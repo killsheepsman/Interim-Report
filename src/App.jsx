@@ -7,7 +7,7 @@ import {
   UploadSimple, User, Warning, WarningCircle, X,
 } from "@phosphor-icons/react";
 import { analyzeImported, downloadJson, parseFiles } from "./dataEngine.js";
-import { loadDefaultSources, loadImportedSources, mergeImportedSources, saveImportedSources } from "./dataStore.js";
+import { loadDefaultAnalysis, loadDefaultSources, loadImportedSources, mergeImportedSources, saveImportedSources } from "./dataStore.js";
 import { sampleData } from "./sampleData.js";
 import { BarCompare, Donut, HorizontalRank, Pareto, QuantityRateCombo, ScoreMonthlyCombo, ScoreYearCompare, StackedStage, WorkshopCategoryHeatmap, YearStackedCompare } from "./charts.jsx";
 
@@ -153,8 +153,8 @@ function DateRangeFilter({ value, onChange, onRefresh, fontSize, onFontSize, ref
 
 function ExecutiveSidebar({ active, setActive }) {
   const nav = [
-    ["总览", House], ["数据导入", UploadSimple], ["IQC", Cube], ["IPQC", Pulse],
-    ["OQC", ShieldCheck], ["DQA", ClipboardText], ["改善计划", Target], ["模板设置", GearSix],
+    ["总览", House], ["IQC", Cube], ["IPQC", Pulse],
+    ["OQC", ShieldCheck], ["DQA", ClipboardText], ["改善计划", Target], ["数据导入", UploadSimple], ["模板设置", GearSix],
   ];
   return <aside className="executive-sidebar">
     <div className="brand"><div className="brand-logo"><ShieldCheck size={26} weight="fill" /></div><div><strong>品质智控</strong><span>质量分析平台</span></div></div>
@@ -389,46 +389,126 @@ function Filters({ dateRange, onDateRange, onRefreshDate, dateRefreshStatus, fon
   return <div className={`filter-bar ${collapsed ? "collapsed" : ""}`}><button className="filter-collapse" onClick={() => setCollapsed(!collapsed)}><Funnel size={17} />{collapsed ? "展开筛选" : "收起筛选"}</button>{!collapsed && <><DateRangeFilter value={dateRange} onChange={onDateRange} onRefresh={onRefreshDate} refreshStatus={dateRefreshStatus} fontSize={fontSize} onFontSize={onFontSize}/><label>组织/工厂<SelectBox>全部</SelectBox></label><label>产品线<SelectBox>全部</SelectBox></label><label>供应商<SelectBox>全部</SelectBox></label><label>设备<SelectBox>全部</SelectBox></label><label>数据集类型<SelectBox>全部</SelectBox></label><SelectBox>2026半年报模板</SelectBox></>}</div>;
 }
 
+const reportStorageKey = "qms-half-year-summary-report-v1";
+const topBy = (rows = [], getter = (row) => row.count || 0) => [...rows].sort((a, b) => getter(b) - getter(a))[0] || {};
+const sumBy = (rows = [], getter = (row) => row.count || 0) => rows.reduce((sum, row) => sum + (Number(getter(row)) || 0), 0);
+const fmt = (value) => Number(value || 0).toLocaleString();
+const rateText = (value) => `${Number(value || 0).toFixed(1)}%`;
+const reportPeriodText = (range) => `2025同期：${range.start2025} 至 ${range.end2025}；2026本期：${range.start2026} 至 ${range.end2026}`;
+
+function buildSummaryReport(data, files, dateRange) {
+  const worstSupplier = [...(data.iqc?.suppliers || [])].sort((a, b) => (a.y2026 || 100) - (b.y2026 || 100))[0] || {};
+  const highWorkshop = topBy(data.ipqc?.workshops || [], (row) => row.y2026 || 0);
+  const topIpqcIssue = topBy(data.ipqc?.categories || [], (row) => row.shenzhen || row.hangzhou || row.count || 0);
+  const topOqcIssue = topBy(data.oqc?.onsite || [], (row) => row.count || 0);
+  const lowOqcTpm = [...(data.oqc?.tpm || [])].sort((a, b) => (a.fiveRate || 100) - (b.fiveRate || 100))[0] || {};
+  const highDqaDivision = topBy(data.dqa?.divisions || [], (row) => (row.production || 0) + (row.onsite || 0));
+  const highDqaTpm = topBy(data.dqa?.tpmStages || [], (row) => (row.production || 0) + (row.onsite || 0));
+  const topDqaIssue = topBy(data.dqa?.categories || [], (row) => (row.production || 0) + (row.onsite || 0));
+  const kpis = data.kpis || [];
+  const totalFiles = files?.length || 0;
+  return {
+    title: "2026年半年度质量总结报告",
+    period: reportPeriodText(dateRange),
+    summary: [
+      `本报告基于经营驾驶舱当前数据自动生成，覆盖 IQC、IPQC、OQC、DQA 四个模块，共读取 ${totalFiles} 个源数据文件。`,
+      `2026本期核心指标：IQC批次良率 ${kpis[0]?.value ?? "-"}${kpis[0]?.unit || "%"}，IPQC异常密度 ${kpis[1]?.value ?? "-"}${kpis[1]?.unit || "%"}，OQC 5分率 ${kpis[2]?.value ?? "-"}${kpis[2]?.unit || "%"}，DQA生产+现场问题 ${fmt(kpis[3]?.value)} 项。`,
+      `主要风险集中在供应商来料稳定性、组装工坊过程异常、现场交付扣分和研发问题后移四条链路，需要下半年用“TOP问题闭环+责任人待办”方式推进。`,
+    ].join("\n"),
+    conclusions: [
+      `IQC：${worstSupplier.supplier || "待识别供应商"} 批次良率相对偏低，2026良率约 ${rateText(worstSupplier.y2026)}，主要问题指向“${worstSupplier.issue || "待识别"}”。`,
+      `IPQC：${highWorkshop.name || "待识别工坊"} 异常密度最高，约 ${rateText(highWorkshop.y2026)}；TOP异常为“${topIpqcIssue.name || "待识别"}”，需优先压降装配过程重复异常。`,
+      `OQC：现场扣分TOP为“${topOqcIssue.name || "待识别"}”（${fmt(topOqcIssue.count)}项，占比${rateText(topOqcIssue.share)}）；${lowOqcTpm.name || "待识别TPM"} 的5分比例需要重点拉升。`,
+      `DQA：${highDqaDivision.name || "待识别产品部"} 的生产+现场问题最多；TPM维度 ${highDqaTpm.name || "待识别TPM"} 问题数最高，TOP研发问题为“${topDqaIssue.name || "待识别"}”。`,
+    ].join("\n"),
+    topImprovements: [
+      `1. 供应商端：针对 ${worstSupplier.supplier || "低良率供应商"} 建立来料异常周度复盘，按材料属性和加工类型分层制定纠正措施。`,
+      `2. 组装工坊端：针对 ${highWorkshop.name || "高异常工坊"} 建立TOP异常日清机制，对“${topIpqcIssue.name || "TOP异常"}”形成作业标准、首件确认和巡检加严。`,
+      `3. 交付端：围绕OQC现场扣分“${topOqcIssue.name || "TOP扣分"}”建立发货前风险清单，交付经理对低分设备逐台复盘。`,
+      `4. 研发端：将“${topDqaIssue.name || "TOP研发问题"}”前移到IPD评审、设计发布、FAT验证节点，TPM负责项目级闭环。`,
+    ].join("\n"),
+    measures: [
+      "IQC：对低良率供应商实施月度质量评分、重复异常8D、首批加严检验和SQE驻场确认；对特采风险单独评审是否存在过度设计。",
+      "IPQC：对高异常工坊建立问题照片库、标准作业点检表、首件互检和巡检频次提升；对重复问题执行班组长现场确认。",
+      "OQC：交付经理按TPM输出5分率排名和低分问题清单，发货前完成问题确认、整改证据和客户风险评估。",
+      "DQA：产品部按TOP问题建立IPD门禁，TR3关注设计完整性，TR4关注BOM/资料齐套，TR5关注FAT和稳定性验证。",
+    ].join("\n"),
+    todos: [
+      { type: "组装工坊", owner: highWorkshop.name || "高风险工坊负责人", object: topIpqcIssue.name || "TOP过程异常", priority: "P0", due: "2026-07-31", action: "建立TOP异常日清单，更新作业指导书和首件确认表，连续4周跟踪异常密度下降。" },
+      { type: "交付经理", owner: lowOqcTpm.name || "低5分率TPM/交付经理", object: topOqcIssue.name || "现场扣分TOP", priority: "P0", due: "2026-08-15", action: "输出低分设备复盘清单，发货前逐台确认整改证据，低分问题横向展开。" },
+      { type: "产品部", owner: highDqaDivision.name || "高风险产品部", object: topDqaIssue.name || "TOP研发问题", priority: "P0", due: "2026-08-31", action: "把TOP研发问题写入IPD门禁检查项，TR3/TR4/TR5分别补充设计、资料、验证要求。" },
+      { type: "TPM", owner: highDqaTpm.name || "高风险TPM", object: `${highDqaTpm.division || "对应产品部"} 生产/现场问题`, priority: "P1", due: "2026-09-15", action: "按项目建立问题闭环台账，复盘生产和现场问题根因，月度向产品部汇报关闭率。" },
+    ],
+  };
+}
+
+function EditableBlock({ label, value, onChange, rows = 5 }) {
+  return <label className="report-field"><span>{label}</span><textarea rows={rows} value={value} onChange={(event) => onChange(event.target.value)} /></label>;
+}
+
+function TodoTable({ rows, onChange }) {
+  const update = (index, patch) => onChange(rows.map((row, rowIndex) => rowIndex === index ? { ...row, ...patch } : row));
+  const add = () => onChange([...rows, { type: "新增待办", owner: "待分配", object: "待填写", priority: "P1", due: "", action: "填写改善动作和验证方式。" }]);
+  return <div className="report-todo-table">
+    <div className="report-todo-row report-todo-head"><span>对象</span><span>责任人</span><span>问题/指标</span><span>优先级</span><span>截止日期</span><span>改善动作</span></div>
+    {rows.map((row, index) => <div className="report-todo-row" key={`${row.type}-${index}`}>
+      <input value={row.type} onChange={(event) => update(index, { type: event.target.value })} />
+      <input value={row.owner} onChange={(event) => update(index, { owner: event.target.value })} />
+      <input value={row.object} onChange={(event) => update(index, { object: event.target.value })} />
+      <select value={row.priority} onChange={(event) => update(index, { priority: event.target.value })}><option>P0</option><option>P1</option><option>P2</option></select>
+      <input type="date" value={row.due} onChange={(event) => update(index, { due: event.target.value })} />
+      <textarea rows={2} value={row.action} onChange={(event) => update(index, { action: event.target.value })} />
+    </div>)}
+    <button className="add-action" onClick={add}><Plus size={17}/>新增待办</button>
+  </div>;
+}
+
 function WorkspaceDashboard({ data, files, onImport, view, onViewChange, onExport, onSave, dateRange, onDateRange, onRefreshDate, dateRefreshStatus, fontSize, onFontSize }) {
-  const [metric, setMetric] = useState("供应商良率");
   const [section, setSection] = useState("top");
-  const [grain, setGrain] = useState("季度");
   const [toast, setToast] = useState("");
-  const [actions, setActions] = useState(data.actions);
-  useEffect(() => setActions(data.actions), [data.actions]);
-  const supplier = data.iqc.suppliers.slice(0, 9);
-  const addAction = () => {
-    setActions((prev) => [...prev, { id: `QA-${String(prev.length + 1).padStart(3, "0")}`, priority: "P1", title: "新建质量改善任务", owner: "待分配", due: "待设置", progress: 0, status: "未开始", module: "DQA" }]);
-    setToast("已新增一条改善行动，可继续编辑责任人和目标日期");
+  const generated = useMemo(() => buildSummaryReport(data, files, dateRange), [data, files, dateRange]);
+  const [report, setReport] = useState(() => safeParse(localStorage.getItem(reportStorageKey), generated));
+  useEffect(() => {
+    const saved = safeParse(localStorage.getItem(reportStorageKey), null);
+    if (!saved) setReport(generated);
+  }, [generated]);
+  const update = (key, value) => setReport((current) => ({ ...current, [key]: value }));
+  const saveReport = () => {
+    localStorage.setItem(reportStorageKey, JSON.stringify({ ...report, savedAt: new Date().toISOString() }));
+    setToast("总结报告已保存到本地");
+    setTimeout(() => setToast(""), 2600);
+  };
+  const regenerate = () => {
+    setReport(generated);
+    setToast("已按当前经营驾驶舱数据重新生成报告草稿");
     setTimeout(() => setToast(""), 2600);
   };
   const jump = (key) => {
     setSection(key);
-    const selectors = { top: ".workspace-shell", datasets: ".dataset-section", analysis: ".workspace-chart", actions: ".workspace-actions-panel" };
+    const selectors = { top: ".summary-report-page", datasets: ".dataset-section", analysis: ".summary-report-section", actions: ".report-todos-panel" };
     document.querySelector(selectors[key])?.scrollIntoView({ behavior: "smooth", block: "start" });
   };
-  return <div className="workspace-shell">
-    <WorkspaceTop onImport={onImport} view={view} onViewChange={onViewChange} onExport={onExport} onSave={onSave} section={section} onSection={jump} />
+  return <div className="workspace-shell summary-report-shell">
+    <WorkspaceTop onImport={onImport} view={view} onViewChange={onViewChange} onExport={onExport} onSave={saveReport} section={section} onSection={jump} />
     <Filters dateRange={dateRange} onDateRange={onDateRange} onRefreshDate={onRefreshDate} dateRefreshStatus={dateRefreshStatus} fontSize={fontSize} onFontSize={onFontSize} />
-    <main className="workspace-main">
-      <section className="dataset-section"><div className="section-label">数据集状态（上传完整度）<Question size={14} /></div><DatasetStatus files={files} /></section>
-      <div className="workspace-grid">
-        <Panel title="良率对比分析" className="workspace-chart">
-          <div className="chart-toolbar"><label>指标<SelectBox>{metric}</SelectBox></label><label>对比维度<SelectBox>供应商</SelectBox></label><div className="segmented">{["月度","季度","半年度"].map(x=><button key={x} className={grain===x?"active":""} onClick={()=>setGrain(x)}>{x}</button>)}</div></div>
-          <BarCompare labels={supplier.map(x => x.supplier)} first={supplier.map(x => x.y2025)} second={supplier.map(x => x.y2026)} />
-        </Panel>
-        <Panel title="" className="workspace-insight"><InsightPanel data={data} /></Panel>
-        <Panel title="不良分类占比（TOP 8）" className="workspace-small">
-          <div className="mini-ranking">{data.ipqc.categories.slice(0, 8).map((r, i) => <div key={r.name}><span>{i+1}</span><strong>{r.name}</strong><em>{r.shenzhen}%</em><b className={i < 3 ? "warn" : ""}>{i < 3 ? "重点" : "观察"}</b></div>)}</div>
-        </Panel>
-        <Panel title="OQC 2026年 5分率TPM Top10" subtitle="设备数≥5" className="workspace-small"><HorizontalRank rows={data.oqc.tpm.slice(0, 10)} height={290} /></Panel>
-        <Panel title="DQA TPM各阶段问题占比" className="workspace-small"><StackedStage rows={data.dqa.tpmStages.slice(0, 7)} height={290} /></Panel>
-        <Panel title="改善行动看板（P0/P1）" className="workspace-actions-panel" action={<button className="text-btn">查看全部 <ArrowRight size={14}/></button>}><ActionBoard actions={actions} onAdd={addAction} /></Panel>
-        <Panel title="TOP问题 Pareto" className="workspace-pareto"><Pareto rows={data.oqc.onsite} /></Panel>
-        <Panel title="IPD阶段门禁控制矩阵" className="workspace-ipd"><IpdMatrix rows={data.ipdMatrix} /></Panel>
+    <main className="workspace-main summary-report-page">
+      <section className="summary-report-hero">
+        <div><span className="section-number">报告</span><input className="report-title-input" value={report.title} onChange={(event) => update("title", event.target.value)} /><p>{report.period}</p></div>
+        <div className="report-actions"><button className="ghost-btn" onClick={regenerate}><ArrowsClockwise size={17}/>重新生成报告</button><button className="green-btn" onClick={saveReport}><FloppyDisk size={17}/>保存报告</button></div>
+      </section>
+      <section className="dataset-section"><div className="section-label">数据集状态（与经营驾驶舱一致）<Question size={14} /></div><DatasetStatus files={files} /></section>
+      <section className="summary-report-kpis">
+        {(data.kpis || []).map((item) => <div className="summary-kpi" key={item.key || item.label}><span>{item.label}</span><strong>{fmt(item.value)}{item.unit}</strong><em className={(item.delta || 0) > 0 && item.goodWhenDown ? "risk-up" : "risk-down"}>同比 {item.delta > 0 ? "+" : ""}{item.delta}</em><small>{item.detail}</small></div>)}
+      </section>
+      <div className="summary-report-grid">
+        <Panel title="一、管理层摘要" className="summary-report-section"><EditableBlock label="可编辑摘要" value={report.summary} onChange={(value) => update("summary", value)} rows={7}/></Panel>
+        <Panel title="二、量化分析结论" className="summary-report-section"><EditableBlock label="按经营驾驶舱数据自动生成，可修改" value={report.conclusions} onChange={(value) => update("conclusions", value)} rows={8}/></Panel>
+        <Panel title="三、TOP改善点" className="summary-report-section"><EditableBlock label="TOP问题与改善方向" value={report.topImprovements} onChange={(value) => update("topImprovements", value)} rows={7}/></Panel>
+        <Panel title="四、下半年改善措施" className="summary-report-section"><EditableBlock label="措施要具体到模块、责任对象和验证方式" value={report.measures} onChange={(value) => update("measures", value)} rows={8}/></Panel>
+        <Panel title="五、待办安排：组装工坊 / 交付经理 / 产品部 / TPM" className="report-todos-panel"><TodoTable rows={report.todos || []} onChange={(rows) => update("todos", rows)} /></Panel>
       </div>
     </main>
-    <footer className="workspace-foot">数据更新时间：{data.updatedAt}<span>数据来源于导入的Excel文件 · 当前模板：2026半年报</span></footer>
+    <footer className="workspace-foot">数据更新时间：{data.updatedAt}<span>总结报告可编辑并保存在本地浏览器；经营驾驶舱页面未改动</span></footer>
     {toast && <div className="toast"><CheckCircle size={19} weight="fill" />{toast}</div>}
   </div>;
 }
@@ -1367,6 +1447,7 @@ export function App() {
   const [importOpen, setImportOpen] = useState(false);
   const [importModule, setImportModule] = useState(null);
   const [storageReady, setStorageReady] = useState(false);
+  const [usingDefaultAnalysis, setUsingDefaultAnalysis] = useState(false);
   const [saved, setSaved] = useState(false);
   const [sourceNotice, setSourceNotice] = useState("");
   const [dateRefreshStatus, setDateRefreshStatus] = useState("idle");
@@ -1379,10 +1460,25 @@ export function App() {
   useEffect(() => { location.hash = view; }, [view]);
   useEffect(() => {
     loadImportedSources().then(async (stored) => {
-      const defaultFiles = stored.length ? [] : await loadDefaultSources();
-      const activeSources = stored.length ? stored : defaultFiles;
-      setFiles(activeSources);
-      if (activeSources.length) setData(analyzeImported(activeSources, appliedDateRange));
+      if (stored.length) {
+        setUsingDefaultAnalysis(false);
+        setFiles(stored);
+        setData(analyzeImported(stored, appliedDateRange));
+        setStorageReady(true);
+        return;
+      }
+      const defaultAnalysis = await loadDefaultAnalysis();
+      if (defaultAnalysis?.data) {
+        setUsingDefaultAnalysis(true);
+        setFiles(defaultAnalysis.files || []);
+        setData(defaultAnalysis.data);
+        setStorageReady(true);
+        return;
+      }
+      const defaultFiles = await loadDefaultSources();
+      setUsingDefaultAnalysis(false);
+      setFiles(defaultFiles);
+      if (defaultFiles.length) setData(analyzeImported(defaultFiles, appliedDateRange));
       setStorageReady(true);
     });
   }, []);
@@ -1392,11 +1488,11 @@ export function App() {
     window.dispatchEvent(new CustomEvent("qms-font-size", { detail: fontSize }));
   }, [fontSize]);
   useEffect(() => {
-    if (storageReady && files.length) {
+    if (storageReady && files.length && !usingDefaultAnalysis) {
       setData(analyzeImported(files, appliedDateRange));
       setAnalysisRevision((current) => current + 1);
     }
-  }, [appliedDateRange, storageReady]);
+  }, [appliedDateRange, storageReady, usingDefaultAnalysis]);
   useEffect(() => {
     localStorage.setItem("qms-chart-label-controls-visible-v2", String(labelControlsVisible));
     window.dispatchEvent(new CustomEvent("qms-chart-label-controls", { detail: labelControlsVisible }));
@@ -1406,6 +1502,7 @@ export function App() {
     setImportOpen(true);
   };
   const applySources = async (sources, result = {}) => {
+    setUsingDefaultAnalysis(false);
     setFiles(sources);
     await saveImportedSources(sources);
     setData(sources.length ? analyzeImported(sources, appliedDateRange) : sampleData);
@@ -1434,6 +1531,20 @@ export function App() {
     if (!files.length) {
       setDateRefreshStatus("missing");
       setTimeout(() => setDateRefreshStatus("idle"), 2600);
+      return;
+    }
+    if (usingDefaultAnalysis) {
+      setDateRefreshStatus("loading");
+      loadDefaultSources().then((defaultFiles) => {
+        setUsingDefaultAnalysis(false);
+        setFiles(defaultFiles);
+        setAppliedDateRange({ ...dateRange });
+        localStorage.setItem("qms-date-range", JSON.stringify(dateRange));
+        setData(defaultFiles.length ? analyzeImported(defaultFiles, dateRange) : sampleData);
+        setAnalysisRevision((current) => current + 1);
+        setDateRefreshStatus("done");
+        setTimeout(() => setDateRefreshStatus("idle"), 1800);
+      });
       return;
     }
     setAppliedDateRange({ ...dateRange });

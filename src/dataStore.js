@@ -43,6 +43,16 @@ export const loadDefaultSources = async () => {
   }
 };
 
+export const loadDefaultAnalysis = async () => {
+  try {
+    const response = await fetch(`${import.meta.env.BASE_URL || "./"}defaultAnalysis.json`, { cache: "no-store" });
+    if (!response.ok) return null;
+    return await response.json();
+  } catch {
+    return null;
+  }
+};
+
 export const saveImportedSources = async (sources) => {
   await transaction("readwrite", (store) => store.put(sources, SOURCES_KEY));
 };
