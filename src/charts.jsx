@@ -129,7 +129,7 @@ export function StackedStage({ rows, height = 330, chartKey = "stage-distributio
     color: "#fff",
     fontSize: 9,
     lineHeight: 12,
-    formatter: (p) => p.value >= 8 ? `${p.data.count}\n${p.value}%` : "",
+    formatter: (p) => p.value >= 8 ? `${Number(p.data.count || 0).toLocaleString()}/${p.value}%` : "",
   });
   return <div className="chart-config-wrap"><LabelPositionControl positions={positions} onChange={changePosition} options={["inside", "insideLeft", "insideRight", "left", "right", "none"]}/><ScaledChart style={{ height }} option={{
     tooltip: {
@@ -405,7 +405,7 @@ export function YearStackedCompare({ rows, values, height = 380, chartKey = valu
           const share = Number(data?.share || 0);
           const count = Number(data?.count || 0);
           if (!count || share < 5) return "";
-          return share >= 9 ? `${count.toLocaleString()}\n${share}%` : `${count.toLocaleString()} / ${share}%`;
+          return `${count.toLocaleString()}/${share}%`;
         },
         fontSize: 9,
         lineHeight: 12,

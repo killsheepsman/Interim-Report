@@ -144,6 +144,48 @@ const oqcMonthlySummaryRows = (workbook) => {
   return rows;
 };
 
+
+
+const iqcProjectName = (fileName) => text(fileName)
+  .replace(/\.xlsx?$/i, "")
+  .replace(/\u9879\u76ee\u8d28\u68c0\u7edf\u8ba1|\u9879\u76ee\u7edf\u8ba1|\u8d28\u68c0\u7edf\u8ba1|\u7edf\u8ba1/g, "")
+  .trim();
+
+const isIqcProjectWorkbook = (workbook) => {
+  if (workbook.SheetNames.length < 3) return false;
+  const firstMatrix = XLSX.utils.sheet_to_json(workbook.Sheets[workbook.SheetNames[0]], { header: 1, defval: "" });
+  const firstHeaderIndex = findHeader(firstMatrix);
+  const firstHeaders = new Set((firstMatrix[firstHeaderIndex] || []).map(text));
+  const firstName = text(workbook.SheetNames[0]);
+  const firstLooksSummary = firstName.includes("\u6c47\u603b") || (firstHeaders.has("\u5e74\u4efd") && firstHeaders.has("\u6765\u6599\u6279\u6b21"));
+  if (!firstLooksSummary) return false;
+  return workbook.SheetNames.slice(1, 3).some((sheetName) => {
+    const matrix = XLSX.utils.sheet_to_json(workbook.Sheets[sheetName], { header: 1, defval: "" });
+    const headerIndex = findHeader(matrix);
+    const headers = new Set((matrix[headerIndex] || []).map(text));
+    return headers.has("\u4f9b\u5e94\u5546") && headers.has("\u8d28\u68c0\u7ed3\u679c") && headers.has("\u68c0\u9a8c\u5f00\u59cb\u65f6\u95f4");
+  });
+};
+
+const iqcProjectRows = (workbook, fileName) => {
+  const rows = [];
+  const project = iqcProjectName(fileName);
+  workbook.SheetNames.slice(1, 3).forEach((sheetName) => {
+    const matrix = XLSX.utils.sheet_to_json(workbook.Sheets[sheetName], { header: 1, defval: "" });
+    const headerIndex = findHeader(matrix);
+    const headers = matrix[headerIndex].map(text);
+    if (!headers.includes("\u4f9b\u5e94\u5546") || !headers.includes("\u8d28\u68c0\u7ed3\u679c")) return;
+    const sheetYear = sheetName.includes("2026") || sheetName.includes("26") ? 2026 : sheetName.includes("2025") || sheetName.includes("25") ? 2025 : null;
+    matrix.slice(headerIndex + 1).forEach((values) => {
+      if (!values.some((v) => text(v))) return;
+      const row = { __project: project, __sourceSheet: sheetName, __projectYear: sheetYear };
+      headers.forEach((h, i) => { if (h) row[h] = values[i]; });
+      if (text(row["\u4f9b\u5e94\u5546"])) rows.push(row);
+    });
+  });
+  return rows;
+};
+
 const detectModule = (fileName, rows) => {
   const columns = new Set(Object.keys(rows[0] || {}));
   if (columns.has("供应商") && columns.has("质检结果")) return "IQC";
@@ -160,7 +202,8 @@ export async function parseFiles(files) {
     const workbook = XLSX.read(arrayBuffer, { type: "array", cellDates: true });
     const isOqcMonthlySummary = file.name.includes("评分按月汇总");
     const isEcnSummary = file.name.includes("ECN");
-    const rows = isOqcMonthlySummary ? oqcMonthlySummaryRows(workbook) : isEcnSummary ? ecnRows(workbook) : sheetRows(workbook);
+    const isIqcProject = !isEcnSummary && !isOqcMonthlySummary && isIqcProjectWorkbook(workbook);
+    const rows = isOqcMonthlySummary ? oqcMonthlySummaryRows(workbook) : isEcnSummary ? ecnRows(workbook) : isIqcProject ? iqcProjectRows(workbook, file.name) : sheetRows(workbook);
     rows.forEach((row) => {
       if (row["治具数量"] == null && row["送检数"] != null) row["治具数量"] = row["送检数"];
       if (row["异常问题数量"] == null && row["不良数"] != null) row["异常问题数量"] = row["不良数"];
@@ -174,8 +217,9 @@ export async function parseFiles(files) {
       module: detectModule(file.name, rows),
       rows,
       sheets: workbook.SheetNames,
-      kind: isOqcMonthlySummary ? "OQC_MONTHLY_SUMMARY" : "STANDARD",
-      subKind: isEcnSummary ? "DQA_ECN" : undefined,
+      kind: isOqcMonthlySummary ? "OQC_MONTHLY_SUMMARY" : isIqcProject ? "IQC_FOCUS_PROJECT" : "STANDARD",
+      subKind: isEcnSummary ? "DQA_ECN" : isIqcProject ? "IQC_FOCUS_PROJECT" : undefined,
+      projectName: isIqcProject ? iqcProjectName(file.name) : undefined,
       importedAt: new Date().toISOString(),
     });
   }
@@ -396,6 +440,70 @@ const buildIqcDetails = (iqcFiles, dateRange, specialAsBad = false) => {
       .sort((a, b) => (b.y2025Qty + b.y2026Qty) - (a.y2025Qty + a.y2026Qty));
   });
   return { siteMonthly, issueBySite, materialBySite, mainSuppliers, supplierCandidates };
+};
+
+
+
+const iqcProjectIssueCategory = (row) => {
+  const source = text(row["\u8d28\u68c0\u8bf4\u660e"]).toLowerCase().replace(/\s/g, "");
+  if (!source) return "\u65e0\u8bf4\u660e";
+  if (/\u5212\u75d5|\u522e\u82b1|\u78d5|\u78b0|\u4fee\u8865|\u7f3a\u5c11|\u7834\u635f|\u538b\u4f24|\u810f\u6c61/.test(source)) return "\u5916\u89c2/\u78d5\u78b0\u5212\u4f24";
+  if (/\u5c3a\u5bf8|\u516c\u5dee|\u5b9e\u6d4b|\u539a\u5ea6|\u957f\u5ea6|\u5bbd\u5ea6|\u9ad8\u5ea6|\u8d85\u5dee/.test(source)) return "\u5c3a\u5bf8/\u516c\u5dee\u5f02\u5e38";
+  if (/\u5b54|\u7259\u7eb9|\u87ba\u7eb9|m\d+|\u03c6|\u76f4\u5f84|\u62e7\u4e0d\u52a8/.test(source)) return "\u5b54\u4f4d/\u7259\u7eb9\u5f02\u5e38";
+  if (/\u6c27\u5316|\u989c\u8272|\u53d1\u9ed1|\u55b7|\u9540|\u8868\u9762\u5904\u7406|\u62db\u5149|\u955c\u9762/.test(source)) return "\u8868\u9762\u5904\u7406\u5f02\u5e38";
+  if (/\u53d8\u5f62|\u6bdb\u523a|\u62ab\u950b|\u9510\u8fb9|\u5012\u89d2/.test(source)) return "\u53d8\u5f62/\u6bdb\u523a\u9510\u8fb9";
+  return "\u5176\u5b83\u5f02\u5e38";
+};
+
+const buildIqcFocusProjects = (projectFiles, dateRange) => {
+  const projectMap = new Map();
+  projectFiles.forEach((file) => {
+    const project = file.projectName || file.rows[0]?.__project || iqcProjectName(file.name);
+    if (!projectMap.has(project)) projectMap.set(project, []);
+    projectMap.get(project).push(...file.rows.map((row) => ({ ...row, __project: project })));
+  });
+  const years = [2025, 2026];
+  const yearStats = (rows, predicate = () => true) => {
+    const result = {};
+    years.forEach((year) => {
+      const source = rows.filter((row) => predicate(row) && (yearOf(row["\u68c0\u9a8c\u5f00\u59cb\u65f6\u95f4"]) || row.__projectYear) === year);
+      const qualified = source.filter((row) => text(row["\u8d28\u68c0\u7ed3\u679c"]) === "\u5408\u683c").length;
+      const special = source.filter((row) => text(row["\u8d28\u68c0\u7ed3\u679c"]) === "\u7279\u91c7").length;
+      const rejected = source.filter((row) => text(row["\u8d28\u68c0\u7ed3\u679c"]) === "\u4e0d\u5408\u683c").length;
+      const abnormal = source.length - qualified;
+      result[year] = { total: source.length, qualified, rejected, special, abnormal, rate: Number((qualified / Math.max(source.length, 1) * 100).toFixed(1)), specialShare: Number((special / Math.max(abnormal, 1) * 100).toFixed(1)) };
+    });
+    return result;
+  };
+  const projectRows = [...projectMap.entries()].map(([name, rows]) => {
+    const stats = yearStats(rows);
+    return { name, y2025Qty: stats[2025].total, y2025Bad: stats[2025].abnormal, y2025Rate: stats[2025].rate, y2026Qty: stats[2026].total, y2026Bad: stats[2026].abnormal, y2026Rate: stats[2026].rate, y2025Special: stats[2025].special, y2026Special: stats[2026].special, y2025SpecialShare: stats[2025].specialShare, y2026SpecialShare: stats[2026].specialShare, delta: Number((stats[2026].rate - stats[2025].rate).toFixed(1)) };
+  }).sort((a, b) => b.y2026Qty - a.y2026Qty);
+  const byProject = Object.fromEntries([...projectMap.entries()].map(([project, rows]) => {
+    const supplierNames = [...new Set(rows.map((row) => text(row["\u4f9b\u5e94\u5546"])).filter(Boolean))];
+    const suppliers = supplierNames.map((supplier) => {
+      const stats = yearStats(rows, (row) => text(row["\u4f9b\u5e94\u5546"]) === supplier);
+      const materialCounts = new Map();
+      rows.filter((row) => text(row["\u4f9b\u5e94\u5546"]) === supplier).forEach((row) => {
+        const material = text(row["\u6750\u8d28\u5206\u7c7b"]) || "\u672a\u5206\u7c7b";
+        materialCounts.set(material, (materialCounts.get(material) || 0) + 1);
+      });
+      const type = [...materialCounts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] || "\u672a\u5206\u7c7b";
+      return { supplier, type, y2025Qty: stats[2025].total, y2025Bad: stats[2025].abnormal, y2025Rate: stats[2025].rate, y2026Qty: stats[2026].total, y2026Bad: stats[2026].abnormal, y2026Rate: stats[2026].rate, delta: Number((stats[2026].rate - stats[2025].rate).toFixed(1)) };
+    }).filter((row) => row.y2025Qty + row.y2026Qty > 0).sort((a, b) => b.y2026Qty - a.y2026Qty);
+    const issueCounts = { 2025: new Map(), 2026: new Map() };
+    rows.filter((row) => text(row["\u8d28\u68c0\u7ed3\u679c"]) !== "\u5408\u683c").forEach((row) => {
+      const year = yearOf(row["\u68c0\u9a8c\u5f00\u59cb\u65f6\u95f4"]) || row.__projectYear;
+      if (!issueCounts[year]) return;
+      const category = iqcProjectIssueCategory(row);
+      issueCounts[year].set(category, (issueCounts[year].get(category) || 0) + 1);
+    });
+    const issueNames = [...new Set([...issueCounts[2025].keys(), ...issueCounts[2026].keys()])];
+    const totals = { 2025: [...issueCounts[2025].values()].reduce((sum, value) => sum + value, 0), 2026: [...issueCounts[2026].values()].reduce((sum, value) => sum + value, 0) };
+    const issues = issueNames.map((name) => ({ name, y2025Count: issueCounts[2025].get(name) || 0, y2026Count: issueCounts[2026].get(name) || 0, y2025Share: Number(((issueCounts[2025].get(name) || 0) / Math.max(totals[2025], 1) * 100).toFixed(1)), y2026Share: Number(((issueCounts[2026].get(name) || 0) / Math.max(totals[2026], 1) * 100).toFixed(1)) })).sort((a, b) => b.y2026Count - a.y2026Count);
+    return [project, { suppliers, issues }];
+  }));
+  return { projects: projectRows, byProject };
 };
 
 const buildIqcSpecialAnalysis = (iqcFiles, dateRange) => {
@@ -957,7 +1065,12 @@ export function analyzeImported(files, dateRange) {
   const byModule = (module) => files.filter((f) => f.module === module).flatMap((f) => f.rows);
 
   const iqcFiles = files.filter((f) => f.module === "IQC");
-  const iqc = byModule("IQC");
+  const iqcProjectFiles = iqcFiles.filter((f) => f.subKind === "IQC_FOCUS_PROJECT");
+  const standardIqcFiles = iqcFiles.filter((f) => f.subKind !== "IQC_FOCUS_PROJECT");
+  const iqc = standardIqcFiles.flatMap((f) => f.rows);
+  if (iqcProjectFiles.length) {
+    next.iqc.focusProjects = buildIqcFocusProjects(iqcProjectFiles, dateRange);
+  }
   if (iqc.length) {
     const process = iqc.filter((r) => !iqcIsInternal(r));
     const good = process.filter((r) => iqcIsGood(r, false)).length;
@@ -982,8 +1095,8 @@ export function analyzeImported(files, dateRange) {
       risk: s.g26 / Math.max(s.b26, 1) < .9 ? "高" : "中",
       issue: classify(iqc.find((r) => text(r["供应商"]) === s.supplier)?.["异常原因"], rules.iqc),
     })).sort((a, b) => a.y2026 - b.y2026).slice(0, 12);
-    const acceptedMode = buildIqcDetails(iqcFiles, dateRange, false);
-    const rejectedMode = buildIqcDetails(iqcFiles, dateRange, true);
+    const acceptedMode = buildIqcDetails(standardIqcFiles, dateRange, false);
+    const rejectedMode = buildIqcDetails(standardIqcFiles, dateRange, true);
     Object.assign(next.iqc, acceptedMode);
     const iqcYearTotals = (year) => Object.values(acceptedMode.siteMonthly).flat()
       .reduce((result, row) => ({
@@ -997,10 +1110,10 @@ export function analyzeImported(files, dateRange) {
     next.kpis[0].value = iqcRate26;
     next.kpis[0].delta = Number((iqcRate26 - iqcRate25).toFixed(1));
     next.iqc.qualityModes = { accepted: acceptedMode, rejected: rejectedMode };
-    next.iqc.specialAnalysis = buildIqcSpecialAnalysis(iqcFiles, dateRange);
+    next.iqc.specialAnalysis = buildIqcSpecialAnalysis(standardIqcFiles, dateRange);
     next.iqc.internalModes = {
-      accepted: buildIqcInternalAnalysis(iqcFiles, dateRange, false),
-      rejected: buildIqcInternalAnalysis(iqcFiles, dateRange, true),
+      accepted: buildIqcInternalAnalysis(standardIqcFiles, dateRange, false),
+      rejected: buildIqcInternalAnalysis(standardIqcFiles, dateRange, true),
     };
   }
 

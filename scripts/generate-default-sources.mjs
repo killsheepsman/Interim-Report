@@ -45,7 +45,7 @@ const defaultDateRange = {
   start2025: "2025-01-01",
   end2025: "2025-05-31",
   start2026: "2026-01-01",
-  end2026: "2026-06-30",
+  end2026: "2026-05-31",
 };
 const metaFiles = parsed.map(({ rows, ...file }) => ({ ...file, rows: [] }));
 const analysis = analyzeImported(parsed, defaultDateRange);

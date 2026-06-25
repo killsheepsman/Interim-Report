@@ -123,7 +123,143 @@ const preserveScrollPosition = (action) => {
   setTimeout(restore, 80);
 };
 
-function FloatingTabs({ options, active, onChange, watchSelector = ".sticky-switch-bar .site-tabs" }) {
+const exportText = {
+  button: "\u5bfc\u51fa\u62a5\u544a",
+  title: "\u5bfc\u51fa\u5f53\u524d\u9875\u9762",
+  desc: "\u5bfc\u51fa\u5f53\u524d\u9875\u9762\u4e2d\u53ef\u89c1\u7684\u56fe\u8868\u3001\u6570\u636e\u8868\u548c\u5206\u6790\u5185\u5bb9\u3002",
+  html: "HTML\u7f51\u9875\u6587\u4ef6",
+  htmlDesc: "\u53ef\u7528\u6d4f\u89c8\u5668\u6253\u5f00\uff0c\u4fdd\u7559\u5f53\u524d\u56fe\u8868\u548c\u8868\u683c\u6837\u5f0f\u3002",
+  pdf: "PDF\u6587\u4ef6",
+  pdfDesc: "\u8c03\u7528\u7cfb\u7edf\u6253\u5370\u5bf9\u8bdd\u6846\uff0c\u9009\u62e9\u201c\u53e6\u5b58\u4e3aPDF\u201d\u5e76\u4fdd\u5b58\u3002",
+  cancel: "\u53d6\u6d88",
+  exporting: "\u6b63\u5728\u51c6\u5907...",
+  fallback: "\u5f53\u524d\u6d4f\u89c8\u5668\u4e0d\u652f\u6301\u76f4\u63a5\u9009\u62e9\u4fdd\u5b58\u8def\u5f84\uff0c\u5df2\u6539\u4e3a\u9ed8\u8ba4\u4e0b\u8f7d\u3002",
+  printTip: "\u8bf7\u5728\u6253\u5370\u7a97\u53e3\u4e2d\u9009\u62e9\u201c\u53e6\u5b58\u4e3a PDF\u201d\u3002",
+};
+
+const exportFileName = (ext) => {
+  const title = document.querySelector(".executive-topbar h1, .report-title-input, .workspace-brand strong")?.value
+    || document.querySelector(".executive-topbar h1, .workspace-brand strong")?.textContent
+    || "QMS\u8d28\u91cf\u62a5\u544a";
+  const stamp = new Date().toISOString().slice(0, 10);
+  return `${String(title).replace(/[\\/:*?"<>|]/g, "-")}-${stamp}.${ext}`;
+};
+
+const exportRootElement = () => document.querySelector(".workspace-main") || document.querySelector(".executive-main") || document.querySelector("#root");
+
+const exportStyles = () => Array.from(document.querySelectorAll('link[rel="stylesheet"], style'))
+  .map((node) => node.outerHTML)
+  .join("\n");
+
+const exportCleanup = (clone) => {
+  clone.querySelectorAll(".export-report-button,.export-dialog-backdrop,.module-floating-tabs,.chart-label-position-control,.axis-angle-control,.date-refresh-btn,.import-btn,.label-controls-toggle,.view-switcher").forEach((node) => node.remove());
+  clone.querySelectorAll("input, textarea, select").forEach((node) => {
+    if (node.tagName === "TEXTAREA") {
+      const div = document.createElement("div");
+      div.className = `${node.className || ""} export-field-text`;
+      div.innerText = node.value || "";
+      node.replaceWith(div);
+    } else if (node.tagName === "SELECT") {
+      const span = document.createElement("span");
+      span.className = `${node.className || ""} export-field-text`;
+      span.innerText = node.options[node.selectedIndex]?.text || node.value || "";
+      node.replaceWith(span);
+    } else {
+      const span = document.createElement("span");
+      span.className = `${node.className || ""} export-field-text`;
+      span.innerText = node.value || "";
+      node.replaceWith(span);
+    }
+  });
+};
+
+const buildExportHtml = () => {
+  const root = exportRootElement();
+  if (!root) return "";
+  const clone = root.cloneNode(true);
+  const sourceCanvases = Array.from(root.querySelectorAll("canvas"));
+  const cloneCanvases = Array.from(clone.querySelectorAll("canvas"));
+  cloneCanvases.forEach((canvas, index) => {
+    try {
+      const image = document.createElement("img");
+      image.src = sourceCanvases[index]?.toDataURL("image/png") || "";
+      image.className = "export-chart-image";
+      image.style.cssText = canvas.getAttribute("style") || "max-width:100%;height:auto;";
+      canvas.replaceWith(image);
+    } catch {}
+  });
+  exportCleanup(clone);
+  const title = document.querySelector(".executive-topbar h1")?.textContent || document.querySelector(".report-title-input")?.value || exportText.button;
+  return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/><title>${title}</title>${exportStyles()}<style>body{background:#f5f7fb!important}.export-document{max-width:1480px;margin:0 auto;padding:18px}.export-chart-image{display:block;max-width:100%;height:auto}.export-field-text{white-space:pre-wrap;display:block;border:1px solid #dce5f1;border-radius:12px;background:#fff;padding:10px 12px;line-height:1.65}.executive-main,.workspace-main{margin-left:0!important;width:100%!important}.executive-topbar{position:static!important}.executive-sidebar,.global-date-filter,.filter-bar,.page-foot,.workspace-foot{display:none!important}@media print{body{background:#fff!important}.panel,.kpi-card,.summary-kpi,.oqc-division-card{break-inside:avoid;box-shadow:none!important}.export-document{padding:0}}</style></head><body><div class="export-document">${clone.outerHTML}</div></body></html>`;
+};
+
+const saveBlobWithPicker = async (blob, filename, accept) => {
+  if (window.showSaveFilePicker) {
+    const handle = await window.showSaveFilePicker({ suggestedName: filename, types: [{ description: filename.split(".").pop().toUpperCase(), accept }] });
+    const writable = await handle.createWritable();
+    await writable.write(blob);
+    await writable.close();
+    return "picker";
+  }
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1200);
+  return "download";
+};
+
+async function exportCurrentPage(format) {
+  const html = buildExportHtml();
+  if (!html) return;
+  if (format === "html") {
+    const result = await saveBlobWithPicker(new Blob([html], { type: "text/html;charset=utf-8" }), exportFileName("html"), { "text/html": [".html"] });
+    if (result === "download") alert(exportText.fallback);
+    return;
+  }
+  const printWindow = window.open("", "_blank");
+  if (!printWindow) return;
+  printWindow.document.open();
+  printWindow.document.write(html);
+  printWindow.document.close();
+  printWindow.focus();
+  setTimeout(() => {
+    alert(exportText.printTip);
+    printWindow.print();
+  }, 600);
+}
+
+function ExportReportButton() {
+  const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const run = async (format) => {
+    setBusy(true);
+    try {
+      await exportCurrentPage(format);
+      setOpen(false);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return <>
+    <button className="export-report-button" onClick={() => setOpen(true)}><DownloadSimple size={17}/>{exportText.button}</button>
+    {open && createPortal(<div className="export-dialog-backdrop" onClick={() => !busy && setOpen(false)}>
+      <div className="export-dialog" onClick={(event) => event.stopPropagation()}>
+        <header><h3>{exportText.title}</h3><p>{busy ? exportText.exporting : exportText.desc}</p></header>
+        <div className="export-choice-grid">
+          <button disabled={busy} onClick={() => run("pdf")}><strong>{exportText.pdf}</strong><span>{exportText.pdfDesc}</span></button>
+          <button disabled={busy} onClick={() => run("html")}><strong>{exportText.html}</strong><span>{exportText.htmlDesc}</span></button>
+        </div>
+        <footer><button disabled={busy} onClick={() => setOpen(false)}>{exportText.cancel}</button></footer>
+      </div>
+    </div>, document.body)}
+  </>;
+}
+
+function FloatingTabs({ options, active, onChange, watchSelector = ".sticky-switch-bar .site-tabs", className = "" }) {
   const [visible, setVisible] = useState(false);
   useEffect(() => {
     if (typeof document === "undefined") return undefined;
@@ -151,7 +287,7 @@ function FloatingTabs({ options, active, onChange, watchSelector = ".sticky-swit
   }, [watchSelector]);
   if (typeof document === "undefined" || !visible) return null;
   const normalized = options.map((option) => typeof option === "string" ? { value: option, label: option } : option);
-  return createPortal(<div className="module-floating-tabs" aria-label="模块快速切换">
+  return createPortal(<div className={`module-floating-tabs ${className}`} aria-label="module quick switch">
     {normalized.map((option) => <button key={option.value} className={active === option.value ? "active" : ""} onClick={() => preserveScrollPosition(() => onChange(option.value))}>{option.label}</button>)}
   </div>, document.body);
 }
@@ -338,14 +474,32 @@ function IpqcWorkshopRisk({ data }) {
 
 function OqcOverviewScore({ data }) {
   const rows = data.oqc.monthlySummary?.divisions || [];
-  return <div className="oqc-overview-score">
-    {rows.map((row) => <div className="oqc-division-card" key={row.name}>
-      <strong>{row.name === "产品一部" ? "半导体&北美" : row.name}</strong>
-      <div><span>评分总数量</span><b>{(row.y2026Count || 0).toLocaleString()}</b></div>
-      <div><span>5分比例</span><b className="good">{row.y2026FiveRate || 0}%</b></div>
-      <div><span>低分比例（≤3分）</span><b className={(row.y2026LowRate || 0) > 10 ? "risk" : ""}>{row.y2026LowRate || 0}%</b></div>
+  const text = {
+    productOne: "\u4ea7\u54c1\u4e00\u90e8",
+    semi: "\u534a\u5bfc\u4f53&\u5317\u7f8e",
+    score2026: "2026\u51fa\u8d27\u8bc4\u5206",
+    fiveRate: "5\u5206\u6bd4\u4f8b",
+    lowRate: "\u4f4e\u5206\u6bd4\u4f8b \u22643\u5206",
+    count: "\u8bc4\u5206\u6570\u91cf",
+    empty: "\u5bfc\u5165OQC\u6708\u5ea6\u8bc4\u5206\u6c47\u603b\u540e\u663e\u793a\u4ea7\u54c1\u90e8\u6307\u6807\u3002",
+  };
+  const displayName = (name) => name === text.productOne ? text.semi : name;
+  return <div className="oqc-overview-score oqc-overview-cards">
+    {rows.map((row, index) => <div className={`oqc-division-card oqc-card-tone-${index % 3}`} key={row.name}>
+      <div className="oqc-card-head">
+        <strong>{displayName(row.name)}</strong>
+        <span>{text.score2026}</span>
+      </div>
+      <div className="oqc-five-rate">
+        <em>{text.fiveRate}</em>
+        <b>{row.y2026FiveRate || 0}%</b>
+      </div>
+      <div className="oqc-card-bottom">
+        <div className="oqc-low-rate"><span>{text.lowRate}</span><b>{row.y2026LowRate || 0}%</b></div>
+        <div className="oqc-score-count"><span>{text.count}</span><b>{(row.y2026Count || 0).toLocaleString()}</b></div>
+      </div>
     </div>)}
-    {!rows.length && <div className="source-empty">导入OQC月度评分汇总后显示产品部指标。</div>}
+    {!rows.length && <div className="source-empty">{text.empty}</div>}
   </div>;
 }
 
@@ -357,7 +511,7 @@ function ExecutiveDashboard({ data, files, onImport, onDeleteSource, view, onVie
     <main className="executive-main">
       <header className="executive-topbar">
         <div><h1>{moduleView ? `${moduleView} 专题分析` : active === "数据导入" ? "数据源管理" : active === "改善计划" ? "改善计划与闭环" : "经营驾驶舱"}</h1><p>{moduleView ? "从原始数据下钻到TOP问题与责任对象" : "全局质量运营总览"}</p></div>
-        <div className="top-actions"><Switcher view={view} onChange={onViewChange} /><button className={`label-controls-toggle ${labelControlsVisible ? "active" : ""}`} onClick={onToggleLabelControls}>{labelControlsVisible ? "隐藏数值设置" : "显示数值设置"}</button><button className="import-btn" onClick={() => onImport(null)}><UploadSimple size={17} />导入数据</button></div>
+        <div className="top-actions"><Switcher view={view} onChange={onViewChange} /><ExportReportButton /><button className={`label-controls-toggle ${labelControlsVisible ? "active" : ""}`} onClick={onToggleLabelControls}>{labelControlsVisible ? "隐藏数值设置" : "显示数值设置"}</button><button className="import-btn" onClick={() => onImport(null)}><UploadSimple size={17} />导入数据</button></div>
       </header>
       <DateRangeFilter value={dateRange} onChange={onDateRange} onRefresh={onRefreshDate} refreshStatus={dateRefreshStatus} fontSize={fontSize} onFontSize={onFontSize}/>
       {active === "数据导入" ? <DataSourcePage files={files} onImportModule={onImport} onDelete={onDeleteSource}/> : active === "改善计划" ? <ActionPage data={data} /> : active === "模板设置" ? <TemplatePage /> : moduleView ? <ModuleDetail key={`${moduleView}-${analysisKey}`} module={moduleView} data={data} /> : <>
@@ -378,7 +532,7 @@ function ExecutiveDashboard({ data, files, onImport, onDeleteSource, view, onVie
 function WorkspaceTop({ view, onViewChange }) {
   return <header className="workspace-top summary-workspace-top">
     <div className="workspace-brand"><ShieldCheck size={24} weight="fill" /><strong>总结报告</strong></div>
-    <div className="workspace-actions"><Switcher view={view} onChange={onViewChange} /></div>
+    <div className="workspace-actions"><Switcher view={view} onChange={onViewChange} /><ExportReportButton /></div>
   </header>;
 }
 
@@ -1397,6 +1551,116 @@ function SupplierCompareTable({ title, rows, candidates = [] }) {
   </Panel>;
 }
 
+
+const focusProjectText = {
+  sectionNo: "1.2.5",
+  title: "重点项目供应商良率",
+  subtitle: "自动识别IQC文件夹内的项目质检统计文件；新增同格式项目文件后会自动进入本板块",
+  overview: "项目总体同期对比",
+  overviewSub: "柱形为检验总数/异常数，折线为批次良率；异常=不合格+特采",
+  supplier: "项目供应商良率对比",
+  supplierSub: "按当前项目的供应商统计检验批次、异常批次和批次良率",
+  issue: "项目异常原因分类",
+  issueSub: "从原始质检说明归类，特采和不合格均作为异常样本",
+  sampleTip: "样本偏少，结论需谨慎",
+  supplierName: "供应商",
+  material: "材料属性",
+  qty25: "2025批次",
+  bad25: "2025异常",
+  rate25: "2025良率",
+  qty26: "2026批次",
+  bad26: "2026异常",
+  rate26: "2026良率",
+  delta: "同比变化",
+  count25: "2025数量",
+  share25: "2025占比",
+  count26: "2026数量",
+  share26: "2026占比",
+  issueCategory: "异常分类",
+  specialShare: "特采/异常占比",
+  checkBatches: "检验批次",
+  abnormalBatches: "异常批次",
+  passRate: "批次良率",
+  abnormalShare: "异常占比",
+};
+
+const focusSupplierColumns = [
+  ["supplier", focusProjectText.supplierName], ["type", focusProjectText.material], ["y2025Qty", focusProjectText.qty25], ["y2025Bad", focusProjectText.bad25],
+  ["y2025Rate", focusProjectText.rate25], ["y2026Qty", focusProjectText.qty26], ["y2026Bad", focusProjectText.bad26],
+  ["y2026Rate", focusProjectText.rate26], ["delta", focusProjectText.delta],
+];
+const focusIssueColumns = [
+  ["name", focusProjectText.issueCategory], ["y2025Count", focusProjectText.count25], ["y2025Share", focusProjectText.share25],
+  ["y2026Count", focusProjectText.count26], ["y2026Share", focusProjectText.share26], ["delta", focusProjectText.delta],
+];
+
+function formatFocusValue(row, key) {
+  if (key.includes("Rate") || key.includes("Share")) return row[key] == null ? "?" : `${row[key]}%`;
+  if (key === "delta") return row[key] == null ? "?" : `${row[key] >= 0 ? "\u2191" : "\u2193"} ${Math.abs(row[key]).toFixed(1)}pp`;
+  const value = row[key];
+  return typeof value === "number" ? value.toLocaleString() : value || "?";
+}
+
+function FocusProjectTable({ rows, columns, rowKey, defaultSort = "y2026Bad" }) {
+  const [sort, setSort] = useState({ key: defaultSort, direction: "desc" });
+  const sorted = useMemo(() => [...rows].sort((a, b) => {
+    const av = a[sort.key] ?? -Infinity;
+    const bv = b[sort.key] ?? -Infinity;
+    const result = typeof av === "string" ? av.localeCompare(bv, "zh-CN") : av - bv;
+    return sort.direction === "asc" ? result : -result;
+  }), [rows, sort]);
+  const changeSort = (key) => setSort((current) => ({ key, direction: current.key === key && current.direction === "desc" ? "asc" : "desc" }));
+  return <div className="focus-project-table">
+    <div className="focus-project-row focus-project-head" style={{ gridTemplateColumns: `repeat(${columns.length}, minmax(96px, 1fr))` }}>
+      {columns.map(([key, label]) => <button key={key} onClick={() => changeSort(key)}>{label}<span>{sort.key === key ? (sort.direction === "asc" ? "\u25b2" : "\u25bc") : ""}</span></button>)}
+    </div>
+    {sorted.map((row, index) => <div className="focus-project-row" style={{ gridTemplateColumns: `repeat(${columns.length}, minmax(96px, 1fr))` }} key={`${row[rowKey] || row.name}-${index}`}>
+      {columns.map(([key]) => <span key={key} className={key === "delta" ? (row.delta == null ? "" : row.delta >= 0 ? "up" : "down") : key.includes("Rate") && row[key] < 90 ? "rate-risk" : ""}>{formatFocusValue(row, key)}</span>)}
+    </div>)}
+  </div>;
+}
+
+function IqcFocusProjectAnalysis({ data }) {
+  const focus = data.iqc.focusProjects;
+  const projects = focus?.projects || [];
+  const [active, setActive] = useState(projects[0]?.name || "");
+  useEffect(() => { if (projects.length && !projects.some((project) => project.name === active)) setActive(projects[0].name); }, [projects, active]);
+  if (!projects.length) return null;
+  const current = focus.byProject?.[active] || focus.byProject?.[projects[0]?.name] || { suppliers: [], issues: [] };
+  const activeProject = projects.find((project) => project.name === active) || projects[0];
+  const projectOptions = projects.map((project) => project.name);
+  return <div className="iqc-focus-section">
+    <FloatingTabs options={projectOptions} active={active} onChange={setActive} watchSelector="[data-focus-project-tabs]" className="focus-project-floating-tabs"/>
+    <div className="iqc-table-heading focus-heading"><span className="section-number">{focusProjectText.sectionNo}</span><div><h2>{focusProjectText.title}</h2><p>{focusProjectText.subtitle}</p></div></div>
+    <div className="focus-project-cards">
+      {projects.map((project) => <button key={project.name} className={`focus-project-card ${project.name === active ? "active" : ""}`} onClick={() => setActive(project.name)}>
+        <span>{project.name}</span>
+        <strong>{project.y2026Rate}%</strong>
+        <em>{focusProjectText.rate26}</em>
+        <small>{focusProjectText.qty26} {project.y2026Qty.toLocaleString()} / {focusProjectText.bad26} {project.y2026Bad.toLocaleString()}</small>
+        {project.y2026Qty > 0 && project.y2026Qty < 30 && <b>{focusProjectText.sampleTip}</b>}
+      </button>)}
+    </div>
+    <Panel title={focusProjectText.overview} subtitle={focusProjectText.overviewSub} className="iqc-wide">
+      <QuantityRateCombo rows={projects} labelKey="name" qtyLabel={focusProjectText.checkBatches} badLabel={focusProjectText.abnormalBatches} rateLabel={focusProjectText.passRate} height={360} chartKey="iqc-focus-project-overview"/>
+    </Panel>
+    <div className="focus-project-detail">
+      <div className="focus-project-detail-head">
+        <div><h3>{activeProject.name}</h3><p>{focusProjectText.specialShare}: 2025 {activeProject.y2025SpecialShare}% / 2026 {activeProject.y2026SpecialShare}%</p></div>
+        <div className="focus-project-tabs" data-focus-project-tabs>{projects.map((project) => <button key={project.name} className={project.name === active ? "active" : ""} onClick={() => setActive(project.name)}>{project.name}</button>)}</div>
+      </div>
+      <Panel title={focusProjectText.supplier} subtitle={focusProjectText.supplierSub} className="iqc-wide">
+        <QuantityRateCombo rows={current.suppliers.slice(0, 12)} labelKey="supplier" qtyLabel={focusProjectText.checkBatches} badLabel={focusProjectText.abnormalBatches} rateLabel={focusProjectText.passRate} height={380} chartKey={`iqc-focus-supplier-${active}`}/>
+        <FocusProjectTable rows={current.suppliers} columns={focusSupplierColumns} rowKey="supplier" />
+      </Panel>
+      <Panel title={focusProjectText.issue} subtitle={focusProjectText.issueSub} className="iqc-wide">
+        <QuantityRateCombo rows={current.issues} qty2025="y2025Count" qty2026="y2026Count" rate2025="y2025Share" rate2026="y2026Share" rateLabel={focusProjectText.abnormalShare} qtyLabel={focusProjectText.abnormalBatches} showBad={false} height={350} chartKey={`iqc-focus-issue-${active}`}/>
+        <FocusProjectTable rows={current.issues} columns={focusIssueColumns} rowKey="name" defaultSort="y2026Count" />
+      </Panel>
+    </div>
+  </div>;
+}
+
 function IqcSpecialTable({ rows }) {
   return <div className="iqc-special-table">
     <div className="iqc-special-row iqc-special-head"><span>证据等级</span><span>供应商</span><span>材料属性</span><span>异常原因</span><span>特采说明</span><span>判定依据</span></div>
@@ -1530,6 +1794,7 @@ function IqcSupplierAnalysis({ data }) {
         <SupplierCompareTable title="深圳主力供应商同期对比" rows={siteSuppliers.深圳 || []} candidates={supplierCandidates.深圳 || []} />
         <SupplierCompareTable title="杭州主力供应商同期对比" rows={siteSuppliers.杭州 || []} candidates={supplierCandidates.杭州 || []} />
       </div>
+      <IqcFocusProjectAnalysis data={data}/>
       <IqcInternalAnalysis data={data} site={site} specialAsBad={specialAsBad}/>
       <IqcSpecialAnalysis data={data} site={site}/>
     </div>
@@ -1539,13 +1804,13 @@ function IqcSupplierAnalysis({ data }) {
 export function App() {
   const defaultDateRange = {
     start2025: "2025-01-01", end2025: "2025-05-31",
-    start2026: "2026-01-01", end2026: "2026-06-30",
+    start2026: "2026-01-01", end2026: "2026-05-31",
   };
   let initialDateRange = defaultDateRange;
   try {
-    const storedDateRange = JSON.parse(localStorage.getItem("qms-date-range") || "null");
+    const storedDateRange = JSON.parse(localStorage.getItem("qms-date-range-v202605") || "null");
     const wasOldDefault = storedDateRange?.start2025 === "2025-01-01" && storedDateRange?.end2025 === "2025-06-30"
-      && storedDateRange?.start2026 === "2026-01-01" && storedDateRange?.end2026 === "2026-06-30";
+      && storedDateRange?.start2026 === "2026-01-01" && (storedDateRange?.end2026 === "2026-06-30" || storedDateRange?.end2026 === "2026-05-31");
     initialDateRange = storedDateRange && !wasOldDefault ? storedDateRange : defaultDateRange;
   } catch { initialDateRange = defaultDateRange; }
   const [view, setView] = useState(() => location.hash.includes("workspace") ? "workspace" : "executive");
@@ -1660,7 +1925,7 @@ export function App() {
         setUsingDefaultAnalysis(false);
         setFiles(defaultFiles);
         setAppliedDateRange({ ...selectedRange });
-        localStorage.setItem("qms-date-range", JSON.stringify(selectedRange));
+        localStorage.setItem("qms-date-range-v202605", JSON.stringify(selectedRange));
         setData(defaultFiles.length ? analyzeImported(defaultFiles, selectedRange) : sampleData);
         setAnalysisRevision((current) => current + 1);
         setDateRefreshStatus("done");
@@ -1669,7 +1934,7 @@ export function App() {
       return;
     }
     setAppliedDateRange({ ...selectedRange });
-    localStorage.setItem("qms-date-range", JSON.stringify(selectedRange));
+    localStorage.setItem("qms-date-range-v202605", JSON.stringify(selectedRange));
     setDateRefreshStatus("done");
     setTimeout(() => setDateRefreshStatus("idle"), 1800);
   };
