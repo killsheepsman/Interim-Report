@@ -392,10 +392,28 @@ export function YearStackedCompare({ rows, values, height = 380, chartKey = valu
     },
     series: values.map((value, index) => ({
       name: value, type: "bar", stack: "total", barMaxWidth: 20,
-      data: axisRows.map((row) => Number(((row.counts?.[value] || 0) / Math.max(row.total, 1) * 100).toFixed(1))),
+      data: axisRows.map((row) => {
+        const count = row.counts?.[value] || 0;
+        const share = Number((count / Math.max(row.total, 1) * 100).toFixed(1));
+        return { value: share, count, share, total: row.total || 0 };
+      }),
       itemStyle: { color: stackedPalette[index % stackedPalette.length] },
-      label: { show: labelVisible(positions[value]), position: labelPosition(positions[value]), formatter: ({ value: share }) => share >= 6 ? `${share}%` : "", fontSize: 9 },
-      labelLayout: { hideOverlap: true },
+      label: {
+        show: labelVisible(positions[value]),
+        position: labelPosition(positions[value]),
+        formatter: ({ data }) => {
+          const share = Number(data?.share || 0);
+          const count = Number(data?.count || 0);
+          if (!count || share < 5) return "";
+          return share >= 9 ? `${count.toLocaleString()}\n${share}%` : `${count.toLocaleString()} / ${share}%`;
+        },
+        fontSize: 9,
+        lineHeight: 12,
+        color: "#fff",
+        textBorderColor: "rgba(0,0,0,.18)",
+        textBorderWidth: 2,
+      },
+      labelLayout: { hideOverlap: true, moveOverlap: "shiftY" },
     })),
   }} /></div>;
 }

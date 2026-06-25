@@ -1,7 +1,7 @@
 const DB_NAME = "qms-quality-analytics";
 const DB_VERSION = 1;
 const STORE_NAME = "app-state";
-const SOURCES_KEY = "imported-sources";
+const SOURCES_KEY = "imported-sources-v20260625-dqa-refresh";
 
 const openDatabase = () => new Promise((resolve, reject) => {
   const request = indexedDB.open(DB_NAME, DB_VERSION);

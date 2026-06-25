@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import {
   ArrowRight, ArrowsClockwise, Bell, CaretDown, ChartBar, ChartPieSlice, CheckCircle,
   ClipboardText, ClockCountdown, Cube, Database, DownloadSimple, Eye, FileXls,
@@ -112,6 +113,48 @@ function ImportModal({ open, onClose, onSourcesChanged, files, dateRange, target
 }
 
 const SelectBox = ({ children }) => <button className="select-box">{children}<CaretDown size={14} /></button>;
+const preserveScrollPosition = (action) => {
+  const x = window.scrollX || document.documentElement.scrollLeft || 0;
+  const y = window.scrollY || document.documentElement.scrollTop || 0;
+  action();
+  const restore = () => window.scrollTo(x, y);
+  requestAnimationFrame(restore);
+  setTimeout(restore, 0);
+  setTimeout(restore, 80);
+};
+
+function FloatingTabs({ options, active, onChange, watchSelector = ".sticky-switch-bar .site-tabs" }) {
+  const [visible, setVisible] = useState(false);
+  useEffect(() => {
+    if (typeof document === "undefined") return undefined;
+    let frame = 0;
+    const update = () => {
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => {
+        const target = document.querySelector(watchSelector);
+        if (!target) {
+          setVisible(false);
+          return;
+        }
+        const rect = target.getBoundingClientRect();
+        setVisible(rect.bottom <= 0);
+      });
+    };
+    update();
+    window.addEventListener("scroll", update, true);
+    window.addEventListener("resize", update);
+    return () => {
+      cancelAnimationFrame(frame);
+      window.removeEventListener("scroll", update, true);
+      window.removeEventListener("resize", update);
+    };
+  }, [watchSelector]);
+  if (typeof document === "undefined" || !visible) return null;
+  const normalized = options.map((option) => typeof option === "string" ? { value: option, label: option } : option);
+  return createPortal(<div className="module-floating-tabs" aria-label="模块快速切换">
+    {normalized.map((option) => <button key={option.value} className={active === option.value ? "active" : ""} onClick={() => preserveScrollPosition(() => onChange(option.value))}>{option.label}</button>)}
+  </div>, document.body);
+}
 const AppliedPeriodTag = ({ data }) => {
   const range = data.appliedDateRange;
   if (!range) return null;
@@ -332,12 +375,10 @@ function ExecutiveDashboard({ data, files, onImport, onDeleteSource, view, onVie
   </div>;
 }
 
-function WorkspaceTop({ onImport, view, onViewChange, onExport, onSave, section, onSection }) {
-  return <header className="workspace-top">
-    <div className="workspace-brand"><ShieldCheck size={24} weight="fill" /><strong>QMS 质量分析平台</strong></div>
-    <nav>{[["总览","top"],["数据集","datasets"],["分析视图","analysis"],["改善闭环","actions"]].map(([label,key]) =>
-      <button key={key} className={section === key ? "active" : ""} onClick={() => onSection(key)}>{label}</button>)}</nav>
-    <div className="workspace-actions"><Switcher view={view} onChange={onViewChange} /><button className="ghost-btn" onClick={onSave}><FloppyDisk size={17} />保存视图</button><button className="ghost-btn" onClick={onExport}><DownloadSimple size={17} />导出数据</button><button className="green-btn" onClick={onImport}><UploadSimple size={18} />导入原始数据</button><Bell size={20} /><Question size={20} /><span className="avatar">张</span></div>
+function WorkspaceTop({ view, onViewChange }) {
+  return <header className="workspace-top summary-workspace-top">
+    <div className="workspace-brand"><ShieldCheck size={24} weight="fill" /><strong>总结报告</strong></div>
+    <div className="workspace-actions"><Switcher view={view} onChange={onViewChange} /></div>
   </header>;
 }
 
@@ -385,8 +426,7 @@ function ActionBoard({ actions, onAdd }) {
 }
 
 function Filters({ dateRange, onDateRange, onRefreshDate, dateRefreshStatus, fontSize, onFontSize }) {
-  const [collapsed, setCollapsed] = useState(false);
-  return <div className={`filter-bar ${collapsed ? "collapsed" : ""}`}><button className="filter-collapse" onClick={() => setCollapsed(!collapsed)}><Funnel size={17} />{collapsed ? "展开筛选" : "收起筛选"}</button>{!collapsed && <><DateRangeFilter value={dateRange} onChange={onDateRange} onRefresh={onRefreshDate} refreshStatus={dateRefreshStatus} fontSize={fontSize} onFontSize={onFontSize}/><label>组织/工厂<SelectBox>全部</SelectBox></label><label>产品线<SelectBox>全部</SelectBox></label><label>供应商<SelectBox>全部</SelectBox></label><label>设备<SelectBox>全部</SelectBox></label><label>数据集类型<SelectBox>全部</SelectBox></label><SelectBox>2026半年报模板</SelectBox></>}</div>;
+  return <div className="filter-bar summary-filter-bar"><DateRangeFilter value={dateRange} onChange={onDateRange} onRefresh={onRefreshDate} refreshStatus={dateRefreshStatus} fontSize={fontSize} onFontSize={onFontSize}/></div>;
 }
 
 const reportStorageKey = "qms-half-year-summary-report-v1";
@@ -463,19 +503,27 @@ function TodoTable({ rows, onChange }) {
   </div>;
 }
 
-function WorkspaceDashboard({ data, files, onImport, view, onViewChange, onExport, onSave, dateRange, onDateRange, onRefreshDate, dateRefreshStatus, fontSize, onFontSize }) {
+function WorkspaceDashboard({ data, files, onImport, view, onViewChange, onExport, onSave, dateRange, appliedDateRange, onDateRange, onRefreshDate, dateRefreshStatus, fontSize, onFontSize }) {
   const [section, setSection] = useState("top");
   const [toast, setToast] = useState("");
-  const generated = useMemo(() => buildSummaryReport(data, files, dateRange), [data, files, dateRange]);
-  const [report, setReport] = useState(() => safeParse(localStorage.getItem(reportStorageKey), generated));
+  const reportDateRange = appliedDateRange || dateRange;
+  const generated = useMemo(() => buildSummaryReport(data, files, reportDateRange), [data, files, reportDateRange]);
+  const reportSignature = useMemo(() => JSON.stringify({
+    period: generated.period,
+    kpis: (data.kpis || []).map((item) => [item.key, item.value, item.delta]),
+  }), [generated.period, data.kpis]);
+  const [report, setReport] = useState(() => {
+    const saved = safeParse(localStorage.getItem(reportStorageKey), null);
+    return saved?.reportSignature === reportSignature ? saved : generated;
+  });
   useEffect(() => {
     const saved = safeParse(localStorage.getItem(reportStorageKey), null);
-    if (!saved) setReport(generated);
-  }, [generated]);
+    setReport(saved?.reportSignature === reportSignature ? saved : generated);
+  }, [generated, reportSignature]);
   const update = (key, value) => setReport((current) => ({ ...current, [key]: value }));
   const saveReport = () => {
-    localStorage.setItem(reportStorageKey, JSON.stringify({ ...report, savedAt: new Date().toISOString() }));
-    setToast("总结报告已保存到本地");
+    localStorage.setItem(reportStorageKey, JSON.stringify({ ...report, reportSignature, savedAt: new Date().toISOString() }));
+    setToast("?????????????");
     setTimeout(() => setToast(""), 2600);
   };
   const regenerate = () => {
@@ -731,9 +779,10 @@ function IpqcAnalysis({ data }) {
   const density = (year) => Number((totals[`y${year}Bad`] / Math.max(totals[`y${year}Qty`], 1) * 100).toFixed(2));
   const top = improvements[0];
   return <div className="module-page iqc-supplier-page ipqc-page">
+    <FloatingTabs options={["深圳", "杭州"]} active={site} onChange={setSite}/>
     <div className="iqc-section-title">
       <div><span className="section-number">2</span><div><h2>IPQC过程质量同比分析</h2><p>异常密度＝问题数量÷送检数；不良内容非空的一行计1个问题</p></div></div>
-      <div className="module-heading-actions"><AppliedPeriodTag data={data}/><div className="site-tabs"><button className={site === "深圳" ? "active" : ""} onClick={() => setSite("深圳")}>深圳</button><button className={site === "杭州" ? "active" : ""} onClick={() => setSite("杭州")}>杭州</button></div></div>
+      <div className="module-heading-actions sticky-switch-bar"><AppliedPeriodTag data={data}/><div className="site-tabs"><button className={site === "深圳" ? "active" : ""} onClick={() => preserveScrollPosition(() => setSite("深圳"))}>深圳</button><button className={site === "杭州" ? "active" : ""} onClick={() => preserveScrollPosition(() => setSite("杭州"))}>杭州</button></div></div>
     </div>
     <div className="iqc-summary-strip ipqc-summary">
       <div><span>2025送检数</span><strong>{totals.y2025Qty.toLocaleString()}</strong></div>
@@ -793,6 +842,7 @@ function OqcAnalysis({ data }) {
   const total2026 = summary.divisions.reduce((sum, row) => sum + row.y2026Count, 0);
   const fpcWorst = [...summary.fpcTpm].sort((a,b) => b.y2026LowRate - a.y2026LowRate)[0];
   return <div className="module-page iqc-supplier-page oqc-page">
+    <FloatingTabs options={[{ value: "产品一部", label: "半导体&北美" }, { value: "产品五部", label: "产品五部" }, { value: "FPC事业部", label: "FPC事业部" }]} active={focusDivision} onChange={setFocusDivision}/>
     <div className="iqc-section-title">
       <div><span className="section-number">3</span><div><h2>OQC出货评分同期分析</h2><p>按顶部已应用日期范围进行同期对比；低分定义为评分≤3分</p></div></div>
       <AppliedPeriodTag data={data}/>
@@ -813,8 +863,8 @@ function OqcAnalysis({ data }) {
       </div>
       <Panel title="产品部指标明细" subtitle="点击表头可按评分数、平均分、5分率或低分率排序"><OqcScoreTable rows={summary.divisions}/></Panel>
 
-      <div className="oqc-section-heading"><span className="section-number">3.2</span><div><h2>月度评分趋势</h2><p>切换产品部查看1—5月平均分、5分率和低分率走势</p></div>
-        <div className="site-tabs">{["产品一部","产品五部","FPC事业部"].map((name) => <button key={name} className={focusDivision === name ? "active" : ""} onClick={() => setFocusDivision(name)}>{name === "产品一部" ? "半导体&北美" : name}</button>)}</div>
+      <div className="oqc-section-heading sticky-switch-bar"><span className="section-number">3.2</span><div><h2>月度评分趋势</h2><p>切换产品部查看1—5月平均分、5分率和低分率走势</p></div>
+        <div className="site-tabs">{["产品一部","产品五部","FPC事业部"].map((name) => <button key={name} className={focusDivision === name ? "active" : ""} onClick={() => preserveScrollPosition(() => setFocusDivision(name))}>{name === "产品一部" ? "半导体&北美" : name}</button>)}</div>
       </div>
       <div className="oqc-three-grid">
         <Panel title={`${focusDivision === "产品一部" ? "半导体&北美" : focusDivision}平均分月度趋势`}><ScoreMonthlyCombo rows={monthly} metric="Avg" label="平均分" numeratorKey="ScoreTotal" numeratorName="评分总分" denominatorName="评分数量" max={5}/></Panel>
@@ -833,9 +883,16 @@ function OqcAnalysis({ data }) {
   </div>;
 }
 
-function DqaCompareTable({ rows, values }) {
+function DqaCompareTable({ rows, values, sort, onSort }) {
+  const sortIcon = (key) => sort?.key === key ? (sort.direction === "asc" ? "ASC" : "DESC") : "SORT";
+  const changeSort = (key) => onSort?.(key);
   return <div className="dqa-compare-table">
-    <div className="dqa-compare-row dqa-compare-head" style={{ "--dqa-cols": values.length }}><span>对象</span><span>年度</span><span>问题总数</span>{values.map((value) => <span key={value}>{value}</span>)}</div>
+    <div className="dqa-compare-row dqa-compare-head" style={{ "--dqa-cols": values.length }}>
+      <button onClick={() => changeSort("name")}>对象 <span>{sortIcon("name")}</span></button>
+      <button onClick={() => changeSort("year")}>年度 <span>{sortIcon("year")}</span></button>
+      <button onClick={() => changeSort("total")}>问题总数 <span>{sortIcon("total")}</span></button>
+      {values.map((value) => <button key={value} onClick={() => changeSort(value)}>{value} <span>{sortIcon(value)}</span></button>)}
+    </div>
     {rows.flatMap((row) => row.years.map((year) => <div className="dqa-compare-row" key={`${row.name}-${year.year}`} style={{ "--dqa-cols": values.length }}>
       <strong>{row.name}</strong><b>{year.year}</b><span>{year.total.toLocaleString()}</span>
       {values.map((value) => {
@@ -848,10 +905,39 @@ function DqaCompareTable({ rows, values }) {
 }
 
 function DqaComparePanel({ title, subtitle, rows, values }) {
+  const [sort, setSort] = useState({ key: "total", direction: "desc" });
+  const sortedRows = useMemo(() => {
+    const valueOf = (row, key) => {
+      if (key === "name") return row.name || "";
+      const y2026 = row.years.find((year) => year.year === 2026) || row.years[row.years.length - 1] || {};
+      if (key === "year") return y2026.year || 0;
+      if (key === "total") return y2026.total || 0;
+      return y2026.counts?.[key] || 0;
+    };
+    return [...rows].sort((a, b) => {
+      const av = valueOf(a, sort.key);
+      const bv = valueOf(b, sort.key);
+      const result = typeof av === "string" ? av.localeCompare(bv, "zh-CN") : av - bv;
+      return sort.direction === "asc" ? result : -result;
+    });
+  }, [rows, sort]);
+  const changeSort = (key) => setSort((current) => ({ key, direction: current.key === key && current.direction === "desc" ? "asc" : "desc" }));
   return <Panel title={title} subtitle={subtitle}>
-    <YearStackedCompare rows={rows} values={values} height={Math.max(360, rows.length * 72 + 90)}/>
-    <DqaCompareTable rows={rows} values={values}/>
+    <YearStackedCompare rows={sortedRows} values={values} height={Math.max(360, sortedRows.length * 72 + 90)}/>
+    <DqaCompareTable rows={sortedRows} values={values} sort={sort} onSort={changeSort}/>
   </Panel>;
+}
+
+
+function DqaTpmSelector({ tpms, hidden, onToggle, onSelectAll, onClearAll }) {
+  const selectedCount = tpms.filter((name) => !hidden.includes(name)).length;
+  return <div className="dqa-tpm-selector">
+    <div><strong>TPM筛选</strong><span>已选 {selectedCount}/{tpms.length}</span></div>
+    <div className="dqa-tpm-actions"><button onClick={onSelectAll}>全选</button><button onClick={onClearAll}>清空</button></div>
+    <div className="dqa-tpm-checks">
+      {tpms.map((name) => <label key={name} className={hidden.includes(name) ? "" : "active"}><input type="checkbox" checked={!hidden.includes(name)} onChange={() => onToggle(name)}/><span>{name}</span></label>)}
+    </div>
+  </div>;
 }
 
 const ecnFlattenRows = (rows) => rows.map((row) => {
@@ -1180,9 +1266,28 @@ function DqaAnalysis({ data }) {
   const compare = data.dqa.yearCompare;
   const [division, setDivision] = useState("半导体&北美");
   const [dqaTab, setDqaTab] = useState("issues");
-  if (!compare && dqaTab !== "ecn") return <div className="module-page"><div className="module-summary"><KpiCard item={data.kpis[3]}/><div className="summary-note"><strong>待导入DQA数据</strong><p>请导入2025、2026研发问题及评审问题文件。</p></div></div></div>;
+  const [hiddenTpmsByDivision, setHiddenTpmsByDivision] = useState(() => safeParse(localStorage.getItem("qms-dqa-hidden-tpms-v1"), {}));
+  useEffect(() => { localStorage.setItem("qms-dqa-hidden-tpms-v1", JSON.stringify(hiddenTpmsByDivision)); }, [hiddenTpmsByDivision]);
+  if (!compare && dqaTab !== "ecn") return <div className="module-page"><div className="module-summary"><KpiCard item={data.kpis[3]}/><div className="summary-note"><strong>???DQA??</strong><p>???2025?2026????????????</p></div></div></div>;
   const tpmData = compare?.byTpm?.[division] || { stages: [], categories: [], disciplines: [] };
+  const divisionTpms = compare?.tpmsByDivision?.[division] || [];
+  const hiddenTpms = hiddenTpmsByDivision[division] || [];
+  const visibleTpms = divisionTpms.filter((name) => !hiddenTpms.includes(name));
+  const visibleTpmSet = new Set(visibleTpms);
+  const filteredTpmData = {
+    stages: tpmData.stages.filter((row) => visibleTpmSet.has(row.name)),
+    categories: tpmData.categories.filter((row) => visibleTpmSet.has(row.name)),
+    disciplines: tpmData.disciplines.filter((row) => visibleTpmSet.has(row.name)),
+  };
+  const toggleTpm = (name) => setHiddenTpmsByDivision((current) => {
+    const currentHidden = current[division] || [];
+    const nextHidden = currentHidden.includes(name) ? currentHidden.filter((item) => item !== name) : [...currentHidden, name];
+    return { ...current, [division]: nextHidden };
+  });
+  const selectAllTpms = () => setHiddenTpmsByDivision((current) => ({ ...current, [division]: [] }));
+  const clearAllTpms = () => setHiddenTpmsByDivision((current) => ({ ...current, [division]: divisionTpms }));
   return <div className="module-page iqc-supplier-page dqa-page">
+    {compare && dqaTab !== "ecn" && <FloatingTabs options={compare.divisionNames} active={division} onChange={setDivision}/>}
     <div className="iqc-section-title">
       <div>
         <span className="section-number">4</span>
@@ -1205,14 +1310,15 @@ function DqaAnalysis({ data }) {
       <DqaComparePanel title="各产品部异常分类占比" subtitle="使用源数据“类别/问题分类”字段；仅统计生产与现场问题" rows={compare.byDivision.categories} values={compare.categoryValues}/>
       <DqaComparePanel title="各产品部学科问题占比" subtitle="使用源数据“学科”字段；仅统计生产与现场问题" rows={compare.byDivision.disciplines} values={compare.disciplineValues}/>
     </div>
-    <div className="dqa-module-title">
+    <div className="dqa-module-title sticky-switch-bar">
       <span className="section-number">4.2</span><div><h2>各产品部TPM对比</h2><p>切换产品部，查看对应TPM的阶段、异常分类和学科同期结构</p></div>
-      <div className="site-tabs">{compare.divisionNames.map((name) => <button key={name} className={division === name ? "active" : ""} onClick={() => setDivision(name)}>{name}</button>)}</div>
+      <div className="site-tabs">{compare.divisionNames.map((name) => <button key={name} className={division === name ? "active" : ""} onClick={() => preserveScrollPosition(() => setDivision(name))}>{name}</button>)}</div>
     </div>
+    <DqaTpmSelector tpms={divisionTpms} hidden={hiddenTpms} onToggle={toggleTpm} onSelectAll={selectAllTpms} onClearAll={clearAllTpms}/>
     <div className="dqa-grid">
-      <DqaComparePanel title={`${division} · TPM阶段问题占比`} subtitle="每个TPM分别对应2025、2026两条堆叠柱" rows={tpmData.stages} values={compare.stageValues}/>
-      <DqaComparePanel title={`${division} · 各TPM异常分类占比`} subtitle="按原始异常类别统计，仅包含生产与现场问题" rows={tpmData.categories} values={compare.categoryValues}/>
-      <DqaComparePanel title={`${division} · 各TPM学科问题占比`} subtitle="按原始学科统计，仅包含生产与现场问题" rows={tpmData.disciplines} values={compare.disciplineValues}/>
+      <DqaComparePanel title={`${division} · TPM阶段问题占比`} subtitle="每个TPM分别对应2025、2026两条堆叠柱" rows={filteredTpmData.stages} values={compare.stageValues}/>
+      <DqaComparePanel title={`${division} · 各TPM异常分类占比`} subtitle="按原始异常类别统计，仅包含生产与现场问题" rows={filteredTpmData.categories} values={compare.categoryValues}/>
+      <DqaComparePanel title={`${division} · 各TPM学科问题占比`} subtitle="按原始学科统计，仅包含生产与现场问题" rows={filteredTpmData.disciplines} values={compare.disciplineValues}/>
     </div>
     </>}
   </div>;
@@ -1397,9 +1503,10 @@ function IqcSupplierAnalysis({ data }) {
     return qty ? monthly.reduce((sum, row) => sum + row[`y${year}Qty`] * row[`y${year}Rate`], 0) / qty : 0;
   };
   return <div className="module-page iqc-supplier-page">
+    <FloatingTabs options={["深圳", "杭州"]} active={site} onChange={setSite}/>
     <div className="iqc-section-title">
       <div><span className="section-number">1.2</span><div><h2>供应商加工件同比分析</h2><p>按检验批次计算数量和批次良率，深圳、杭州独立分析</p></div></div>
-      <div className="iqc-title-actions"><label className={`special-toggle ${specialAsBad ? "active" : ""}`}><input type="checkbox" checked={specialAsBad} onChange={(event) => setSpecialAsBad(event.target.checked)}/><span>计入特采</span></label><div className="site-tabs"><button className={site==="深圳"?"active":""} onClick={()=>setSite("深圳")}>深圳</button><button className={site==="杭州"?"active":""} onClick={()=>setSite("杭州")}>杭州</button></div></div>
+      <div className="iqc-title-actions sticky-switch-bar"><label className={`special-toggle ${specialAsBad ? "active" : ""}`}><input type="checkbox" checked={specialAsBad} onChange={(event) => setSpecialAsBad(event.target.checked)}/><span>计入特采</span></label><div className="site-tabs"><button className={site==="深圳"?"active":""} onClick={()=>preserveScrollPosition(() => setSite("深圳"))}>深圳</button><button className={site==="杭州"?"active":""} onClick={()=>preserveScrollPosition(() => setSite("杭州"))}>杭州</button></div></div>
     </div>
     <div className="iqc-summary-strip">
       <div><span>{site} 2025检验批次</span><strong>{totals.y2025Qty.toLocaleString()}</strong></div>
@@ -1524,9 +1631,23 @@ export function App() {
     setDateRange(next);
     setDateRefreshStatus("idle");
   };
+  const getVisibleDateRange = () => {
+    const inputs = Array.from(document.querySelectorAll('.global-date-filter input[type="date"]'));
+    if (inputs.length >= 4) {
+      return {
+        start2025: inputs[0].value || dateRange.start2025,
+        end2025: inputs[1].value || dateRange.end2025,
+        start2026: inputs[2].value || dateRange.start2026,
+        end2026: inputs[3].value || dateRange.end2026,
+      };
+    }
+    return dateRange;
+  };
   const refreshDateData = () => {
-    const valid = dateRange.start2025 && dateRange.end2025 && dateRange.start2026 && dateRange.end2026
-      && dateRange.start2025 <= dateRange.end2025 && dateRange.start2026 <= dateRange.end2026;
+    const selectedRange = getVisibleDateRange();
+    setDateRange(selectedRange);
+    const valid = selectedRange.start2025 && selectedRange.end2025 && selectedRange.start2026 && selectedRange.end2026
+      && selectedRange.start2025 <= selectedRange.end2025 && selectedRange.start2026 <= selectedRange.end2026;
     if (!valid) return;
     if (!files.length) {
       setDateRefreshStatus("missing");
@@ -1538,17 +1659,17 @@ export function App() {
       loadDefaultSources().then((defaultFiles) => {
         setUsingDefaultAnalysis(false);
         setFiles(defaultFiles);
-        setAppliedDateRange({ ...dateRange });
-        localStorage.setItem("qms-date-range", JSON.stringify(dateRange));
-        setData(defaultFiles.length ? analyzeImported(defaultFiles, dateRange) : sampleData);
+        setAppliedDateRange({ ...selectedRange });
+        localStorage.setItem("qms-date-range", JSON.stringify(selectedRange));
+        setData(defaultFiles.length ? analyzeImported(defaultFiles, selectedRange) : sampleData);
         setAnalysisRevision((current) => current + 1);
         setDateRefreshStatus("done");
         setTimeout(() => setDateRefreshStatus("idle"), 1800);
       });
       return;
     }
-    setAppliedDateRange({ ...dateRange });
-    localStorage.setItem("qms-date-range", JSON.stringify(dateRange));
+    setAppliedDateRange({ ...selectedRange });
+    localStorage.setItem("qms-date-range", JSON.stringify(selectedRange));
     setDateRefreshStatus("done");
     setTimeout(() => setDateRefreshStatus("idle"), 1800);
   };
@@ -1560,8 +1681,8 @@ export function App() {
 
   return <>
     {view === "executive"
-      ? <ExecutiveDashboard data={data} files={files} onImport={openImport} onDeleteSource={deleteSource} view={view} onViewChange={setView} dateRange={dateRange} onDateRange={updateDateRange} onRefreshDate={refreshDateData} dateRefreshStatus={dateRefreshStatus} fontSize={fontSize} onFontSize={setFontSize} analysisKey={analysisRevision} labelControlsVisible={labelControlsVisible} onToggleLabelControls={() => setLabelControlsVisible((current) => !current)} />
-      : <WorkspaceDashboard key={`workspace-${analysisRevision}`} data={data} files={files} onImport={() => openImport(null)} view={view} onViewChange={setView} onExport={exportData} onSave={saveTemplate} dateRange={dateRange} onDateRange={updateDateRange} onRefreshDate={refreshDateData} dateRefreshStatus={dateRefreshStatus} fontSize={fontSize} onFontSize={setFontSize} />}
+      ? <ExecutiveDashboard data={data} files={files} onImport={openImport} onDeleteSource={deleteSource} view={view} onViewChange={setView} dateRange={dateRange} appliedDateRange={appliedDateRange} onDateRange={updateDateRange} onRefreshDate={refreshDateData} dateRefreshStatus={dateRefreshStatus} fontSize={fontSize} onFontSize={setFontSize} analysisKey={analysisRevision} labelControlsVisible={labelControlsVisible} onToggleLabelControls={() => setLabelControlsVisible((current) => !current)} />
+      : <WorkspaceDashboard key={`workspace-${analysisRevision}`} data={data} files={files} onImport={() => openImport(null)} view={view} onViewChange={setView} onExport={exportData} onSave={saveTemplate} dateRange={dateRange} appliedDateRange={appliedDateRange} onDateRange={updateDateRange} onRefreshDate={refreshDateData} dateRefreshStatus={dateRefreshStatus} fontSize={fontSize} onFontSize={setFontSize} />}
     <ImportModal open={importOpen} onClose={() => setImportOpen(false)} onSourcesChanged={applySources} files={files} dateRange={appliedDateRange} targetModule={importModule} />
     {saved && <div className="toast"><CheckCircle size={19} weight="fill" />当前分析视图已保存为本机模板</div>}
     {sourceNotice && <div className="toast"><Database size={19}/>{sourceNotice}</div>}
