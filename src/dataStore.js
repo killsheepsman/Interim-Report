@@ -35,9 +35,7 @@ export const loadImportedSources = async () => {
 
 export const loadDefaultSources = async () => {
   try {
-    const response = await fetch(`${import.meta.env.BASE_URL || "./"}defaultSources.json`, { cache: "no-store" });
-    if (!response.ok) return [];
-    return await response.json();
+    return await loadDefaultJson("defaultSources.json") || [];
   } catch {
     return [];
   }
@@ -45,12 +43,37 @@ export const loadDefaultSources = async () => {
 
 export const loadDefaultAnalysis = async () => {
   try {
-    const response = await fetch(`${import.meta.env.BASE_URL || "./"}defaultAnalysis.json`, { cache: "no-store" });
-    if (!response.ok) return null;
-    return await response.json();
+    return await loadDefaultJson("defaultAnalysis.json");
   } catch {
     return null;
   }
+};
+
+export const loadDefaultAnnotations = async () => {
+  try {
+    const response = await fetch(`${import.meta.env.BASE_URL || "./"}defaultAnnotations.json`, { cache: "no-store" });
+    if (!response.ok) return [];
+    return await response.json();
+  } catch {
+    return [];
+  }
+};
+
+const loadDefaultJson = async (fileName) => {
+  const base = import.meta.env.BASE_URL || "./";
+  const compressed = await fetchJsonGzip(`${base}${fileName}.gz`);
+  if (compressed != null) return compressed;
+  const response = await fetch(`${base}${fileName}`, { cache: "no-store" });
+  if (!response.ok) return null;
+  return await response.json();
+};
+
+const fetchJsonGzip = async (url) => {
+  if (typeof DecompressionStream === "undefined") return null;
+  const response = await fetch(url, { cache: "no-store" });
+  if (!response.ok || !response.body) return null;
+  const stream = response.body.pipeThrough(new DecompressionStream("gzip"));
+  return await new Response(stream).json();
 };
 
 export const saveImportedSources = async (sources) => {

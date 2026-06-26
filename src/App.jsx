@@ -8,7 +8,7 @@ import {
   UploadSimple, User, Warning, WarningCircle, X,
 } from "@phosphor-icons/react";
 import { analyzeImported, downloadJson, parseFiles } from "./dataEngine.js";
-import { loadDefaultAnalysis, loadDefaultSources, loadImportedSources, mergeImportedSources, saveImportedSources } from "./dataStore.js";
+import { loadDefaultAnalysis, loadDefaultAnnotations, loadDefaultSources, loadImportedSources, mergeImportedSources, saveImportedSources } from "./dataStore.js";
 import { sampleData } from "./sampleData.js";
 import { BarCompare, Donut, HorizontalRank, Pareto, QuantityRateCombo, ScoreMonthlyCombo, ScoreYearCompare, StackedStage, WorkshopCategoryHeatmap, YearStackedCompare } from "./charts.jsx";
 
@@ -257,6 +257,232 @@ function ExportReportButton() {
       </div>
     </div>, document.body)}
   </>;
+}
+
+const annotationStorageKey = "qms-page-annotations-v1";
+const annotationTypes = [
+  "\u5206\u6790\u7ed3\u8bba", "\u98ce\u9669\u5224\u65ad", "\u6539\u5584\u63aa\u65bd", "\u5f85\u529e\u4e8b\u9879", "\u62a5\u544a\u91cd\u70b9",
+];
+const annotationModules = ["\u603b\u89c8", "IQC", "IPQC", "OQC", "DQA", "\u6539\u5584\u8ba1\u5212", "\u6570\u636e\u5bfc\u5165", "\u6a21\u677f\u8bbe\u7f6e", "\u8d28\u91cf\u5de5\u4f5c\u53f0"];
+const annotationText = {
+  button: "\u5206\u6790\u6539\u5584\u63aa\u65bd",
+  showButton: "\u5206\u6790\u663e\u793a",
+  add: "\u5206\u6790\u6539\u5584\u63aa\u65bd",
+  showTitle: "\u5df2\u4fdd\u5b58\u7684\u5206\u6790\u6539\u5584\u63aa\u65bd",
+  desc: "\u6309\u7c7b\u578b\u8bb0\u5f55\u5f53\u524d\u9875\u9762\u7684\u5206\u6790\u3001\u5224\u65ad\u548c\u6539\u5584\u63aa\u65bd\uff0c\u4fdd\u5b58\u540e\u53ef\u7ee7\u7eed\u8865\u5145\u3002",
+  showDesc: "\u67e5\u770b\u6240\u6709\u5df2\u4fdd\u5b58\u7684\u6279\u6ce8\u5185\u5bb9\uff0c\u8fd9\u91cc\u4e0d\u906e\u6321\u56fe\u8868\u3002",
+  module: "\u6a21\u5757",
+  include: "\u8fdb\u5165\u62a5\u544a",
+  save: "\u4fdd\u5b58\u5185\u5bb9",
+  cancel: "\u5173\u95ed",
+  placeholder: "\u5728\u8fd9\u91cc\u8f93\u5165\u5bf9\u5e94\u7c7b\u578b\u7684\u5206\u6790\u6216\u63aa\u65bd...",
+  pool: "\u6279\u6ce8\u7d20\u6750\u6c60",
+  poolSub: "\u6765\u81ea\u7ecf\u8425\u9a7e\u9a76\u8231\u548c\u8d28\u91cf\u5de5\u4f5c\u53f0\u7684\u624b\u5de5\u6279\u6ce8\uff0c\u53ef\u5728\u6b64\u4fee\u6539\u540e\u7eb3\u5165\u6700\u7ec8\u62a5\u544a\u3002",
+  empty: "\u6682\u65e0\u6279\u6ce8\u3002\u70b9\u51fb\u9876\u90e8\u201c\u5206\u6790\u6539\u5584\u63aa\u65bd\u201d\u5373\u53ef\u8bb0\u5f55\u3002",
+  created: "\u8bb0\u5f55\u65f6\u95f4",
+  delete: "\u5220\u9664",
+  saved: "\u5df2\u4fdd\u5b58",
+};
+const loadAnnotations = () => safeParse(localStorage.getItem(annotationStorageKey), []);
+const normalizeAnnotations = (rows = []) => rows.map((row) => ({ ...row, include: row.include !== false }));
+const saveAnnotations = (rows) => {
+  localStorage.setItem(annotationStorageKey, JSON.stringify(normalizeAnnotations(rows)));
+  window.dispatchEvent(new CustomEvent("qms-annotations-updated", { detail: rows }));
+};
+const seedDefaultAnnotations = async () => {
+  const current = normalizeAnnotations(loadAnnotations());
+  if (current.length) return;
+  const defaults = normalizeAnnotations(await loadDefaultAnnotations());
+  if (!defaults.length) return;
+  saveAnnotations(defaults);
+};
+function useAnnotations() {
+  const [rows, setRows] = useState(() => normalizeAnnotations(loadAnnotations()));
+  useEffect(() => {
+    const update = () => setRows(normalizeAnnotations(loadAnnotations()));
+    window.addEventListener("qms-annotations-updated", update);
+    return () => window.removeEventListener("qms-annotations-updated", update);
+  }, []);
+  const persist = (next) => { saveAnnotations(next); setRows(normalizeAnnotations(next)); };
+  return [rows, persist];
+}
+const annotationDraftFromRows = (rows, module) => Object.fromEntries(annotationTypes.map((type) => [type, rows.find((row) => row.module === module && row.type === type)?.content || ""]));
+const currentPageName = (fallback) => document.querySelector(".executive-topbar h1")?.textContent || document.querySelector(".workspace-brand strong")?.textContent || fallback;
+function AnnotationEditButton({ defaultModule = "\u603b\u89c8" }) {
+  const [open, setOpen] = useState(false);
+  const [module, setModule] = useState(defaultModule);
+  const [include, setInclude] = useState(true);
+  const [draft, setDraft] = useState(() => annotationDraftFromRows(loadAnnotations(), defaultModule));
+  const [saved, setSaved] = useState(false);
+  useEffect(() => {
+    if (open) {
+      setModule(defaultModule);
+      const rows = loadAnnotations();
+      setDraft(annotationDraftFromRows(rows, defaultModule));
+      const first = rows.find((row) => row.module === defaultModule);
+      setInclude(first?.include !== false);
+      setSaved(false);
+    }
+  }, [defaultModule, open]);
+  useEffect(() => {
+    document.body.classList.toggle("annotation-drawer-open", open);
+    return () => document.body.classList.remove("annotation-drawer-open");
+  }, [open]);
+  const changeModule = (value) => {
+    setModule(value);
+    const rows = loadAnnotations();
+    setDraft(annotationDraftFromRows(rows, value));
+    const first = rows.find((row) => row.module === value);
+    setInclude(first?.include !== false);
+    setSaved(false);
+  };
+  const save = () => {
+    const rows = loadAnnotations();
+    const others = rows.filter((row) => !(row.module === module && annotationTypes.includes(row.type)));
+    const page = currentPageName(module);
+    const now = new Date().toISOString();
+    const nextRows = annotationTypes.flatMap((type) => {
+      const content = (draft[type] || "").trim();
+      if (!content) return [];
+      const existing = rows.find((row) => row.module === module && row.type === type);
+      return [{ ...(existing || {}), id: existing?.id || `${module}-${type}-${Date.now()}-${Math.random().toString(16).slice(2)}`, type, module, include, content, page, createdAt: existing?.createdAt || now, updatedAt: now }];
+    });
+    saveAnnotations([...others, ...nextRows]);
+    setSaved(true);
+  };
+  return <>
+    <button className="annotation-button" onClick={() => setOpen(true)}><ClipboardText size={17}/>{annotationText.button}</button>
+    {open && createPortal(<aside className="annotation-drawer" aria-label={annotationText.add}>
+      <header><div><h3>{annotationText.add}</h3><p>{annotationText.desc}</p></div><button className="annotation-close" onClick={() => setOpen(false)}><X size={18}/></button></header>
+      <div className="annotation-drawer-body">
+        <div className="annotation-form-grid single"><label><span>{annotationText.module}</span><select value={module} onChange={(event) => changeModule(event.target.value)}>{annotationModules.map((item) => <option key={item}>{item}</option>)}</select></label></div>
+        <div className="annotation-type-editor">
+          {annotationTypes.map((type) => <label key={type} className="annotation-content"><span>{type}</span><textarea rows={5} value={draft[type] || ""} placeholder={annotationText.placeholder} onChange={(event) => setDraft((current) => ({ ...current, [type]: event.target.value }))} /></label>)}
+        </div>
+      </div>
+      <div className="annotation-dialog-foot"><label className="annotation-include"><input type="checkbox" checked={include} onChange={(event) => setInclude(event.target.checked)}/>{annotationText.include}</label><div>{saved && <span className="annotation-saved">{annotationText.saved}</span>}<button onClick={() => setOpen(false)}>{annotationText.cancel}</button><button className="primary" onClick={save}>{annotationText.save}</button></div></div>
+    </aside>, document.body)}
+  </>;
+}
+function AnnotationViewButton() {
+  const [open, setOpen] = useState(false);
+  const [rows] = useAnnotations();
+  useEffect(() => {
+    document.body.classList.toggle("annotation-drawer-open", open);
+    return () => document.body.classList.remove("annotation-drawer-open");
+  }, [open]);
+  const grouped = annotationModules.map((module) => ({ module, rows: rows.filter((row) => row.module === module) })).filter((group) => group.rows.length);
+  return <>
+    <button className="annotation-button secondary" onClick={() => setOpen(true)}><Eye size={17}/>{annotationText.showButton}</button>
+    {open && createPortal(<aside className="annotation-drawer annotation-view-drawer" aria-label={annotationText.showTitle}>
+      <header><div><h3>{annotationText.showTitle}</h3><p>{annotationText.showDesc}</p></div><button className="annotation-close" onClick={() => setOpen(false)}><X size={18}/></button></header>
+      <div className="annotation-drawer-body annotation-view-body">
+        {!grouped.length && <div className="annotation-empty">{annotationText.empty}</div>}
+        {grouped.map((group) => <section className="annotation-view-group" key={group.module}><h4>{group.module}</h4>{group.rows.map((row) => <article key={row.id}><div><b>{row.type}</b>{row.include === false && <em>未进入报告</em>}</div><p>{row.content}</p></article>)}</section>)}
+      </div>
+    </aside>, document.body)}
+  </>;
+}
+function AnnotationReportPanel() {
+  const [rows, setRows] = useAnnotations();
+  const update = (id, patch) => setRows(rows.map((row) => row.id === id ? { ...row, ...patch, updatedAt: new Date().toISOString() } : row));
+  const remove = (id) => setRows(rows.filter((row) => row.id !== id));
+  const reportRows = rows.filter((row) => row.include !== false);
+  const grouped = annotationModules.map((module) => ({ module, rows: reportRows.filter((row) => row.module === module) })).filter((group) => group.rows.length);
+  if (!rows.length) return <div className="annotation-empty">{annotationText.empty}</div>;
+  return <div className="annotation-report-panel">
+    {grouped.map((group) => <section className="annotation-module-group" key={group.module}>
+      <h4>{group.module}</h4>
+      {group.rows.map((row) => <div className="annotation-report-row" key={row.id}>
+        <div className="annotation-row-meta"><select value={row.type} onChange={(event) => update(row.id, { type: event.target.value })}>{annotationTypes.map((item) => <option key={item}>{item}</option>)}</select><select value={row.module} onChange={(event) => update(row.id, { module: event.target.value })}>{annotationModules.map((item) => <option key={item}>{item}</option>)}</select><label><input type="checkbox" checked={row.include !== false} onChange={(event) => update(row.id, { include: event.target.checked })}/>{annotationText.include}</label><span>{annotationText.created}: {String(row.createdAt || "").slice(0, 10)}</span><button onClick={() => remove(row.id)}><Trash size={14}/>{annotationText.delete}</button></div>
+        <textarea value={row.content} rows={3} onChange={(event) => update(row.id, { content: event.target.value })}/>
+      </div>)}
+    </section>)}
+    {rows.some((row) => row.include === false) && <section className="annotation-module-group muted"><h4>未进入报告</h4>{rows.filter((row) => row.include === false).map((row) => <div className="annotation-report-row" key={row.id}><div className="annotation-row-meta"><select value={row.type} onChange={(event) => update(row.id, { type: event.target.value })}>{annotationTypes.map((item) => <option key={item}>{item}</option>)}</select><select value={row.module} onChange={(event) => update(row.id, { module: event.target.value })}>{annotationModules.map((item) => <option key={item}>{item}</option>)}</select><label><input type="checkbox" checked={false} onChange={(event) => update(row.id, { include: event.target.checked })}/>{annotationText.include}</label><button onClick={() => remove(row.id)}><Trash size={14}/>{annotationText.delete}</button></div><textarea value={row.content} rows={2} onChange={(event) => update(row.id, { content: event.target.value })}/></div>)}</section>}
+  </div>;
+}
+
+function AnnotationTransferActions() {
+  const [rows, setRows] = useAnnotations();
+  const mergeInputRef = useRef(null);
+  const replaceInputRef = useRef(null);
+  const [notice, setNotice] = useState("");
+  const showNotice = (message) => {
+    setNotice(message);
+    setTimeout(() => setNotice(""), 2600);
+  };
+  const exportAnnotations = () => {
+    const payload = {
+      app: "QMS质量分析平台",
+      type: "annotations",
+      version: 1,
+      exportedAt: new Date().toISOString(),
+      count: rows.length,
+      rows: normalizeAnnotations(rows),
+    };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `QMS批注-${new Date().toISOString().slice(0, 10)}.json`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+    showNotice(`已导出 ${rows.length} 条批注`);
+  };
+  const normalizeImportRows = (payload) => {
+    const imported = Array.isArray(payload) ? payload : payload?.rows;
+    if (!Array.isArray(imported)) return [];
+    const now = new Date().toISOString();
+    return normalizeAnnotations(imported).map((row, index) => ({
+      id: row.id || `imported-${Date.now()}-${index}`,
+      type: annotationTypes.includes(row.type) ? row.type : annotationTypes[0],
+      module: annotationModules.includes(row.module) ? row.module : annotationModules[0],
+      include: row.include !== false,
+      content: String(row.content || "").trim(),
+      page: row.page || row.module || annotationModules[0],
+      createdAt: row.createdAt || now,
+      updatedAt: now,
+    })).filter((row) => row.content);
+  };
+  const mergeRows = (current, imported) => {
+    const next = [...current];
+    imported.forEach((row) => {
+      const key = `${row.module}::${row.type}::${row.content}`;
+      const exists = next.some((item) => `${item.module}::${item.type}::${item.content}` === key);
+      if (!exists) next.push({ ...row, id: row.id || `imported-${Date.now()}-${Math.random().toString(16).slice(2)}` });
+    });
+    return next;
+  };
+  const importAnnotations = (file, mode) => {
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const payload = JSON.parse(String(reader.result || "{}"));
+        const imported = normalizeImportRows(payload);
+        if (!imported.length) {
+          showNotice("没有识别到可导入的批注");
+          return;
+        }
+        const next = mode === "replace" ? imported : mergeRows(rows, imported);
+        setRows(next);
+        showNotice(mode === "replace" ? `已覆盖导入 ${imported.length} 条批注` : `已合并导入 ${next.length - rows.length} 条新批注`);
+      } catch {
+        showNotice("导入失败：文件格式不是有效的批注 JSON");
+      }
+    };
+    reader.readAsText(file, "utf-8");
+  };
+  return <div className="annotation-transfer-actions">
+    <button onClick={exportAnnotations}><DownloadSimple size={15}/>导出批注</button>
+    <button onClick={() => mergeInputRef.current?.click()}><UploadSimple size={15}/>导入批注</button>
+    <button className="danger" onClick={() => replaceInputRef.current?.click()}><UploadSimple size={15}/>覆盖导入</button>
+    <input ref={mergeInputRef} type="file" accept=".json,application/json" hidden onChange={(event) => { importAnnotations(event.target.files?.[0], "merge"); event.target.value = ""; }} />
+    <input ref={replaceInputRef} type="file" accept=".json,application/json" hidden onChange={(event) => { importAnnotations(event.target.files?.[0], "replace"); event.target.value = ""; }} />
+    {notice && <span>{notice}</span>}
+  </div>;
 }
 
 function FloatingTabs({ options, active, onChange, watchSelector = ".sticky-switch-bar .site-tabs", className = "" }) {
@@ -511,7 +737,7 @@ function ExecutiveDashboard({ data, files, onImport, onDeleteSource, view, onVie
     <main className="executive-main">
       <header className="executive-topbar">
         <div><h1>{moduleView ? `${moduleView} 专题分析` : active === "数据导入" ? "数据源管理" : active === "改善计划" ? "改善计划与闭环" : "经营驾驶舱"}</h1><p>{moduleView ? "从原始数据下钻到TOP问题与责任对象" : "全局质量运营总览"}</p></div>
-        <div className="top-actions"><Switcher view={view} onChange={onViewChange} /><ExportReportButton /><button className={`label-controls-toggle ${labelControlsVisible ? "active" : ""}`} onClick={onToggleLabelControls}>{labelControlsVisible ? "隐藏数值设置" : "显示数值设置"}</button><button className="import-btn" onClick={() => onImport(null)}><UploadSimple size={17} />导入数据</button></div>
+        <div className="top-actions"><Switcher view={view} onChange={onViewChange} /><AnnotationEditButton defaultModule={moduleView || "\u603b\u89c8"} /><AnnotationViewButton /><ExportReportButton /><button className={`label-controls-toggle ${labelControlsVisible ? "active" : ""}`} onClick={onToggleLabelControls}>{labelControlsVisible ? "隐藏数值设置" : "显示数值设置"}</button><button className="import-btn" onClick={() => onImport(null)}><UploadSimple size={17} />导入数据</button></div>
       </header>
       <DateRangeFilter value={dateRange} onChange={onDateRange} onRefresh={onRefreshDate} refreshStatus={dateRefreshStatus} fontSize={fontSize} onFontSize={onFontSize}/>
       {active === "数据导入" ? <DataSourcePage files={files} onImportModule={onImport} onDelete={onDeleteSource}/> : active === "改善计划" ? <ActionPage data={data} /> : active === "模板设置" ? <TemplatePage /> : moduleView ? <ModuleDetail key={`${moduleView}-${analysisKey}`} module={moduleView} data={data} /> : <>
@@ -532,7 +758,7 @@ function ExecutiveDashboard({ data, files, onImport, onDeleteSource, view, onVie
 function WorkspaceTop({ view, onViewChange }) {
   return <header className="workspace-top summary-workspace-top">
     <div className="workspace-brand"><ShieldCheck size={24} weight="fill" /><strong>总结报告</strong></div>
-    <div className="workspace-actions"><Switcher view={view} onChange={onViewChange} /><ExportReportButton /></div>
+    <div className="workspace-actions"><Switcher view={view} onChange={onViewChange} /><AnnotationEditButton defaultModule="\u8d28\u91cf\u5de5\u4f5c\u53f0" /><AnnotationViewButton /><ExportReportButton /></div>
   </header>;
 }
 
@@ -657,61 +883,14 @@ function TodoTable({ rows, onChange }) {
   </div>;
 }
 
-function WorkspaceDashboard({ data, files, onImport, view, onViewChange, onExport, onSave, dateRange, appliedDateRange, onDateRange, onRefreshDate, dateRefreshStatus, fontSize, onFontSize }) {
-  const [section, setSection] = useState("top");
-  const [toast, setToast] = useState("");
-  const reportDateRange = appliedDateRange || dateRange;
-  const generated = useMemo(() => buildSummaryReport(data, files, reportDateRange), [data, files, reportDateRange]);
-  const reportSignature = useMemo(() => JSON.stringify({
-    period: generated.period,
-    kpis: (data.kpis || []).map((item) => [item.key, item.value, item.delta]),
-  }), [generated.period, data.kpis]);
-  const [report, setReport] = useState(() => {
-    const saved = safeParse(localStorage.getItem(reportStorageKey), null);
-    return saved?.reportSignature === reportSignature ? saved : generated;
-  });
-  useEffect(() => {
-    const saved = safeParse(localStorage.getItem(reportStorageKey), null);
-    setReport(saved?.reportSignature === reportSignature ? saved : generated);
-  }, [generated, reportSignature]);
-  const update = (key, value) => setReport((current) => ({ ...current, [key]: value }));
-  const saveReport = () => {
-    localStorage.setItem(reportStorageKey, JSON.stringify({ ...report, reportSignature, savedAt: new Date().toISOString() }));
-    setToast("?????????????");
-    setTimeout(() => setToast(""), 2600);
-  };
-  const regenerate = () => {
-    setReport(generated);
-    setToast("已按当前经营驾驶舱数据重新生成报告草稿");
-    setTimeout(() => setToast(""), 2600);
-  };
-  const jump = (key) => {
-    setSection(key);
-    const selectors = { top: ".summary-report-page", datasets: ".dataset-section", analysis: ".summary-report-section", actions: ".report-todos-panel" };
-    document.querySelector(selectors[key])?.scrollIntoView({ behavior: "smooth", block: "start" });
-  };
-  return <div className="workspace-shell summary-report-shell">
-    <WorkspaceTop onImport={onImport} view={view} onViewChange={onViewChange} onExport={onExport} onSave={saveReport} section={section} onSection={jump} />
-    <Filters dateRange={dateRange} onDateRange={onDateRange} onRefreshDate={onRefreshDate} dateRefreshStatus={dateRefreshStatus} fontSize={fontSize} onFontSize={onFontSize} />
+function WorkspaceDashboard({ data, files, onImport, view, onViewChange }) {
+  return <div className="workspace-shell summary-report-shell annotation-only-workspace">
+    <WorkspaceTop onImport={onImport} view={view} onViewChange={onViewChange} />
     <main className="workspace-main summary-report-page">
-      <section className="summary-report-hero">
-        <div><span className="section-number">报告</span><input className="report-title-input" value={report.title} onChange={(event) => update("title", event.target.value)} /><p>{report.period}</p></div>
-        <div className="report-actions"><button className="ghost-btn" onClick={regenerate}><ArrowsClockwise size={17}/>重新生成报告</button><button className="green-btn" onClick={saveReport}><FloppyDisk size={17}/>保存报告</button></div>
-      </section>
       <section className="dataset-section"><div className="section-label">数据集状态（与经营驾驶舱一致）<Question size={14} /></div><DatasetStatus files={files} /></section>
-      <section className="summary-report-kpis">
-        {(data.kpis || []).map((item) => <div className="summary-kpi" key={item.key || item.label}><span>{item.label}</span><strong>{fmt(item.value)}{item.unit}</strong><em className={(item.delta || 0) > 0 && item.goodWhenDown ? "risk-up" : "risk-down"}>同比 {item.delta > 0 ? "+" : ""}{item.delta}</em><small>{item.detail}</small></div>)}
-      </section>
-      <div className="summary-report-grid">
-        <Panel title="一、管理层摘要" className="summary-report-section"><EditableBlock label="可编辑摘要" value={report.summary} onChange={(value) => update("summary", value)} rows={7}/></Panel>
-        <Panel title="二、量化分析结论" className="summary-report-section"><EditableBlock label="按经营驾驶舱数据自动生成，可修改" value={report.conclusions} onChange={(value) => update("conclusions", value)} rows={8}/></Panel>
-        <Panel title="三、TOP改善点" className="summary-report-section"><EditableBlock label="TOP问题与改善方向" value={report.topImprovements} onChange={(value) => update("topImprovements", value)} rows={7}/></Panel>
-        <Panel title="四、下半年改善措施" className="summary-report-section"><EditableBlock label="措施要具体到模块、责任对象和验证方式" value={report.measures} onChange={(value) => update("measures", value)} rows={8}/></Panel>
-        <Panel title="五、待办安排：组装工坊 / 交付经理 / 产品部 / TPM" className="report-todos-panel"><TodoTable rows={report.todos || []} onChange={(rows) => update("todos", rows)} /></Panel>
-      </div>
+      <Panel title={annotationText.pool} subtitle={annotationText.poolSub} action={<AnnotationTransferActions />} className="report-todos-panel"><AnnotationReportPanel /></Panel>
     </main>
-    <footer className="workspace-foot">数据更新时间：{data.updatedAt}<span>总结报告可编辑并保存在本地浏览器；经营驾驶舱页面未改动</span></footer>
-    {toast && <div className="toast"><CheckCircle size={19} weight="fill" />{toast}</div>}
+    <footer className="workspace-foot">数据更新时间：{data.updatedAt}<span>质量工作台已简化为批注素材池，用于整理最终报告手写内容。</span></footer>
   </div>;
 }
 
@@ -987,14 +1166,91 @@ function OqcScoreTable({ rows }) {
   </div>;
 }
 
+const buildOqcOverallMetrics = (rows = []) => {
+  const total = (key) => rows.reduce((sum, row) => sum + (Number(row[key]) || 0), 0);
+  const count2025 = total("y2025Count");
+  const count2026 = total("y2026Count");
+  const score2025 = total("y2025ScoreTotal");
+  const score2026 = total("y2026ScoreTotal");
+  const five2025 = total("y2025Five");
+  const five2026 = total("y2026Five");
+  const low2025 = total("y2025Low");
+  const low2026 = total("y2026Low");
+  return {
+    avg: {
+      label: "平均分",
+      y2025: Number((score2025 / Math.max(count2025, 1)).toFixed(2)),
+      y2026: Number((score2026 / Math.max(count2026, 1)).toFixed(2)),
+      suffix: "分",
+      goodWhenDown: false,
+      digits: 2,
+    },
+    fiveRate: {
+      label: "5分比例",
+      y2025: Number((five2025 / Math.max(count2025, 1) * 100).toFixed(1)),
+      y2026: Number((five2026 / Math.max(count2026, 1) * 100).toFixed(1)),
+      suffix: "%",
+      goodWhenDown: false,
+      digits: 1,
+    },
+    lowRate: {
+      label: "低分比例",
+      y2025: Number((low2025 / Math.max(count2025, 1) * 100).toFixed(1)),
+      y2026: Number((low2026 / Math.max(count2026, 1) * 100).toFixed(1)),
+      suffix: "%",
+      goodWhenDown: true,
+      digits: 1,
+    },
+  };
+};
+
+function OqcSummaryMetricCard({ item }) {
+  const delta = Number((item.y2026 - item.y2025).toFixed(item.digits));
+  const improved = item.goodWhenDown ? delta <= 0 : delta >= 0;
+  const direction = delta >= 0 ? "↑" : "↓";
+  const value = (number) => Number(number || 0).toFixed(item.digits);
+  return <div className="oqc-summary-metric-card">
+    <span>{item.label}</span>
+    <strong>{value(item.y2026)}<small>{item.suffix}</small></strong>
+    <div className="oqc-summary-card-foot">
+      <em>2025：{value(item.y2025)}{item.suffix}</em>
+      <b className={improved ? "good" : "bad"}>{direction} {Math.abs(delta).toFixed(item.digits)}{item.suffix}</b>
+    </div>
+  </div>;
+}
+
+function OqcSummaryCountCard({ y2025 = 0, y2026 = 0 }) {
+  const delta = y2026 - y2025;
+  return <div className="oqc-summary-metric-card oqc-summary-count-card">
+    <span>评分设备</span>
+    <strong>{Number(y2026 || 0).toLocaleString()}<small>台</small></strong>
+    <div className="oqc-summary-card-foot">
+      <em>2025：{Number(y2025 || 0).toLocaleString()}台</em>
+      <b className={delta >= 0 ? "good" : "bad"}>{delta >= 0 ? "↑" : "↓"} {Math.abs(delta).toLocaleString()}台</b>
+    </div>
+  </div>;
+}
+
+function OqcSummaryFocusCard({ row }) {
+  return <div className="oqc-summary-metric-card oqc-summary-focus-card">
+    <span>重点关注</span>
+    <strong>{row?.name || "—"}</strong>
+    <div className="oqc-summary-card-foot">
+      <em>2026低分率</em>
+      <b className="bad">{Number(row?.y2026LowRate || 0).toFixed(1)}% / {Number(row?.y2026Low || 0).toLocaleString()}台</b>
+    </div>
+  </div>;
+}
+
 function OqcAnalysis({ data }) {
   const summary = data.oqc.monthlySummary;
   if (!summary) return <div className="module-page"><div className="module-summary"><KpiCard item={data.kpis[2]} /><div className="summary-note"><strong>待导入月度汇总表</strong><p>请导入“2025年-2026年评分按月汇总.xlsx”生成同期评分分析。</p></div></div></div>;
   const [focusDivision, setFocusDivision] = useState("FPC事业部");
   const monthly = summary.divisionMonthly?.[focusDivision] || summary.fpcMonthly || [];
-  const total2025 = summary.divisions.reduce((sum, row) => sum + row.y2025Count, 0);
-  const total2026 = summary.divisions.reduce((sum, row) => sum + row.y2026Count, 0);
-  const fpcWorst = [...summary.fpcTpm].sort((a,b) => b.y2026LowRate - a.y2026LowRate)[0];
+  const overallMetrics = buildOqcOverallMetrics(summary.divisions);
+  const total2025 = summary.divisions.reduce((sum, row) => sum + (Number(row.y2025Count) || 0), 0);
+  const total2026 = summary.divisions.reduce((sum, row) => sum + (Number(row.y2026Count) || 0), 0);
+  const fpcWorst = [...(summary.fpcTpm || [])].sort((a,b) => (b.y2026LowRate || 0) - (a.y2026LowRate || 0))[0];
   return <div className="module-page iqc-supplier-page oqc-page">
     <FloatingTabs options={[{ value: "产品一部", label: "半导体&北美" }, { value: "产品五部", label: "产品五部" }, { value: "FPC事业部", label: "FPC事业部" }]} active={focusDivision} onChange={setFocusDivision}/>
     <div className="iqc-section-title">
@@ -1002,11 +1258,11 @@ function OqcAnalysis({ data }) {
       <AppliedPeriodTag data={data}/>
     </div>
     <div className="iqc-summary-strip oqc-summary">
-      <div><span>2025评分设备</span><strong>{total2025.toLocaleString()}</strong></div>
-      <div><span>2026评分设备</span><strong>{total2026.toLocaleString()}</strong></div>
-      <div><span>产品部范围</span><strong>3</strong></div>
-      <div><span>FPC TPM范围</span><strong>5</strong></div>
-      <div><span>重点关注</span><strong className="red">{fpcWorst?.name || "—"}低分率 {fpcWorst?.y2026LowRate || 0}%</strong></div>
+      <OqcSummaryCountCard y2025={total2025} y2026={total2026} />
+      <OqcSummaryMetricCard item={overallMetrics.avg} />
+      <OqcSummaryMetricCard item={overallMetrics.fiveRate} />
+      <OqcSummaryMetricCard item={overallMetrics.lowRate} />
+      <OqcSummaryFocusCard row={fpcWorst} />
     </div>
     <div className="iqc-analysis-grid">
       <div className="oqc-section-heading"><span className="section-number">3.1</span><div><h2>三大产品部总体对比</h2><p>半导体&北美、产品五部、FPC事业部按评分数量加权计算</p></div></div>
@@ -1422,7 +1678,7 @@ function DqaAnalysis({ data }) {
   const [dqaTab, setDqaTab] = useState("issues");
   const [hiddenTpmsByDivision, setHiddenTpmsByDivision] = useState(() => safeParse(localStorage.getItem("qms-dqa-hidden-tpms-v1"), {}));
   useEffect(() => { localStorage.setItem("qms-dqa-hidden-tpms-v1", JSON.stringify(hiddenTpmsByDivision)); }, [hiddenTpmsByDivision]);
-  if (!compare && dqaTab !== "ecn") return <div className="module-page"><div className="module-summary"><KpiCard item={data.kpis[3]}/><div className="summary-note"><strong>???DQA??</strong><p>???2025?2026????????????</p></div></div></div>;
+  if (!compare && dqaTab !== "ecn") return <div className="module-page"><div className="module-summary"><KpiCard item={data.kpis[3]}/><div className="summary-note"><strong>暂无DQA数据</strong><p>请确认已导入2025、2026年DQA研发问题数据。</p></div></div></div>;
   const tpmData = compare?.byTpm?.[division] || { stages: [], categories: [], disciplines: [] };
   const divisionTpms = compare?.tpmsByDivision?.[division] || [];
   const hiddenTpms = hiddenTpmsByDivision[division] || [];
@@ -1830,6 +2086,7 @@ export function App() {
   const [analysisRevision, setAnalysisRevision] = useState(0);
 
   useEffect(() => { location.hash = view; }, [view]);
+  useEffect(() => { seedDefaultAnnotations(); }, []);
   useEffect(() => {
     loadImportedSources().then(async (stored) => {
       if (stored.length) {

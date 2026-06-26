@@ -3,6 +3,9 @@ dist/
 release/
 public/defaultSources.json
 public/defaultAnalysis.json
+public/defaultSources.json.gz
+public/defaultAnalysis.json.gz
+public/defaultAnnotations.json
 .vite/
 *.log
 npm-debug.log*

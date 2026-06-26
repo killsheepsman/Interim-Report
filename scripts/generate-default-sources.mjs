@@ -1,11 +1,22 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import { gzip } from "node:zlib";
+import { promisify } from "node:util";
 
 const projectRoot = path.resolve(process.cwd());
 const sourceRoot = path.resolve(projectRoot, "..");
 const sourceDirs = ["DQA", "IPQC", "IQC", "OQC"].map((name) => path.join(sourceRoot, name));
 const { analyzeImported, parseFiles } = await import(pathToFileURL(path.join(projectRoot, "src", "dataEngine.js")).href);
+const gzipAsync = promisify(gzip);
+
+const writeGzipJson = async (filePath, value) => {
+  const json = JSON.stringify(value);
+  const gz = await gzipAsync(Buffer.from(json, "utf8"), { level: 9 });
+  await fs.writeFile(`${filePath}.gz`, gz);
+  await fs.rm(filePath, { force: true });
+  return { rawBytes: Buffer.byteLength(json), gzBytes: gz.byteLength };
+};
 
 const workbooks = [];
 for (const dir of sourceDirs) {
@@ -40,7 +51,8 @@ for (const source of parsed) {
 }
 
 await fs.mkdir(path.join(projectRoot, "public"), { recursive: true });
-await fs.writeFile(path.join(projectRoot, "public", "defaultSources.json"), JSON.stringify(parsed), "utf8");
+const sourcesOutput = path.join(projectRoot, "public", "defaultSources.json");
+const sourcesSize = await writeGzipJson(sourcesOutput, parsed);
 const defaultDateRange = {
   start2025: "2025-01-01",
   end2025: "2025-05-31",
@@ -49,12 +61,13 @@ const defaultDateRange = {
 };
 const metaFiles = parsed.map(({ rows, ...file }) => ({ ...file, rows: [] }));
 const analysis = analyzeImported(parsed, defaultDateRange);
-await fs.writeFile(path.join(projectRoot, "public", "defaultAnalysis.json"), JSON.stringify({
+const analysisOutput = path.join(projectRoot, "public", "defaultAnalysis.json");
+const analysisSize = await writeGzipJson(analysisOutput, {
   generatedAt: new Date().toISOString(),
   dateRange: defaultDateRange,
   files: metaFiles,
   data: analysis,
-}), "utf8");
+});
 
 const summary = parsed.reduce((acc, file) => {
   acc[file.module] = (acc[file.module] || 0) + 1;
@@ -64,6 +77,10 @@ const summary = parsed.reduce((acc, file) => {
 console.log(JSON.stringify({
   files: parsed.length,
   summary,
-  output: path.join(projectRoot, "public", "defaultSources.json"),
-  analysisOutput: path.join(projectRoot, "public", "defaultAnalysis.json"),
+  output: `${sourcesOutput}.gz`,
+  analysisOutput: `${analysisOutput}.gz`,
+  compression: {
+    sources: sourcesSize,
+    analysis: analysisSize,
+  },
 }, null, 2));
