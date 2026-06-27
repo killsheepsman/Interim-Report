@@ -48,19 +48,21 @@ const themeSeries = (series, index) => {
   const color = appleChartPalette[index % appleChartPalette.length];
   const next = { ...series };
   if (next.type === "bar") {
+    const originalColor = next.itemStyle?.color;
+    const themedColor = typeof originalColor === "function" ? originalColor : color;
     next.barMaxWidth = next.barMaxWidth || 22;
-    next.itemStyle = { borderRadius: [8, 8, 0, 0], color, shadowBlur: 7, shadowColor: "rgba(15,23,42,.08)", ...(next.itemStyle || {}) };
+    next.itemStyle = { ...(next.itemStyle || {}), borderRadius: next.stack ? [0, 0, 0, 0] : [8, 8, 0, 0], color: themedColor, shadowBlur: 7, shadowColor: "rgba(15,23,42,.08)" };
   }
   if (next.type === "line") {
     next.symbolSize = next.symbolSize || 8;
-    next.lineStyle = { width: 3, color, shadowBlur: 8, shadowColor: "rgba(10,132,255,.18)", ...(next.lineStyle || {}) };
-    next.itemStyle = { color, borderColor: "#fff", borderWidth: 2, ...(next.itemStyle || {}) };
+    next.lineStyle = { ...(next.lineStyle || {}), width: 3, color, shadowBlur: 8, shadowColor: "rgba(10,132,255,.18)" };
+    next.itemStyle = { ...(next.itemStyle || {}), color, borderColor: "#fff", borderWidth: 2 };
   }
   if (next.type === "pie") {
     next.itemStyle = { borderColor: "#fff", borderWidth: 2, ...(next.itemStyle || {}) };
   }
   if (next.label?.show) {
-    next.label = { color: "#526174", fontWeight: 800, backgroundColor: "rgba(255,255,255,.94)", borderRadius: 8, padding: [2, 5], ...(next.label || {}) };
+    next.label = { ...(next.label || {}), color: "#1F2937", fontWeight: 800, backgroundColor: "rgba(255,255,255,.94)", borderRadius: 8, padding: [2, 5], textBorderWidth: 0 };
   }
   return next;
 };
@@ -285,8 +287,8 @@ export function QuantityRateCombo({
   const appleLabelDistance = (distance) => apple ? Math.max(18, distance + 8) : distance;
   const labels = rows.map((x) => x[labelKey]);
   const axisBottom = axisAngle ? Math.min(170, Math.max(92, Math.max(...labels.map((label) => String(label).length)) * (axisAngle === 90 ? 12 : 8))) : 48;
-  const numberLabel = (name, distance, color = apple ? applePalette.text : "#596273") => ({
-    show: appleLabelVisible(name), position: apple ? "top" : labelPosition(positions[name]), distance: appleLabelDistance(distance), color, fontSize: apple ? 10 : 9, fontWeight: apple ? 700 : undefined,
+  const numberLabel = (name, distance, color = apple ? "#1F2937" : "#596273") => ({
+    show: appleLabelVisible(name), position: labelPosition(positions[name]), distance: appleLabelDistance(distance), color: apple ? "#1F2937" : color, fontSize: apple ? 10 : 9, fontWeight: apple ? 700 : undefined,
     backgroundColor: apple ? "rgba(255,255,255,.96)" : undefined,
     borderRadius: apple ? 7 : undefined,
     padding: apple ? [2, 5] : undefined,
@@ -295,22 +297,24 @@ export function QuantityRateCombo({
     formatter: ({ value }) => value ? Number(value).toLocaleString() : "",
   });
   const ratePointLabel = (name, color) => ({
-    show: appleLabelVisible(name), position: apple ? "top" : labelPosition(positions[name]), distance: apple ? 22 : 14, color, fontSize: apple ? 10 : 9, fontWeight: apple ? 800 : 600,
+    show: appleLabelVisible(name), position: labelPosition(positions[name]), distance: apple ? 22 : 14, color: apple ? "#1F2937" : color, fontSize: apple ? 10 : 9, fontWeight: apple ? 800 : 600,
     backgroundColor: apple ? "rgba(255,255,255,.94)" : "rgba(255,255,255,.88)", borderRadius: apple ? 8 : 2, padding: apple ? [3, 6] : [1, 3],
     borderColor: apple ? "rgba(226,232,240,.9)" : undefined,
     borderWidth: apple ? 1 : undefined,
     formatter: ({ value }) => `${value}%`,
   });
   const rateData = (key, year) => rows.map((row, index) => {
+    const labelName = `${year}${rateLabel}`;
+    const selectedPosition = positions[labelName];
     const value = row[key] || 0;
     const low = value <= 12;
     return {
       value,
       label: {
-        ...(apple ? { position: "top" } : {}),
+        ...(apple ? { position: labelPosition(selectedPosition) } : {}),
         distance: apple ? 22 : (low ? 20 : 10),
         offset: apple
-          ? [year === 2025 ? -14 : 14, index % 2 ? -4 : -10]
+          ? (selectedPosition === "top" ? [year === 2025 ? -14 : 14, index % 2 ? -4 : -10] : undefined)
           : year === 2025
             ? [index % 2 ? -12 : -18, low ? -8 : -2]
             : [index % 2 ? 18 : 12, low ? 10 : 5],
