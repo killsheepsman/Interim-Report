@@ -193,7 +193,39 @@ export function QuantityRateCombo({
   showBad = true,
   height = 340,
   chartKey = `${labelKey}-${qtyLabel}-${rateLabel}-${badLabel}-${showBad}`,
+  theme = "default",
 }) {
+  const apple = theme === "apple";
+  const applePalette = {
+    qty25: "#9CC7F3",
+    bad25: "#F2A3A8",
+    qty26: "#FDBA74",
+    bad26: "#D85A67",
+    rate25: "#0A84FF",
+    rate26: "#FF9F0A",
+    grid: "#EEF3F9",
+    axis: "#D8E2EE",
+    text: "#526174",
+    muted: "#7C8A9E",
+  };
+  const appleGradient = (from, to) => ({
+    type: "linear",
+    x: 0,
+    y: 0,
+    x2: 0,
+    y2: 1,
+    colorStops: [
+      { offset: 0, color: from },
+      { offset: 1, color: to },
+    ],
+  });
+  const appleBarColor = (name) => {
+    if (name === "2025总数") return appleGradient("#B8D8FA", applePalette.qty25);
+    if (name === "2026总数") return appleGradient("#FFD3A4", applePalette.qty26);
+    if (name.startsWith("2025")) return appleGradient("#F7C2C6", applePalette.bad25);
+    if (name.startsWith("2026")) return appleGradient("#EC7A84", applePalette.bad26);
+    return applePalette.qty25;
+  };
   const [axisAngle, setAxisAngle] = useState(0);
   const seriesNames = [
     "2025总数", ...(showBad ? [`2025${badLabel}`] : []), "2026总数", ...(showBad ? [`2026${badLabel}`] : []),
@@ -206,13 +238,18 @@ export function QuantityRateCombo({
   const changePosition = (name, value) => setPositions((current) => ({ ...current, [name]: value }));
   const labels = rows.map((x) => x[labelKey]);
   const axisBottom = axisAngle ? Math.min(170, Math.max(92, Math.max(...labels.map((label) => String(label).length)) * (axisAngle === 90 ? 12 : 8))) : 48;
-  const numberLabel = (name, distance, color = "#596273") => ({
-    show: labelVisible(positions[name]), position: labelPosition(positions[name]), distance, color, fontSize: 9,
+  const numberLabel = (name, distance, color = apple ? applePalette.text : "#596273") => ({
+    show: labelVisible(positions[name]), position: labelPosition(positions[name]), distance, color, fontSize: apple ? 10 : 9, fontWeight: apple ? 700 : undefined,
+    backgroundColor: apple ? "rgba(255,255,255,.9)" : undefined,
+    borderRadius: apple ? 7 : undefined,
+    padding: apple ? [2, 5] : undefined,
     formatter: ({ value }) => value ? Number(value).toLocaleString() : "",
   });
   const ratePointLabel = (name, color) => ({
-    show: labelVisible(positions[name]), position: labelPosition(positions[name]), distance: 14, color, fontSize: 9, fontWeight: 600,
-    backgroundColor: "rgba(255,255,255,.88)", borderRadius: 2, padding: [1, 3],
+    show: labelVisible(positions[name]), position: labelPosition(positions[name]), distance: 14, color, fontSize: apple ? 10 : 9, fontWeight: apple ? 800 : 600,
+    backgroundColor: apple ? "rgba(255,255,255,.94)" : "rgba(255,255,255,.88)", borderRadius: apple ? 8 : 2, padding: apple ? [3, 6] : [1, 3],
+    borderColor: apple ? "rgba(226,232,240,.9)" : undefined,
+    borderWidth: apple ? 1 : undefined,
     formatter: ({ value }) => `${value}%`,
   });
   const rateData = (key, year) => rows.map((row, index) => {
@@ -239,29 +276,49 @@ export function QuantityRateCombo({
     { name: "2026总数", type: "bar", data: rows.map((x) => x[qty2026] || 0), barMaxWidth: 22, label: numberLabel("2026总数", 5), labelLayout, itemStyle: { color: "#f6ad72", borderRadius: [3,3,0,0] } },
     ...(showBad ? [{ name: `2026${badLabel}`, type: "bar", data: rows.map((x) => badValue(x, bad2026, qty2026, rate2026)), barMaxWidth: 22, label: numberLabel(`2026${badLabel}`, 17, "#8f3440"), labelLayout, itemStyle: { color: "#b84d58", borderRadius: [3,3,0,0] } }] : []),
   ];
-  return <div className="combo-chart-wrap">
+  const themedBarSeries = apple ? barSeries.map((series, index) => ({
+    ...series,
+    barMaxWidth: 16,
+    barGap: index === 0 ? "18%" : series.barGap,
+    barCategoryGap: "42%",
+    itemStyle: {
+      ...series.itemStyle,
+      color: appleBarColor(series.name),
+      borderRadius: [9, 9, 0, 0],
+      shadowBlur: 8,
+      shadowColor: "rgba(15,23,42,.08)",
+    },
+    emphasis: { focus: "series", itemStyle: { shadowBlur: 14, shadowColor: "rgba(10,132,255,.18)" } },
+  })) : barSeries;
+  return <div className={`combo-chart-wrap${apple ? " apple-combo-chart" : ""}`}>
     <div className="chart-control-row"><div className="axis-angle-control"><span>横坐标文字</span>{[0,45,90].map((angle) => <button key={angle} className={axisAngle === angle ? "active" : ""} onClick={() => setAxisAngle(angle)}>{angle}°</button>)}</div><LabelPositionControl positions={positions} onChange={changePosition}/></div>
     <ScaledChart style={{ height }} option={{
     tooltip: {
       trigger: "axis",
       axisPointer: { type: "cross" },
+      backgroundColor: apple ? "rgba(255,255,255,.96)" : undefined,
+      borderColor: apple ? "#E2E8F0" : undefined,
+      borderWidth: apple ? 1 : undefined,
+      textStyle: apple ? { color: "#1F2937" } : undefined,
+      extraCssText: apple ? "box-shadow:0 12px 30px rgba(16,24,40,.12);border-radius:12px;" : undefined,
       valueFormatter: (value) => typeof value === "number" ? value.toLocaleString() : value,
     },
-    legend: { top: 0, right: 8 },
-    grid: { left: 58, right: 58, top: 78, bottom: axisBottom, containLabel: true },
+    legend: { top: 0, right: 8, itemWidth: apple ? 13 : undefined, itemHeight: apple ? 8 : undefined, borderRadius: apple ? 6 : undefined, textStyle: apple ? { color: applePalette.text, fontWeight: 700, fontSize: 12 } : undefined },
+    grid: { left: apple ? 64 : 58, right: apple ? 64 : 58, top: apple ? 82 : 78, bottom: axisBottom, containLabel: true },
     xAxis: {
       type: "category", data: labels,
-      axisLabel: { interval: 0, rotate: axisAngle, margin: axisAngle ? 12 : 8, color: "#596273", hideOverlap: axisAngle === 0 },
-      axisLine: { lineStyle: { color: "#d8dee7" } },
+      axisLabel: { interval: 0, rotate: axisAngle, margin: axisAngle ? 12 : 8, color: apple ? applePalette.text : "#596273", fontWeight: apple ? 600 : undefined, hideOverlap: axisAngle === 0 },
+      axisLine: { lineStyle: { color: apple ? applePalette.axis : "#d8dee7" } },
+      axisTick: { show: !apple },
     },
     yAxis: [
-      { type: "value", name: qtyLabel, nameTextStyle: { color: "#718096" }, splitLine: { lineStyle: { color: "#eef1f5" } } },
-      { type: "value", name: rateLabel, min: 0, max: 100, axisLabel: { formatter: "{value}%" }, splitLine: { show: false } },
+      { type: "value", name: qtyLabel, nameTextStyle: { color: apple ? applePalette.muted : "#718096", fontWeight: apple ? 700 : undefined }, axisLabel: { color: apple ? applePalette.muted : undefined }, splitLine: { lineStyle: { color: apple ? applePalette.grid : "#eef1f5", type: apple ? "dashed" : "solid" } } },
+      { type: "value", name: rateLabel, min: 0, max: 100, nameTextStyle: apple ? { color: applePalette.muted, fontWeight: 700 } : undefined, axisLabel: { formatter: "{value}%", color: apple ? applePalette.muted : undefined }, splitLine: { show: false } },
     ],
     series: [
-      ...barSeries,
-      { name: `2025${rateLabel}`, type: "line", yAxisIndex: 1, data: rateData(rate2025, 2025), label: ratePointLabel(`2025${rateLabel}`, blue), labelLayout, smooth: true, symbolSize: 7, lineStyle: { width: 2.5, color: blue }, itemStyle: { color: blue } },
-      { name: `2026${rateLabel}`, type: "line", yAxisIndex: 1, data: rateData(rate2026, 2026), label: ratePointLabel(`2026${rateLabel}`, orange), labelLayout, smooth: true, symbolSize: 7, lineStyle: { width: 2.5, color: orange }, itemStyle: { color: orange } },
+      ...themedBarSeries,
+      { name: `2025${rateLabel}`, type: "line", yAxisIndex: 1, data: rateData(rate2025, 2025), label: ratePointLabel(`2025${rateLabel}`, apple ? applePalette.rate25 : blue), labelLayout, smooth: true, symbolSize: apple ? 9 : 7, lineStyle: { width: apple ? 3.4 : 2.5, color: apple ? applePalette.rate25 : blue, shadowBlur: apple ? 10 : 0, shadowColor: apple ? "rgba(10,132,255,.26)" : undefined }, areaStyle: apple ? { color: "rgba(10,132,255,.055)" } : undefined, itemStyle: { color: apple ? applePalette.rate25 : blue, borderColor: "#fff", borderWidth: apple ? 2.5 : 0 } },
+      { name: `2026${rateLabel}`, type: "line", yAxisIndex: 1, data: rateData(rate2026, 2026), label: ratePointLabel(`2026${rateLabel}`, apple ? applePalette.rate26 : orange), labelLayout, smooth: true, symbolSize: apple ? 9 : 7, lineStyle: { width: apple ? 3.4 : 2.5, color: apple ? applePalette.rate26 : orange, shadowBlur: apple ? 10 : 0, shadowColor: apple ? "rgba(255,159,10,.28)" : undefined }, areaStyle: apple ? { color: "rgba(255,159,10,.06)" } : undefined, itemStyle: { color: apple ? applePalette.rate26 : orange, borderColor: "#fff", borderWidth: apple ? 2.5 : 0 } },
     ],
     }} />
   </div>;

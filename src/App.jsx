@@ -1786,7 +1786,7 @@ function SupplierCompareTable({ title, rows, candidates = [] }) {
       {activeRows.map((r) => <label className="supplier-check" key={r.supplier}><input type="checkbox" checked={selected.includes(r.supplier)} onChange={() => toggle(r.supplier)}/><span>{r.supplier}</span></label>)}
     </div>
     {visibleRows.length
-      ? <div className="supplier-chart"><QuantityRateCombo rows={visibleRows} labelKey="supplier" height={360} /></div>
+      ? <div className="supplier-chart"><QuantityRateCombo rows={visibleRows} labelKey="supplier" height={360} theme="apple" /></div>
       : <div className="supplier-empty">请至少选择一家供应商</div>}
     <div className="supplier-compare-table">
       <div className="supplier-compare-row supplier-compare-head">
@@ -1898,7 +1898,7 @@ function IqcFocusProjectAnalysis({ data }) {
       </button>)}
     </div>
     <Panel title={focusProjectText.overview} subtitle={focusProjectText.overviewSub} className="iqc-wide">
-      <QuantityRateCombo rows={projects} labelKey="name" qtyLabel={focusProjectText.checkBatches} badLabel={focusProjectText.abnormalBatches} rateLabel={focusProjectText.passRate} height={360} chartKey="iqc-focus-project-overview"/>
+      <QuantityRateCombo rows={projects} labelKey="name" qtyLabel={focusProjectText.checkBatches} badLabel={focusProjectText.abnormalBatches} rateLabel={focusProjectText.passRate} height={360} chartKey="iqc-focus-project-overview" theme="apple"/>
     </Panel>
     <div className="focus-project-detail">
       <div className="focus-project-detail-head">
@@ -1906,11 +1906,11 @@ function IqcFocusProjectAnalysis({ data }) {
         <div className="focus-project-tabs" data-focus-project-tabs>{projects.map((project) => <button key={project.name} className={project.name === active ? "active" : ""} onClick={() => setActive(project.name)}>{project.name}</button>)}</div>
       </div>
       <Panel title={focusProjectText.supplier} subtitle={focusProjectText.supplierSub} className="iqc-wide">
-        <QuantityRateCombo rows={current.suppliers.slice(0, 12)} labelKey="supplier" qtyLabel={focusProjectText.checkBatches} badLabel={focusProjectText.abnormalBatches} rateLabel={focusProjectText.passRate} height={380} chartKey={`iqc-focus-supplier-${active}`}/>
+        <QuantityRateCombo rows={current.suppliers.slice(0, 12)} labelKey="supplier" qtyLabel={focusProjectText.checkBatches} badLabel={focusProjectText.abnormalBatches} rateLabel={focusProjectText.passRate} height={380} chartKey={`iqc-focus-supplier-${active}`} theme="apple"/>
         <FocusProjectTable rows={current.suppliers} columns={focusSupplierColumns} rowKey="supplier" />
       </Panel>
       <Panel title={focusProjectText.issue} subtitle={focusProjectText.issueSub} className="iqc-wide">
-        <QuantityRateCombo rows={current.issues} qty2025="y2025Count" qty2026="y2026Count" rate2025="y2025Share" rate2026="y2026Share" rateLabel={focusProjectText.abnormalShare} qtyLabel={focusProjectText.abnormalBatches} showBad={false} height={350} chartKey={`iqc-focus-issue-${active}`}/>
+        <QuantityRateCombo rows={current.issues} qty2025="y2025Count" qty2026="y2026Count" rate2025="y2025Share" rate2026="y2026Share" rateLabel={focusProjectText.abnormalShare} qtyLabel={focusProjectText.abnormalBatches} showBad={false} height={350} chartKey={`iqc-focus-issue-${active}`} theme="apple"/>
         <FocusProjectTable rows={current.issues} columns={focusIssueColumns} rowKey="name" defaultSort="y2026Count" />
       </Panel>
     </div>
@@ -1949,16 +1949,16 @@ function IqcSpecialAnalysis({ data, site }) {
     </div>
     <div className="iqc-analysis-grid">
       <Panel title="特采月度趋势" subtitle={`${site} · 柱形为检验总数/特采数量，折线为特采率`}>
-        <QuantityRateCombo rows={special.monthly} labelKey="month" rateLabel="特采率" qtyLabel="检验批次" badLabel="特采" height={360}/>
+        <QuantityRateCombo rows={special.monthly} labelKey="month" rateLabel="特采率" qtyLabel="检验批次" badLabel="特采" height={360} theme="apple"/>
       </Panel>
       <Panel title="特采材料属性" subtitle="按特采数量和占比进行同期对比">
-        <QuantityRateCombo rows={special.materials} qty2025="y2025Count" qty2026="y2026Count" rate2025="y2025Share" rate2026="y2026Share" rateLabel="特采占比" qtyLabel="特采数量" showBad={false} height={370}/>
+        <QuantityRateCombo rows={special.materials} qty2025="y2025Count" qty2026="y2026Count" rate2025="y2025Share" rate2026="y2026Share" rateLabel="特采占比" qtyLabel="特采数量" showBad={false} height={370} theme="apple"/>
       </Panel>
       <Panel title="特采供应商TOP" subtitle="柱形为特采数量，折线为该供应商特采率">
-        <QuantityRateCombo rows={special.suppliers.slice(0, 10)} labelKey="name" qty2025="y2025Count" qty2026="y2026Count" rate2025="y2025Rate" rate2026="y2026Rate" rateLabel="特采率" qtyLabel="特采数量" showBad={false} height={390}/>
+        <QuantityRateCombo rows={special.suppliers.slice(0, 10)} labelKey="name" qty2025="y2025Count" qty2026="y2026Count" rate2025="y2025Rate" rate2026="y2026Rate" rateLabel="特采率" qtyLabel="特采数量" showBad={false} height={390} theme="apple"/>
       </Panel>
       <Panel title="特采原因证据分类" subtitle="区分疑似过度设计、资料问题、供应商制造偏差及证据不足">
-        <QuantityRateCombo rows={special.evidence} qty2025="y2025Count" qty2026="y2026Count" rate2025="y2025Share" rate2026="y2026Share" rateLabel="特采占比" qtyLabel="特采数量" showBad={false} height={360}/>
+        <QuantityRateCombo rows={special.evidence} qty2025="y2025Count" qty2026="y2026Count" rate2025="y2025Share" rate2026="y2026Share" rateLabel="特采占比" qtyLabel="特采数量" showBad={false} height={360} theme="apple"/>
       </Panel>
       <Panel title="疑似研发过度设计证据明细" subtitle="高证据：规格偏差且质检说明明确不影响装配/功能；中证据：规格偏差后仍被特采放行">
         <IqcSpecialTable rows={special.designEvidence}/>
@@ -1992,13 +1992,13 @@ function IqcInternalAnalysis({ data, site, specialAsBad }) {
     </div>
     <div className="iqc-analysis-grid">
       <Panel title="一楼自制月度良率趋势" subtitle={`${site} · 按当前“计入特采”口径计算`}>
-        <QuantityRateCombo rows={internal.monthly} labelKey="month" height={360}/>
+        <QuantityRateCombo rows={internal.monthly} labelKey="month" height={360} theme="apple"/>
       </Panel>
       <Panel title="一楼自制异常类型" subtitle="仅统计质检结果=不合格">
-        <QuantityRateCombo rows={internal.issues} qty2025="y2025Count" qty2026="y2026Count" rate2025="y2025Share" rate2026="y2026Share" rateLabel="异常占比" qtyLabel="异常批次" showBad={false} height={360}/>
+        <QuantityRateCombo rows={internal.issues} qty2025="y2025Count" qty2026="y2026Count" rate2025="y2025Share" rate2026="y2026Share" rateLabel="异常占比" qtyLabel="异常批次" showBad={false} height={360} theme="apple"/>
       </Panel>
       <Panel title="一楼自制材料质量表现" subtitle="按材料属性对比检验数量、不合格数量和良率">
-        <QuantityRateCombo rows={internal.materials} height={380}/>
+        <QuantityRateCombo rows={internal.materials} height={380} theme="apple"/>
       </Panel>
     </div></>}
   </div>;
@@ -2037,13 +2037,13 @@ function IqcSupplierAnalysis({ data }) {
     </div>
     <div className="iqc-analysis-grid">
       <Panel title="1.2.3 总体供应商良率趋势" subtitle={`${site} · 按月同比 · 柱形为检验总数/不合格数，折线为批次良率`} className="iqc-wide">
-        <QuantityRateCombo rows={monthly} labelKey="month" height={360} />
+        <QuantityRateCombo rows={monthly} labelKey="month" height={360} theme="apple" />
       </Panel>
       <Panel title="1.2.1 加工件异常类型" subtitle={`${site} · 仅统计质检结果=不合格；特采进入专项分析，不重复计数`} className="iqc-wide">
-        <QuantityRateCombo rows={issues} qty2025="y2025Count" qty2026="y2026Count" rate2025="y2025Share" rate2026="y2026Share" rateLabel="异常占比" qtyLabel="异常批次" showBad={false} height={370} />
+        <QuantityRateCombo rows={issues} qty2025="y2025Count" qty2026="y2026Count" rate2025="y2025Share" rate2026="y2026Share" rateLabel="异常占比" qtyLabel="异常批次" showBad={false} height={370} theme="apple" />
       </Panel>
       <Panel title="1.2.2 异常加工件材料属性" subtitle={`${site} · 按材料类别同比 · 柱形为检验总数/不合格数，折线为材料批次良率`} className="iqc-wide">
-        <QuantityRateCombo rows={materials} height={380} />
+        <QuantityRateCombo rows={materials} height={380} theme="apple" />
       </Panel>
       <div className="iqc-table-heading"><span className="section-number">1.2.4</span><div><h2>主要供应商良率趋势</h2><p>按提纲指定加工类型筛选，深圳、杭州分别呈现</p></div></div>
       <div className="iqc-supplier-tables">
