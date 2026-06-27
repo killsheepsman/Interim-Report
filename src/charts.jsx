@@ -236,17 +236,21 @@ export function QuantityRateCombo({
   ]));
   const [positions, setPositions] = usePersistentPositions("quantity-rate", chartKey, defaultPositions);
   const changePosition = (name, value) => setPositions((current) => ({ ...current, [name]: value }));
+  const appleLabelVisible = (name) => apple ? positions[name] !== "none" : labelVisible(positions[name]);
+  const appleLabelDistance = (distance) => apple ? Math.max(18, distance + 8) : distance;
   const labels = rows.map((x) => x[labelKey]);
   const axisBottom = axisAngle ? Math.min(170, Math.max(92, Math.max(...labels.map((label) => String(label).length)) * (axisAngle === 90 ? 12 : 8))) : 48;
   const numberLabel = (name, distance, color = apple ? applePalette.text : "#596273") => ({
-    show: labelVisible(positions[name]), position: labelPosition(positions[name]), distance, color, fontSize: apple ? 10 : 9, fontWeight: apple ? 700 : undefined,
-    backgroundColor: apple ? "rgba(255,255,255,.9)" : undefined,
+    show: appleLabelVisible(name), position: apple ? "top" : labelPosition(positions[name]), distance: appleLabelDistance(distance), color, fontSize: apple ? 10 : 9, fontWeight: apple ? 700 : undefined,
+    backgroundColor: apple ? "rgba(255,255,255,.96)" : undefined,
     borderRadius: apple ? 7 : undefined,
     padding: apple ? [2, 5] : undefined,
+    borderColor: apple ? "rgba(226,232,240,.92)" : undefined,
+    borderWidth: apple ? 1 : undefined,
     formatter: ({ value }) => value ? Number(value).toLocaleString() : "",
   });
   const ratePointLabel = (name, color) => ({
-    show: labelVisible(positions[name]), position: labelPosition(positions[name]), distance: 14, color, fontSize: apple ? 10 : 9, fontWeight: apple ? 800 : 600,
+    show: appleLabelVisible(name), position: apple ? "top" : labelPosition(positions[name]), distance: apple ? 22 : 14, color, fontSize: apple ? 10 : 9, fontWeight: apple ? 800 : 600,
     backgroundColor: apple ? "rgba(255,255,255,.94)" : "rgba(255,255,255,.88)", borderRadius: apple ? 8 : 2, padding: apple ? [3, 6] : [1, 3],
     borderColor: apple ? "rgba(226,232,240,.9)" : undefined,
     borderWidth: apple ? 1 : undefined,
@@ -258,14 +262,17 @@ export function QuantityRateCombo({
     return {
       value,
       label: {
-        distance: low ? 20 : 10,
-        offset: year === 2025
-          ? [index % 2 ? -12 : -18, low ? -8 : -2]
-          : [index % 2 ? 18 : 12, low ? 10 : 5],
+        ...(apple ? { position: "top" } : {}),
+        distance: apple ? 22 : (low ? 20 : 10),
+        offset: apple
+          ? [year === 2025 ? -14 : 14, index % 2 ? -4 : -10]
+          : year === 2025
+            ? [index % 2 ? -12 : -18, low ? -8 : -2]
+            : [index % 2 ? 18 : 12, low ? 10 : 5],
       },
     };
   });
-  const labelLayout = { hideOverlap: true, moveOverlap: "shiftY" };
+  const labelLayout = { hideOverlap: false, moveOverlap: "shiftY" };
   const badValue = (row, badKey, qtyKey, rateKey) => {
     if (row[badKey] != null) return row[badKey];
     return Math.max(0, Math.round((row[qtyKey] || 0) * (100 - (row[rateKey] || 0)) / 100));
@@ -317,8 +324,8 @@ export function QuantityRateCombo({
     ],
     series: [
       ...themedBarSeries,
-      { name: `2025${rateLabel}`, type: "line", yAxisIndex: 1, data: rateData(rate2025, 2025), label: ratePointLabel(`2025${rateLabel}`, apple ? applePalette.rate25 : blue), labelLayout, smooth: true, symbolSize: apple ? 9 : 7, lineStyle: { width: apple ? 3.4 : 2.5, color: apple ? applePalette.rate25 : blue, shadowBlur: apple ? 10 : 0, shadowColor: apple ? "rgba(10,132,255,.26)" : undefined }, areaStyle: apple ? { color: "rgba(10,132,255,.055)" } : undefined, itemStyle: { color: apple ? applePalette.rate25 : blue, borderColor: "#fff", borderWidth: apple ? 2.5 : 0 } },
-      { name: `2026${rateLabel}`, type: "line", yAxisIndex: 1, data: rateData(rate2026, 2026), label: ratePointLabel(`2026${rateLabel}`, apple ? applePalette.rate26 : orange), labelLayout, smooth: true, symbolSize: apple ? 9 : 7, lineStyle: { width: apple ? 3.4 : 2.5, color: apple ? applePalette.rate26 : orange, shadowBlur: apple ? 10 : 0, shadowColor: apple ? "rgba(255,159,10,.28)" : undefined }, areaStyle: apple ? { color: "rgba(255,159,10,.06)" } : undefined, itemStyle: { color: apple ? applePalette.rate26 : orange, borderColor: "#fff", borderWidth: apple ? 2.5 : 0 } },
+      { name: `2025${rateLabel}`, type: "line", yAxisIndex: 1, data: rateData(rate2025, 2025), label: ratePointLabel(`2025${rateLabel}`, apple ? applePalette.rate25 : blue), labelLayout, smooth: true, symbolSize: apple ? 9 : 7, lineStyle: { width: apple ? 3.4 : 2.5, color: apple ? applePalette.rate25 : blue, shadowBlur: apple ? 10 : 0, shadowColor: apple ? "rgba(10,132,255,.26)" : undefined }, itemStyle: { color: apple ? applePalette.rate25 : blue, borderColor: "#fff", borderWidth: apple ? 2.5 : 0 } },
+      { name: `2026${rateLabel}`, type: "line", yAxisIndex: 1, data: rateData(rate2026, 2026), label: ratePointLabel(`2026${rateLabel}`, apple ? applePalette.rate26 : orange), labelLayout, smooth: true, symbolSize: apple ? 9 : 7, lineStyle: { width: apple ? 3.4 : 2.5, color: apple ? applePalette.rate26 : orange, shadowBlur: apple ? 10 : 0, shadowColor: apple ? "rgba(255,159,10,.28)" : undefined }, itemStyle: { color: apple ? applePalette.rate26 : orange, borderColor: "#fff", borderWidth: apple ? 2.5 : 0 } },
     ],
     }} />
   </div>;
