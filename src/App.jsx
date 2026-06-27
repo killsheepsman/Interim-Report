@@ -2022,7 +2022,7 @@ function IqcSupplierAnalysis({ data }) {
     const qty = totals[`y${year}Qty`];
     return qty ? monthly.reduce((sum, row) => sum + row[`y${year}Qty`] * row[`y${year}Rate`], 0) / qty : 0;
   };
-  return <div className="module-page iqc-supplier-page">
+  return <div className="module-page iqc-supplier-page iqc-apple-page">
     <FloatingTabs options={["深圳", "杭州"]} active={site} onChange={setSite}/>
     <div className="iqc-section-title">
       <div><span className="section-number">1.2</span><div><h2>供应商加工件同比分析</h2><p>按检验批次计算数量和批次良率，深圳、杭州独立分析</p></div></div>
