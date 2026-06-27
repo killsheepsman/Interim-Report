@@ -9,6 +9,8 @@ const red = "#ef4f4f";
 const displayLabel = (value) => value === "产品一部" ? "半导体&北美" : value;
 
 const fontScales = { small: .86, standard: 1, large: 1.22, xlarge: 1.4 };
+const appleChartPalette = ["#0A84FF", "#FF9F0A", "#34C759", "#AF52DE", "#5AC8FA", "#FF375F", "#8E8E93", "#B8860B", "#64D2FF", "#30D158"];
+const isAppleTheme = () => (document.documentElement.dataset.uiTheme || localStorage.getItem("qms-ui-theme") || "classic") === "apple";
 const scaleOptionFonts = (value, scale, key = "") => {
   if (key === "fontSize" && typeof value === "number") return Math.round(value * scale);
   if (Array.isArray(value)) return value.map((item) => scaleOptionFonts(item, scale));
@@ -29,8 +31,50 @@ const useChartFontScale = () => {
 };
 function ScaledChart({ option, ...props }) {
   const scale = useChartFontScale();
-  return <ReactECharts {...props} notMerge lazyUpdate option={{ textStyle: { fontSize: Math.round(12 * scale) }, ...scaleOptionFonts(option, scale) }} />;
+  const themedOption = isAppleTheme() ? applyAppleChartTheme(option) : option;
+  return <ReactECharts {...props} notMerge lazyUpdate option={{ textStyle: { fontSize: Math.round(12 * scale), color: isAppleTheme() ? "#526174" : undefined, fontFamily: "PingFang SC, Microsoft YaHei, sans-serif" }, ...scaleOptionFonts(themedOption, scale) }} />;
 }
+
+const asArray = (value) => Array.isArray(value) ? value : value ? [value] : [];
+const themeAxis = (axis) => ({
+  ...axis,
+  nameTextStyle: { color: "#7C8A9E", fontWeight: 700, ...(axis?.nameTextStyle || {}) },
+  axisLabel: { color: "#526174", fontWeight: 600, ...(axis?.axisLabel || {}) },
+  axisLine: { ...(axis?.axisLine || {}), lineStyle: { color: "#D8E2EE", ...(axis?.axisLine?.lineStyle || {}) } },
+  axisTick: { show: false, ...(axis?.axisTick || {}) },
+  splitLine: axis?.splitLine?.show === false ? axis?.splitLine : { show: true, lineStyle: { color: "#EEF3F9", type: "dashed", ...(axis?.splitLine?.lineStyle || {}) }, ...(axis?.splitLine || {}) },
+});
+const themeSeries = (series, index) => {
+  const color = appleChartPalette[index % appleChartPalette.length];
+  const next = { ...series };
+  if (next.type === "bar") {
+    next.barMaxWidth = next.barMaxWidth || 22;
+    next.itemStyle = { borderRadius: [8, 8, 0, 0], color, shadowBlur: 7, shadowColor: "rgba(15,23,42,.08)", ...(next.itemStyle || {}) };
+  }
+  if (next.type === "line") {
+    next.symbolSize = next.symbolSize || 8;
+    next.lineStyle = { width: 3, color, shadowBlur: 8, shadowColor: "rgba(10,132,255,.18)", ...(next.lineStyle || {}) };
+    next.itemStyle = { color, borderColor: "#fff", borderWidth: 2, ...(next.itemStyle || {}) };
+  }
+  if (next.type === "pie") {
+    next.itemStyle = { borderColor: "#fff", borderWidth: 2, ...(next.itemStyle || {}) };
+  }
+  if (next.label?.show) {
+    next.label = { color: "#526174", fontWeight: 800, backgroundColor: "rgba(255,255,255,.94)", borderRadius: 8, padding: [2, 5], ...(next.label || {}) };
+  }
+  return next;
+};
+const applyAppleChartTheme = (option) => ({
+  color: option.color || appleChartPalette,
+  ...option,
+  tooltip: { trigger: "axis", ...(option.tooltip || {}), backgroundColor: "rgba(255,255,255,.96)", borderColor: "#E2E8F0", borderWidth: 1, textStyle: { color: "#1F2937", ...(option.tooltip?.textStyle || {}) }, extraCssText: `box-shadow:0 12px 30px rgba(16,24,40,.12);border-radius:12px;${option.tooltip?.extraCssText || ""}` },
+  legend: option.legend ? { itemWidth: 13, itemHeight: 8, ...(option.legend || {}), textStyle: { color: "#526174", fontWeight: 700, fontSize: 12, ...(option.legend?.textStyle || {}) } } : option.legend,
+  grid: option.grid ? { containLabel: true, ...(option.grid || {}) } : option.grid,
+  xAxis: Array.isArray(option.xAxis) ? option.xAxis.map(themeAxis) : option.xAxis ? themeAxis(option.xAxis) : option.xAxis,
+  yAxis: Array.isArray(option.yAxis) ? option.yAxis.map(themeAxis) : option.yAxis ? themeAxis(option.yAxis) : option.yAxis,
+  visualMap: option.visualMap ? { ...(option.visualMap || {}), inRange: { color: ["#EFF6FF", "#BFDBFE", "#FDBA74", "#FB7185"], ...(option.visualMap?.inRange || {}) } } : option.visualMap,
+  series: asArray(option.series).map(themeSeries),
+});
 
 const safeParse = (value, fallback) => {
   try { return value ? JSON.parse(value) : fallback; } catch { return fallback; }
