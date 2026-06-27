@@ -193,9 +193,10 @@ export function QuantityRateCombo({
   showBad = true,
   height = 340,
   chartKey = `${labelKey}-${qtyLabel}-${rateLabel}-${badLabel}-${showBad}`,
-  theme = "default",
+  theme = "auto",
 }) {
-  const apple = theme === "apple";
+  const resolvedTheme = theme === "auto" ? (document.documentElement.dataset.uiTheme || localStorage.getItem("qms-ui-theme") || "classic") : theme;
+  const apple = resolvedTheme === "apple";
   const applePalette = {
     qty25: "#9CC7F3",
     bad25: "#F2A3A8",

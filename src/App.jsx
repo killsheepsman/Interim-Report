@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { createContext, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import {
   ArrowRight, ArrowsClockwise, Bell, CaretDown, ChartBar, ChartPieSlice, CheckCircle,
@@ -14,6 +14,8 @@ import { BarCompare, Donut, HorizontalRank, Pareto, QuantityRateCombo, ScoreMont
 
 const moduleIcons = { IQC: Cube, IPQC: Pulse, OQC: ShieldCheck, DQA: ClipboardText };
 const moduleColor = { IQC: "green", IPQC: "blue", OQC: "orange", DQA: "amber" };
+const UiThemeContext = createContext("classic");
+const useUiTheme = () => useContext(UiThemeContext);
 const safeParse = (value, fallback) => {
   try { return value ? JSON.parse(value) : fallback; } catch { return fallback; }
 };
@@ -556,15 +558,23 @@ function DateRangeFilter({ value, onChange, onRefresh, fontSize, onFontSize, ref
   </div>;
 }
 
-function ExecutiveSidebar({ active, setActive }) {
+function ThemeToggle({ value, onChange }) {
+  return <div className="theme-switcher" aria-label="风格切换">
+    <button className={value === "classic" ? "active" : ""} onClick={() => onChange("classic")}>class</button>
+    <button className={value === "apple" ? "active" : ""} onClick={() => onChange("apple")}>Apple</button>
+  </div>;
+}
+
+function ExecutiveSidebar({ active, setActive, uiTheme, onThemeChange, collapsed, onToggleCollapsed }) {
   const nav = [
     ["总览", House], ["IQC", Cube], ["IPQC", Pulse],
     ["OQC", ShieldCheck], ["DQA", ClipboardText], ["改善计划", Target], ["数据导入", UploadSimple], ["模板设置", GearSix],
   ];
-  return <aside className="executive-sidebar">
+  return <aside className={`executive-sidebar ${collapsed ? "collapsed" : ""}`}>
     <div className="brand"><div className="brand-logo"><ShieldCheck size={26} weight="fill" /></div><div><strong>品质智控</strong><span>质量分析平台</span></div></div>
     <nav>{nav.map(([name, Icon]) => <button key={name} className={active === name ? "active" : ""} onClick={() => setActive(name)}><Icon size={20} /><span>{name}</span></button>)}</nav>
-    <button className="collapse-nav"><SidebarSimple size={18} />收起</button>
+    <div className="sidebar-bottom"><ThemeToggle value={uiTheme} onChange={onThemeChange}/></div>
+    <button className="sidebar-drawer-toggle" aria-label={collapsed ? "展开导航" : "收起导航"} onClick={onToggleCollapsed}><SidebarSimple size={18} /></button>
   </aside>;
 }
 
@@ -729,11 +739,11 @@ function OqcOverviewScore({ data }) {
   </div>;
 }
 
-function ExecutiveDashboard({ data, files, onImport, onDeleteSource, view, onViewChange, dateRange, onDateRange, onRefreshDate, dateRefreshStatus, fontSize, onFontSize, analysisKey, labelControlsVisible, onToggleLabelControls }) {
+function ExecutiveDashboard({ data, files, onImport, onDeleteSource, view, onViewChange, dateRange, onDateRange, onRefreshDate, dateRefreshStatus, fontSize, onFontSize, analysisKey, labelControlsVisible, onToggleLabelControls, uiTheme, onThemeChange, sidebarCollapsed, onToggleSidebar }) {
   const [active, setActive] = useState("总览");
   const moduleView = ["IQC", "IPQC", "OQC", "DQA"].includes(active) ? active : null;
-  return <div className="executive-shell">
-    <ExecutiveSidebar active={active} setActive={setActive} />
+  return <div className={`executive-shell theme-${uiTheme} ${sidebarCollapsed ? "sidebar-collapsed" : ""}`}>
+    <ExecutiveSidebar active={active} setActive={setActive} uiTheme={uiTheme} onThemeChange={onThemeChange} collapsed={sidebarCollapsed} onToggleCollapsed={onToggleSidebar} />
     <main className="executive-main">
       <header className="executive-topbar">
         <div><h1>{moduleView ? `${moduleView} 专题分析` : active === "数据导入" ? "数据源管理" : active === "改善计划" ? "改善计划与闭环" : "经营驾驶舱"}</h1><p>{moduleView ? "从原始数据下钻到TOP问题与责任对象" : "全局质量运营总览"}</p></div>
@@ -883,8 +893,8 @@ function TodoTable({ rows, onChange }) {
   </div>;
 }
 
-function WorkspaceDashboard({ data, files, onImport, view, onViewChange }) {
-  return <div className="workspace-shell summary-report-shell annotation-only-workspace">
+function WorkspaceDashboard({ data, files, onImport, view, onViewChange, uiTheme }) {
+  return <div className={`workspace-shell summary-report-shell annotation-only-workspace theme-${uiTheme}`}>
     <WorkspaceTop onImport={onImport} view={view} onViewChange={onViewChange} />
     <main className="workspace-main summary-report-page">
       <section className="dataset-section"><div className="section-label">数据集状态（与经营驾驶舱一致）<Question size={14} /></div><DatasetStatus files={files} /></section>
@@ -1786,7 +1796,7 @@ function SupplierCompareTable({ title, rows, candidates = [] }) {
       {activeRows.map((r) => <label className="supplier-check" key={r.supplier}><input type="checkbox" checked={selected.includes(r.supplier)} onChange={() => toggle(r.supplier)}/><span>{r.supplier}</span></label>)}
     </div>
     {visibleRows.length
-      ? <div className="supplier-chart"><QuantityRateCombo rows={visibleRows} labelKey="supplier" height={360} theme="apple" /></div>
+      ? <div className="supplier-chart"><QuantityRateCombo rows={visibleRows} labelKey="supplier" height={360} /></div>
       : <div className="supplier-empty">请至少选择一家供应商</div>}
     <div className="supplier-compare-table">
       <div className="supplier-compare-row supplier-compare-head">
@@ -1898,7 +1908,7 @@ function IqcFocusProjectAnalysis({ data }) {
       </button>)}
     </div>
     <Panel title={focusProjectText.overview} subtitle={focusProjectText.overviewSub} className="iqc-wide">
-      <QuantityRateCombo rows={projects} labelKey="name" qtyLabel={focusProjectText.checkBatches} badLabel={focusProjectText.abnormalBatches} rateLabel={focusProjectText.passRate} height={360} chartKey="iqc-focus-project-overview" theme="apple"/>
+      <QuantityRateCombo rows={projects} labelKey="name" qtyLabel={focusProjectText.checkBatches} badLabel={focusProjectText.abnormalBatches} rateLabel={focusProjectText.passRate} height={360} chartKey="iqc-focus-project-overview"/>
     </Panel>
     <div className="focus-project-detail">
       <div className="focus-project-detail-head">
@@ -1906,11 +1916,11 @@ function IqcFocusProjectAnalysis({ data }) {
         <div className="focus-project-tabs" data-focus-project-tabs>{projects.map((project) => <button key={project.name} className={project.name === active ? "active" : ""} onClick={() => setActive(project.name)}>{project.name}</button>)}</div>
       </div>
       <Panel title={focusProjectText.supplier} subtitle={focusProjectText.supplierSub} className="iqc-wide">
-        <QuantityRateCombo rows={current.suppliers.slice(0, 12)} labelKey="supplier" qtyLabel={focusProjectText.checkBatches} badLabel={focusProjectText.abnormalBatches} rateLabel={focusProjectText.passRate} height={380} chartKey={`iqc-focus-supplier-${active}`} theme="apple"/>
+        <QuantityRateCombo rows={current.suppliers.slice(0, 12)} labelKey="supplier" qtyLabel={focusProjectText.checkBatches} badLabel={focusProjectText.abnormalBatches} rateLabel={focusProjectText.passRate} height={380} chartKey={`iqc-focus-supplier-${active}`}/>
         <FocusProjectTable rows={current.suppliers} columns={focusSupplierColumns} rowKey="supplier" />
       </Panel>
       <Panel title={focusProjectText.issue} subtitle={focusProjectText.issueSub} className="iqc-wide">
-        <QuantityRateCombo rows={current.issues} qty2025="y2025Count" qty2026="y2026Count" rate2025="y2025Share" rate2026="y2026Share" rateLabel={focusProjectText.abnormalShare} qtyLabel={focusProjectText.abnormalBatches} showBad={false} height={350} chartKey={`iqc-focus-issue-${active}`} theme="apple"/>
+        <QuantityRateCombo rows={current.issues} qty2025="y2025Count" qty2026="y2026Count" rate2025="y2025Share" rate2026="y2026Share" rateLabel={focusProjectText.abnormalShare} qtyLabel={focusProjectText.abnormalBatches} showBad={false} height={350} chartKey={`iqc-focus-issue-${active}`}/>
         <FocusProjectTable rows={current.issues} columns={focusIssueColumns} rowKey="name" defaultSort="y2026Count" />
       </Panel>
     </div>
@@ -1949,16 +1959,16 @@ function IqcSpecialAnalysis({ data, site }) {
     </div>
     <div className="iqc-analysis-grid">
       <Panel title="特采月度趋势" subtitle={`${site} · 柱形为检验总数/特采数量，折线为特采率`}>
-        <QuantityRateCombo rows={special.monthly} labelKey="month" rateLabel="特采率" qtyLabel="检验批次" badLabel="特采" height={360} theme="apple"/>
+        <QuantityRateCombo rows={special.monthly} labelKey="month" rateLabel="特采率" qtyLabel="检验批次" badLabel="特采" height={360}/>
       </Panel>
       <Panel title="特采材料属性" subtitle="按特采数量和占比进行同期对比">
-        <QuantityRateCombo rows={special.materials} qty2025="y2025Count" qty2026="y2026Count" rate2025="y2025Share" rate2026="y2026Share" rateLabel="特采占比" qtyLabel="特采数量" showBad={false} height={370} theme="apple"/>
+        <QuantityRateCombo rows={special.materials} qty2025="y2025Count" qty2026="y2026Count" rate2025="y2025Share" rate2026="y2026Share" rateLabel="特采占比" qtyLabel="特采数量" showBad={false} height={370}/>
       </Panel>
       <Panel title="特采供应商TOP" subtitle="柱形为特采数量，折线为该供应商特采率">
-        <QuantityRateCombo rows={special.suppliers.slice(0, 10)} labelKey="name" qty2025="y2025Count" qty2026="y2026Count" rate2025="y2025Rate" rate2026="y2026Rate" rateLabel="特采率" qtyLabel="特采数量" showBad={false} height={390} theme="apple"/>
+        <QuantityRateCombo rows={special.suppliers.slice(0, 10)} labelKey="name" qty2025="y2025Count" qty2026="y2026Count" rate2025="y2025Rate" rate2026="y2026Rate" rateLabel="特采率" qtyLabel="特采数量" showBad={false} height={390}/>
       </Panel>
       <Panel title="特采原因证据分类" subtitle="区分疑似过度设计、资料问题、供应商制造偏差及证据不足">
-        <QuantityRateCombo rows={special.evidence} qty2025="y2025Count" qty2026="y2026Count" rate2025="y2025Share" rate2026="y2026Share" rateLabel="特采占比" qtyLabel="特采数量" showBad={false} height={360} theme="apple"/>
+        <QuantityRateCombo rows={special.evidence} qty2025="y2025Count" qty2026="y2026Count" rate2025="y2025Share" rate2026="y2026Share" rateLabel="特采占比" qtyLabel="特采数量" showBad={false} height={360}/>
       </Panel>
       <Panel title="疑似研发过度设计证据明细" subtitle="高证据：规格偏差且质检说明明确不影响装配/功能；中证据：规格偏差后仍被特采放行">
         <IqcSpecialTable rows={special.designEvidence}/>
@@ -1992,19 +2002,20 @@ function IqcInternalAnalysis({ data, site, specialAsBad }) {
     </div>
     <div className="iqc-analysis-grid">
       <Panel title="一楼自制月度良率趋势" subtitle={`${site} · 按当前“计入特采”口径计算`}>
-        <QuantityRateCombo rows={internal.monthly} labelKey="month" height={360} theme="apple"/>
+        <QuantityRateCombo rows={internal.monthly} labelKey="month" height={360}/>
       </Panel>
       <Panel title="一楼自制异常类型" subtitle="仅统计质检结果=不合格">
-        <QuantityRateCombo rows={internal.issues} qty2025="y2025Count" qty2026="y2026Count" rate2025="y2025Share" rate2026="y2026Share" rateLabel="异常占比" qtyLabel="异常批次" showBad={false} height={360} theme="apple"/>
+        <QuantityRateCombo rows={internal.issues} qty2025="y2025Count" qty2026="y2026Count" rate2025="y2025Share" rate2026="y2026Share" rateLabel="异常占比" qtyLabel="异常批次" showBad={false} height={360}/>
       </Panel>
       <Panel title="一楼自制材料质量表现" subtitle="按材料属性对比检验数量、不合格数量和良率">
-        <QuantityRateCombo rows={internal.materials} height={380} theme="apple"/>
+        <QuantityRateCombo rows={internal.materials} height={380}/>
       </Panel>
     </div></>}
   </div>;
 }
 
 function IqcSupplierAnalysis({ data }) {
+  const uiTheme = useUiTheme();
   const [site, setSite] = useState("深圳");
   const [specialAsBad, setSpecialAsBad] = useState(false);
   const mode = specialAsBad ? data.iqc.qualityModes?.rejected : data.iqc.qualityModes?.accepted;
@@ -2022,7 +2033,7 @@ function IqcSupplierAnalysis({ data }) {
     const qty = totals[`y${year}Qty`];
     return qty ? monthly.reduce((sum, row) => sum + row[`y${year}Qty`] * row[`y${year}Rate`], 0) / qty : 0;
   };
-  return <div className="module-page iqc-supplier-page iqc-apple-page">
+  return <div className={`module-page iqc-supplier-page ${uiTheme === "apple" ? "iqc-apple-page" : ""}`}>
     <FloatingTabs options={["深圳", "杭州"]} active={site} onChange={setSite}/>
     <div className="iqc-section-title">
       <div><span className="section-number">1.2</span><div><h2>供应商加工件同比分析</h2><p>按检验批次计算数量和批次良率，深圳、杭州独立分析</p></div></div>
@@ -2037,13 +2048,13 @@ function IqcSupplierAnalysis({ data }) {
     </div>
     <div className="iqc-analysis-grid">
       <Panel title="1.2.3 总体供应商良率趋势" subtitle={`${site} · 按月同比 · 柱形为检验总数/不合格数，折线为批次良率`} className="iqc-wide">
-        <QuantityRateCombo rows={monthly} labelKey="month" height={360} theme="apple" />
+        <QuantityRateCombo rows={monthly} labelKey="month" height={360} />
       </Panel>
       <Panel title="1.2.1 加工件异常类型" subtitle={`${site} · 仅统计质检结果=不合格；特采进入专项分析，不重复计数`} className="iqc-wide">
-        <QuantityRateCombo rows={issues} qty2025="y2025Count" qty2026="y2026Count" rate2025="y2025Share" rate2026="y2026Share" rateLabel="异常占比" qtyLabel="异常批次" showBad={false} height={370} theme="apple" />
+        <QuantityRateCombo rows={issues} qty2025="y2025Count" qty2026="y2026Count" rate2025="y2025Share" rate2026="y2026Share" rateLabel="异常占比" qtyLabel="异常批次" showBad={false} height={370} />
       </Panel>
       <Panel title="1.2.2 异常加工件材料属性" subtitle={`${site} · 按材料类别同比 · 柱形为检验总数/不合格数，折线为材料批次良率`} className="iqc-wide">
-        <QuantityRateCombo rows={materials} height={380} theme="apple" />
+        <QuantityRateCombo rows={materials} height={380} />
       </Panel>
       <div className="iqc-table-heading"><span className="section-number">1.2.4</span><div><h2>主要供应商良率趋势</h2><p>按提纲指定加工类型筛选，深圳、杭州分别呈现</p></div></div>
       <div className="iqc-supplier-tables">
@@ -2081,11 +2092,19 @@ export function App() {
   const [dateRefreshStatus, setDateRefreshStatus] = useState("idle");
   const [fontSize, setFontSize] = useState(() => localStorage.getItem("qms-font-size") || "standard");
   const [labelControlsVisible, setLabelControlsVisible] = useState(() => localStorage.getItem("qms-chart-label-controls-visible-v2") === "true");
+  const [uiTheme, setUiTheme] = useState(() => localStorage.getItem("qms-ui-theme") || "classic");
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => localStorage.getItem("qms-sidebar-collapsed") === "true");
   const [dateRange, setDateRange] = useState(initialDateRange);
   const [appliedDateRange, setAppliedDateRange] = useState(initialDateRange);
   const [analysisRevision, setAnalysisRevision] = useState(0);
 
   useEffect(() => { location.hash = view; }, [view]);
+  useEffect(() => {
+    const theme = uiTheme === "apple" ? "apple" : "classic";
+    document.documentElement.dataset.uiTheme = theme;
+    localStorage.setItem("qms-ui-theme", theme);
+  }, [uiTheme]);
+  useEffect(() => { localStorage.setItem("qms-sidebar-collapsed", sidebarCollapsed ? "true" : "false"); }, [sidebarCollapsed]);
   useEffect(() => { seedDefaultAnnotations(); }, []);
   useEffect(() => {
     loadImportedSources().then(async (stored) => {
@@ -2200,13 +2219,19 @@ export function App() {
     setSaved(true); setTimeout(() => setSaved(false), 2200);
   };
   const exportData = () => downloadJson(data, `质量分析-${data.period}.json`);
+  const changeUiTheme = (nextTheme) => {
+    const theme = nextTheme === "apple" ? "apple" : "classic";
+    document.documentElement.dataset.uiTheme = theme;
+    localStorage.setItem("qms-ui-theme", theme);
+    setUiTheme(theme);
+  };
 
-  return <>
+  return <UiThemeContext.Provider value={uiTheme === "apple" ? "apple" : "classic"}>
     {view === "executive"
-      ? <ExecutiveDashboard data={data} files={files} onImport={openImport} onDeleteSource={deleteSource} view={view} onViewChange={setView} dateRange={dateRange} appliedDateRange={appliedDateRange} onDateRange={updateDateRange} onRefreshDate={refreshDateData} dateRefreshStatus={dateRefreshStatus} fontSize={fontSize} onFontSize={setFontSize} analysisKey={analysisRevision} labelControlsVisible={labelControlsVisible} onToggleLabelControls={() => setLabelControlsVisible((current) => !current)} />
-      : <WorkspaceDashboard key={`workspace-${analysisRevision}`} data={data} files={files} onImport={() => openImport(null)} view={view} onViewChange={setView} onExport={exportData} onSave={saveTemplate} dateRange={dateRange} appliedDateRange={appliedDateRange} onDateRange={updateDateRange} onRefreshDate={refreshDateData} dateRefreshStatus={dateRefreshStatus} fontSize={fontSize} onFontSize={setFontSize} />}
+      ? <ExecutiveDashboard data={data} files={files} onImport={openImport} onDeleteSource={deleteSource} view={view} onViewChange={setView} dateRange={dateRange} appliedDateRange={appliedDateRange} onDateRange={updateDateRange} onRefreshDate={refreshDateData} dateRefreshStatus={dateRefreshStatus} fontSize={fontSize} onFontSize={setFontSize} analysisKey={analysisRevision} labelControlsVisible={labelControlsVisible} onToggleLabelControls={() => setLabelControlsVisible((current) => !current)} uiTheme={uiTheme === "apple" ? "apple" : "classic"} onThemeChange={changeUiTheme} sidebarCollapsed={sidebarCollapsed} onToggleSidebar={() => setSidebarCollapsed((current) => !current)} />
+      : <WorkspaceDashboard key={`workspace-${analysisRevision}`} data={data} files={files} onImport={() => openImport(null)} view={view} onViewChange={setView} onExport={exportData} onSave={saveTemplate} dateRange={dateRange} appliedDateRange={appliedDateRange} onDateRange={updateDateRange} onRefreshDate={refreshDateData} dateRefreshStatus={dateRefreshStatus} fontSize={fontSize} onFontSize={setFontSize} uiTheme={uiTheme === "apple" ? "apple" : "classic"} />}
     <ImportModal open={importOpen} onClose={() => setImportOpen(false)} onSourcesChanged={applySources} files={files} dateRange={appliedDateRange} targetModule={importModule} />
     {saved && <div className="toast"><CheckCircle size={19} weight="fill" />当前分析视图已保存为本机模板</div>}
     {sourceNotice && <div className="toast"><Database size={19}/>{sourceNotice}</div>}
-  </>;
+  </UiThemeContext.Provider>;
 }
