@@ -1518,9 +1518,9 @@ function EcnKpiCards({ ecn }) {
   </div>;
 }
 
-function EcnRateTable({ rows }) {
+function EcnRateTable({ rows, numeratorLabel = "ECN条数", denominatorLabel = "物料款数", rateLabel = "ECN率" }) {
   return <div className="dqa-compare-table">
-    <div className="ecn-rate-row ecn-rate-head"><span>对象</span><span>2025 ECN条数</span><span>2025物料款数</span><span>2025 ECN率</span><span>2026 ECN条数</span><span>2026物料款数</span><span>2026 ECN率</span><span>同比变化</span></div>
+    <div className="ecn-rate-row ecn-rate-head"><span>对象</span><span>2025 {numeratorLabel}</span><span>2025 {denominatorLabel}</span><span>2025 {rateLabel}</span><span>2026 {numeratorLabel}</span><span>2026 {denominatorLabel}</span><span>2026 {rateLabel}</span><span>同比变化</span></div>
     {ecnFlattenRows(rows).map((row) => <div className="ecn-rate-row" key={row.name}>
       <strong>{row.name}</strong>
       <span>{row.y2025Bad.toLocaleString()}</span><span>{row.y2025Qty.toLocaleString()}</span><b>{row.y2025Rate}%</b>
@@ -1530,11 +1530,11 @@ function EcnRateTable({ rows }) {
   </div>;
 }
 
-function EcnRatePanel({ title, subtitle, rows, chartKey }) {
+function EcnRatePanel({ title, subtitle, rows, chartKey, numeratorLabel = "ECN条数", denominatorLabel = "物料款数", rateLabel = "ECN率" }) {
   const flat = ecnFlattenRows(rows);
   return <Panel title={title} subtitle={subtitle}>
-    <QuantityRateCombo rows={flat} qtyLabel="物料款数" badLabel="ECN条数" rateLabel="ECN率" height={Math.max(360, flat.length * 46 + 160)} chartKey={chartKey}/>
-    <EcnRateTable rows={rows}/>
+    <QuantityRateCombo rows={flat} qtyLabel={denominatorLabel} badLabel={numeratorLabel} rateLabel={rateLabel} height={Math.max(360, flat.length * 46 + 160)} chartKey={chartKey}/>
+    <EcnRateTable rows={rows} numeratorLabel={numeratorLabel} denominatorLabel={denominatorLabel} rateLabel={rateLabel}/>
   </Panel>;
 }
 
@@ -1621,6 +1621,63 @@ function DqaEcnAnalysis({ data }) {
     </div>
     <div className="dqa-module-title"><span className="section-number">4.E.1</span><div><h2>TPM变更原因合并分析</h2><p>TPM分析使用原始产品部做左侧分组标记，不把IC载板/北美/传感器合并；仅产品部总体分析时才合并为“半导体&北美”。</p></div></div>
     <EcnTpmReasonGrouped ecn={ecn}/>
+  </div>;
+}
+
+function MachinedPartKpiCards({ parts }) {
+  const items = [
+    { title: "ECN加工件占比", data: parts.ecn },
+    { title: "ECN加工件数量", data: parts.ecn, mode: "count" },
+    { title: "非BOM加工件占比", data: parts.nonBom },
+    { title: "非BOM加工件数量", data: parts.nonBom, mode: "count" },
+  ];
+  return <div className="dqa-overview-kpis ecn-kpis machined-kpis">
+    {items.map((item) => {
+      const y2025 = item.data?.totals?.[2025] || { numerator: 0, denominator: 0, rate: 0 };
+      const y2026 = item.data?.totals?.[2026] || { numerator: 0, denominator: 0, rate: 0 };
+      const isCount = item.mode === "count";
+      const value2026 = isCount ? y2026.numerator : y2026.rate;
+      const value2025 = isCount ? y2025.numerator : y2025.rate;
+      const delta = Number((value2026 - value2025).toFixed(2));
+      return <div key={item.title}>
+        <span>2026 {item.title}</span>
+        <strong>{isCount ? value2026.toLocaleString() : `${value2026}%`}</strong>
+        <p><b>2025：{isCount ? value2025.toLocaleString() : `${value2025}%`}</b><em className={delta > 0 ? "risk-up" : "risk-down"}>{delta > 0 ? "+" : ""}{isCount ? delta.toLocaleString() : `${delta}pp`}</em></p>
+      </div>;
+    })}
+  </div>;
+}
+
+const machinedMonthlyRows = (rows) => rows.map((row) => ({
+  name: row.name,
+  years: [
+    { year: 2025, denominator: row.y2025Qty, numerator: row.y2025Bad, rate: row.y2025Rate },
+    { year: 2026, denominator: row.y2026Qty, numerator: row.y2026Bad, rate: row.y2026Rate },
+  ],
+}));
+
+function MachinedPartSection({ title, subtitle, part, chartPrefix }) {
+  const labels = { numeratorLabel: "加工件数量", denominatorLabel: "加工件总数", rateLabel: "加工件占比" };
+  return <div className="dqa-grid machined-grid">
+    <Panel title={`${title}月度同期趋势`} subtitle="柱形图为加工件总数与对应加工件数量，折线为加工件占比">
+      <QuantityRateCombo rows={part.monthly} qtyLabel={labels.denominatorLabel} badLabel={labels.numeratorLabel} rateLabel={labels.rateLabel} height={390} chartKey={`${chartPrefix}-monthly`}/>
+      <EcnRateTable rows={machinedMonthlyRows(part.monthly)} {...labels}/>
+    </Panel>
+    <EcnRatePanel title={`${title}产品部同期对比`} subtitle={subtitle} rows={part.divisions} chartKey={`${chartPrefix}-division`} {...labels}/>
+    <EcnRatePanel title={`${title}TPM同期对比`} subtitle="TPM维度按表格当前字段展示；2025年产品一部、产品五部尚未拆分TPM时保留原字段" rows={part.tpms} chartKey={`${chartPrefix}-tpm`} {...labels}/>
+  </div>;
+}
+
+function DqaMachinedPartsAnalysis({ data }) {
+  const parts = data.dqa.machinedParts;
+  if (!parts) return <div className="summary-note ecn-empty"><strong>待导入ECN和非BOM加工件数据</strong><p>请在 DQA 数据源中导入“2025年加工件数量比例.xlsx”和“2026年加工件数量比例.xlsx”，系统会读取 ECN加工件统计、非BOM加工件统计两个Sheet。</p></div>;
+  return <div className="dqa-ecn-page dqa-machined-page">
+    <div className="dqa-module-title"><span className="section-number">4.N</span><div><h2>ECN和非BOM加工件同期分析</h2><p>加工件占比 = 对象加工件数量 / 同期加工件总数；默认按2025年1-5月 vs 2026年1-5月对比，海外亚太项目开发部、技术中心不统计。</p></div></div>
+    <MachinedPartKpiCards parts={parts}/>
+    <div className="dqa-module-title"><span className="section-number">4.N.1</span><div><h2>ECN加工件分析</h2><p>产品一部、IC载板、北美、半导体、传感器统一合并为“半导体&北美”。</p></div></div>
+    <MachinedPartSection title="ECN加工件" subtitle="产品部按三大产品部合并；2025年产品一部归入半导体&北美" part={parts.ecn} chartPrefix="dqa-machined-ecn"/>
+    <div className="dqa-module-title"><span className="section-number">4.N.2</span><div><h2>非BOM加工件分析</h2><p>非BOM加工件作为研发设计/资料完整性风险的前置信号，按产品部和TPM做同期对比。</p></div></div>
+    <MachinedPartSection title="非BOM加工件" subtitle="产品部按三大产品部合并；2025年产品一部归入半导体&北美" part={parts.nonBom} chartPrefix="dqa-machined-nonbom"/>
   </div>;
 }
 
@@ -1731,7 +1788,7 @@ function DqaAnalysis({ data }) {
   const [dqaTab, setDqaTab] = useState("issues");
   const [hiddenTpmsByDivision, setHiddenTpmsByDivision] = useState(() => safeParse(localStorage.getItem("qms-dqa-hidden-tpms-v1"), {}));
   useEffect(() => { localStorage.setItem("qms-dqa-hidden-tpms-v1", JSON.stringify(hiddenTpmsByDivision)); }, [hiddenTpmsByDivision]);
-  if (!compare && dqaTab !== "ecn") return <div className="module-page"><div className="module-summary"><KpiCard item={data.kpis[3]}/><div className="summary-note"><strong>暂无DQA数据</strong><p>请确认已导入2025、2026年DQA研发问题数据。</p></div></div></div>;
+  if (!compare && dqaTab === "issues") return <div className="module-page"><div className="module-summary"><KpiCard item={data.kpis[3]}/><div className="summary-note"><strong>暂无DQA数据</strong><p>请确认已导入2025、2026年DQA研发问题数据。</p></div></div></div>;
   const tpmData = compare?.byTpm?.[division] || { stages: [], categories: [], disciplines: [] };
   const divisionTpms = compare?.tpmsByDivision?.[division] || [];
   const hiddenTpms = hiddenTpmsByDivision[division] || [];
@@ -1749,14 +1806,19 @@ function DqaAnalysis({ data }) {
   });
   const selectAllTpms = () => setHiddenTpmsByDivision((current) => ({ ...current, [division]: [] }));
   const clearAllTpms = () => setHiddenTpmsByDivision((current) => ({ ...current, [division]: divisionTpms }));
+  const dqaSubtitle = dqaTab === "ecn"
+    ? "ECN率按月、产品部、TPM和变更原因做2025/2026同期对比"
+    : dqaTab === "machined"
+      ? "ECN加工件与非BOM加工件按月、产品部、TPM做2025/2026同期对比"
+      : "2025评审按汇总数量统计，2026评审按“阶段=评审”的明细行统计；产品一部统一显示为“半导体&北美”";
   return <div className="module-page iqc-supplier-page dqa-page">
-    {compare && dqaTab !== "ecn" && <FloatingTabs options={compare.divisionNames} active={division} onChange={setDivision}/>}
+    {compare && dqaTab === "issues" && <FloatingTabs options={compare.divisionNames} active={division} onChange={setDivision}/>}
     <div className="iqc-section-title">
       <div>
         <span className="section-number">4</span>
         <div>
           <h2>DQA研发质量同期分析</h2>
-          <p>{dqaTab === "ecn" ? "ECN率按月、产品部、TPM和变更原因做2025/2026同期对比" : "2025评审按汇总数量统计，2026评审按“阶段=评审”的明细行统计；产品一部统一显示为“半导体&北美”"}</p>
+          <p>{dqaSubtitle}</p>
         </div>
       </div>
       <AppliedPeriodTag data={data}/>
@@ -1764,8 +1826,9 @@ function DqaAnalysis({ data }) {
     <div className="dqa-sub-tabs">
       <button className={dqaTab === "issues" ? "active" : ""} onClick={() => setDqaTab("issues")}>研发问题分析</button>
       <button className={dqaTab === "ecn" ? "active" : ""} onClick={() => setDqaTab("ecn")}>ECN分析</button>
+      <button className={dqaTab === "machined" ? "active" : ""} onClick={() => setDqaTab("machined")}>ECN和非BOM加工件分析</button>
     </div>
-    {dqaTab === "ecn" ? <DqaEcnAnalysis data={data}/> : <>
+    {dqaTab === "ecn" ? <DqaEcnAnalysis data={data}/> : dqaTab === "machined" ? <DqaMachinedPartsAnalysis data={data}/> : <>
     <DqaOverview compare={compare}/>
     <div className="dqa-module-title"><span className="section-number">4.1</span><div><h2>三大产品部总体对比</h2><p>阶段、异常分类和学科均按产品部展示2025/2026两条堆叠柱</p></div></div>
     <div className="dqa-grid">
