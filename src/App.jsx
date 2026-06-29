@@ -175,7 +175,37 @@ const exportCleanup = (clone) => {
   });
 };
 
+const escapeHtml = (value = "") => String(value)
+  .replace(/&/g, "&amp;")
+  .replace(/</g, "&lt;")
+  .replace(/>/g, "&gt;")
+  .replace(/"/g, "&quot;")
+  .replace(/'/g, "&#39;");
+
+const buildAnnotationReportHtml = () => {
+  const rows = normalizeAnnotations(loadAnnotations())
+    .filter((row) => row.include !== false && String(row.content || "").trim());
+  const grouped = annotationTypes
+    .map((type) => ({ type, rows: rows.filter((row) => row.type === type) }))
+    .filter((group) => group.rows.length);
+  const stamp = new Date().toLocaleDateString("zh-CN");
+  const body = grouped.length
+    ? grouped.map((group) => `<section class="formal-section"><h2>${escapeHtml(group.type)}</h2>${group.rows.map((row) => `<p>${escapeHtml(row.content).replace(/\n/g, "<br/>")}</p>`).join("")}</section>`).join("")
+    : `<section class="formal-section"><p>暂无已进入报告的批注素材。</p></section>`;
+  return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/><title>总结报告</title><style>
+    body{margin:0;background:#f5f7fb;color:#172033;font-family:"PingFang SC","Microsoft YaHei",Arial,sans-serif}
+    .formal-report{max-width:980px;margin:0 auto;padding:42px 54px 64px;background:#fff;min-height:100vh;box-shadow:0 18px 48px rgba(16,24,40,.08)}
+    h1{margin:0;color:#0f2f5f;font-size:30px;letter-spacing:-.4px}
+    .meta{margin:8px 0 30px;color:#64748b;font-size:13px;border-bottom:1px solid #e5edf6;padding-bottom:18px}
+    .formal-section{break-inside:avoid;margin:0 0 28px}
+    .formal-section h2{margin:0 0 12px;color:#174f8b;font-size:20px;border-left:4px solid #0a84ff;padding-left:10px}
+    .formal-section p{margin:0 0 12px;white-space:normal;line-height:1.9;font-size:15px;color:#243348;text-align:justify}
+    @media print{body{background:#fff}.formal-report{box-shadow:none;padding:0;max-width:none}.formal-section{page-break-inside:avoid}}
+  </style></head><body><main class="formal-report"><h1>总结报告</h1><div class="meta">导出日期：${stamp}</div>${body}</main></body></html>`;
+};
+
 const buildExportHtml = () => {
+  if (document.querySelector(".summary-report-shell")) return buildAnnotationReportHtml();
   const root = exportRootElement();
   if (!root) return "";
   const clone = root.cloneNode(true);
@@ -387,20 +417,33 @@ function AnnotationViewButton() {
 }
 function AnnotationReportPanel() {
   const [rows, setRows] = useAnnotations();
-  const update = (id, patch) => setRows(rows.map((row) => row.id === id ? { ...row, ...patch, updatedAt: new Date().toISOString() } : row));
+  const [draftRows, setDraftRows] = useState(rows);
+  const [saved, setSaved] = useState(false);
+  useEffect(() => { setDraftRows(rows); }, [rows]);
+  const update = (id, patch) => {
+    setDraftRows((current) => current.map((row) => row.id === id ? { ...row, ...patch, updatedAt: new Date().toISOString() } : row));
+    setSaved(false);
+  };
+  const save = () => {
+    setRows(draftRows);
+    setSaved(true);
+    setTimeout(() => setSaved(false), 2200);
+  };
   const remove = (id) => setRows(rows.filter((row) => row.id !== id));
-  const reportRows = rows.filter((row) => row.include !== false);
+  const autosizeRows = (value) => Math.max(4, String(value || "").split(/\r?\n/).length + Math.ceil(String(value || "").length / 78) + 1);
+  const reportRows = draftRows.filter((row) => row.include !== false);
   const grouped = annotationModules.map((module) => ({ module, rows: reportRows.filter((row) => row.module === module) })).filter((group) => group.rows.length);
-  if (!rows.length) return <div className="annotation-empty">{annotationText.empty}</div>;
+  if (!draftRows.length) return <div className="annotation-empty">{annotationText.empty}</div>;
   return <div className="annotation-report-panel">
+    <div className="annotation-save-bar"><span>{saved ? annotationText.saved : "修改后请点击保存，导出报告会使用已保存内容。"}</span><button onClick={save}><FloppyDisk size={15}/>{annotationText.save}</button></div>
     {grouped.map((group) => <section className="annotation-module-group" key={group.module}>
       <h4>{group.module}</h4>
       {group.rows.map((row) => <div className="annotation-report-row" key={row.id}>
         <div className="annotation-row-meta"><select value={row.type} onChange={(event) => update(row.id, { type: event.target.value })}>{annotationTypes.map((item) => <option key={item}>{item}</option>)}</select><select value={row.module} onChange={(event) => update(row.id, { module: event.target.value })}>{annotationModules.map((item) => <option key={item}>{item}</option>)}</select><label><input type="checkbox" checked={row.include !== false} onChange={(event) => update(row.id, { include: event.target.checked })}/>{annotationText.include}</label><span>{annotationText.created}: {String(row.createdAt || "").slice(0, 10)}</span><button onClick={() => remove(row.id)}><Trash size={14}/>{annotationText.delete}</button></div>
-        <textarea value={row.content} rows={3} onChange={(event) => update(row.id, { content: event.target.value })}/>
+        <textarea className="annotation-full-text" value={row.content} rows={autosizeRows(row.content)} onChange={(event) => update(row.id, { content: event.target.value })}/>
       </div>)}
     </section>)}
-    {rows.some((row) => row.include === false) && <section className="annotation-module-group muted"><h4>未进入报告</h4>{rows.filter((row) => row.include === false).map((row) => <div className="annotation-report-row" key={row.id}><div className="annotation-row-meta"><select value={row.type} onChange={(event) => update(row.id, { type: event.target.value })}>{annotationTypes.map((item) => <option key={item}>{item}</option>)}</select><select value={row.module} onChange={(event) => update(row.id, { module: event.target.value })}>{annotationModules.map((item) => <option key={item}>{item}</option>)}</select><label><input type="checkbox" checked={false} onChange={(event) => update(row.id, { include: event.target.checked })}/>{annotationText.include}</label><button onClick={() => remove(row.id)}><Trash size={14}/>{annotationText.delete}</button></div><textarea value={row.content} rows={2} onChange={(event) => update(row.id, { content: event.target.value })}/></div>)}</section>}
+    {draftRows.some((row) => row.include === false) && <section className="annotation-module-group muted"><h4>未进入报告</h4>{draftRows.filter((row) => row.include === false).map((row) => <div className="annotation-report-row" key={row.id}><div className="annotation-row-meta"><select value={row.type} onChange={(event) => update(row.id, { type: event.target.value })}>{annotationTypes.map((item) => <option key={item}>{item}</option>)}</select><select value={row.module} onChange={(event) => update(row.id, { module: event.target.value })}>{annotationModules.map((item) => <option key={item}>{item}</option>)}</select><label><input type="checkbox" checked={false} onChange={(event) => update(row.id, { include: event.target.checked })}/>{annotationText.include}</label><button onClick={() => remove(row.id)}><Trash size={14}/>{annotationText.delete}</button></div><textarea className="annotation-full-text" value={row.content} rows={autosizeRows(row.content)} onChange={(event) => update(row.id, { content: event.target.value })}/></div>)}</section>}
   </div>;
 }
 
