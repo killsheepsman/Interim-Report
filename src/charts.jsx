@@ -392,6 +392,70 @@ export function QuantityRateCombo({
   </div>;
 }
 
+export function MachinedTpmCompareChart({
+  rows,
+  labelKey = "label",
+  maxRate = 5,
+  height = 420,
+  chartKey = "machined-tpm-compare",
+}) {
+  const names = ["2025数量", "2026数量", "2025比例", "2026比例"];
+  const defaultPositions = { "2025数量": "top", "2026数量": "top", "2025比例": "top", "2026比例": "bottom" };
+  const [positions, setPositions] = usePersistentPositions("machined-tpm", chartKey, defaultPositions);
+  const changePosition = (name, value) => setPositions((current) => ({ ...current, [name]: value }));
+  const labels = rows.map((row) => row[labelKey]);
+  const valueLabel = (name, color) => ({
+    show: labelVisible(positions[name]),
+    position: labelPosition(positions[name]),
+    color,
+    fontSize: 9,
+    backgroundColor: "rgba(255,255,255,.9)",
+    borderRadius: 3,
+    padding: [1, 3],
+    formatter: ({ value }) => value ? Number(value).toLocaleString() : "",
+  });
+  const rateLabel = (name, color) => ({
+    show: labelVisible(positions[name]),
+    position: labelPosition(positions[name]),
+    distance: isAppleTheme() ? 20 : 14,
+    color,
+    fontSize: 9,
+    fontWeight: 700,
+    backgroundColor: "rgba(255,255,255,.92)",
+    borderRadius: 6,
+    padding: [2, 5],
+    formatter: ({ value }) => `${value}%`,
+  });
+  return <div className="chart-config-wrap">
+    <LabelPositionControl positions={positions} onChange={changePosition}/>
+    <ScaledChart style={{ height }} option={{
+      tooltip: {
+        trigger: "axis",
+        axisPointer: { type: "cross" },
+        valueFormatter: (value) => typeof value === "number" ? value.toLocaleString() : value,
+      },
+      legend: topLegend(8),
+      grid: { left: 58, right: 62, top: isAppleTheme() ? 78 : 64, bottom: labels.length > 8 ? 82 : 48, containLabel: true },
+      xAxis: {
+        type: "category",
+        data: labels,
+        axisLabel: { interval: 0, rotate: labels.length > 8 ? 35 : 0, color: "#596273" },
+        axisLine: { lineStyle: { color: "#d8dee7" } },
+      },
+      yAxis: [
+        { type: "value", name: "ECN加工件数量", splitLine: { lineStyle: { color: "#eef1f5" } } },
+        { type: "value", name: "加工件占比", min: 0, max: Number(maxRate) || 5, axisLabel: { formatter: "{value}%" }, splitLine: { show: false } },
+      ],
+      series: [
+        { name: "2025数量", type: "bar", data: rows.map((row) => row.y2025Bad || 0), barMaxWidth: 22, itemStyle: { color: "#8db9ed", borderRadius: [4,4,0,0] }, label: valueLabel("2025数量", "#365d84"), labelLayout: { hideOverlap: true } },
+        { name: "2026数量", type: "bar", data: rows.map((row) => row.y2026Bad || 0), barMaxWidth: 22, itemStyle: { color: "#f6ad72", borderRadius: [4,4,0,0] }, label: valueLabel("2026数量", "#8f4d19"), labelLayout: { hideOverlap: true } },
+        { name: "2025比例", type: "line", yAxisIndex: 1, data: rows.map((row) => row.y2025Rate || 0), smooth: true, symbolSize: 7, lineStyle: { width: 2.6, color: blue }, itemStyle: { color: blue }, label: rateLabel("2025比例", blue), labelLayout: { hideOverlap: true, moveOverlap: "shiftY" } },
+        { name: "2026比例", type: "line", yAxisIndex: 1, data: rows.map((row) => row.y2026Rate || 0), smooth: true, symbolSize: 7, lineStyle: { width: 2.6, color: orange }, itemStyle: { color: orange }, label: rateLabel("2026比例", orange), labelLayout: { hideOverlap: true, moveOverlap: "shiftY" } },
+      ],
+    }} />
+  </div>;
+}
+
 export function WorkshopCategoryHeatmap({ data, height = 400, chartKey = "workshop-category" }) {
   const categories = data?.categories || [];
   const rows = data?.rows || [];

@@ -10,7 +10,7 @@ import {
 import { analyzeImported, downloadJson, parseFiles } from "./dataEngine.js";
 import { loadDefaultAnalysis, loadDefaultAnnotations, loadDefaultSources, loadImportedSources, mergeImportedSources, saveImportedSources } from "./dataStore.js";
 import { sampleData } from "./sampleData.js";
-import { BarCompare, Donut, HorizontalRank, Pareto, QuantityRateCombo, ScoreMonthlyCombo, ScoreYearCompare, StackedStage, WorkshopCategoryHeatmap, YearStackedCompare } from "./charts.jsx";
+import { BarCompare, Donut, HorizontalRank, MachinedTpmCompareChart, Pareto, QuantityRateCombo, ScoreMonthlyCombo, ScoreYearCompare, StackedStage, WorkshopCategoryHeatmap, YearStackedCompare } from "./charts.jsx";
 
 const moduleIcons = { IQC: Cube, IPQC: Pulse, OQC: ShieldCheck, DQA: ClipboardText };
 const moduleColor = { IQC: "green", IPQC: "blue", OQC: "orange", DQA: "amber" };
@@ -1648,6 +1648,8 @@ function MachinedPartKpiCards({ parts }) {
   </div>;
 }
 
+const MACHINED_TPM_DIVISIONS = ["全公司", "半导体&北美", "产品五部", "FPC事业部"];
+
 const machinedMonthlyRows = (rows) => rows.map((row) => ({
   name: row.name,
   years: [
@@ -1656,15 +1658,86 @@ const machinedMonthlyRows = (rows) => rows.map((row) => ({
   ],
 }));
 
+function MachinedTpmSummary({ rows }) {
+  const total = rows.reduce((acc, row) => ({
+    y2025Qty: acc.y2025Qty + (row.y2025Qty || 0),
+    y2026Qty: acc.y2026Qty + (row.y2026Qty || 0),
+    y2025Bad: acc.y2025Bad + (row.y2025Bad || 0),
+    y2026Bad: acc.y2026Bad + (row.y2026Bad || 0),
+  }), { y2025Qty: 0, y2026Qty: 0, y2025Bad: 0, y2026Bad: 0 });
+  const rate25 = Number((total.y2025Bad / Math.max(total.y2025Qty, 1) * 100).toFixed(2));
+  const rate26 = Number((total.y2026Bad / Math.max(total.y2026Qty, 1) * 100).toFixed(2));
+  return <div className="machined-tpm-total-cards">
+    <div><span>2025加工件总数</span><strong>{total.y2025Qty.toLocaleString()}</strong><em>ECN {total.y2025Bad.toLocaleString()} / {rate25}%</em></div>
+    <div><span>2026加工件总数</span><strong>{total.y2026Qty.toLocaleString()}</strong><em>ECN {total.y2026Bad.toLocaleString()} / {rate26}%</em></div>
+  </div>;
+}
+
+function MachinedTpmTable({ rows }) {
+  return <div className="dqa-compare-table">
+    <div className="ecn-rate-row ecn-rate-head"><span>TPM</span><span>2025数量</span><span>2025比例</span><span>2026数量</span><span>2026比例</span><span>数量变化</span><span>比例变化</span><span>产品部</span></div>
+    {rows.map((row) => {
+      const deltaCount = (row.y2026Bad || 0) - (row.y2025Bad || 0);
+      const deltaRate = Number(((row.y2026Rate || 0) - (row.y2025Rate || 0)).toFixed(2));
+      return <div className="ecn-rate-row" key={row.name}>
+        <strong>{row.displayName}</strong>
+        <span>{(row.y2025Bad || 0).toLocaleString()}</span><b>{row.y2025Rate}%</b>
+        <span>{(row.y2026Bad || 0).toLocaleString()}</span><b>{row.y2026Rate}%</b>
+        <em className={deltaCount > 0 ? "risk-up" : "risk-down"}>{deltaCount > 0 ? "+" : ""}{deltaCount.toLocaleString()}</em>
+        <em className={deltaRate > 0 ? "risk-up" : "risk-down"}>{deltaRate > 0 ? "+" : ""}{deltaRate}pp</em>
+        <span>{row.division}</span>
+      </div>;
+    })}
+  </div>;
+}
+
+function MachinedEcnTpmPanel({ part }) {
+  const storageDivisionKey = "qms-dqa-machined-ecn-tpm-division-v1";
+  const storageMaxKey = "qms-dqa-machined-ecn-tpm-rate-max-v1";
+  const [division, setDivision] = useState(() => localStorage.getItem(storageDivisionKey) || "全公司");
+  const [rateMax, setRateMax] = useState(() => Number(localStorage.getItem(storageMaxKey)) || 2);
+  useEffect(() => { localStorage.setItem(storageDivisionKey, division); }, [division]);
+  useEffect(() => { localStorage.setItem(storageMaxKey, String(rateMax)); }, [rateMax]);
+  const rows = ecnFlattenRows(part.tpms)
+    .filter((row) => division === "全公司" || row.division === division)
+    .map((row) => ({
+      ...row,
+      displayName: division === "全公司" ? String(row.name || "").replace("\n", " / ") : ecnTpmDisplayName(row.name),
+      label: division === "全公司" ? String(row.name || "").replace("\n", "\n") : ecnTpmDisplayName(row.name),
+    }))
+    .filter((row) => (row.y2025Bad || 0) > 0 || (row.y2026Bad || 0) > 0)
+    .sort((a, b) => (b.y2026Bad + b.y2025Bad) - (a.y2026Bad + a.y2025Bad));
+  const safeRateMax = Math.max(0.1, Number(rateMax) || 2);
+  return <Panel title="ECN加工件TPM同期对比" subtitle="只展示ECN加工件数量和加工件占比；全公司显示全部TPM，产品部按钮只显示当前产品部TPM">
+    <div className="machined-tpm-toolbar">
+      <div className="site-tabs machined-division-tabs">
+        {MACHINED_TPM_DIVISIONS.map((item) => <button key={item} className={division === item ? "active" : ""} onClick={() => setDivision(item)}>{item}</button>)}
+      </div>
+      <label className="machined-axis-control">比例轴最大值
+        <input type="number" min="0.1" step="0.1" value={rateMax} onChange={(event) => setRateMax(event.target.value)} onBlur={() => setRateMax(safeRateMax)}/>
+        <span>%</span>
+      </label>
+    </div>
+    <MachinedTpmSummary rows={rows}/>
+    {rows.length
+      ? <MachinedTpmCompareChart rows={rows} maxRate={safeRateMax} height={Math.max(390, rows.length * 42 + 150)} chartKey={`dqa-machined-ecn-tpm-${division}`}/>
+      : <div className="supplier-empty">当前产品部没有ECN加工件TPM数据</div>}
+    <MachinedTpmTable rows={rows}/>
+  </Panel>;
+}
+
 function MachinedPartSection({ title, subtitle, part, chartPrefix }) {
   const labels = { numeratorLabel: "加工件数量", denominatorLabel: "加工件总数", rateLabel: "加工件占比" };
+  const isEcn = chartPrefix === "dqa-machined-ecn";
   return <div className="dqa-grid machined-grid">
     <Panel title={`${title}月度同期趋势`} subtitle="柱形图为加工件总数与对应加工件数量，折线为加工件占比">
       <QuantityRateCombo rows={part.monthly} qtyLabel={labels.denominatorLabel} badLabel={labels.numeratorLabel} rateLabel={labels.rateLabel} height={390} chartKey={`${chartPrefix}-monthly`}/>
       <EcnRateTable rows={machinedMonthlyRows(part.monthly)} {...labels}/>
     </Panel>
     <EcnRatePanel title={`${title}产品部同期对比`} subtitle={subtitle} rows={part.divisions} chartKey={`${chartPrefix}-division`} {...labels}/>
-    <EcnRatePanel title={`${title}TPM同期对比`} subtitle="TPM维度按表格当前字段展示；2025年产品一部、产品五部尚未拆分TPM时保留原字段" rows={part.tpms} chartKey={`${chartPrefix}-tpm`} {...labels}/>
+    {isEcn
+      ? <MachinedEcnTpmPanel part={part}/>
+      : <EcnRatePanel title={`${title}TPM同期对比`} subtitle="TPM维度按表格当前字段展示；2025年产品一部、产品五部尚未拆分TPM时保留原字段" rows={part.tpms} chartKey={`${chartPrefix}-tpm`} {...labels}/>}
   </div>;
 }
 
