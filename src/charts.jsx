@@ -123,6 +123,12 @@ function LabelPositionControl({ positions, onChange, options = ["top", "bottom",
 }
 const labelPosition = (value) => value === "none" ? "top" : value;
 const labelVisible = (value) => value !== "none";
+const topLegend = (right = 8) => isAppleTheme()
+  ? { type: "scroll", left: 8, right: 8, top: 0 }
+  : { right, top: 0 };
+const bottomLegend = () => isAppleTheme()
+  ? { type: "scroll", left: 8, right: 8, bottom: 0 }
+  : { type: "scroll", bottom: 0, left: 8, right: 8 };
 
 export function LineCompare({ data, height = 300, chartKey = data.series.map((item) => item.name).join("-") }) {
   const defaults = Object.fromEntries(data.series.map((item, index) => [item.name, index ? "bottom" : "top"]));
@@ -130,7 +136,7 @@ export function LineCompare({ data, height = 300, chartKey = data.series.map((it
   const changePosition = (name, value) => setPositions((current) => ({ ...current, [name]: value }));
   return <div className="chart-config-wrap"><LabelPositionControl positions={positions} onChange={changePosition}/><ScaledChart style={{ height }} option={{
     tooltip: { trigger: "axis" },
-    legend: { type: "scroll", left: 8, right: 8, top: 0 },
+    legend: topLegend(8),
     grid: { left: 42, right: 18, top: 42, bottom: 30 },
     xAxis: { type: "category", data: data.labels, axisLine: { lineStyle: { color: "#d5dbe5" } } },
     yAxis: { type: "value", min: 75, max: 100, axisLabel: { formatter: "{value}%" }, splitLine: { lineStyle: { color: "#eef1f5" } } },
@@ -143,7 +149,7 @@ export function BarCompare({ labels, first, second, names = ["2025", "2026"], pe
   const changePosition = (name, value) => setPositions((current) => ({ ...current, [name]: value }));
   return <div className="chart-config-wrap"><LabelPositionControl positions={positions} onChange={changePosition}/><ScaledChart style={{ height }} option={{
     tooltip: { trigger: "axis", axisPointer: { type: "shadow" }, valueFormatter: (v) => percent ? `${v}%` : v },
-    legend: { type: "scroll", left: 8, right: 8, top: 0 },
+    legend: topLegend(6),
     grid: { left: 46, right: 18, top: 42, bottom: 54 },
     xAxis: { type: "category", data: labels, axisLabel: { interval: 0, rotate: labels.length > 7 ? 25 : 0, color: "#596273" }, axisLine: { lineStyle: { color: "#d8dee7" } } },
     yAxis: { type: "value", axisLabel: { formatter: percent ? "{value}%" : "{value}" }, splitLine: { lineStyle: { color: "#edf0f4" } } },
@@ -189,7 +195,7 @@ export function StackedStage({ rows, height = 330, chartKey = "stage-distributio
       axisPointer: { type: "shadow" },
       formatter: (params) => `${params[0]?.axisValue || ""}<br/>${params.map((item) => `${item.marker}${item.seriesName}：${item.data.count}（${item.value}%）`).join("<br/>")}`,
     },
-    legend: { type: "scroll", left: 8, right: 8, top: 0 },
+    legend: topLegend(0),
     grid: { left: 92, right: 24, top: 40, bottom: 18 },
     xAxis: { type: "value", max: 100, axisLabel: { formatter: "{value}%" }, splitLine: { show: false } },
     yAxis: { type: "category", data: rows.map((x) => x.name), axisTick: { show: false }, axisLine: { show: false } },
@@ -206,7 +212,7 @@ export function Donut({ rows, height = 270, chartKey = "donut" }) {
   const position = positions.分类数值;
   return <div className="chart-config-wrap"><LabelPositionControl positions={positions} onChange={(name, value) => setPositions((current) => ({ ...current, [name]: value }))} options={["outside", "inside", "none"]}/><ScaledChart style={{ height }} option={{
     tooltip: { trigger: "item", formatter: "{b}<br/>{c} · {d}%" },
-    legend: { type: "scroll", bottom: 0, left: 8, right: 8 },
+    legend: bottomLegend(),
     series: [{ type: "pie", radius: ["45%", "68%"], center: ["50%", "43%"], data: rows.map((x) => ({ name: x.name, value: x.count })), label: { show: labelVisible(position), position: labelPosition(position), formatter: "{b}\n{d}%", fontSize: 10 }, labelLayout: { hideOverlap: true, moveOverlap: "shiftY" }, itemStyle: { borderColor: "#fff", borderWidth: 2 } }],
   }} /></div>;
 }
@@ -219,7 +225,7 @@ export function Pareto({ rows, height = 315, chartKey = "pareto" }) {
   const changePosition = (name, value) => setPositions((current) => ({ ...current, [name]: value }));
   return <div className="chart-config-wrap"><LabelPositionControl positions={positions} onChange={changePosition}/><ScaledChart style={{ height }} option={{
     tooltip: { trigger: "axis" },
-    legend: { type: "scroll", left: 8, right: 8, top: 0 },
+    legend: topLegend(0),
     grid: { left: 48, right: 48, top: 42, bottom: 62 },
     xAxis: { type: "category", data: rows.map((x) => x.name), axisLabel: { rotate: 28, interval: 0 } },
     yAxis: [{ type: "value", splitLine: { lineStyle: { color: "#eef1f5" } } }, { type: "value", max: 100, axisLabel: { formatter: "{value}%" }, splitLine: { show: false } }],
@@ -365,7 +371,7 @@ export function QuantityRateCombo({
       extraCssText: apple ? "box-shadow:0 12px 30px rgba(16,24,40,.12);border-radius:12px;" : undefined,
       valueFormatter: (value) => typeof value === "number" ? value.toLocaleString() : value,
     },
-    legend: { type: "scroll", left: 8, right: 8, top: 0, itemWidth: apple ? 13 : undefined, itemHeight: apple ? 8 : undefined, borderRadius: apple ? 6 : undefined, textStyle: apple ? { color: applePalette.text, fontWeight: 700, fontSize: 12 } : undefined },
+    legend: apple ? { type: "scroll", left: 8, right: 8, top: 0, itemWidth: 13, itemHeight: 8, borderRadius: 6, textStyle: { color: applePalette.text, fontWeight: 700, fontSize: 12 } } : { top: 0, right: 8 },
     grid: { left: apple ? 64 : 58, right: apple ? 64 : 58, top: apple ? 82 : 78, bottom: axisBottom, containLabel: true },
     xAxis: {
       type: "category", data: labels,
@@ -409,7 +415,7 @@ export function ScoreYearCompare({ rows, metric, label, percent = false, max, he
   const changePosition = (name, value) => setPositions((current) => ({ ...current, [name]: value }));
   return <div className="chart-config-wrap"><LabelPositionControl positions={positions} onChange={changePosition}/><ScaledChart style={{ height }} option={{
     tooltip: { trigger: "axis", axisPointer: { type: "shadow" }, valueFormatter: (value) => `${value}${suffix}` },
-    legend: { type: "scroll", top: 0, left: 8, right: 8 },
+    legend: topLegend(8),
     grid: { left: 52, right: 24, top: isAppleTheme() ? 76 : 56, bottom: 48, containLabel: true },
     xAxis: { type: "category", data: rows.map((row) => displayLabel(row.name)), axisLabel: { interval: 0 } },
     yAxis: { type: "value", name: label, max, axisLabel: { formatter: `{value}${suffix}` }, splitLine: { lineStyle: { color: "#eef1f5" } } },
@@ -426,7 +432,7 @@ export function ScoreMonthlyTrend({ rows, metric, label, percent = false, max, h
   const changePosition = (name, value) => setPositions((current) => ({ ...current, [name]: value }));
   return <div className="chart-config-wrap"><LabelPositionControl positions={positions} onChange={changePosition}/><ScaledChart style={{ height }} option={{
     tooltip: { trigger: "axis", valueFormatter: (value) => `${value}${suffix}` },
-    legend: { type: "scroll", top: 0, left: 8, right: 8 },
+    legend: topLegend(8),
     grid: { left: 52, right: 25, top: 48, bottom: 38, containLabel: true },
     xAxis: { type: "category", data: rows.map((row) => row.month), axisLine: { lineStyle: { color: "#d8dee7" } } },
     yAxis: { type: "value", name: label, max, axisLabel: { formatter: `{value}${suffix}` }, splitLine: { lineStyle: { color: "#eef1f5" } } },
@@ -462,7 +468,7 @@ export function ScoreMonthlyCombo({ rows, metric, label, numeratorKey, numerator
     <LabelPositionControl positions={positions} onChange={changePosition}/>
     <ScaledChart style={{ height }} option={{
       tooltip: { trigger: "axis", axisPointer: { type: "cross" } },
-      legend: { top: 0, left: 8, right: 8, type: "scroll" },
+      legend: isAppleTheme() ? { top: 0, left: 8, right: 8, type: "scroll" } : { top: 0, left: 8, right: 8 },
       grid: { left: 58, right: 58, top: 62, bottom: 42, containLabel: true },
       xAxis: { type: "category", data: rows.map((row) => row.month), axisLine: { lineStyle: { color: "#d8dee7" } } },
       yAxis: [
@@ -500,7 +506,7 @@ export function YearStackedCompare({ rows, values, height = 380, chartKey = valu
         return `${current.entity} · ${current.year}<br/>总数：${current.total || 0}<br/>${details}`;
       },
     },
-    legend: { type: "scroll", top: 0, left: 8, right: 8 },
+    legend: isAppleTheme() ? { type: "scroll", top: 0, left: 8, right: 8 } : { type: "scroll", top: 0, left: 8, right: 8 },
     grid: { left: 130, right: 28, top: 48, bottom: 28, containLabel: true },
     xAxis: { type: "value", max: 100, axisLabel: { formatter: "{value}%" }, splitLine: { lineStyle: { color: "#eef1f5" } } },
     yAxis: {
