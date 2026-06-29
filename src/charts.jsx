@@ -395,6 +395,7 @@ export function QuantityRateCombo({
 export function MachinedTpmCompareChart({
   rows,
   labelKey = "label",
+  minRate = 0,
   maxRate = 5,
   height = 420,
   chartKey = "machined-tpm-compare",
@@ -403,7 +404,9 @@ export function MachinedTpmCompareChart({
   const defaultPositions = { "2025数量": "top", "2026数量": "top", "2025比例": "top", "2026比例": "bottom" };
   const [positions, setPositions] = usePersistentPositions("machined-tpm", chartKey, defaultPositions);
   const changePosition = (name, value) => setPositions((current) => ({ ...current, [name]: value }));
+  const [axisAngle, setAxisAngle] = useState(0);
   const labels = rows.map((row) => row[labelKey]);
+  const axisBottom = axisAngle ? Math.min(170, Math.max(82, Math.max(0, ...labels.map((label) => String(label).length)) * (axisAngle === 90 ? 10 : 7))) : 48;
   const valueLabel = (name, color) => ({
     show: labelVisible(positions[name]),
     position: labelPosition(positions[name]),
@@ -427,7 +430,7 @@ export function MachinedTpmCompareChart({
     formatter: ({ value }) => `${value}%`,
   });
   return <div className="chart-config-wrap">
-    <LabelPositionControl positions={positions} onChange={changePosition}/>
+    <div className="chart-control-row"><div className="axis-angle-control"><span>横坐标文字</span>{[0,45,90].map((angle) => <button key={angle} className={axisAngle === angle ? "active" : ""} onClick={() => setAxisAngle(angle)}>{angle}°</button>)}</div><LabelPositionControl positions={positions} onChange={changePosition}/></div>
     <ScaledChart style={{ height }} option={{
       tooltip: {
         trigger: "axis",
@@ -435,16 +438,16 @@ export function MachinedTpmCompareChart({
         valueFormatter: (value) => typeof value === "number" ? value.toLocaleString() : value,
       },
       legend: topLegend(8),
-      grid: { left: 58, right: 62, top: isAppleTheme() ? 78 : 64, bottom: labels.length > 8 ? 82 : 48, containLabel: true },
+      grid: { left: 58, right: 62, top: isAppleTheme() ? 78 : 64, bottom: axisBottom, containLabel: true },
       xAxis: {
         type: "category",
         data: labels,
-        axisLabel: { interval: 0, rotate: labels.length > 8 ? 35 : 0, color: "#596273" },
+        axisLabel: { interval: 0, rotate: axisAngle, color: "#596273", hideOverlap: axisAngle === 0 },
         axisLine: { lineStyle: { color: "#d8dee7" } },
       },
       yAxis: [
         { type: "value", name: "ECN加工件数量", splitLine: { lineStyle: { color: "#eef1f5" } } },
-        { type: "value", name: "加工件占比", min: 0, max: Number(maxRate) || 5, axisLabel: { formatter: "{value}%" }, splitLine: { show: false } },
+        { type: "value", name: "加工件占比", min: Number(minRate) || 0, max: Number(maxRate) || 5, axisLabel: { formatter: "{value}%" }, splitLine: { show: false } },
       ],
       series: [
         { name: "2025数量", type: "bar", data: rows.map((row) => row.y2025Bad || 0), barMaxWidth: 22, itemStyle: { color: "#8db9ed", borderRadius: [4,4,0,0] }, label: valueLabel("2025数量", "#365d84"), labelLayout: { hideOverlap: true } },

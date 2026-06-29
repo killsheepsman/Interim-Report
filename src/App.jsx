@@ -1673,18 +1673,23 @@ function MachinedTpmSummary({ rows }) {
   </div>;
 }
 
-function MachinedTpmTable({ rows }) {
+const machinedTpmColumns = [
+  ["displayName", "TPM"], ["y2025Bad", "2025数量"], ["y2025Rate", "2025比例"],
+  ["y2026Bad", "2026数量"], ["y2026Rate", "2026比例"], ["deltaCount", "数量变化"],
+  ["deltaRate", "比例变化"], ["division", "产品部"],
+];
+
+function MachinedTpmTable({ rows, sort, onSort }) {
+  const sortIcon = (key) => sort?.key === key ? (sort.direction === "asc" ? "▲" : "▼") : "↕";
   return <div className="dqa-compare-table">
-    <div className="ecn-rate-row ecn-rate-head"><span>TPM</span><span>2025数量</span><span>2025比例</span><span>2026数量</span><span>2026比例</span><span>数量变化</span><span>比例变化</span><span>产品部</span></div>
+    <div className="ecn-rate-row ecn-rate-head">{machinedTpmColumns.map(([key, label]) => <button key={key} onClick={() => onSort(key)}>{label}<span>{sortIcon(key)}</span></button>)}</div>
     {rows.map((row) => {
-      const deltaCount = (row.y2026Bad || 0) - (row.y2025Bad || 0);
-      const deltaRate = Number(((row.y2026Rate || 0) - (row.y2025Rate || 0)).toFixed(2));
       return <div className="ecn-rate-row" key={row.name}>
         <strong>{row.displayName}</strong>
         <span>{(row.y2025Bad || 0).toLocaleString()}</span><b>{row.y2025Rate}%</b>
         <span>{(row.y2026Bad || 0).toLocaleString()}</span><b>{row.y2026Rate}%</b>
-        <em className={deltaCount > 0 ? "risk-up" : "risk-down"}>{deltaCount > 0 ? "+" : ""}{deltaCount.toLocaleString()}</em>
-        <em className={deltaRate > 0 ? "risk-up" : "risk-down"}>{deltaRate > 0 ? "+" : ""}{deltaRate}pp</em>
+        <em className={row.deltaCount > 0 ? "risk-up" : "risk-down"}>{row.deltaCount > 0 ? "+" : ""}{row.deltaCount.toLocaleString()}</em>
+        <em className={row.deltaRate > 0 ? "risk-up" : "risk-down"}>{row.deltaRate > 0 ? "+" : ""}{row.deltaRate}pp</em>
         <span>{row.division}</span>
       </div>;
     })}
@@ -1693,36 +1698,79 @@ function MachinedTpmTable({ rows }) {
 
 function MachinedEcnTpmPanel({ part }) {
   const storageDivisionKey = "qms-dqa-machined-ecn-tpm-division-v1";
+  const storageMinKey = "qms-dqa-machined-ecn-tpm-rate-min-v1";
   const storageMaxKey = "qms-dqa-machined-ecn-tpm-rate-max-v1";
+  const storageHiddenKey = "qms-dqa-machined-ecn-tpm-hidden-v1";
   const [division, setDivision] = useState(() => localStorage.getItem(storageDivisionKey) || "全公司");
+  const [rateMin, setRateMin] = useState(() => Number(localStorage.getItem(storageMinKey)) || 0);
   const [rateMax, setRateMax] = useState(() => Number(localStorage.getItem(storageMaxKey)) || 2);
+  const [hiddenByDivision, setHiddenByDivision] = useState(() => safeParse(localStorage.getItem(storageHiddenKey), {}));
+  const [sort, setSort] = useState({ key: "y2026Bad", direction: "desc" });
   useEffect(() => { localStorage.setItem(storageDivisionKey, division); }, [division]);
+  useEffect(() => { localStorage.setItem(storageMinKey, String(rateMin)); }, [rateMin]);
   useEffect(() => { localStorage.setItem(storageMaxKey, String(rateMax)); }, [rateMax]);
-  const rows = ecnFlattenRows(part.tpms)
+  useEffect(() => { localStorage.setItem(storageHiddenKey, JSON.stringify(hiddenByDivision)); }, [hiddenByDivision]);
+  const baseRows = ecnFlattenRows(part.tpms)
     .filter((row) => division === "全公司" || row.division === division)
     .map((row) => ({
       ...row,
       displayName: division === "全公司" ? String(row.name || "").replace("\n", " / ") : ecnTpmDisplayName(row.name),
       label: division === "全公司" ? String(row.name || "").replace("\n", "\n") : ecnTpmDisplayName(row.name),
+      deltaCount: (row.y2026Bad || 0) - (row.y2025Bad || 0),
+      deltaRate: Number(((row.y2026Rate || 0) - (row.y2025Rate || 0)).toFixed(2)),
     }))
-    .filter((row) => (row.y2025Bad || 0) > 0 || (row.y2026Bad || 0) > 0)
-    .sort((a, b) => (b.y2026Bad + b.y2025Bad) - (a.y2026Bad + a.y2025Bad));
+    .filter((row) => (row.y2025Bad || 0) > 0 || (row.y2026Bad || 0) > 0);
+  const hidden = hiddenByDivision[division] || [];
+  const visibleRows = baseRows.filter((row) => !hidden.includes(row.name));
+  const changeSort = (key) => setSort((current) => ({ key, direction: current.key === key && current.direction === "desc" ? "asc" : "desc" }));
+  const rows = useMemo(() => [...visibleRows].sort((a, b) => {
+    const av = a[sort.key] ?? 0;
+    const bv = b[sort.key] ?? 0;
+    const result = typeof av === "string" ? av.localeCompare(bv, "zh-CN") : av - bv;
+    return sort.direction === "asc" ? result : -result;
+  }), [visibleRows, sort]);
+  const monthlyByName = new Map((part.tpmMonthly || []).map((row) => [row.name, row]));
+  const monthlyRows = rows.map((row) => ({ ...row, months: monthlyByName.get(row.name)?.months || [] })).filter((row) => row.months.length);
   const safeRateMax = Math.max(0.1, Number(rateMax) || 2);
+  const safeRateMin = Math.min(safeRateMax - 0.1, Math.max(0, Number(rateMin) || 0));
+  const toggleTpm = (name) => setHiddenByDivision((current) => {
+    const currentHidden = current[division] || [];
+    const nextHidden = currentHidden.includes(name) ? currentHidden.filter((item) => item !== name) : [...currentHidden, name];
+    return { ...current, [division]: nextHidden };
+  });
+  const selectAllTpms = () => setHiddenByDivision((current) => ({ ...current, [division]: [] }));
+  const clearAllTpms = () => setHiddenByDivision((current) => ({ ...current, [division]: baseRows.map((row) => row.name) }));
   return <Panel title="ECN加工件TPM同期对比" subtitle="只展示ECN加工件数量和加工件占比；全公司显示全部TPM，产品部按钮只显示当前产品部TPM">
     <div className="machined-tpm-toolbar">
       <div className="site-tabs machined-division-tabs">
         {MACHINED_TPM_DIVISIONS.map((item) => <button key={item} className={division === item ? "active" : ""} onClick={() => setDivision(item)}>{item}</button>)}
       </div>
-      <label className="machined-axis-control">比例轴最大值
-        <input type="number" min="0.1" step="0.1" value={rateMax} onChange={(event) => setRateMax(event.target.value)} onBlur={() => setRateMax(safeRateMax)}/>
-        <span>%</span>
-      </label>
+      <div className="machined-axis-group">
+        <label className="machined-axis-control">比例轴最小值<input type="number" min="0" step="0.1" value={rateMin} onChange={(event) => setRateMin(event.target.value)} onBlur={() => setRateMin(safeRateMin)}/><span>%</span></label>
+        <label className="machined-axis-control">比例轴最大值<input type="number" min="0.1" step="0.1" value={rateMax} onChange={(event) => setRateMax(event.target.value)} onBlur={() => setRateMax(safeRateMax)}/><span>%</span></label>
+      </div>
+    </div>
+    <div className="machined-tpm-check-row">
+      <div><strong>当前TPM</strong><span>默认全选，取消后总图、表格、月度趋势同步隐藏</span></div>
+      <div className="dqa-tpm-actions"><button onClick={selectAllTpms}>全选</button><button onClick={clearAllTpms}>清空</button></div>
+      <div className="dqa-tpm-checks">
+        {baseRows.map((row) => <label key={row.name} className={hidden.includes(row.name) ? "" : "active"}><input type="checkbox" checked={!hidden.includes(row.name)} onChange={() => toggleTpm(row.name)}/><span>{row.displayName}</span></label>)}
+      </div>
     </div>
     <MachinedTpmSummary rows={rows}/>
     {rows.length
-      ? <MachinedTpmCompareChart rows={rows} maxRate={safeRateMax} height={Math.max(390, rows.length * 42 + 150)} chartKey={`dqa-machined-ecn-tpm-${division}`}/>
+      ? <MachinedTpmCompareChart rows={rows} minRate={safeRateMin} maxRate={safeRateMax} height={Math.max(390, rows.length * 42 + 150)} chartKey={`dqa-machined-ecn-tpm-${division}`}/>
       : <div className="supplier-empty">当前产品部没有ECN加工件TPM数据</div>}
-    <MachinedTpmTable rows={rows}/>
+    <MachinedTpmTable rows={rows} sort={sort} onSort={changeSort}/>
+    <div className="machined-monthly-block">
+      <div className="machined-monthly-title"><h3>ECN加工件TPM月度趋势对比</h3><span>按当前产品部和TPM勾选结果展示；每个TPM单独成图，避免趋势线互相重叠</span></div>
+      <div className="machined-monthly-grid">
+        {monthlyRows.map((row) => <div className="machined-monthly-card" key={row.name}>
+          <h4>{row.displayName}</h4>
+          <QuantityRateCombo rows={row.months} qtyLabel="加工件总数" badLabel="ECN加工件数量" rateLabel="加工件占比" height={320} chartKey={`dqa-machined-ecn-monthly-${row.name}`}/>
+        </div>)}
+      </div>
+    </div>
   </Panel>;
 }
 

@@ -1179,6 +1179,23 @@ const buildMachinedTpmRows = (entities, rows, denominatorRows, kind, entityGette
   };
 });
 
+const buildMachinedTpmMonthly = (entities, rows, denominatorRows, kind, months) => entities.map((entity) => ({
+  name: entity.name,
+  division: entity.division,
+  tpm: entity.tpm,
+  months: months.map((month) => {
+    const result = { name: `${month}月`, month };
+    [2025, 2026].forEach((year) => {
+      const denominator = sumMachinedDenominator(denominatorRows, kind, year, month);
+      const numerator = sumMachinedQuantity(rows, kind, year, (row) => `${row.division}\n${row.tpmName}`, entity.name, month);
+      result[`y${year}Qty`] = denominator;
+      result[`y${year}Bad`] = numerator;
+      result[`y${year}Rate`] = machinedRate(numerator, denominator);
+    });
+    return result;
+  }),
+}));
+
 const buildDqaMachinedParts = (dqaFiles) => {
   const partRows = dqaFiles.filter((file) => file.subKind === "DQA_MACHINED_PARTS").flatMap((file) => file.rows || []);
   if (!partRows.length) return null;
@@ -1217,6 +1234,7 @@ const buildDqaMachinedParts = (dqaFiles) => {
       monthly,
       divisions: buildMachinedDivisionRows(ECN_DIVISIONS, partRows, sourceRows, denominatorRows, kind),
       tpms: buildMachinedTpmRows(tpmEntities, sourceRows, denominatorRows, kind, (row) => `${row.division}\n${row.tpmName}`),
+      tpmMonthly: buildMachinedTpmMonthly(tpmEntities, sourceRows, denominatorRows, kind, months),
     };
   };
   return {
