@@ -394,7 +394,7 @@ export function QuantityRateCombo({
 
 export function MachinedTpmCompareChart({
   rows,
-  labelKey = "label",
+  labelKey = "name",
   minRate = 0,
   maxRate = 5,
   height = 420,
@@ -405,7 +405,7 @@ export function MachinedTpmCompareChart({
   const [positions, setPositions] = usePersistentPositions("machined-tpm", chartKey, defaultPositions);
   const changePosition = (name, value) => setPositions((current) => ({ ...current, [name]: value }));
   const [axisAngle, setAxisAngle] = useState(0);
-  const labels = rows.map((row) => row[labelKey]);
+  const labels = rows.map((row) => row[labelKey] ?? row.label ?? row.name ?? "");
   const axisBottom = axisAngle ? Math.min(170, Math.max(82, Math.max(0, ...labels.map((label) => String(label).length)) * (axisAngle === 90 ? 10 : 7))) : 48;
   const valueLabel = (name, color) => ({
     show: labelVisible(positions[name]),
@@ -415,7 +415,7 @@ export function MachinedTpmCompareChart({
     backgroundColor: "rgba(255,255,255,.9)",
     borderRadius: 3,
     padding: [1, 3],
-    formatter: ({ value }) => value ? Number(value).toLocaleString() : "",
+    formatter: ({ value }) => value == null ? "" : Number(value).toLocaleString(),
   });
   const rateLabel = (name, color) => ({
     show: labelVisible(positions[name]),
@@ -438,7 +438,7 @@ export function MachinedTpmCompareChart({
         valueFormatter: (value) => typeof value === "number" ? value.toLocaleString() : value,
       },
       legend: topLegend(8),
-      grid: { left: 58, right: 62, top: isAppleTheme() ? 78 : 64, bottom: axisBottom, containLabel: true },
+      grid: { left: 58, right: 68, top: isAppleTheme() ? 92 : 82, bottom: axisBottom, containLabel: true },
       xAxis: {
         type: "category",
         data: labels,
@@ -450,10 +450,10 @@ export function MachinedTpmCompareChart({
         { type: "value", name: "加工件占比", min: Number(minRate) || 0, max: Number(maxRate) || 5, axisLabel: { formatter: "{value}%" }, splitLine: { show: false } },
       ],
       series: [
-        { name: "2025数量", type: "bar", data: rows.map((row) => row.y2025Bad || 0), barMaxWidth: 22, itemStyle: { color: "#8db9ed", borderRadius: [4,4,0,0] }, label: valueLabel("2025数量", "#365d84"), labelLayout: { hideOverlap: true } },
-        { name: "2026数量", type: "bar", data: rows.map((row) => row.y2026Bad || 0), barMaxWidth: 22, itemStyle: { color: "#f6ad72", borderRadius: [4,4,0,0] }, label: valueLabel("2026数量", "#8f4d19"), labelLayout: { hideOverlap: true } },
-        { name: "2025比例", type: "line", yAxisIndex: 1, data: rows.map((row) => row.y2025Rate || 0), smooth: true, symbolSize: 7, lineStyle: { width: 2.6, color: blue }, itemStyle: { color: blue }, label: rateLabel("2025比例", blue), labelLayout: { hideOverlap: true, moveOverlap: "shiftY" } },
-        { name: "2026比例", type: "line", yAxisIndex: 1, data: rows.map((row) => row.y2026Rate || 0), smooth: true, symbolSize: 7, lineStyle: { width: 2.6, color: orange }, itemStyle: { color: orange }, label: rateLabel("2026比例", orange), labelLayout: { hideOverlap: true, moveOverlap: "shiftY" } },
+        { name: "2025数量", type: "bar", data: rows.map((row) => row.y2025Bad || 0), barMaxWidth: 22, itemStyle: { color: "#8db9ed", borderRadius: [4,4,0,0] }, label: valueLabel("2025数量", "#365d84"), labelLayout: { hideOverlap: false, moveOverlap: "shiftY" } },
+        { name: "2026数量", type: "bar", data: rows.map((row) => row.y2026Bad || 0), barMaxWidth: 22, itemStyle: { color: "#f6ad72", borderRadius: [4,4,0,0] }, label: valueLabel("2026数量", "#8f4d19"), labelLayout: { hideOverlap: false, moveOverlap: "shiftY" } },
+        { name: "2025比例", type: "line", yAxisIndex: 1, data: rows.map((row) => row.y2025Rate || 0), smooth: true, symbolSize: 7, lineStyle: { width: 2.6, color: blue }, itemStyle: { color: blue }, label: rateLabel("2025比例", blue), labelLayout: { hideOverlap: false, moveOverlap: "shiftY" } },
+        { name: "2026比例", type: "line", yAxisIndex: 1, data: rows.map((row) => row.y2026Rate || 0), smooth: true, symbolSize: 7, lineStyle: { width: 2.6, color: orange }, itemStyle: { color: orange }, label: rateLabel("2026比例", orange), labelLayout: { hideOverlap: false, moveOverlap: "shiftY" } },
       ],
     }} />
   </div>;

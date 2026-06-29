@@ -1755,6 +1755,7 @@ function MachinedEcnTpmPanel({ part }) {
     .filter((row) => !monthlyHidden.includes(row.name))
     .map((row) => ({ ...row, months: monthlyByName.get(row.name)?.months || [] }))
     .filter((row) => row.months.length);
+  const monthlyHeaderTotals = machinedPeriodTotals(part.monthly || []);
   const safeRateMax = Math.max(0.1, Number(rateMax) || 2);
   const safeRateMin = Math.min(safeRateMax - 0.1, Math.max(0, Number(rateMin) || 0));
   const safeMonthlyRateMax = Math.max(0.1, Number(monthlyRateMax) || 2);
@@ -1786,11 +1787,14 @@ function MachinedEcnTpmPanel({ part }) {
     </div>}
     <MachinedTpmSummary rows={rows}/>
     {rows.length
-      ? <MachinedTpmCompareChart rows={rows} minRate={safeRateMin} maxRate={safeRateMax} height={Math.max(390, rows.length * 42 + 150)} chartKey={`dqa-machined-ecn-tpm-${division}`}/>
+      ? <MachinedTpmCompareChart rows={rows} labelKey="label" minRate={safeRateMin} maxRate={safeRateMax} height={Math.max(390, rows.length * 42 + 150)} chartKey={`dqa-machined-ecn-tpm-${division}`}/>
       : <div className="supplier-empty">当前产品部没有ECN加工件TPM数据</div>}
     <MachinedTpmTable rows={rows} sort={sort} onSort={changeSort}/>
     <div className="machined-monthly-block">
-      <div className="machined-monthly-title"><h3>ECN加工件TPM月度趋势对比</h3><span>按月度趋势产品部切换和TPM勾选结果展示；图表会随月份数量自动加宽</span></div>
+      <div className="machined-monthly-title">
+        <div><h3>ECN加工件TPM月度趋势对比</h3><span>按月度趋势产品部切换和TPM勾选结果展示；图表会随月份数量自动加宽</span></div>
+        <div className="machined-monthly-total-line"><span>2025加工件总数：{monthlyHeaderTotals.y2025Qty.toLocaleString()}</span><span>2026加工件总数：{monthlyHeaderTotals.y2026Qty.toLocaleString()}</span></div>
+      </div>
       <div className="machined-monthly-toolbar">
         <div className="site-tabs machined-division-tabs">
           {MACHINED_TPM_DIVISIONS.map((item) => <button key={item} className={monthlyDivision === item ? "active" : ""} onClick={() => setMonthlyDivision(item)}>{item}</button>)}
@@ -1802,12 +1806,10 @@ function MachinedEcnTpmPanel({ part }) {
       </div>
       <div className="machined-monthly-grid">
         {monthlyRows.map((row) => {
-          const totals = machinedPeriodTotals(row.months);
           const monthCount = Math.max(1, row.months.length);
           const cardWidth = Math.max(460, monthCount * 108 + 150);
           return <div className="machined-monthly-card" key={row.name} style={{ "--monthly-card-width": `${cardWidth}px` }}>
           <h4>{row.displayName}</h4>
-          <div className="machined-monthly-total-line"><span>2025加工件总数：{totals.y2025Qty.toLocaleString()}</span><span>2026加工件总数：{totals.y2026Qty.toLocaleString()}</span></div>
           <MachinedTpmCompareChart rows={row.months} minRate={safeMonthlyRateMin} maxRate={safeMonthlyRateMax} height={320} chartKey={`dqa-machined-ecn-monthly-${row.name}`}/>
         </div>;
         })}
