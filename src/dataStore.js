@@ -69,11 +69,15 @@ const loadDefaultJson = async (fileName) => {
 };
 
 const fetchJsonGzip = async (url) => {
-  if (typeof DecompressionStream === "undefined") return null;
-  const response = await fetch(url, { cache: "no-store" });
-  if (!response.ok || !response.body) return null;
-  const stream = response.body.pipeThrough(new DecompressionStream("gzip"));
-  return await new Response(stream).json();
+  try {
+    if (typeof DecompressionStream === "undefined") return null;
+    const response = await fetch(url, { cache: "no-store" });
+    if (!response.ok || !response.body) return null;
+    const stream = response.body.pipeThrough(new DecompressionStream("gzip"));
+    return await new Response(stream).json();
+  } catch {
+    return null;
+  }
 };
 
 export const saveImportedSources = async (sources) => {

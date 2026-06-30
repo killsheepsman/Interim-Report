@@ -701,8 +701,8 @@ function MainSupplierOverview({ data }) {
         return row ? <button key={key} onClick={() => setSelected((current) => current.filter((item) => item !== key))}>{row.site} · {row.supplier}<X size={13}/></button> : null;
       })}</div>
     </Panel>
-    <Panel title="深圳主力供应商批次良率对比" subtitle="柱形为检验总数/不合格数，折线为批次良率" className="span-6"><QuantityRateCombo rows={rowsBySite.深圳} labelKey="supplier" height={350}/></Panel>
-    <Panel title="杭州主力供应商批次良率对比" subtitle="柱形为检验总数/不合格数，折线为批次良率" className="span-6"><QuantityRateCombo rows={rowsBySite.杭州} labelKey="supplier" height={350}/></Panel>
+    <AxisControlledPanel title="深圳主力供应商批次良率对比" subtitle="柱形为检验总数/不合格数，折线为批次良率" className="span-6" axisKey="overview-main-supplier-shenzhen-axis-v1" defaults={{ min: 80, max: 100 }}>{(axis) => <QuantityRateCombo rows={rowsBySite.深圳} labelKey="supplier" height={350} rateAxisOverride={axis.effective} hideRateAxisControl/>}</AxisControlledPanel>
+    <AxisControlledPanel title="杭州主力供应商批次良率对比" subtitle="柱形为检验总数/不合格数，折线为批次良率" className="span-6" axisKey="overview-main-supplier-hangzhou-axis-v1" defaults={{ min: 80, max: 100 }}>{(axis) => <QuantityRateCombo rows={rowsBySite.杭州} labelKey="supplier" height={350} rateAxisOverride={axis.effective} hideRateAxisControl/>}</AxisControlledPanel>
   </>;
 }
 
@@ -1114,6 +1114,7 @@ const workshopColumns = [
 function WorkshopCompare({ rows }) {
   const [selected, setSelected] = useState(() => rows.map((row) => row.name));
   const [sort, setSort] = useState({ key: "y2026Rate", direction: "desc" });
+  const axis = useMachinedAxisRange("ipqc-workshop-compare-axis-v1", { min: 0, max: 80 });
   useEffect(() => setSelected(rows.map((row) => row.name)), [rows]);
   const visibleRows = useMemo(() => rows.filter((row) => selected.includes(row.name))
     .map((row) => ({ ...row, delta: row.y2026Rate - row.y2025Rate }))
@@ -1128,7 +1129,8 @@ function WorkshopCompare({ rows }) {
       <label className="supplier-check all"><input type="checkbox" checked={selected.length === rows.length} onChange={() => setSelected(selected.length === rows.length ? [] : rows.map((row) => row.name))}/><span>全选</span></label>
       {rows.map((row) => <label className="supplier-check" key={row.name}><input type="checkbox" checked={selected.includes(row.name)} onChange={() => setSelected((current) => current.includes(row.name) ? current.filter((name) => name !== row.name) : [...current, row.name])}/><span>{row.name}</span></label>)}
     </div>
-    {visibleRows.length ? <QuantityRateCombo rows={visibleRows} labelKey="name" rateLabel="异常密度" qtyLabel="送检数/问题数量" height={400}/> : <div className="supplier-empty">请至少选择一个工坊</div>}
+    <MachinedAxisPanelControl axis={axis}/>
+    {visibleRows.length ? <QuantityRateCombo rows={visibleRows} labelKey="name" rateLabel="异常密度" qtyLabel="送检数/问题数量" height={400} rateAxisOverride={axis.effective} hideRateAxisControl/> : <div className="supplier-empty">请至少选择一个工坊</div>}
     <div className="workshop-table">
       <div className="workshop-row workshop-head">{workshopColumns.map(([key, label]) => <button key={key} onClick={() => changeSort(key)}>{label}<span>{sort.key === key ? sort.direction === "asc" ? "▲" : "▼" : "↕"}</span></button>)}</div>
       {visibleRows.map((row) => <div className="workshop-row" key={row.name}>
@@ -1179,15 +1181,15 @@ function IpqcAnalysis({ data }) {
     </div>
     <div className="ipqc-insight"><strong>重点结论</strong><span>{top ? `${site}${top.workshop}的“${top.category}”为当前TOP问题，2026年占比${top.share}%，建议由${top.owner}牵头改善。` : "导入IPQC原始数据后自动生成重点结论。"}</span></div>
     <div className="iqc-analysis-grid">
-      <Panel title="2.1 总体质量趋势" subtitle={`${site} · 柱形为送检数/问题数量，折线为异常密度（问题数量÷送检数）`}>
-        <QuantityRateCombo rows={monthly} labelKey="month" rateLabel="异常密度" qtyLabel="送检数/问题数量" height={390}/>
-      </Panel>
+      <AxisControlledPanel title="2.1 总体质量趋势" subtitle={`${site} · 柱形为送检数/问题数量，折线为异常密度（问题数量÷送检数）`} axisKey={`ipqc-${site}-monthly-axis-v1`} defaults={{ min: 0, max: 20 }}>
+        {(axis) => <QuantityRateCombo rows={monthly} labelKey="month" rateLabel="异常密度" qtyLabel="送检数/问题数量" height={390} rateAxisOverride={axis.effective} hideRateAxisControl/>}
+      </AxisControlledPanel>
       <Panel title="2.2 工坊质量表现" subtitle="可勾选工坊；表头点击后按对应指标升降序排列">
         <WorkshopCompare rows={workshops}/>
       </Panel>
-      <Panel title="2.3 原始不良类型同比" subtitle="直接使用原始数据中的“不良类型”；柱形为问题数量，折线为分类占比">
-        <QuantityRateCombo rows={rawTypes} qty2025="y2025Count" qty2026="y2026Count" rate2025="y2025Share" rate2026="y2026Share" rateLabel="分类占比" qtyLabel="问题数量" showBad={false} height={410}/>
-      </Panel>
+      <AxisControlledPanel title="2.3 原始不良类型同比" subtitle="直接使用原始数据中的“不良类型”；柱形为问题数量，折线为分类占比" axisKey={`ipqc-${site}-raw-type-axis-v1`} defaults={{ min: 0, max: 60 }}>
+        {(axis) => <QuantityRateCombo rows={rawTypes} qty2025="y2025Count" qty2026="y2026Count" rate2025="y2025Share" rate2026="y2026Share" rateLabel="分类占比" qtyLabel="问题数量" showBad={false} height={410} rateAxisOverride={axis.effective} hideRateAxisControl/>}
+      </AxisControlledPanel>
       <Panel title="2.4 工坊 × 原始不良类型热力图" subtitle="直接使用原始“不良类型”字段；颜色越深表示该工坊对应问题越集中">
         <WorkshopCategoryHeatmap data={heatmap} height={Math.max(360, heatmap.rows.length * 38 + 150)}/>
       </Panel>
@@ -1304,6 +1306,9 @@ function OqcAnalysis({ data }) {
   const total2025 = summary.divisions.reduce((sum, row) => sum + (Number(row.y2025Count) || 0), 0);
   const total2026 = summary.divisions.reduce((sum, row) => sum + (Number(row.y2026Count) || 0), 0);
   const fpcWorst = [...(summary.fpcTpm || [])].sort((a,b) => (b.y2026LowRate || 0) - (a.y2026LowRate || 0))[0];
+  const avgAxis = useMachinedAxisRange(`oqc-${focusDivision}-avg-axis-v1`, { min: 0, max: 5 });
+  const fiveAxis = useMachinedAxisRange(`oqc-${focusDivision}-five-axis-v1`, { min: 0, max: 100 });
+  const lowAxis = useMachinedAxisRange(`oqc-${focusDivision}-low-axis-v1`, { min: 0, max: 30 });
   return <div className="module-page iqc-supplier-page oqc-page">
     <FloatingTabs options={[{ value: "产品一部", label: "半导体&北美" }, { value: "产品五部", label: "产品五部" }, { value: "FPC事业部", label: "FPC事业部" }]} active={focusDivision} onChange={setFocusDivision}/>
     <div className="iqc-section-title">
@@ -1328,11 +1333,12 @@ function OqcAnalysis({ data }) {
 
       <div className="oqc-section-heading sticky-switch-bar"><span className="section-number">3.2</span><div><h2>月度评分趋势</h2><p>切换产品部查看1—5月平均分、5分率和低分率走势</p></div>
         <div className="site-tabs">{["产品一部","产品五部","FPC事业部"].map((name) => <button key={name} className={focusDivision === name ? "active" : ""} onClick={() => preserveScrollPosition(() => setFocusDivision(name))}>{name === "产品一部" ? "半导体&北美" : name}</button>)}</div>
+        <OqcMonthlyAxisControl scoreAxis={avgAxis} fiveAxis={fiveAxis} lowAxis={lowAxis}/>
       </div>
       <div className="oqc-three-grid">
-        <Panel title={`${focusDivision === "产品一部" ? "半导体&北美" : focusDivision}平均分月度趋势`}><ScoreMonthlyCombo rows={monthly} metric="Avg" label="平均分" numeratorKey="ScoreTotal" numeratorName="评分总分" denominatorName="评分数量" max={5}/></Panel>
-        <Panel title={`${focusDivision === "产品一部" ? "半导体&北美" : focusDivision}5分比例月度趋势`}><ScoreMonthlyCombo rows={monthly} metric="FiveRate" label="5分比例" numeratorKey="Five" numeratorName="5分数量" denominatorName="评分总数量" percent max={100}/></Panel>
-        <Panel title={`${focusDivision === "产品一部" ? "半导体&北美" : focusDivision}低分率月度趋势`}><ScoreMonthlyCombo rows={monthly} metric="LowRate" label="低分比例" numeratorKey="Low" numeratorName="≤3分数量" denominatorName="评分总数量" percent max={100}/></Panel>
+        <Panel title={`${focusDivision === "产品一部" ? "半导体&北美" : focusDivision}平均分月度趋势`}><ScoreMonthlyCombo rows={monthly} metric="Avg" label="平均分" numeratorKey="ScoreTotal" numeratorName="评分总分" denominatorName="评分数量" max={5} rateAxisOverride={avgAxis.effective} hideRateAxisControl/></Panel>
+        <Panel title={`${focusDivision === "产品一部" ? "半导体&北美" : focusDivision}5分比例月度趋势`}><ScoreMonthlyCombo rows={monthly} metric="FiveRate" label="5分比例" numeratorKey="Five" numeratorName="5分数量" denominatorName="评分总数量" percent max={100} rateAxisOverride={fiveAxis.effective} hideRateAxisControl/></Panel>
+        <Panel title={`${focusDivision === "产品一部" ? "半导体&北美" : focusDivision}低分率月度趋势`}><ScoreMonthlyCombo rows={monthly} metric="LowRate" label="低分比例" numeratorKey="Low" numeratorName="≤3分数量" denominatorName="评分总数量" percent max={100} rateAxisOverride={lowAxis.effective} hideRateAxisControl/></Panel>
       </div>
 
       <div className="oqc-section-heading"><span className="section-number">3.3</span><div><h2>FPC事业部TPM对比</h2><p>刘波、王辉、罗超、林秋秋、朱慧慧同期评分表现</p></div></div>
@@ -1532,10 +1538,12 @@ function EcnRateTable({ rows, numeratorLabel = "ECN条数", denominatorLabel = "
 
 function EcnRatePanel({ title, subtitle, rows, chartKey, numeratorLabel = "ECN条数", denominatorLabel = "物料款数", rateLabel = "ECN率" }) {
   const flat = ecnFlattenRows(rows);
-  return <Panel title={title} subtitle={subtitle}>
-    <QuantityRateCombo rows={flat} qtyLabel={denominatorLabel} badLabel={numeratorLabel} rateLabel={rateLabel} height={Math.max(360, flat.length * 46 + 160)} chartKey={chartKey}/>
+  return <AxisControlledPanel title={title} subtitle={subtitle} axisKey={`${chartKey}-axis-v1`} defaults={{ min: 0, max: 20 }}>
+    {(axis) => <>
+    <QuantityRateCombo rows={flat} qtyLabel={denominatorLabel} badLabel={numeratorLabel} rateLabel={rateLabel} height={Math.max(360, flat.length * 46 + 160)} chartKey={chartKey} rateAxisOverride={axis.effective} hideRateAxisControl/>
     <EcnRateTable rows={rows} numeratorLabel={numeratorLabel} denominatorLabel={denominatorLabel} rateLabel={rateLabel}/>
-  </Panel>;
+    </>}
+  </AxisControlledPanel>;
 }
 
 const ecnTpmDisplayName = (name) => String(name || "").split("\n").pop();
@@ -1557,14 +1565,22 @@ function EcnTpmReasonTable({ rows, values }) {
 
 function EcnTpmReasonGrouped({ ecn }) {
   const rows = ecn.tpmReasons || [];
-  const groups = [...new Set(rows.map((row) => row.division).filter(Boolean))].map((division) => ({
+  const divisions = ["全公司", ...new Set(rows.map((row) => row.division).filter(Boolean))];
+  const [division, setDivision] = useState("全公司");
+  const filteredRows = division === "全公司" ? rows : rows.filter((row) => row.division === division);
+  const groups = [...new Set(filteredRows.map((row) => row.division).filter(Boolean))].map((division) => ({
     division,
-    rows: rows.filter((row) => row.division === division),
+    rows: filteredRows.filter((row) => row.division === division),
   })).filter((group) => group.rows.length);
-  const chartRows = rows.map((row) => ({ ...row, name: ecnTpmDisplayName(row.name) }));
+  const chartRows = filteredRows.map((row) => ({ ...row, name: ecnTpmDisplayName(row.name) }));
   const totalAxisRows = Math.max(1, chartRows.reduce((sum, row) => sum + row.years.length, 0));
   const chartHeight = Math.max(420, totalAxisRows * 28 + 120);
-  return <Panel title="TPM变更原因占比" subtitle="TPM合并在同一张图展示；左侧产品部色块仅作分组标记，TPM姓名不再带产品部前缀">
+  return <Panel title="TPM变更原因占比" subtitle="可按产品部或全公司切换；TPM姓名不带产品部前缀">
+    <div className="machined-tpm-toolbar">
+      <div className="site-tabs machined-division-tabs">
+        {divisions.map((item) => <button key={item} className={division === item ? "active" : ""} onClick={() => setDivision(item)}>{item}</button>)}
+      </div>
+    </div>
     <div className="ecn-tpm-grouped-chart" style={{ "--ecn-axis-rows": totalAxisRows, "--ecn-plot-height": `${chartHeight - 76}px` }}>
       <div className="ecn-tpm-group-labels">
         {groups.map((group) => <div key={group.division} style={{ flex: group.rows.length * 2 }}><span>{group.division}</span></div>)}
@@ -1573,7 +1589,7 @@ function EcnTpmReasonGrouped({ ecn }) {
         <YearStackedCompare rows={chartRows} values={ecn.tpmReasonValues} height={chartHeight} chartKey="dqa-ecn-tpm-reasons-grouped" topToBottom/>
       </div>
     </div>
-    <EcnTpmReasonTable rows={rows} values={ecn.tpmReasonValues}/>
+    <EcnTpmReasonTable rows={filteredRows} values={ecn.tpmReasonValues}/>
   </Panel>;
 }
 
@@ -1606,8 +1622,9 @@ function DqaEcnAnalysis({ data }) {
     <EcnReasonSelector reasons={reasons} selected={selectedReasons} onChange={updateSelectedReasons}/>
     <EcnKpiCards ecn={ecn}/>
     <div className="dqa-grid">
-      <Panel title="ECN率月度趋势" subtitle="柱形图为物料款数与ECN条数，折线为ECN率">
-        <QuantityRateCombo rows={ecn.monthly} qtyLabel="物料款数" badLabel="ECN条数" rateLabel="ECN率" height={390} chartKey="dqa-ecn-monthly"/>
+      <AxisControlledPanel title="ECN率月度趋势" subtitle="柱形图为物料款数与ECN条数，折线为ECN率" axisKey="dqa-ecn-monthly-axis-v1" defaults={{ min: 0, max: 10 }}>
+        {(axis) => <>
+        <QuantityRateCombo rows={ecn.monthly} qtyLabel="物料款数" badLabel="ECN条数" rateLabel="ECN率" height={390} chartKey="dqa-ecn-monthly" rateAxisOverride={axis.effective} hideRateAxisControl/>
         <EcnRateTable rows={ecn.monthly.map((row) => ({
           name: row.name,
           years: [
@@ -1615,7 +1632,8 @@ function DqaEcnAnalysis({ data }) {
             { year: 2026, denominator: row.y2026Qty, numerator: row.y2026Bad, rate: row.y2026Rate },
           ],
         }))}/>
-      </Panel>
+        </>}
+      </AxisControlledPanel>
       <EcnRatePanel title="产品部ECN率同期对比" subtitle="IC载板产品部、北美项目部、传感器产品部合并为半导体&北美" rows={ecn.divisions} chartKey="dqa-ecn-division-rate"/>
       <DqaComparePanel title="产品部变更原因占比" subtitle="按ECN（分子）中的“变更原因”统计，上方为2025、下方为2026" rows={ecn.divisionReasons} values={ecn.reasonValues}/>
     </div>
@@ -1658,18 +1676,67 @@ const machinedMonthlyRows = (rows) => rows.map((row) => ({
   ],
 }));
 
-function MachinedTpmSummary({ rows }) {
-  const total = rows.reduce((acc, row) => ({
-    y2025Qty: acc.y2025Qty + (row.y2025Qty || 0),
-    y2026Qty: acc.y2026Qty + (row.y2026Qty || 0),
+function useMachinedAxisRange(storageKey, defaults = { min: 0, max: 20 }) {
+  const [range, setRange] = useState(() => {
+    const saved = safeParse(localStorage.getItem(storageKey), null);
+    return saved && saved.min != null && saved.max != null ? saved : defaults;
+  });
+  useEffect(() => { localStorage.setItem(storageKey, JSON.stringify(range)); }, [storageKey, range]);
+  const safeMax = Math.max(0.1, Number(range.max) || defaults.max || 20);
+  const safeMin = Math.min(safeMax - 0.1, Math.max(0, Number(range.min) || 0));
+  const update = (key, value) => setRange((current) => ({ ...current, [key]: value }));
+  const commit = () => setRange({ min: safeMin, max: safeMax });
+  return { range, effective: { min: safeMin, max: safeMax }, update, commit };
+}
+
+function MachinedAxisPanelControl({ axis }) {
+  return <div className="machined-axis-group machined-panel-axis">
+    <label className="machined-axis-control">比例轴最小值<input type="number" min="0" step="0.1" value={axis.range.min} onChange={(event) => axis.update("min", event.target.value)} onBlur={axis.commit}/><span>%</span></label>
+    <label className="machined-axis-control">比例轴最大值<input type="number" min="0.1" step="0.1" value={axis.range.max} onChange={(event) => axis.update("max", event.target.value)} onBlur={axis.commit}/><span>%</span></label>
+  </div>;
+}
+
+function OqcMonthlyAxisControl({ scoreAxis, fiveAxis, lowAxis }) {
+  const axisItems = [
+    { label: "平均分轴", axis: scoreAxis, unit: "分", step: "0.1" },
+    { label: "5分比例轴", axis: fiveAxis, unit: "%", step: "0.1" },
+    { label: "低分比例轴", axis: lowAxis, unit: "%", step: "0.1" },
+  ];
+  return <div className="machined-axis-group machined-panel-axis oqc-monthly-axis-group">
+    {axisItems.map(({ label, axis, unit, step }) => <div className="oqc-axis-mini-group" key={label}>
+      <span>{label}</span>
+      <label className="machined-axis-control">最小<input type="number" min="0" step={step} value={axis.range.min} onChange={(event) => axis.update("min", event.target.value)} onBlur={axis.commit}/><em>{unit}</em></label>
+      <label className="machined-axis-control">最大<input type="number" min="0.1" step={step} value={axis.range.max} onChange={(event) => axis.update("max", event.target.value)} onBlur={axis.commit}/><em>{unit}</em></label>
+    </div>)}
+  </div>;
+}
+
+function AxisControlledPanel({ title, subtitle, className = "", axisKey, defaults = { min: 0, max: 100 }, children }) {
+  const axis = useMachinedAxisRange(axisKey, defaults);
+  return <Panel title={title} subtitle={subtitle} className={className} action={<MachinedAxisPanelControl axis={axis}/>}>
+    {children(axis)}
+  </Panel>;
+}
+
+function MachinedTpmSummary({ rows, totals, kindLabel = "ECN" }) {
+  const summaryRows = rows.filter((row) => row.division !== "FPC事业部" || String(row.tpm || row.name || "").includes("总计"));
+  const total = summaryRows.reduce((acc, row) => ({
+    y2025Qty: acc.y2025Qty,
+    y2026Qty: acc.y2026Qty,
     y2025Bad: acc.y2025Bad + (row.y2025Bad || 0),
     y2026Bad: acc.y2026Bad + (row.y2026Bad || 0),
-  }), { y2025Qty: 0, y2026Qty: 0, y2025Bad: 0, y2026Bad: 0 });
+  }), { y2025Qty: totals?.[2025]?.denominator || 0, y2026Qty: totals?.[2026]?.denominator || 0, y2025Bad: 0, y2026Bad: 0 });
   const rate25 = Number((total.y2025Bad / Math.max(total.y2025Qty, 1) * 100).toFixed(2));
   const rate26 = Number((total.y2026Bad / Math.max(total.y2026Qty, 1) * 100).toFixed(2));
   return <div className="machined-tpm-total-cards">
-    <div><span>2025加工件总数</span><strong>{total.y2025Qty.toLocaleString()}</strong><em>ECN {total.y2025Bad.toLocaleString()} / {rate25}%</em></div>
-    <div><span>2026加工件总数</span><strong>{total.y2026Qty.toLocaleString()}</strong><em>ECN {total.y2026Bad.toLocaleString()} / {rate26}%</em></div>
+    <div><span>2025加工件总数</span><strong>{total.y2025Qty.toLocaleString()}</strong><em>{kindLabel} {total.y2025Bad.toLocaleString()} / {rate25}%</em></div>
+    <div><span>2026加工件总数</span><strong>{total.y2026Qty.toLocaleString()}</strong><em>{kindLabel} {total.y2026Bad.toLocaleString()} / {rate26}%</em></div>
+  </div>;
+}
+
+function MonthlyTotalStrip({ rows }) {
+  return <div className="machined-monthly-total-strip">
+    {rows.map((row) => <span key={row.name}>{row.name}：2025 {Number(row.y2025Qty || 0).toLocaleString()} / 2026 {Number(row.y2026Qty || 0).toLocaleString()}</span>)}
   </div>;
 }
 
@@ -1703,14 +1770,14 @@ function MachinedTpmTable({ rows, sort, onSort }) {
   </div>;
 }
 
-function MachinedEcnTpmPanel({ part }) {
-  const storageDivisionKey = "qms-dqa-machined-ecn-tpm-division-v1";
-  const storageMonthlyDivisionKey = "qms-dqa-machined-ecn-monthly-division-v1";
-  const storageMinKey = "qms-dqa-machined-ecn-tpm-rate-min-v1";
-  const storageMaxKey = "qms-dqa-machined-ecn-tpm-rate-max-v1";
-  const storageMonthlyMinKey = "qms-dqa-machined-ecn-monthly-rate-min-v1";
-  const storageMonthlyMaxKey = "qms-dqa-machined-ecn-monthly-rate-max-v1";
-  const storageHiddenKey = "qms-dqa-machined-ecn-tpm-hidden-v1";
+function MachinedTpmPanel({ part, kindLabel = "ECN加工件", storagePrefix = "ecn" }) {
+  const storageDivisionKey = `qms-dqa-machined-${storagePrefix}-tpm-division-v1`;
+  const storageMonthlyDivisionKey = `qms-dqa-machined-${storagePrefix}-monthly-division-v1`;
+  const storageMinKey = `qms-dqa-machined-${storagePrefix}-tpm-rate-min-v1`;
+  const storageMaxKey = `qms-dqa-machined-${storagePrefix}-tpm-rate-max-v1`;
+  const storageMonthlyMinKey = `qms-dqa-machined-${storagePrefix}-monthly-rate-min-v1`;
+  const storageMonthlyMaxKey = `qms-dqa-machined-${storagePrefix}-monthly-rate-max-v1`;
+  const storageHiddenKey = `qms-dqa-machined-${storagePrefix}-tpm-hidden-v1`;
   const [division, setDivision] = useState(() => localStorage.getItem(storageDivisionKey) || "全公司");
   const [monthlyDivision, setMonthlyDivision] = useState(() => localStorage.getItem(storageMonthlyDivisionKey) || "全公司");
   const [rateMin, setRateMin] = useState(() => Number(localStorage.getItem(storageMinKey)) || 0);
@@ -1753,13 +1820,18 @@ function MachinedEcnTpmPanel({ part }) {
   const monthlyHidden = hiddenByDivision[monthlyDivision] || [];
   const monthlyRows = decorateRows(allRows.filter((row) => monthlyDivision === "全公司" || row.division === monthlyDivision), monthlyDivision)
     .filter((row) => !monthlyHidden.includes(row.name))
-    .map((row) => ({ ...row, months: monthlyByName.get(row.name)?.months || [] }))
+    .map((row) => ({
+      ...row,
+      displayName: row.division === "半导体&北美" && row.tpm === "产品一部" ? "半导体&北美" : row.division === "产品五部" && row.tpm === "产品五部" ? "产品五部" : row.displayName,
+      months: monthlyByName.get(row.name)?.months || [],
+    }))
     .filter((row) => row.months.length);
-  const monthlyHeaderTotals = machinedPeriodTotals(part.monthly || []);
   const safeRateMax = Math.max(0.1, Number(rateMax) || 2);
   const safeRateMin = Math.min(safeRateMax - 0.1, Math.max(0, Number(rateMin) || 0));
   const safeMonthlyRateMax = Math.max(0.1, Number(monthlyRateMax) || 2);
   const safeMonthlyRateMin = Math.min(safeMonthlyRateMax - 0.1, Math.max(0, Number(monthlyRateMin) || 0));
+  const tpmRateAxis = { min: safeRateMin, max: safeRateMax };
+  const monthlyRateAxis = { min: safeMonthlyRateMin, max: safeMonthlyRateMax };
   const toggleTpm = (name) => setHiddenByDivision((current) => {
     const currentHidden = current[division] || [];
     const nextHidden = currentHidden.includes(name) ? currentHidden.filter((item) => item !== name) : [...currentHidden, name];
@@ -1767,7 +1839,7 @@ function MachinedEcnTpmPanel({ part }) {
   });
   const selectAllTpms = () => setHiddenByDivision((current) => ({ ...current, [division]: [] }));
   const clearAllTpms = () => setHiddenByDivision((current) => ({ ...current, [division]: baseRows.map((row) => row.name) }));
-  return <Panel title="ECN加工件TPM同期对比" subtitle="只展示ECN加工件数量和加工件占比；全公司显示全部TPM，产品部按钮只显示当前产品部TPM">
+  return <Panel title={`${kindLabel}TPM同期对比`} subtitle={`只展示${kindLabel}数量和加工件占比；全公司显示全部TPM，产品部按钮只显示当前产品部TPM`}>
     <div className="machined-tpm-toolbar">
       <div className="site-tabs machined-division-tabs">
         {MACHINED_TPM_DIVISIONS.map((item) => <button key={item} className={division === item ? "active" : ""} onClick={() => setDivision(item)}>{item}</button>)}
@@ -1779,21 +1851,21 @@ function MachinedEcnTpmPanel({ part }) {
       </div>
     </div>
     {showTpmFilter && <div className="machined-tpm-check-row">
-      <div><strong>当前TPM</strong><span>默认全选，取消后总图、表格、月度趋势同步隐藏</span></div>
+        <div><strong>当前TPM</strong><span>默认全选，取消后总图、表格、月度趋势同步隐藏</span></div>
       <div className="dqa-tpm-actions"><button onClick={selectAllTpms}>全选</button><button onClick={clearAllTpms}>清空</button></div>
       <div className="dqa-tpm-checks">
         {baseRows.map((row) => <label key={row.name} className={hidden.includes(row.name) ? "" : "active"}><input type="checkbox" checked={!hidden.includes(row.name)} onChange={() => toggleTpm(row.name)}/><span>{row.displayName}</span></label>)}
       </div>
     </div>}
-    <MachinedTpmSummary rows={rows}/>
+    <MachinedTpmSummary rows={rows} totals={part.totals} kindLabel={kindLabel}/>
     {rows.length
-      ? <MachinedTpmCompareChart rows={rows} labelKey="label" minRate={safeRateMin} maxRate={safeRateMax} height={Math.max(390, rows.length * 42 + 150)} chartKey={`dqa-machined-ecn-tpm-${division}`}/>
-      : <div className="supplier-empty">当前产品部没有ECN加工件TPM数据</div>}
+      ? <MachinedTpmCompareChart rows={rows} labelKey="label" minRate={safeRateMin} maxRate={safeRateMax} rateAxisOverride={tpmRateAxis} hideRateAxisControl height={Math.max(390, rows.length * 42 + 150)} chartKey={`dqa-machined-${storagePrefix}-tpm-${division}`}/>
+      : <div className="supplier-empty">当前产品部没有{kindLabel}TPM数据</div>}
     <MachinedTpmTable rows={rows} sort={sort} onSort={changeSort}/>
     <div className="machined-monthly-block">
       <div className="machined-monthly-title">
-        <div><h3>ECN加工件TPM月度趋势对比</h3><span>按月度趋势产品部切换和TPM勾选结果展示；图表会随月份数量自动加宽</span></div>
-        <div className="machined-monthly-total-line"><span>2025加工件总数：{monthlyHeaderTotals.y2025Qty.toLocaleString()}</span><span>2026加工件总数：{monthlyHeaderTotals.y2026Qty.toLocaleString()}</span></div>
+        <div><h3>{kindLabel}TPM月度趋势对比</h3><span>按月度趋势产品部切换和TPM勾选结果展示；图表会随月份数量自动加宽</span></div>
+        <MonthlyTotalStrip rows={part.monthly || []}/>
       </div>
       <div className="machined-monthly-toolbar">
         <div className="site-tabs machined-division-tabs">
@@ -1810,7 +1882,7 @@ function MachinedEcnTpmPanel({ part }) {
           const cardWidth = Math.max(460, monthCount * 108 + 150);
           return <div className="machined-monthly-card" key={row.name} style={{ "--monthly-card-width": `${cardWidth}px` }}>
           <h4>{row.displayName}</h4>
-          <MachinedTpmCompareChart rows={row.months} minRate={safeMonthlyRateMin} maxRate={safeMonthlyRateMax} height={320} chartKey={`dqa-machined-ecn-monthly-${row.name}`}/>
+          <MachinedTpmCompareChart rows={row.months} minRate={safeMonthlyRateMin} maxRate={safeMonthlyRateMax} rateAxisOverride={monthlyRateAxis} hideRateAxisControl height={320} chartKey={`dqa-machined-${storagePrefix}-monthly-${row.name}`}/>
         </div>;
         })}
       </div>
@@ -1821,15 +1893,15 @@ function MachinedEcnTpmPanel({ part }) {
 function MachinedPartSection({ title, subtitle, part, chartPrefix }) {
   const labels = { numeratorLabel: "加工件数量", denominatorLabel: "加工件总数", rateLabel: "加工件占比" };
   const isEcn = chartPrefix === "dqa-machined-ecn";
+  const monthlyAxis = useMachinedAxisRange(`${chartPrefix}-legacy-monthly-axis-v1`, { min: 0, max: 10 });
   return <div className="dqa-grid machined-grid">
     <Panel title={`${title}月度同期趋势`} subtitle="柱形图为加工件总数与对应加工件数量，折线为加工件占比">
-      <QuantityRateCombo rows={part.monthly} qtyLabel={labels.denominatorLabel} badLabel={labels.numeratorLabel} rateLabel={labels.rateLabel} height={390} chartKey={`${chartPrefix}-monthly`}/>
+      <MachinedAxisPanelControl axis={monthlyAxis}/>
+      <QuantityRateCombo rows={part.monthly} qtyLabel={labels.denominatorLabel} badLabel={labels.numeratorLabel} rateLabel={labels.rateLabel} height={390} chartKey={`${chartPrefix}-monthly`} rateAxisOverride={monthlyAxis.effective} hideRateAxisControl/>
       <EcnRateTable rows={machinedMonthlyRows(part.monthly)} {...labels}/>
     </Panel>
     <EcnRatePanel title={`${title}产品部同期对比`} subtitle={subtitle} rows={part.divisions} chartKey={`${chartPrefix}-division`} {...labels}/>
-    {isEcn
-      ? <MachinedEcnTpmPanel part={part}/>
-      : <EcnRatePanel title={`${title}TPM同期对比`} subtitle="TPM维度按表格当前字段展示；2025年产品一部、产品五部尚未拆分TPM时保留原字段" rows={part.tpms} chartKey={`${chartPrefix}-tpm`} {...labels}/>}
+    <MachinedTpmPanel part={part} kindLabel={title} storagePrefix={isEcn ? "ecn" : "nonbom"}/>
   </div>;
 }
 
@@ -1843,6 +1915,38 @@ function DqaMachinedPartsAnalysis({ data }) {
     <MachinedPartSection title="ECN加工件" subtitle="产品部按三大产品部合并；2025年产品一部归入半导体&北美" part={parts.ecn} chartPrefix="dqa-machined-ecn"/>
     <div className="dqa-module-title"><span className="section-number">4.N.2</span><div><h2>非BOM加工件分析</h2><p>非BOM加工件作为研发设计/资料完整性风险的前置信号，按产品部和TPM做同期对比。</p></div></div>
     <MachinedPartSection title="非BOM加工件" subtitle="产品部按三大产品部合并；2025年产品一部归入半导体&北美" part={parts.nonBom} chartPrefix="dqa-machined-nonbom"/>
+  </div>;
+}
+
+function MachinedPartSectionClean({ title, subtitle, part, chartPrefix }) {
+  const labels = { numeratorLabel: "加工件数量", denominatorLabel: "加工件总数", rateLabel: "加工件占比" };
+  const isEcn = chartPrefix === "dqa-machined-ecn";
+  const monthlyAxis = useMachinedAxisRange(`${chartPrefix}-monthly-axis-v1`, { min: 0, max: 25 });
+  const divisionAxis = useMachinedAxisRange(`${chartPrefix}-division-axis-v1`, { min: 0, max: 10 });
+  const divisionRows = ecnFlattenRows(part.divisions);
+  return <div className="dqa-grid machined-grid">
+    <Panel title={`${title}月度同期趋势`} subtitle="柱形图为加工件总数与对应加工件数量，折线为加工件占比" action={<MachinedAxisPanelControl axis={monthlyAxis}/>}>
+      <QuantityRateCombo rows={part.monthly} qtyLabel={labels.denominatorLabel} badLabel={labels.numeratorLabel} rateLabel={labels.rateLabel} height={390} chartKey={`${chartPrefix}-monthly`} rateAxisOverride={monthlyAxis.effective} hideRateAxisControl/>
+      <EcnRateTable rows={machinedMonthlyRows(part.monthly)} {...labels}/>
+    </Panel>
+    <Panel title={`${title}产品部同期对比`} subtitle={subtitle} action={<MachinedAxisPanelControl axis={divisionAxis}/>}>
+      <QuantityRateCombo rows={divisionRows} qtyLabel={labels.denominatorLabel} badLabel={labels.numeratorLabel} rateLabel={labels.rateLabel} height={360} chartKey={`${chartPrefix}-division`} rateAxisOverride={divisionAxis.effective} hideRateAxisControl/>
+      <EcnRateTable rows={divisionRows} {...labels}/>
+    </Panel>
+    <MachinedTpmPanel part={part} kindLabel={title} storagePrefix={isEcn ? "ecn" : "nonbom"}/>
+  </div>;
+}
+
+function DqaMachinedPartsAnalysisClean({ data }) {
+  const parts = data.dqa.machinedParts;
+  if (!parts) return <div className="summary-note ecn-empty"><strong>待导入ECN和非BOM加工件数据</strong><p>请在 DQA 数据源中导入“2025年加工件数量比例.xlsx”和“2026年加工件数量比例.xlsx”，系统会读取 ECN加工件统计、非BOM加工件统计两个Sheet。</p></div>;
+  return <div className="dqa-ecn-page dqa-machined-page">
+    <div className="dqa-module-title"><span className="section-number">4.N</span><div><h2>ECN和非BOM加工件同期分析</h2><p>加工件占比 = 对象加工件数量 / 同期加工件总数；默认按2025年1-5月 vs 2026年1-5月对比，海外亚太项目开发部、技术中心不统计。</p></div></div>
+    <MachinedPartKpiCards parts={parts}/>
+    <div className="dqa-module-title"><span className="section-number">4.N.1</span><div><h2>ECN加工件分析</h2><p>产品一部、IC载板、北美、半导体、传感器统一合并为“半导体&北美”。</p></div></div>
+    <MachinedPartSectionClean title="ECN加工件" subtitle="产品部按三大产品部合并；2025年产品一部归入半导体&北美" part={parts.ecn} chartPrefix="dqa-machined-ecn"/>
+    <div className="dqa-module-title"><span className="section-number">4.N.2</span><div><h2>非BOM加工件分析</h2><p>非BOM加工件作为研发设计/资料完整性风险的前置信号，按产品部和TPM做同期对比。</p></div></div>
+    <MachinedPartSectionClean title="非BOM加工件" subtitle="产品部按三大产品部合并；2025年产品一部归入半导体&北美" part={parts.nonBom} chartPrefix="dqa-machined-nonbom"/>
   </div>;
 }
 
@@ -1993,7 +2097,7 @@ function DqaAnalysis({ data }) {
       <button className={dqaTab === "ecn" ? "active" : ""} onClick={() => setDqaTab("ecn")}>ECN分析</button>
       <button className={dqaTab === "machined" ? "active" : ""} onClick={() => setDqaTab("machined")}>ECN和非BOM加工件分析</button>
     </div>
-    {dqaTab === "ecn" ? <DqaEcnAnalysis data={data}/> : dqaTab === "machined" ? <DqaMachinedPartsAnalysis data={data}/> : <>
+    {dqaTab === "ecn" ? <DqaEcnAnalysis data={data}/> : dqaTab === "machined" ? <DqaMachinedPartsAnalysisClean data={data}/> : <>
     <DqaOverview compare={compare}/>
     <div className="dqa-module-title"><span className="section-number">4.1</span><div><h2>三大产品部总体对比</h2><p>阶段、异常分类和学科均按产品部展示2025/2026两条堆叠柱</p></div></div>
     <div className="dqa-grid">
@@ -2033,6 +2137,7 @@ function SupplierCompareTable({ title, rows, candidates = [] }) {
   const [selected, setSelected] = useState(() => rows.map((r) => r.supplier));
   const [newSupplier, setNewSupplier] = useState("");
   const [sort, setSort] = useState({ key: "y2026Qty", direction: "desc" });
+  const axis = useMachinedAxisRange(`iqc-supplier-${title}-axis-v1`, { min: 80, max: 100 });
   useEffect(() => { setActiveRows(rows); setSelected(rows.map((r) => r.supplier)); setNewSupplier(""); }, [rows]);
   const toggle = (supplier) => setSelected((current) => current.includes(supplier) ? current.filter((x) => x !== supplier) : [...current, supplier]);
   const availableCandidates = candidates.filter((candidate) => !activeRows.some((row) => row.supplier === candidate.supplier));
@@ -2067,7 +2172,7 @@ function SupplierCompareTable({ title, rows, candidates = [] }) {
       {activeRows.map((r) => <label className="supplier-check" key={r.supplier}><input type="checkbox" checked={selected.includes(r.supplier)} onChange={() => toggle(r.supplier)}/><span>{r.supplier}</span></label>)}
     </div>
     {visibleRows.length
-      ? <div className="supplier-chart"><QuantityRateCombo rows={visibleRows} labelKey="supplier" height={360} /></div>
+      ? <div className="supplier-chart"><MachinedAxisPanelControl axis={axis}/><QuantityRateCombo rows={visibleRows} labelKey="supplier" height={360} rateAxisOverride={axis.effective} hideRateAxisControl /></div>
       : <div className="supplier-empty">请至少选择一家供应商</div>}
     <div className="supplier-compare-table">
       <div className="supplier-compare-row supplier-compare-head">
@@ -2178,22 +2283,26 @@ function IqcFocusProjectAnalysis({ data }) {
         {project.y2026Qty > 0 && project.y2026Qty < 30 && <b>{focusProjectText.sampleTip}</b>}
       </button>)}
     </div>
-    <Panel title={focusProjectText.overview} subtitle={focusProjectText.overviewSub} className="iqc-wide">
-      <QuantityRateCombo rows={projects} labelKey="name" qtyLabel={focusProjectText.checkBatches} badLabel={focusProjectText.abnormalBatches} rateLabel={focusProjectText.passRate} height={360} chartKey="iqc-focus-project-overview"/>
-    </Panel>
+    <AxisControlledPanel title={focusProjectText.overview} subtitle={focusProjectText.overviewSub} className="iqc-wide" axisKey="iqc-focus-project-overview-axis-v1" defaults={{ min: 80, max: 100 }}>
+      {(axis) => <QuantityRateCombo rows={projects} labelKey="name" qtyLabel={focusProjectText.checkBatches} badLabel={focusProjectText.abnormalBatches} rateLabel={focusProjectText.passRate} height={360} chartKey="iqc-focus-project-overview" rateAxisOverride={axis.effective} hideRateAxisControl/>}
+    </AxisControlledPanel>
     <div className="focus-project-detail">
       <div className="focus-project-detail-head">
         <div><h3>{activeProject.name}</h3><p>{focusProjectText.specialShare}: 2025 {activeProject.y2025SpecialShare}% / 2026 {activeProject.y2026SpecialShare}%</p></div>
         <div className="focus-project-tabs" data-focus-project-tabs>{projects.map((project) => <button key={project.name} className={project.name === active ? "active" : ""} onClick={() => setActive(project.name)}>{project.name}</button>)}</div>
       </div>
-      <Panel title={focusProjectText.supplier} subtitle={focusProjectText.supplierSub} className="iqc-wide">
-        <QuantityRateCombo rows={current.suppliers.slice(0, 12)} labelKey="supplier" qtyLabel={focusProjectText.checkBatches} badLabel={focusProjectText.abnormalBatches} rateLabel={focusProjectText.passRate} height={380} chartKey={`iqc-focus-supplier-${active}`}/>
+      <AxisControlledPanel title={focusProjectText.supplier} subtitle={focusProjectText.supplierSub} className="iqc-wide" axisKey={`iqc-focus-supplier-${active}-axis-v1`} defaults={{ min: 80, max: 100 }}>
+        {(axis) => <>
+        <QuantityRateCombo rows={current.suppliers.slice(0, 12)} labelKey="supplier" qtyLabel={focusProjectText.checkBatches} badLabel={focusProjectText.abnormalBatches} rateLabel={focusProjectText.passRate} height={380} chartKey={`iqc-focus-supplier-${active}`} rateAxisOverride={axis.effective} hideRateAxisControl/>
         <FocusProjectTable rows={current.suppliers} columns={focusSupplierColumns} rowKey="supplier" />
-      </Panel>
-      <Panel title={focusProjectText.issue} subtitle={focusProjectText.issueSub} className="iqc-wide">
-        <QuantityRateCombo rows={current.issues} qty2025="y2025Count" qty2026="y2026Count" rate2025="y2025Share" rate2026="y2026Share" rateLabel={focusProjectText.abnormalShare} qtyLabel={focusProjectText.abnormalBatches} showBad={false} height={350} chartKey={`iqc-focus-issue-${active}`}/>
+        </>}
+      </AxisControlledPanel>
+      <AxisControlledPanel title={focusProjectText.issue} subtitle={focusProjectText.issueSub} className="iqc-wide" axisKey={`iqc-focus-issue-${active}-axis-v1`} defaults={{ min: 0, max: 80 }}>
+        {(axis) => <>
+        <QuantityRateCombo rows={current.issues} qty2025="y2025Count" qty2026="y2026Count" rate2025="y2025Share" rate2026="y2026Share" rateLabel={focusProjectText.abnormalShare} qtyLabel={focusProjectText.abnormalBatches} showBad={false} height={350} chartKey={`iqc-focus-issue-${active}`} rateAxisOverride={axis.effective} hideRateAxisControl/>
         <FocusProjectTable rows={current.issues} columns={focusIssueColumns} rowKey="name" defaultSort="y2026Count" />
-      </Panel>
+        </>}
+      </AxisControlledPanel>
     </div>
   </div>;
 }
@@ -2216,6 +2325,10 @@ function IqcSpecialAnalysis({ data, site }) {
   const total2026 = special.monthly.reduce((sum, row) => sum + row.y2026Bad, 0);
   const design = special.evidence.find((row) => row.name === "疑似过度设计");
   const highEvidence = special.highDesignEvidenceTotal || 0;
+  const monthlyAxis = useMachinedAxisRange(`iqc-special-${site}-monthly-axis-v1`, { min: 0, max: 20 });
+  const materialsAxis = useMachinedAxisRange(`iqc-special-${site}-materials-axis-v1`, { min: 0, max: 80 });
+  const suppliersAxis = useMachinedAxisRange(`iqc-special-${site}-suppliers-axis-v1`, { min: 0, max: 50 });
+  const evidenceAxis = useMachinedAxisRange(`iqc-special-${site}-evidence-axis-v1`, { min: 0, max: 80 });
   return <div className="iqc-special-section">
     <button className={`iqc-special-collapse ${expanded ? "expanded" : ""}`} onClick={() => setExpanded((current) => !current)}>
       <span className="section-number special-number">1.2.T</span>
@@ -2230,16 +2343,20 @@ function IqcSpecialAnalysis({ data, site }) {
     </div>
     <div className="iqc-analysis-grid">
       <Panel title="特采月度趋势" subtitle={`${site} · 柱形为检验总数/特采数量，折线为特采率`}>
-        <QuantityRateCombo rows={special.monthly} labelKey="month" rateLabel="特采率" qtyLabel="检验批次" badLabel="特采" height={360}/>
+        <MachinedAxisPanelControl axis={monthlyAxis}/>
+        <QuantityRateCombo rows={special.monthly} labelKey="month" rateLabel="特采率" qtyLabel="检验批次" badLabel="特采" height={360} rateAxisOverride={monthlyAxis.effective} hideRateAxisControl/>
       </Panel>
       <Panel title="特采材料属性" subtitle="按特采数量和占比进行同期对比">
-        <QuantityRateCombo rows={special.materials} qty2025="y2025Count" qty2026="y2026Count" rate2025="y2025Share" rate2026="y2026Share" rateLabel="特采占比" qtyLabel="特采数量" showBad={false} height={370}/>
+        <MachinedAxisPanelControl axis={materialsAxis}/>
+        <QuantityRateCombo rows={special.materials} qty2025="y2025Count" qty2026="y2026Count" rate2025="y2025Share" rate2026="y2026Share" rateLabel="特采占比" qtyLabel="特采数量" showBad={false} height={370} rateAxisOverride={materialsAxis.effective} hideRateAxisControl/>
       </Panel>
       <Panel title="特采供应商TOP" subtitle="柱形为特采数量，折线为该供应商特采率">
-        <QuantityRateCombo rows={special.suppliers.slice(0, 10)} labelKey="name" qty2025="y2025Count" qty2026="y2026Count" rate2025="y2025Rate" rate2026="y2026Rate" rateLabel="特采率" qtyLabel="特采数量" showBad={false} height={390}/>
+        <MachinedAxisPanelControl axis={suppliersAxis}/>
+        <QuantityRateCombo rows={special.suppliers.slice(0, 10)} labelKey="name" qty2025="y2025Count" qty2026="y2026Count" rate2025="y2025Rate" rate2026="y2026Rate" rateLabel="特采率" qtyLabel="特采数量" showBad={false} height={390} rateAxisOverride={suppliersAxis.effective} hideRateAxisControl/>
       </Panel>
       <Panel title="特采原因证据分类" subtitle="区分疑似过度设计、资料问题、供应商制造偏差及证据不足">
-        <QuantityRateCombo rows={special.evidence} qty2025="y2025Count" qty2026="y2026Count" rate2025="y2025Share" rate2026="y2026Share" rateLabel="特采占比" qtyLabel="特采数量" showBad={false} height={360}/>
+        <MachinedAxisPanelControl axis={evidenceAxis}/>
+        <QuantityRateCombo rows={special.evidence} qty2025="y2025Count" qty2026="y2026Count" rate2025="y2025Share" rate2026="y2026Share" rateLabel="特采占比" qtyLabel="特采数量" showBad={false} height={360} rateAxisOverride={evidenceAxis.effective} hideRateAxisControl/>
       </Panel>
       <Panel title="疑似研发过度设计证据明细" subtitle="高证据：规格偏差且质检说明明确不影响装配/功能；中证据：规格偏差后仍被特采放行">
         <IqcSpecialTable rows={special.designEvidence}/>
@@ -2258,6 +2375,9 @@ function IqcInternalAnalysis({ data, site, specialAsBad }) {
     y2026Qty: result.y2026Qty + row.y2026Qty, y2026Bad: result.y2026Bad + row.y2026Bad,
   }), { y2025Qty: 0, y2025Bad: 0, y2026Qty: 0, y2026Bad: 0 });
   const rate = (year) => Number(((totals[`y${year}Qty`] - totals[`y${year}Bad`]) / Math.max(totals[`y${year}Qty`], 1) * 100).toFixed(1));
+  const monthlyAxis = useMachinedAxisRange(`iqc-internal-${site}-${specialAsBad ? "special-bad" : "special-good"}-monthly-axis-v1`, { min: 80, max: 100 });
+  const issuesAxis = useMachinedAxisRange(`iqc-internal-${site}-${specialAsBad ? "special-bad" : "special-good"}-issues-axis-v1`, { min: 0, max: 80 });
+  const materialsAxis = useMachinedAxisRange(`iqc-internal-${site}-${specialAsBad ? "special-bad" : "special-good"}-materials-axis-v1`, { min: 80, max: 100 });
   return <div className="iqc-internal-section">
     <button className={`iqc-special-collapse internal-collapse ${expanded ? "expanded" : ""}`} onClick={() => setExpanded((current) => !current)}>
       <span className="section-number internal-number">1.2.I</span>
@@ -2273,13 +2393,16 @@ function IqcInternalAnalysis({ data, site, specialAsBad }) {
     </div>
     <div className="iqc-analysis-grid">
       <Panel title="一楼自制月度良率趋势" subtitle={`${site} · 按当前“计入特采”口径计算`}>
-        <QuantityRateCombo rows={internal.monthly} labelKey="month" height={360}/>
+        <MachinedAxisPanelControl axis={monthlyAxis}/>
+        <QuantityRateCombo rows={internal.monthly} labelKey="month" height={360} rateAxisOverride={monthlyAxis.effective} hideRateAxisControl/>
       </Panel>
       <Panel title="一楼自制异常类型" subtitle="仅统计质检结果=不合格">
-        <QuantityRateCombo rows={internal.issues} qty2025="y2025Count" qty2026="y2026Count" rate2025="y2025Share" rate2026="y2026Share" rateLabel="异常占比" qtyLabel="异常批次" showBad={false} height={360}/>
+        <MachinedAxisPanelControl axis={issuesAxis}/>
+        <QuantityRateCombo rows={internal.issues} qty2025="y2025Count" qty2026="y2026Count" rate2025="y2025Share" rate2026="y2026Share" rateLabel="异常占比" qtyLabel="异常批次" showBad={false} height={360} rateAxisOverride={issuesAxis.effective} hideRateAxisControl/>
       </Panel>
       <Panel title="一楼自制材料质量表现" subtitle="按材料属性对比检验数量、不合格数量和良率">
-        <QuantityRateCombo rows={internal.materials} height={380}/>
+        <MachinedAxisPanelControl axis={materialsAxis}/>
+        <QuantityRateCombo rows={internal.materials} height={380} rateAxisOverride={materialsAxis.effective} hideRateAxisControl/>
       </Panel>
     </div></>}
   </div>;
@@ -2318,15 +2441,15 @@ function IqcSupplierAnalysis({ data }) {
       <div><span>同比变化</span><strong className={weightedRate(2026) < weightedRate(2025) ? "red" : "green"}>{weightedRate(2026)-weightedRate(2025)>=0?"↑":"↓"} {Math.abs(weightedRate(2026)-weightedRate(2025)).toFixed(1)}pp</strong></div>
     </div>
     <div className="iqc-analysis-grid">
-      <Panel title="1.2.3 总体供应商良率趋势" subtitle={`${site} · 按月同比 · 柱形为检验总数/不合格数，折线为批次良率`} className="iqc-wide">
-        <QuantityRateCombo rows={monthly} labelKey="month" height={360} />
-      </Panel>
-      <Panel title="1.2.1 加工件异常类型" subtitle={`${site} · 仅统计质检结果=不合格；特采进入专项分析，不重复计数`} className="iqc-wide">
-        <QuantityRateCombo rows={issues} qty2025="y2025Count" qty2026="y2026Count" rate2025="y2025Share" rate2026="y2026Share" rateLabel="异常占比" qtyLabel="异常批次" showBad={false} height={370} />
-      </Panel>
-      <Panel title="1.2.2 异常加工件材料属性" subtitle={`${site} · 按材料类别同比 · 柱形为检验总数/不合格数，折线为材料批次良率`} className="iqc-wide">
-        <QuantityRateCombo rows={materials} height={380} />
-      </Panel>
+      <AxisControlledPanel title="1.2.3 总体供应商良率趋势" subtitle={`${site} · 按月同比 · 柱形为检验总数/不合格数，折线为批次良率`} className="iqc-wide" axisKey={`iqc-${site}-${specialAsBad ? "special-bad" : "special-good"}-monthly-axis-v1`} defaults={{ min: 80, max: 100 }}>
+        {(axis) => <QuantityRateCombo rows={monthly} labelKey="month" height={360} rateAxisOverride={axis.effective} hideRateAxisControl />}
+      </AxisControlledPanel>
+      <AxisControlledPanel title="1.2.1 加工件异常类型" subtitle={`${site} · 仅统计质检结果=不合格；特采进入专项分析，不重复计数`} className="iqc-wide" axisKey={`iqc-${site}-${specialAsBad ? "special-bad" : "special-good"}-issues-axis-v1`} defaults={{ min: 0, max: 80 }}>
+        {(axis) => <QuantityRateCombo rows={issues} qty2025="y2025Count" qty2026="y2026Count" rate2025="y2025Share" rate2026="y2026Share" rateLabel="异常占比" qtyLabel="异常批次" showBad={false} height={370} rateAxisOverride={axis.effective} hideRateAxisControl />}
+      </AxisControlledPanel>
+      <AxisControlledPanel title="1.2.2 异常加工件材料属性" subtitle={`${site} · 按材料类别同比 · 柱形为检验总数/不合格数，折线为材料批次良率`} className="iqc-wide" axisKey={`iqc-${site}-${specialAsBad ? "special-bad" : "special-good"}-materials-axis-v1`} defaults={{ min: 80, max: 100 }}>
+        {(axis) => <QuantityRateCombo rows={materials} height={380} rateAxisOverride={axis.effective} hideRateAxisControl />}
+      </AxisControlledPanel>
       <div className="iqc-table-heading"><span className="section-number">1.2.4</span><div><h2>主要供应商良率趋势</h2><p>按提纲指定加工类型筛选，深圳、杭州分别呈现</p></div></div>
       <div className="iqc-supplier-tables">
         <SupplierCompareTable title="深圳主力供应商同期对比" rows={siteSuppliers.深圳 || []} candidates={supplierCandidates.深圳 || []} />
@@ -2340,6 +2463,7 @@ function IqcSupplierAnalysis({ data }) {
 }
 
 export function App() {
+  const machinedSourceVersion = "20260630-tpm-monthly-bridge-v1";
   const defaultDateRange = {
     start2025: "2025-01-01", end2025: "2025-05-31",
     start2026: "2026-01-01", end2026: "2026-05-31",
@@ -2380,6 +2504,22 @@ export function App() {
   useEffect(() => {
     loadImportedSources().then(async (stored) => {
       if (stored.length) {
+        const hasMachinedPartsData = !!analyzeImported(stored, appliedDateRange)?.dqa?.machinedParts;
+        const machinedVersionMatched = localStorage.getItem("qms-dqa-machined-source-version") === machinedSourceVersion;
+        if (!hasMachinedPartsData || !machinedVersionMatched) {
+          const defaultFiles = await loadDefaultSources();
+          const defaultMachinedParts = defaultFiles.filter((file) => file.subKind === "DQA_MACHINED_PARTS");
+          if (defaultMachinedParts.length) {
+            const merged = [...stored.filter((file) => file.subKind !== "DQA_MACHINED_PARTS"), ...defaultMachinedParts];
+            await saveImportedSources(merged);
+            localStorage.setItem("qms-dqa-machined-source-version", machinedSourceVersion);
+            setUsingDefaultAnalysis(false);
+            setFiles(merged);
+            setData(analyzeImported(merged, appliedDateRange));
+            setStorageReady(true);
+            return;
+          }
+        }
         setUsingDefaultAnalysis(false);
         setFiles(stored);
         setData(analyzeImported(stored, appliedDateRange));

@@ -34,7 +34,6 @@ function ScaledChart({ option, ...props }) {
   const themedOption = isAppleTheme() ? applyAppleChartTheme(option) : option;
   return <ReactECharts {...props} notMerge lazyUpdate option={{ textStyle: { fontSize: Math.round(12 * scale), color: isAppleTheme() ? "#526174" : undefined, fontFamily: "PingFang SC, Microsoft YaHei, sans-serif" }, ...scaleOptionFonts(themedOption, scale) }} />;
 }
-
 const asArray = (value) => Array.isArray(value) ? value : value ? [value] : [];
 const themeAxis = (axis) => ({
   ...axis,
@@ -88,6 +87,7 @@ const safeParse = (value, fallback) => {
   try { return value ? JSON.parse(value) : fallback; } catch { return fallback; }
 };
 const storageKey = (type, key) => `qms-chart-label-position:${type}:${key}`;
+const axisStorageKey = (type, key) => `qms-chart-axis-range:${type}:${key}`;
 const usePersistentPositions = (type, key, defaults) => {
   const [positions, setPositions] = useState(() => ({
     ...defaults,
@@ -102,6 +102,17 @@ const usePersistentPositions = (type, key, defaults) => {
   }, [type, key, JSON.stringify(defaults)]);
   useEffect(() => { localStorage.setItem(storageKey(type, key), JSON.stringify(positions)); }, [type, key, positions]);
   return [positions, setPositions];
+};
+const usePersistentAxisRange = (type, key, defaults) => {
+  const [range, setRange] = useState(() => ({
+    ...defaults,
+    ...safeParse(localStorage.getItem(axisStorageKey(type, key)), {}),
+  }));
+  useEffect(() => {
+    const next = { ...defaults, ...range };
+    localStorage.setItem(axisStorageKey(type, key), JSON.stringify(next));
+  }, [type, key, range.min, range.max, JSON.stringify(defaults)]);
+  return [range, setRange];
 };
 const useLabelControlsVisible = () => {
   const [visible, setVisible] = useState(() => localStorage.getItem("qms-chart-label-controls-visible-v2") === "true");
@@ -133,29 +144,30 @@ const bottomLegend = () => isAppleTheme()
 export function LineCompare({ data, height = 300, chartKey = data.series.map((item) => item.name).join("-") }) {
   const defaults = Object.fromEntries(data.series.map((item, index) => [item.name, index ? "bottom" : "top"]));
   const [positions, setPositions] = usePersistentPositions("line", chartKey, defaults);
+  const [rateAxis, setRateAxis] = usePersistentAxisRange("line", chartKey, { min: 75, max: 100 });
   const changePosition = (name, value) => setPositions((current) => ({ ...current, [name]: value }));
-  return <div className="chart-config-wrap"><LabelPositionControl positions={positions} onChange={changePosition}/><ScaledChart style={{ height }} option={{
+  return <div className="chart-config-wrap"><div className="chart-control-row"><RateAxisControl range={rateAxis} onChange={setRateAxis}/><LabelPositionControl positions={positions} onChange={changePosition}/></div><ScaledChart style={{ height }} option={{
     tooltip: { trigger: "axis" },
     legend: topLegend(8),
     grid: { left: 42, right: 18, top: 42, bottom: 30 },
     xAxis: { type: "category", data: data.labels, axisLine: { lineStyle: { color: "#d5dbe5" } } },
-    yAxis: { type: "value", min: 75, max: 100, axisLabel: { formatter: "{value}%" }, splitLine: { lineStyle: { color: "#eef1f5" } } },
-    series: data.series.map((s, i) => ({ name: s.name, type: "line", smooth: true, symbolSize: 7, data: s.data, label: { show: labelVisible(positions[s.name]), position: labelPosition(positions[s.name]), formatter: "{c}", fontSize: 9 }, labelLayout: { hideOverlap: true, moveOverlap: "shiftY" }, lineStyle: { width: 3 }, itemStyle: { color: i ? cyan : blue }, areaStyle: i === 0 ? { color: "rgba(47,126,230,.07)" } : undefined })),
+    yAxis: { type: "value", min: Number(rateAxis.min) || 0, max: Math.max(Number(rateAxis.max) || 100, (Number(rateAxis.min) || 0) + 0.1), axisLabel: { formatter: "{value}%" }, splitLine: { lineStyle: { color: "#eef1f5" } } },
+    series: data.series.map((s, i) => ({ name: s.name, type: "line", smooth: true, symbolSize: 7, data: s.data, label: { show: labelVisible(positions[s.name]), position: labelPosition(positions[s.name]), formatter: "{c}", fontSize: 9 }, labelLayout: { hideOverlap: false, moveOverlap: "shiftY" }, lineStyle: { width: 3 }, itemStyle: { color: i ? cyan : blue }, areaStyle: i === 0 ? { color: "rgba(47,126,230,.07)" } : undefined })),
   }} /></div>;
 }
-
 export function BarCompare({ labels, first, second, names = ["2025", "2026"], percent = true, height = 310, chartKey = names.join("-") }) {
   const [positions, setPositions] = usePersistentPositions("bar", chartKey, { [names[0]]: "top", [names[1]]: "top" });
+  const [rateAxis, setRateAxis] = usePersistentAxisRange("bar", chartKey, { min: 0, max: 100 });
   const changePosition = (name, value) => setPositions((current) => ({ ...current, [name]: value }));
-  return <div className="chart-config-wrap"><LabelPositionControl positions={positions} onChange={changePosition}/><ScaledChart style={{ height }} option={{
+  return <div className="chart-config-wrap"><div className="chart-control-row">{percent && <RateAxisControl range={rateAxis} onChange={setRateAxis}/>}<LabelPositionControl positions={positions} onChange={changePosition}/></div><ScaledChart style={{ height }} option={{
     tooltip: { trigger: "axis", axisPointer: { type: "shadow" }, valueFormatter: (v) => percent ? `${v}%` : v },
     legend: topLegend(6),
     grid: { left: 46, right: 18, top: 42, bottom: 54 },
     xAxis: { type: "category", data: labels, axisLabel: { interval: 0, rotate: labels.length > 7 ? 25 : 0, color: "#596273" }, axisLine: { lineStyle: { color: "#d8dee7" } } },
-    yAxis: { type: "value", axisLabel: { formatter: percent ? "{value}%" : "{value}" }, splitLine: { lineStyle: { color: "#edf0f4" } } },
+    yAxis: { type: "value", min: percent ? Number(rateAxis.min) || 0 : undefined, max: percent ? Math.max(Number(rateAxis.max) || 100, (Number(rateAxis.min) || 0) + 0.1) : undefined, axisLabel: { formatter: percent ? "{value}%" : "{value}" }, splitLine: { lineStyle: { color: "#edf0f4" } } },
     series: [
-      { name: names[0], type: "bar", data: first, barMaxWidth: 28, itemStyle: { color: blue, borderRadius: [4, 4, 0, 0] }, label: { show: labelVisible(positions[names[0]]), position: labelPosition(positions[names[0]]), formatter: percent ? "{c}%" : "{c}", fontSize: 10 }, labelLayout: { hideOverlap: true } },
-      { name: names[1], type: "bar", data: second, barMaxWidth: 28, itemStyle: { color: orange, borderRadius: [4, 4, 0, 0] }, label: { show: labelVisible(positions[names[1]]), position: labelPosition(positions[names[1]]), formatter: percent ? "{c}%" : "{c}", fontSize: 10 }, labelLayout: { hideOverlap: true } },
+      { name: names[0], type: "bar", data: first, barMaxWidth: 28, itemStyle: { color: blue, borderRadius: [4, 4, 0, 0] }, label: { show: labelVisible(positions[names[0]]), position: labelPosition(positions[names[0]]), formatter: percent ? "{c}%" : "{c}", fontSize: 10 }, labelLayout: { hideOverlap: false } },
+      { name: names[1], type: "bar", data: second, barMaxWidth: 28, itemStyle: { color: orange, borderRadius: [4, 4, 0, 0] }, label: { show: labelVisible(positions[names[1]]), position: labelPosition(positions[names[1]]), formatter: percent ? "{c}%" : "{c}", fontSize: 10 }, labelLayout: { hideOverlap: false } },
     ],
   }} /></div>;
 }
@@ -163,19 +175,21 @@ export function BarCompare({ labels, first, second, names = ["2025", "2026"], pe
 export function HorizontalRank({ rows, height = 330, chartKey = "five-rate-rank" }) {
   const data = [...rows].sort((a, b) => a.fiveRate - b.fiveRate);
   const [positions, setPositions] = usePersistentPositions("horizontal-rank", chartKey, { "5分率": "right" });
+  const [rateAxis, setRateAxis] = usePersistentAxisRange("horizontal-rank", chartKey, { min: 0, max: 100 });
   const position = positions["5分率"];
-  return <div className="chart-config-wrap"><LabelPositionControl positions={positions} onChange={(name, value) => setPositions((current) => ({ ...current, [name]: value }))} options={["right", "left", "inside", "none"]}/><ScaledChart style={{ height }} option={{
+  return <div className="chart-config-wrap"><div className="chart-control-row"><RateAxisControl range={rateAxis} onChange={setRateAxis}/><LabelPositionControl positions={positions} onChange={(name, value) => setPositions((current) => ({ ...current, [name]: value }))} options={["right", "left", "inside", "none"]}/></div><ScaledChart style={{ height }} option={{
     tooltip: { trigger: "axis", axisPointer: { type: "shadow" }, formatter: (p) => `${p[0].name}<br/>5分率：${p[0].value}%` },
     grid: { left: 72, right: 48, top: 8, bottom: 18 },
-    xAxis: { type: "value", max: 100, axisLabel: { formatter: "{value}%" }, splitLine: { lineStyle: { color: "#eef1f5" } } },
+    xAxis: { type: "value", min: Number(rateAxis.min) || 0, max: Math.max(Number(rateAxis.max) || 100, (Number(rateAxis.min) || 0) + 0.1), axisLabel: { formatter: "{value}%" }, splitLine: { lineStyle: { color: "#eef1f5" } } },
     yAxis: { type: "category", data: data.map((x) => x.name), axisTick: { show: false }, axisLine: { show: false } },
-    series: [{ type: "bar", data: data.map((x) => x.fiveRate), barWidth: 17, itemStyle: { color: (p) => p.value < 40 ? red : p.value < 70 ? orange : green, borderRadius: [0, 6, 6, 0] }, label: { show: labelVisible(position), position: labelPosition(position), formatter: "{c}%" }, labelLayout: { hideOverlap: true } }],
+    series: [{ type: "bar", data: data.map((x) => x.fiveRate), barWidth: 17, itemStyle: { color: (p) => p.value < 40 ? red : p.value < 70 ? orange : green, borderRadius: [0, 6, 6, 0] }, label: { show: labelVisible(position), position: labelPosition(position), formatter: "{c}%" }, labelLayout: { hideOverlap: false } }],
   }} /></div>;
 }
 
 export function StackedStage({ rows, height = 330, chartKey = "stage-distribution" }) {
   const totals = rows.map((x) => Math.max(x.review + x.production + x.onsite, 1));
-  const [positions, setPositions] = usePersistentPositions("stacked-stage", chartKey, { 评审问题: "inside", 生产问题: "inside", 现场问题: "inside" });
+  const [positions, setPositions] = usePersistentPositions("stacked-stage", chartKey, { "评审问题": "inside", "生产问题": "inside", "现场问题": "inside" });
+  const [rateAxis, setRateAxis] = usePersistentAxisRange("stacked-stage", chartKey, { min: 0, max: 100 });
   const changePosition = (name, value) => setPositions((current) => ({ ...current, [name]: value }));
   const stageData = (key) => rows.map((row, index) => ({
     value: +(row[key] / totals[index] * 100).toFixed(1),
@@ -187,9 +201,9 @@ export function StackedStage({ rows, height = 330, chartKey = "stage-distributio
     color: "#fff",
     fontSize: 9,
     lineHeight: 12,
-    formatter: (p) => p.value >= 8 ? `${Number(p.data.count || 0).toLocaleString()}/${p.value}%` : "",
+    formatter: (p) => Number(p.data.count || 0) ? `${Number(p.data.count || 0).toLocaleString()}/${p.value}%` : "",
   });
-  return <div className="chart-config-wrap"><LabelPositionControl positions={positions} onChange={changePosition} options={["inside", "insideLeft", "insideRight", "left", "right", "none"]}/><ScaledChart style={{ height }} option={{
+  return <div className="chart-config-wrap"><div className="chart-control-row"><RateAxisControl range={rateAxis} onChange={setRateAxis}/><LabelPositionControl positions={positions} onChange={changePosition} options={["inside", "insideLeft", "insideRight", "left", "right", "none"]}/></div><ScaledChart style={{ height }} option={{
     tooltip: {
       trigger: "axis",
       axisPointer: { type: "shadow" },
@@ -197,12 +211,12 @@ export function StackedStage({ rows, height = 330, chartKey = "stage-distributio
     },
     legend: topLegend(0),
     grid: { left: 92, right: 24, top: 40, bottom: 18 },
-    xAxis: { type: "value", max: 100, axisLabel: { formatter: "{value}%" }, splitLine: { show: false } },
+    xAxis: { type: "value", min: Number(rateAxis.min) || 0, max: Math.max(Number(rateAxis.max) || 100, (Number(rateAxis.min) || 0) + 0.1), axisLabel: { formatter: "{value}%" }, splitLine: { show: false } },
     yAxis: { type: "category", data: rows.map((x) => x.name), axisTick: { show: false }, axisLine: { show: false } },
     series: [
-      { name: "评审问题", type: "bar", stack: "total", data: stageData("review"), itemStyle: { color: blue }, label: stageLabel("评审问题"), labelLayout: { hideOverlap: true } },
-      { name: "生产问题", type: "bar", stack: "total", data: stageData("production"), itemStyle: { color: orange }, label: stageLabel("生产问题"), labelLayout: { hideOverlap: true } },
-      { name: "现场问题", type: "bar", stack: "total", data: stageData("onsite"), itemStyle: { color: green }, label: stageLabel("现场问题"), labelLayout: { hideOverlap: true } },
+      { name: "评审问题", type: "bar", stack: "total", data: stageData("review"), itemStyle: { color: blue }, label: stageLabel("评审问题"), labelLayout: { hideOverlap: false } },
+      { name: "生产问题", type: "bar", stack: "total", data: stageData("production"), itemStyle: { color: orange }, label: stageLabel("生产问题"), labelLayout: { hideOverlap: false } },
+      { name: "现场问题", type: "bar", stack: "total", data: stageData("onsite"), itemStyle: { color: green }, label: stageLabel("现场问题"), labelLayout: { hideOverlap: false } },
     ],
   }} /></div>;
 }
@@ -211,9 +225,9 @@ export function Donut({ rows, height = 270, chartKey = "donut" }) {
   const [positions, setPositions] = usePersistentPositions("donut", chartKey, { 分类数值: "outside" });
   const position = positions.分类数值;
   return <div className="chart-config-wrap"><LabelPositionControl positions={positions} onChange={(name, value) => setPositions((current) => ({ ...current, [name]: value }))} options={["outside", "inside", "none"]}/><ScaledChart style={{ height }} option={{
-    tooltip: { trigger: "item", formatter: "{b}<br/>{c} · {d}%" },
+    tooltip: { trigger: "item", formatter: "{b}<br/>{c} 路 {d}%" },
     legend: bottomLegend(),
-    series: [{ type: "pie", radius: ["45%", "68%"], center: ["50%", "43%"], data: rows.map((x) => ({ name: x.name, value: x.count })), label: { show: labelVisible(position), position: labelPosition(position), formatter: "{b}\n{d}%", fontSize: 10 }, labelLayout: { hideOverlap: true, moveOverlap: "shiftY" }, itemStyle: { borderColor: "#fff", borderWidth: 2 } }],
+    series: [{ type: "pie", radius: ["45%", "68%"], center: ["50%", "43%"], data: rows.map((x) => ({ name: x.name, value: x.count })), label: { show: labelVisible(position), position: labelPosition(position), formatter: "{b}\n{d}%", fontSize: 10 }, labelLayout: { hideOverlap: false, moveOverlap: "shiftY" }, itemStyle: { borderColor: "#fff", borderWidth: 2 } }],
   }} /></div>;
 }
 
@@ -222,16 +236,17 @@ export function Pareto({ rows, height = 315, chartKey = "pareto" }) {
   let sum = 0;
   const cumulative = rows.map((x) => { sum += x.count; return +(sum / Math.max(total, 1) * 100).toFixed(1); });
   const [positions, setPositions] = usePersistentPositions("pareto", chartKey, { 问题数: "top", 累计占比: "bottom" });
+  const [rateAxis, setRateAxis] = usePersistentAxisRange("pareto", chartKey, { min: 0, max: 100 });
   const changePosition = (name, value) => setPositions((current) => ({ ...current, [name]: value }));
-  return <div className="chart-config-wrap"><LabelPositionControl positions={positions} onChange={changePosition}/><ScaledChart style={{ height }} option={{
+  return <div className="chart-config-wrap"><div className="chart-control-row"><RateAxisControl range={rateAxis} onChange={setRateAxis}/><LabelPositionControl positions={positions} onChange={changePosition}/></div><ScaledChart style={{ height }} option={{
     tooltip: { trigger: "axis" },
     legend: topLegend(0),
     grid: { left: 48, right: 48, top: 42, bottom: 62 },
     xAxis: { type: "category", data: rows.map((x) => x.name), axisLabel: { rotate: 28, interval: 0 } },
-    yAxis: [{ type: "value", splitLine: { lineStyle: { color: "#eef1f5" } } }, { type: "value", max: 100, axisLabel: { formatter: "{value}%" }, splitLine: { show: false } }],
+    yAxis: [{ type: "value", splitLine: { lineStyle: { color: "#eef1f5" } } }, { type: "value", min: Number(rateAxis.min) || 0, max: Math.max(Number(rateAxis.max) || 100, (Number(rateAxis.min) || 0) + 0.1), axisLabel: { formatter: "{value}%" }, splitLine: { show: false } }],
     series: [
-      { name: "问题数", type: "bar", data: rows.map((x) => x.count), itemStyle: { color: blue, borderRadius: [5, 5, 0, 0] }, barMaxWidth: 32, label: { show: labelVisible(positions.问题数), position: labelPosition(positions.问题数), formatter: "{c}", fontSize: 9 }, labelLayout: { hideOverlap: true } },
-      { name: "累计占比", type: "line", yAxisIndex: 1, data: cumulative, smooth: true, itemStyle: { color: orange }, label: { show: labelVisible(positions.累计占比), position: labelPosition(positions.累计占比), formatter: "{c}%", fontSize: 9 }, labelLayout: { hideOverlap: true, moveOverlap: "shiftY" } },
+      { name: "问题数", type: "bar", data: rows.map((x) => x.count), itemStyle: { color: blue, borderRadius: [5, 5, 0, 0] }, barMaxWidth: 32, label: { show: labelVisible(positions.问题数), position: labelPosition(positions.问题数), formatter: "{c}", fontSize: 9 }, labelLayout: { hideOverlap: false } },
+      { name: "累计占比", type: "line", yAxisIndex: 1, data: cumulative, smooth: true, itemStyle: { color: orange }, label: { show: labelVisible(positions.累计占比), position: labelPosition(positions.累计占比), formatter: "{c}%", fontSize: 9 }, labelLayout: { hideOverlap: false, moveOverlap: "shiftY" } },
     ],
   }} /></div>;
 }
@@ -252,6 +267,8 @@ export function QuantityRateCombo({
   height = 340,
   chartKey = `${labelKey}-${qtyLabel}-${rateLabel}-${badLabel}-${showBad}`,
   theme = "auto",
+  rateAxisOverride = null,
+  hideRateAxisControl = false,
 }) {
   const resolvedTheme = theme === "auto" ? (document.documentElement.dataset.uiTheme || localStorage.getItem("qms-ui-theme") || "classic") : theme;
   const apple = resolvedTheme === "apple";
@@ -294,6 +311,8 @@ export function QuantityRateCombo({
     name, name.startsWith("2026") && name.includes(rateLabel) ? "bottom" : "top",
   ]));
   const [positions, setPositions] = usePersistentPositions("quantity-rate", chartKey, defaultPositions);
+  const [rateAxis, setRateAxis] = usePersistentAxisRange("quantity-rate", chartKey, { min: 0, max: 100 });
+  const effectiveRateAxis = rateAxisOverride || rateAxis;
   const changePosition = (name, value) => setPositions((current) => ({ ...current, [name]: value }));
   const appleLabelVisible = (name) => apple ? positions[name] !== "none" : labelVisible(positions[name]);
   const appleLabelDistance = (distance) => apple ? Math.max(18, distance + 8) : distance;
@@ -359,7 +378,7 @@ export function QuantityRateCombo({
     emphasis: { focus: "series", itemStyle: { shadowBlur: 14, shadowColor: "rgba(10,132,255,.18)" } },
   })) : barSeries;
   return <div className={`combo-chart-wrap${apple ? " apple-combo-chart" : ""}`}>
-    <div className="chart-control-row"><div className="axis-angle-control"><span>横坐标文字</span>{[0,45,90].map((angle) => <button key={angle} className={axisAngle === angle ? "active" : ""} onClick={() => setAxisAngle(angle)}>{angle}°</button>)}</div><LabelPositionControl positions={positions} onChange={changePosition}/></div>
+    <div className="chart-control-row"><div className="axis-angle-control"><span>横坐标文字</span>{[0,45,90].map((angle) => <button key={angle} className={axisAngle === angle ? "active" : ""} onClick={() => setAxisAngle(angle)}>{angle}°</button>)}</div>{!hideRateAxisControl && <RateAxisControl range={rateAxis} onChange={setRateAxis}/>}<LabelPositionControl positions={positions} onChange={changePosition}/></div>
     <ScaledChart style={{ height }} option={{
     tooltip: {
       trigger: "axis",
@@ -381,7 +400,7 @@ export function QuantityRateCombo({
     },
     yAxis: [
       { type: "value", name: qtyLabel, nameTextStyle: { color: apple ? applePalette.muted : "#718096", fontWeight: apple ? 700 : undefined }, axisLabel: { color: apple ? applePalette.muted : undefined }, splitLine: { lineStyle: { color: apple ? applePalette.grid : "#eef1f5", type: apple ? "dashed" : "solid" } } },
-      { type: "value", name: rateLabel, min: 0, max: 100, nameTextStyle: apple ? { color: applePalette.muted, fontWeight: 700 } : undefined, axisLabel: { formatter: "{value}%", color: apple ? applePalette.muted : undefined }, splitLine: { show: false } },
+      { type: "value", name: rateLabel, min: Number(effectiveRateAxis.min) || 0, max: Math.max(Number(effectiveRateAxis.max) || 100, (Number(effectiveRateAxis.min) || 0) + 0.1), nameTextStyle: apple ? { color: applePalette.muted, fontWeight: 700 } : undefined, axisLabel: { formatter: "{value}%", color: apple ? applePalette.muted : undefined }, splitLine: { show: false } },
     ],
     series: [
       ...themedBarSeries,
@@ -391,6 +410,15 @@ export function QuantityRateCombo({
     }} />
   </div>;
 }
+function RateAxisControl({ range, onChange, label = "比例轴" }) {
+  const visible = useLabelControlsVisible();
+  if (!visible) return null;
+  const min = Number(range.min);
+  const max = Number(range.max);
+  const safeMax = Math.max(0.1, Number.isFinite(max) ? max : 100);
+  const safeMin = Math.min(safeMax - 0.1, Math.max(0, Number.isFinite(min) ? min : 0));
+  return <div className="axis-angle-control rate-axis-control"><span>{label}</span><label>最小<input type="number" min="0" step="0.1" value={range.min} onChange={(event) => onChange({ ...range, min: event.target.value })} onBlur={() => onChange({ ...range, min: safeMin })}/></label><label>最大<input type="number" min="0.1" step="0.1" value={range.max} onChange={(event) => onChange({ ...range, max: event.target.value })} onBlur={() => onChange({ ...range, max: safeMax })}/></label></div>;
+}
 
 export function MachinedTpmCompareChart({
   rows,
@@ -399,11 +427,15 @@ export function MachinedTpmCompareChart({
   maxRate = 5,
   height = 420,
   chartKey = "machined-tpm-compare",
+  rateAxisOverride = null,
+  hideRateAxisControl = false,
 }) {
   const names = ["2025数量", "2026数量", "2025比例", "2026比例"];
   const defaultPositions = { "2025数量": "top", "2026数量": "top", "2025比例": "top", "2026比例": "bottom" };
   const [positions, setPositions] = usePersistentPositions("machined-tpm", chartKey, defaultPositions);
   const changePosition = (name, value) => setPositions((current) => ({ ...current, [name]: value }));
+  const [rateAxis, setRateAxis] = usePersistentAxisRange("machined-tpm", chartKey, { min: minRate, max: maxRate });
+  const effectiveRateAxis = rateAxisOverride || rateAxis;
   const [axisAngle, setAxisAngle] = useState(0);
   const labels = rows.map((row) => row[labelKey] ?? row.label ?? row.name ?? "");
   const axisBottom = axisAngle ? Math.min(170, Math.max(82, Math.max(0, ...labels.map((label) => String(label).length)) * (axisAngle === 90 ? 10 : 7))) : 48;
@@ -430,7 +462,7 @@ export function MachinedTpmCompareChart({
     formatter: ({ value }) => `${value}%`,
   });
   return <div className="chart-config-wrap">
-    <div className="chart-control-row"><div className="axis-angle-control"><span>横坐标文字</span>{[0,45,90].map((angle) => <button key={angle} className={axisAngle === angle ? "active" : ""} onClick={() => setAxisAngle(angle)}>{angle}°</button>)}</div><LabelPositionControl positions={positions} onChange={changePosition}/></div>
+    <div className="chart-control-row"><div className="axis-angle-control"><span>横坐标文字</span>{[0,45,90].map((angle) => <button key={angle} className={axisAngle === angle ? "active" : ""} onClick={() => setAxisAngle(angle)}>{angle}°</button>)}</div>{!hideRateAxisControl && <RateAxisControl range={rateAxis} onChange={setRateAxis}/>}<LabelPositionControl positions={positions} onChange={changePosition}/></div>
     <ScaledChart style={{ height }} option={{
       tooltip: {
         trigger: "axis",
@@ -446,8 +478,8 @@ export function MachinedTpmCompareChart({
         axisLine: { lineStyle: { color: "#d8dee7" } },
       },
       yAxis: [
-        { type: "value", name: "ECN加工件数量", splitLine: { lineStyle: { color: "#eef1f5" } } },
-        { type: "value", name: "加工件占比", min: Number(minRate) || 0, max: Number(maxRate) || 5, axisLabel: { formatter: "{value}%" }, splitLine: { show: false } },
+        { type: "value", name: "加工件数量", splitLine: { lineStyle: { color: "#eef1f5" } } },
+        { type: "value", name: "加工件占比", min: Number(effectiveRateAxis.min) || 0, max: Math.max(Number(effectiveRateAxis.max) || maxRate || 5, (Number(effectiveRateAxis.min) || 0) + 0.1), axisLabel: { formatter: "{value}%" }, splitLine: { show: false } },
       ],
       series: [
         { name: "2025数量", type: "bar", data: rows.map((row) => row.y2025Bad || 0), barMaxWidth: 22, itemStyle: { color: "#8db9ed", borderRadius: [4,4,0,0] }, label: valueLabel("2025数量", "#365d84"), labelLayout: { hideOverlap: false, moveOverlap: "shiftY" } },
@@ -472,7 +504,7 @@ export function WorkshopCategoryHeatmap({ data, height = 400, chartKey = "worksh
     xAxis: { type: "category", data: categories, splitArea: { show: true }, axisLabel: { interval: 0, rotate: 45, fontSize: 10 } },
     yAxis: { type: "category", data: rows.map((row) => row.name), splitArea: { show: true }, axisLabel: { fontSize: 10 } },
     visualMap: { min: 0, max, calculable: true, orient: "horizontal", left: "center", bottom: 5, inRange: { color: ["#eef6ff", "#83b9ec", "#f6bd6f", "#e85c55"] } },
-    series: [{ type: "heatmap", data: values, label: { show: labelVisible(position), position: labelPosition(position), formatter: ({ value }) => value[2] || "", fontSize: 9 }, labelLayout: { hideOverlap: true }, emphasis: { itemStyle: { shadowBlur: 8, shadowColor: "rgba(0,0,0,.25)" } } }],
+    series: [{ type: "heatmap", data: values, label: { show: labelVisible(position), position: labelPosition(position), formatter: ({ value }) => value[2] || "", fontSize: 9 }, labelLayout: { hideOverlap: false }, emphasis: { itemStyle: { shadowBlur: 8, shadowColor: "rgba(0,0,0,.25)" } } }],
   }} /></div>;
 }
 
@@ -504,17 +536,19 @@ export function ScoreMonthlyTrend({ rows, metric, label, percent = false, max, h
     xAxis: { type: "category", data: rows.map((row) => row.month), axisLine: { lineStyle: { color: "#d8dee7" } } },
     yAxis: { type: "value", name: label, max, axisLabel: { formatter: `{value}${suffix}` }, splitLine: { lineStyle: { color: "#eef1f5" } } },
     series: [
-      { name: "2025同期", type: "line", smooth: true, symbolSize: 7, data: rows.map((row) => row[`y2025${metric}`] || 0), label: { show: labelVisible(positions["2025同期"]), position: labelPosition(positions["2025同期"]), formatter: `{c}${suffix}`, fontSize: 9 }, labelLayout: { hideOverlap: true, moveOverlap: "shiftY" }, lineStyle: { width: 2.5 }, itemStyle: { color: blue } },
-      { name: "2026本期", type: "line", smooth: true, symbolSize: 7, data: rows.map((row) => row[`y2026${metric}`] || 0), label: { show: labelVisible(positions["2026本期"]), position: labelPosition(positions["2026本期"]), formatter: `{c}${suffix}`, fontSize: 9 }, labelLayout: { hideOverlap: true, moveOverlap: "shiftY" }, lineStyle: { width: 2.5 }, itemStyle: { color: orange } },
+      { name: "2025同期", type: "line", smooth: true, symbolSize: 7, data: rows.map((row) => row[`y2025${metric}`] || 0), label: { show: labelVisible(positions["2025同期"]), position: labelPosition(positions["2025同期"]), formatter: `{c}${suffix}`, fontSize: 9 }, labelLayout: { hideOverlap: false, moveOverlap: "shiftY" }, lineStyle: { width: 2.5 }, itemStyle: { color: blue } },
+      { name: "2026本期", type: "line", smooth: true, symbolSize: 7, data: rows.map((row) => row[`y2026${metric}`] || 0), label: { show: labelVisible(positions["2026本期"]), position: labelPosition(positions["2026本期"]), formatter: `{c}${suffix}`, fontSize: 9 }, labelLayout: { hideOverlap: false, moveOverlap: "shiftY" }, lineStyle: { width: 2.5 }, itemStyle: { color: orange } },
     ],
   }} /></div>;
 }
 
-export function ScoreMonthlyCombo({ rows, metric, label, numeratorKey, numeratorName, denominatorName = "评分总数量", percent = false, max, height = 340, chartKey = `${metric}-${label}-${numeratorName}` }) {
+export function ScoreMonthlyCombo({ rows, metric, label, numeratorKey, numeratorName, denominatorName = "评分总数量", percent = false, max, height = 340, chartKey = `${metric}-${label}-${numeratorName}`, rateAxisOverride = null, hideRateAxisControl = false }) {
   const suffix = percent ? "%" : "";
   const names = [`2025${numeratorName}`, `2025${denominatorName}`, `2026${numeratorName}`, `2026${denominatorName}`, `2025${label}`, `2026${label}`];
   const defaultPositions = Object.fromEntries(names.map((name, index) => [name, index === 5 ? "bottom" : "top"]));
   const [positions, setPositions] = usePersistentPositions("score-monthly-combo", chartKey, defaultPositions);
+  const [rateAxis, setRateAxis] = usePersistentAxisRange("score-monthly-combo", chartKey, { min: 0, max: max || 100 });
+  const effectiveRateAxis = rateAxisOverride || rateAxis;
   const changePosition = (name, value) => setPositions((current) => ({ ...current, [name]: value }));
   const values = (year) => {
     const denominator = rows.map((row) => row[`y${year}Count`] ?? 0);
@@ -532,7 +566,7 @@ export function ScoreMonthlyCombo({ rows, metric, label, numeratorKey, numerator
   const y26 = values(2026);
   const valueLabel = (name, color) => ({ show: labelVisible(positions[name]), position: labelPosition(positions[name]), distance: 4, color, fontSize: 8, formatter: ({ value }) => value ? value.toLocaleString() : "" });
   return <div className="score-combo-wrap">
-    <LabelPositionControl positions={positions} onChange={changePosition}/>
+    <div className="chart-control-row">{!hideRateAxisControl && <RateAxisControl range={rateAxis} onChange={setRateAxis}/>}<LabelPositionControl positions={positions} onChange={changePosition}/></div>
     <ScaledChart style={{ height }} option={{
       tooltip: { trigger: "axis", axisPointer: { type: "cross" } },
       legend: isAppleTheme() ? { top: 0, left: 8, right: 8, type: "scroll" } : { top: 0, left: 8, right: 8 },
@@ -540,15 +574,15 @@ export function ScoreMonthlyCombo({ rows, metric, label, numeratorKey, numerator
       xAxis: { type: "category", data: rows.map((row) => row.month), axisLine: { lineStyle: { color: "#d8dee7" } } },
       yAxis: [
         { type: "value", name: "数量", splitLine: { lineStyle: { color: "#eef1f5" } } },
-        { type: "value", name: label, min: 0, max, axisLabel: { formatter: `{value}${suffix}` }, splitLine: { show: false } },
+        { type: "value", name: label, min: Number(effectiveRateAxis.min) || 0, max: Math.max(Number(effectiveRateAxis.max) || max || 100, (Number(effectiveRateAxis.min) || 0) + 0.1), axisLabel: { formatter: `{value}${suffix}` }, splitLine: { show: false } },
       ],
       series: [
-        { name: `2025${numeratorName}`, type: "bar", data: y25.numerator, barWidth: 9, barGap: "18%", label: valueLabel(`2025${numeratorName}`, "#9a5a22"), labelLayout: { hideOverlap: true }, itemStyle: { color: "#f3b778", borderRadius: [3,3,0,0] } },
-        { name: `2025${denominatorName}`, type: "bar", data: y25.denominator, barWidth: 9, barGap: "18%", label: valueLabel(`2025${denominatorName}`, "#41678c"), labelLayout: { hideOverlap: true }, itemStyle: { color: "#9fc5eb", borderRadius: [3,3,0,0] } },
-        { name: `2026${numeratorName}`, type: "bar", data: y26.numerator, barWidth: 9, barGap: "18%", label: valueLabel(`2026${numeratorName}`, "#91400f"), labelLayout: { hideOverlap: true }, itemStyle: { color: "#e8752e", borderRadius: [3,3,0,0] } },
-        { name: `2026${denominatorName}`, type: "bar", data: y26.denominator, barWidth: 9, barGap: "18%", label: valueLabel(`2026${denominatorName}`, "#174f84"), labelLayout: { hideOverlap: true }, itemStyle: { color: "#438fd8", borderRadius: [3,3,0,0] } },
-        { name: `2025${label}`, type: "line", yAxisIndex: 1, data: y25.rates, smooth: true, symbolSize: 7, label: { show: labelVisible(positions[`2025${label}`]), position: labelPosition(positions[`2025${label}`]), formatter: `{c}${suffix}`, fontSize: 9, backgroundColor: "rgba(255,255,255,.88)", padding: [1,3] }, labelLayout: { hideOverlap: true, moveOverlap: "shiftY" }, lineStyle: { width: 2.4 }, itemStyle: { color: "#6f63c4" } },
-        { name: `2026${label}`, type: "line", yAxisIndex: 1, data: y26.rates, smooth: true, symbolSize: 7, label: { show: labelVisible(positions[`2026${label}`]), position: labelPosition(positions[`2026${label}`]), formatter: `{c}${suffix}`, fontSize: 9, backgroundColor: "rgba(255,255,255,.88)", padding: [1,3] }, labelLayout: { hideOverlap: true, moveOverlap: "shiftY" }, lineStyle: { width: 2.6 }, itemStyle: { color: green } },
+        { name: `2025${numeratorName}`, type: "bar", data: y25.numerator, barWidth: 9, barGap: "18%", label: valueLabel(`2025${numeratorName}`, "#9a5a22"), labelLayout: { hideOverlap: false, moveOverlap: "shiftY" }, itemStyle: { color: "#f3b778", borderRadius: [3,3,0,0] } },
+        { name: `2025${denominatorName}`, type: "bar", data: y25.denominator, barWidth: 9, barGap: "18%", label: valueLabel(`2025${denominatorName}`, "#41678c"), labelLayout: { hideOverlap: false, moveOverlap: "shiftY" }, itemStyle: { color: "#9fc5eb", borderRadius: [3,3,0,0] } },
+        { name: `2026${numeratorName}`, type: "bar", data: y26.numerator, barWidth: 9, barGap: "18%", label: valueLabel(`2026${numeratorName}`, "#91400f"), labelLayout: { hideOverlap: false, moveOverlap: "shiftY" }, itemStyle: { color: "#e8752e", borderRadius: [3,3,0,0] } },
+        { name: `2026${denominatorName}`, type: "bar", data: y26.denominator, barWidth: 9, barGap: "18%", label: valueLabel(`2026${denominatorName}`, "#174f84"), labelLayout: { hideOverlap: false, moveOverlap: "shiftY" }, itemStyle: { color: "#438fd8", borderRadius: [3,3,0,0] } },
+        { name: `2025${label}`, type: "line", yAxisIndex: 1, data: y25.rates, smooth: true, symbolSize: 7, label: { show: labelVisible(positions[`2025${label}`]), position: labelPosition(positions[`2025${label}`]), formatter: `{c}${suffix}`, fontSize: 9, backgroundColor: "rgba(255,255,255,.88)", padding: [1,3] }, labelLayout: { hideOverlap: false, moveOverlap: "shiftY" }, lineStyle: { width: 2.4 }, itemStyle: { color: "#6f63c4" } },
+        { name: `2026${label}`, type: "line", yAxisIndex: 1, data: y26.rates, smooth: true, symbolSize: 7, label: { show: labelVisible(positions[`2026${label}`]), position: labelPosition(positions[`2026${label}`]), formatter: `{c}${suffix}`, fontSize: 9, backgroundColor: "rgba(255,255,255,.88)", padding: [1,3] }, labelLayout: { hideOverlap: false, moveOverlap: "shiftY" }, lineStyle: { width: 2.6 }, itemStyle: { color: green } },
       ],
     }} />
   </div>;
@@ -563,8 +597,9 @@ export function YearStackedCompare({ rows, values, height = 380, chartKey = valu
     .map((year) => ({ entity: row.name, ...year })));
   const defaultPositions = Object.fromEntries(values.map((value) => [value, "inside"]));
   const [positions, setPositions] = usePersistentPositions("year-stacked", chartKey, defaultPositions);
+  const [rateAxis, setRateAxis] = usePersistentAxisRange("year-stacked", chartKey, { min: 0, max: 100 });
   const changePosition = (name, value) => setPositions((current) => ({ ...current, [name]: value }));
-  return <div className="chart-config-wrap"><LabelPositionControl positions={positions} onChange={changePosition} options={["inside", "insideLeft", "insideRight", "left", "right", "none"]}/><ScaledChart style={{ height }} option={{
+  return <div className="chart-config-wrap"><div className="chart-control-row"><RateAxisControl range={rateAxis} onChange={setRateAxis}/><LabelPositionControl positions={positions} onChange={changePosition} options={["inside", "insideLeft", "insideRight", "left", "right", "none"]}/></div><ScaledChart style={{ height }} option={{
     tooltip: {
       trigger: "axis", axisPointer: { type: "shadow" },
       formatter: (params) => {
@@ -575,7 +610,7 @@ export function YearStackedCompare({ rows, values, height = 380, chartKey = valu
     },
     legend: isAppleTheme() ? { type: "scroll", top: 0, left: 8, right: 8 } : { type: "scroll", top: 0, left: 8, right: 8 },
     grid: { left: 130, right: 28, top: 48, bottom: 28, containLabel: true },
-    xAxis: { type: "value", max: 100, axisLabel: { formatter: "{value}%" }, splitLine: { lineStyle: { color: "#eef1f5" } } },
+    xAxis: { type: "value", min: Number(rateAxis.min) || 0, max: Math.max(Number(rateAxis.max) || 100, (Number(rateAxis.min) || 0) + 0.1), axisLabel: { formatter: "{value}%" }, splitLine: { lineStyle: { color: "#eef1f5" } } },
     yAxis: {
       type: "category",
       data: axisRows.map((row) => `${row.entity}  ${row.year}`),
@@ -596,7 +631,7 @@ export function YearStackedCompare({ rows, values, height = 380, chartKey = valu
         formatter: ({ data }) => {
           const share = Number(data?.share || 0);
           const count = Number(data?.count || 0);
-          if (!count || share < 5) return "";
+          if (!count) return "";
           return `${count.toLocaleString()}/${share}%`;
         },
         fontSize: 9,
@@ -605,7 +640,7 @@ export function YearStackedCompare({ rows, values, height = 380, chartKey = valu
         textBorderColor: "rgba(0,0,0,.18)",
         textBorderWidth: 2,
       },
-      labelLayout: { hideOverlap: true, moveOverlap: "shiftY" },
+      labelLayout: { hideOverlap: false, moveOverlap: "shiftY" },
     })),
   }} /></div>;
 }

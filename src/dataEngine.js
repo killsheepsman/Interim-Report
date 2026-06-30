@@ -195,6 +195,93 @@ const machinedPartRows = (workbook, fileName) => {
 
 
 
+const cn = {
+  machinedFile: "\u52a0\u5de5\u4ef6\u6570\u91cf\u6bd4\u4f8b",
+  machinedSheet: "\u52a0\u5de5\u4ef6\u7edf\u8ba1",
+  nonBom: "\u975eBOM",
+  ecn: "ECN",
+  totalParts: "\u52a0\u5de5\u4ef6\u603b\u6570",
+  productTotal: "\u4ea7\u54c1\u90e8\u603b\u8ba1",
+  fpcTotal: "FPC\u4e8b\u4e1a\u90e8\u603b\u8ba1",
+  fcpTotal: "FCP\u4e8b\u4e1a\u90e8\u603b\u8ba1",
+  division: "\u4ea7\u54c1\u90e8",
+  department: "\u90e8\u95e8",
+  applyDepartment: "\u7533\u8bf7\u90e8\u95e8",
+  qty: "\u6570\u91cf",
+  ratio: "\u6bd4\u4f8b",
+  date: "\u65e5\u671f",
+  year: "\u5e74\u4efd",
+  month: "\u6708\u4efd",
+  semiconductor: "\u534a\u5bfc\u4f53&\u5317\u7f8e",
+  productOne: "\u4ea7\u54c1\u4e00\u90e8",
+  productFive: "\u4ea7\u54c1\u4e94\u90e8",
+  fpc: "FPC\u4e8b\u4e1a\u90e8",
+  fcp: "FCP\u4e8b\u4e1a\u90e8",
+  northAmerica: "\u5317\u7f8e\u9879\u76ee\u90e8",
+  semiconductorDept: "\u534a\u5bfc\u4f53\u4e8b\u4e1a\u90e8",
+  icCarrier: "IC\u8f7d\u677f",
+  sensor: "\u4f20\u611f\u5668",
+  overseasAsia: "\u6d77\u5916\u4e9a\u592a\u9879\u76ee\u5f00\u53d1\u90e8",
+  techCenter: "\u6280\u672f\u4e2d\u5fc3",
+  unfilled: "\u672a\u586b\u5199",
+};
+
+const isMachinedPartsWorkbookStable = (fileName, workbook) => text(fileName).includes(cn.machinedFile)
+  || workbook.SheetNames.some((name) => text(name).includes(cn.machinedSheet));
+
+const machinedPartRowsStable = (workbook, fileName) => {
+  const rows = [];
+  workbook.SheetNames.forEach((sheetName) => {
+    const normalizedSheet = text(sheetName);
+    const sheetKind = normalizedSheet.includes(cn.nonBom) ? cn.nonBom : normalizedSheet.includes(cn.ecn) ? cn.ecn : "";
+    if (!sheetKind) return;
+    const matrix = XLSX.utils.sheet_to_json(workbook.Sheets[sheetName], { header: 1, defval: "" });
+    const firstRow = matrix[0] || [];
+    let currentDivision = "";
+    matrix.slice(2).forEach((values) => {
+      if (!values.some((v) => text(v))) return;
+      const rawDivisionCell = text(values[0]);
+      if (rawDivisionCell) currentDivision = rawDivisionCell;
+      const rawDivision = rawDivisionCell || currentDivision;
+      const tpm = text(values[1]);
+      if (!rawDivision && !tpm) return;
+      for (let col = 2; col < values.length; col += 2) {
+        let monthHeader = text(firstRow[col]);
+        if (!monthHeader) {
+          for (let left = col - 1; left >= 2 && !monthHeader; left -= 1) monthHeader = text(firstRow[left]);
+        }
+        const monthMatch = monthHeader.match(/(20\d{2})\u5e74\s*(\d{1,2})\u6708/);
+        if (!monthMatch) continue;
+        const year = Number(monthMatch[1]);
+        const month = Number(monthMatch[2]);
+        const quantity = number(values[col]);
+        const ratio = number(values[col + 1]);
+        if (quantity <= 0 && ratio <= 0) continue;
+        rows.push({
+          __sheet: normalizedSheet,
+          __partKind: sheetKind,
+          __sourceFile: fileName,
+          __division: rawDivision,
+          __tpm: tpm,
+          __year: year,
+          __month: month,
+          __quantity: quantity,
+          __ratio: ratio,
+          [cn.date]: new Date(year, month - 1, 1),
+          [cn.year]: year,
+          [cn.month]: month,
+          [cn.division]: rawDivision,
+          [cn.department]: rawDivision,
+          TPM: tpm,
+          [cn.qty]: quantity,
+          [cn.ratio]: ratio,
+        });
+      }
+    });
+  });
+  return rows;
+};
+
 const iqcProjectName = (fileName) => text(fileName)
   .replace(/\.xlsx?$/i, "")
   .replace(/\u9879\u76ee\u8d28\u68c0\u7edf\u8ba1|\u9879\u76ee\u7edf\u8ba1|\u8d28\u68c0\u7edf\u8ba1|\u7edf\u8ba1/g, "")
@@ -251,10 +338,10 @@ export async function parseFiles(files) {
     const arrayBuffer = await file.arrayBuffer();
     const workbook = XLSX.read(arrayBuffer, { type: "array", cellDates: true });
     const isOqcMonthlySummary = file.name.includes("评分按月汇总");
-    const isMachinedParts = isMachinedPartsWorkbook(file.name, workbook);
+    const isMachinedParts = isMachinedPartsWorkbookStable(file.name, workbook) || isMachinedPartsWorkbook(file.name, workbook);
     const isEcnSummary = !isMachinedParts && file.name.includes("ECN");
     const isIqcProject = !isEcnSummary && !isOqcMonthlySummary && isIqcProjectWorkbook(workbook);
-    const rows = isOqcMonthlySummary ? oqcMonthlySummaryRows(workbook) : isMachinedParts ? machinedPartRows(workbook, file.name) : isEcnSummary ? ecnRows(workbook) : isIqcProject ? iqcProjectRows(workbook, file.name) : sheetRows(workbook);
+    const rows = isOqcMonthlySummary ? oqcMonthlySummaryRows(workbook) : isMachinedParts ? machinedPartRowsStable(workbook, file.name) : isEcnSummary ? ecnRows(workbook) : isIqcProject ? iqcProjectRows(workbook, file.name) : sheetRows(workbook);
     rows.forEach((row) => {
       if (row["治具数量"] == null && row["送检数"] != null) row["治具数量"] = row["送检数"];
       if (row["异常问题数量"] == null && row["不良数"] != null) row["异常问题数量"] = row["不良数"];
@@ -1244,6 +1331,146 @@ const buildDqaMachinedParts = (dqaFiles) => {
   };
 };
 
+const machinedDivisionStable = (rawDivision, tpm) => {
+  const source = `${text(rawDivision)} ${text(tpm)}`;
+  if (!source.trim()) return "";
+  if ([cn.overseasAsia, cn.techCenter, cn.productTotal, cn.totalParts].some((name) => source.includes(name))) return "";
+  if ([cn.productOne, cn.northAmerica, cn.semiconductorDept, cn.icCarrier, cn.sensor].some((name) => source.includes(name))) return cn.semiconductor;
+  if (source.includes(cn.productFive)) return cn.productFive;
+  if (source.includes(cn.fpc) || source.includes(cn.fcp)) return cn.fpc;
+  return "";
+};
+
+const machinedTpmNameStable = (row) => text(row.__tpm || row.TPM || row.__division) || cn.unfilled;
+
+const machinedRateStable = (quantity, denominator) => Number((quantity / Math.max(denominator, 1) * 100).toFixed(2));
+
+const sumMachinedDenominatorStable = (denominatorRows, kind, year, month) => denominatorRows
+  .filter((row) => row.__partKind === kind && row.__year === year && (month == null || row.__month === month))
+  .reduce((sum, row) => sum + number(row.__quantity), 0);
+
+const sumMachinedQuantityStable = (rows, kind, year, getter, entity, month) => rows
+  .filter((row) => row.__partKind === kind && row.__year === year && (month == null || row.__month === month) && (!getter || getter(row) === entity))
+  .reduce((sum, row) => sum + number(row.__quantity), 0);
+
+const buildDqaMachinedPartsStable = (dqaFiles) => {
+  const partRows = dqaFiles.filter((file) => file.subKind === "DQA_MACHINED_PARTS").flatMap((file) => file.rows || []);
+  if (!partRows.length) return null;
+
+  const denominatorRows = partRows.filter((row) => text(row.__division).includes(cn.totalParts));
+  const isFpcTotalRow = (row) => [cn.fpcTotal, cn.fcpTotal].some((name) => text(row.__division).includes(name));
+  const sourceRows = partRows.map((row) => ({
+    ...row,
+    division: machinedDivisionStable(row.__division, row.__tpm),
+    tpmName: machinedTpmNameStable(row),
+  })).filter((row) => row.division);
+  const months = [...new Set(partRows.map((row) => number(row.__month)).filter(Boolean))].sort((a, b) => a - b);
+
+  const sumDivisionQuantity = (rows, kind, year, division, month) => rows
+    .filter((row) => row.__partKind === kind && row.__year === year && row.division === division && (month == null || row.__month === month))
+    .filter((row) => division !== cn.fpc || isFpcTotalRow(row))
+    .reduce((sum, row) => sum + number(row.__quantity), 0);
+
+  const sumTotalQuantity = (kind, year, month) => ECN_DIVISIONS.reduce((sum, division) => sum + sumDivisionQuantity(sourceRows, kind, year, division, month), 0);
+
+  const buildDivisionRows = (kind) => ECN_DIVISIONS.map((division) => ({
+    name: division,
+    years: [2025, 2026].map((year) => {
+      const numerator = sumDivisionQuantity(sourceRows, kind, year, division);
+      const denominator = sumMachinedDenominatorStable(denominatorRows, kind, year);
+      return { year, numerator, denominator, rate: machinedRateStable(numerator, denominator) };
+    }),
+  }));
+
+  const buildTpmEntities = (kind) => [...new Map(sourceRows
+    .filter((row) => row.__partKind === kind)
+    .map((row) => [`${row.division}\n${row.tpmName}`, { name: `${row.division}\n${row.tpmName}`, division: row.division, tpm: row.tpmName }])).values()]
+    .sort((a, b) => ECN_DIVISIONS.indexOf(a.division) - ECN_DIVISIONS.indexOf(b.division) || a.tpm.localeCompare(b.tpm, "zh-Hans-CN"));
+
+  const buildTpmRows = (kind, entities) => entities.map((entity) => ({
+    name: entity.name,
+    division: entity.division,
+    tpm: entity.tpm,
+    years: [2025, 2026].map((year) => {
+      const numerator = sumMachinedQuantityStable(sourceRows, kind, year, (row) => `${row.division}\n${row.tpmName}`, entity.name);
+      const denominator = sumMachinedDenominatorStable(denominatorRows, kind, year);
+      return { year, numerator, denominator, rate: machinedRateStable(numerator, denominator) };
+    }),
+  }));
+
+  const monthlyNumeratorForEntity = (kind, entity, year, month) => {
+    const isProductOneBridge = entity.division === cn.semiconductor && entity.tpm === cn.productOne;
+    const isProductFiveBridge = entity.division === cn.productFive && entity.tpm === cn.productFive;
+    if (isProductOneBridge && year === 2026) {
+      return sourceRows
+        .filter((row) => row.__partKind === kind && row.__year === year && row.__month === month && row.division === cn.semiconductor)
+        .filter((row) => [cn.northAmerica, cn.sensor, cn.icCarrier].includes(row.tpmName))
+        .reduce((sum, row) => sum + number(row.__quantity), 0);
+    }
+    if (isProductFiveBridge && year === 2026) {
+      return sourceRows
+        .filter((row) => row.__partKind === kind && row.__year === year && row.__month === month && row.division === cn.productFive)
+        .reduce((sum, row) => sum + number(row.__quantity), 0);
+    }
+    return sumMachinedQuantityStable(sourceRows, kind, year, (row) => `${row.division}\n${row.tpmName}`, entity.name, month);
+  };
+
+  const buildTpmMonthly = (kind, entities) => entities.map((entity) => ({
+    name: entity.name,
+    division: entity.division,
+    tpm: entity.tpm,
+    months: months.map((month) => {
+      const result = { name: `${month}\u6708`, month };
+      [2025, 2026].forEach((year) => {
+        const denominator = sumMachinedDenominatorStable(denominatorRows, kind, year, month);
+        const numerator = monthlyNumeratorForEntity(kind, entity, year, month);
+        result[`y${year}Qty`] = denominator;
+        result[`y${year}Bad`] = numerator;
+        result[`y${year}Rate`] = machinedRateStable(numerator, denominator);
+      });
+      return result;
+    }),
+  }));
+
+  const buildKind = (kind) => {
+    const monthly = months.map((month) => {
+      const result = { name: `${month}\u6708`, month };
+      [2025, 2026].forEach((year) => {
+        const denominator = sumMachinedDenominatorStable(denominatorRows, kind, year, month);
+        const numerator = sumTotalQuantity(kind, year, month);
+        result[`y${year}Qty`] = denominator;
+        result[`y${year}Bad`] = numerator;
+        result[`y${year}Rate`] = machinedRateStable(numerator, denominator);
+      });
+      result.delta = Number((result.y2026Rate - result.y2025Rate).toFixed(2));
+      return result;
+    });
+    const totals = [2025, 2026].reduce((result, year) => {
+      const denominator = sumMachinedDenominatorStable(denominatorRows, kind, year);
+      const numerator = sumTotalQuantity(kind, year);
+      result[year] = { numerator, denominator, rate: machinedRateStable(numerator, denominator) };
+      return result;
+    }, {});
+    const tpmEntities = buildTpmEntities(kind);
+    return {
+      totals,
+      monthly,
+      divisions: buildDivisionRows(kind),
+      tpms: buildTpmRows(kind, tpmEntities),
+      tpmMonthly: buildTpmMonthly(kind, tpmEntities),
+    };
+  };
+
+  return {
+    kinds: [
+      { key: "ecn", label: cn.ecn },
+      { key: "nonBom", label: cn.nonBom },
+    ],
+    ecn: buildKind(cn.ecn),
+    nonBom: buildKind(cn.nonBom),
+  };
+};
+
 export function analyzeImported(files, dateRange) {
   if (!files.length) return sampleData;
   files = filterFilesByDate(files, dateRange);
@@ -1386,7 +1613,7 @@ export function analyzeImported(files, dateRange) {
   if (dqa.length) {
     const dqaFiles = files.filter((file) => file.module === "DQA");
     next.dqa.ecn = buildDqaEcn(dqaFiles, dateRange);
-    next.dqa.machinedParts = buildDqaMachinedParts(dqaFiles);
+    next.dqa.machinedParts = buildDqaMachinedPartsStable(dqaFiles);
     const issueRows = dqa.filter((r) => r["问题描述"]);
     const stageName = (r) => text(r["阶段"] || r["问题发生地"] || r["问题反馈部门"]);
     const stageMap = { "评审": "review", "公司内部": "production", "生产": "production", "售后": "onsite" };
