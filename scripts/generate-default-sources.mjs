@@ -12,9 +12,9 @@ const gzipAsync = promisify(gzip);
 
 const writeGzipJson = async (filePath, value) => {
   const json = JSON.stringify(value);
+  await fs.writeFile(filePath, json, "utf8");
   const gz = await gzipAsync(Buffer.from(json, "utf8"), { level: 9 });
   await fs.writeFile(`${filePath}.gz`, gz);
-  await fs.rm(filePath, { force: true });
   return { rawBytes: Buffer.byteLength(json), gzBytes: gz.byteLength };
 };
 
