@@ -63,6 +63,8 @@ const loadDefaultJson = async (fileName) => {
   const base = import.meta.env.BASE_URL || "./";
   const compressed = await fetchJsonGzip(`${base}${fileName}.gz`);
   if (compressed != null) return compressed;
+  // 兼容旧包或手工调试目录：如果压缩文件不存在，再尝试读取未压缩文件。
+  // 正常构建只保留 .gz，避免 80MB+ 原始 JSON 被开发服务器和桌面包反复扫描复制。
   const response = await fetch(`${base}${fileName}`, { cache: "no-store" });
   if (!response.ok) return null;
   return await response.json();

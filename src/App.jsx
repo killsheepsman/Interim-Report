@@ -295,7 +295,7 @@ const annotationStorageKey = "qms-page-annotations-v1";
 const annotationTypes = [
   "\u5206\u6790\u7ed3\u8bba", "\u98ce\u9669\u5224\u65ad", "\u6539\u5584\u63aa\u65bd", "\u5f85\u529e\u4e8b\u9879", "\u62a5\u544a\u91cd\u70b9",
 ];
-const annotationModules = ["\u603b\u89c8", "IQC", "IPQC", "OQC", "DQA", "\u6539\u5584\u8ba1\u5212", "\u6570\u636e\u5bfc\u5165", "\u6a21\u677f\u8bbe\u7f6e", "\u8d28\u91cf\u5de5\u4f5c\u53f0"];
+const annotationModules = ["\u603b\u89c8", "IQC", "IPQC", "OQC", "DQA", "\u6570\u636e\u5bfc\u5165", "\u8d28\u91cf\u5de5\u4f5c\u53f0"];
 const annotationText = {
   button: "\u5206\u6790\u6539\u5584\u63aa\u65bd",
   showButton: "\u5206\u6790\u663e\u793a",
@@ -611,7 +611,7 @@ function ThemeToggle({ value, onChange }) {
 function ExecutiveSidebar({ active, setActive, uiTheme, onThemeChange, collapsed, onToggleCollapsed }) {
   const nav = [
     ["总览", House], ["IQC", Cube], ["IPQC", Pulse],
-    ["OQC", ShieldCheck], ["DQA", ClipboardText], ["改善计划", Target], ["数据导入", UploadSimple], ["模板设置", GearSix],
+    ["OQC", ShieldCheck], ["DQA", ClipboardText], ["数据导入", UploadSimple],
   ];
   return <aside className={`executive-sidebar ${collapsed ? "collapsed" : ""}`}>
     <div className="brand"><div className="brand-logo"><ShieldCheck size={26} weight="fill" /></div><div><strong>品质智控</strong><span>质量分析平台</span></div></div>
@@ -751,6 +751,120 @@ function IpqcWorkshopRisk({ data }) {
   </div>;
 }
 
+const sumRows = (rows = [], getter) => rows.reduce((sum, row) => sum + (Number(getter(row)) || 0), 0);
+const percentText = (value, digits = 1) => `${Number(value || 0).toFixed(digits)}%`;
+const numberText = (value) => Number(value || 0).toLocaleString();
+const signedText = (value, suffix = "pp", digits = 1) => `${value >= 0 ? "↑" : "↓"} ${Math.abs(Number(value || 0)).toFixed(digits)}${suffix ? suffix : ""}`;
+
+const yearTotalsFromMonthly = (rows = [], year) => rows.reduce((result, row) => ({
+  qty: result.qty + (Number(row[`y${year}Qty`]) || 0),
+  bad: result.bad + (Number(row[`y${year}Bad`]) || 0),
+  good: result.good + ((Number(row[`y${year}Qty`]) || 0) - (Number(row[`y${year}Bad`]) || 0)),
+}), { qty: 0, bad: 0, good: 0 });
+
+const rateFromTotals = (totals, goodWhenDown = false) => {
+  if (goodWhenDown) return Number((totals.bad / Math.max(totals.qty, 1) * 100).toFixed(2));
+  return Number((totals.good / Math.max(totals.qty, 1) * 100).toFixed(1));
+};
+
+function OverviewMetricLine({ label, value, tone = "neutral", sub }) {
+  return <div className="overview-kpi-line">
+    <span>{label}</span>
+    <b className={tone}>{value}</b>
+    {sub && <em>{sub}</em>}
+  </div>;
+}
+
+function OverviewQualityCard({ type, title, subtitle, mainValue, unit = "%", delta, goodWhenDown = false, lines = [] }) {
+  const deltaGood = goodWhenDown ? Number(delta || 0) <= 0 : Number(delta || 0) >= 0;
+  return <div className={`overview-kpi-card ${type}`}>
+    <div className="overview-kpi-head">
+      <div><span>{subtitle}</span><strong>{title}</strong></div>
+      <em className={deltaGood ? "good" : "bad"}>{signedText(delta || 0, "pp", Math.abs(delta || 0) < 10 ? 1 : 0)}</em>
+    </div>
+    <div className={`overview-kpi-main ${type === "ipqc" || type === "dqa" ? "risk-main" : ""}`}>
+      <strong>{typeof mainValue === "number" ? Number(mainValue).toLocaleString(undefined, { maximumFractionDigits: mainValue > 100 ? 0 : 2 }) : mainValue}</strong><small>{unit}</small>
+    </div>
+    <div className="overview-kpi-lines">
+      {lines.map((line) => <OverviewMetricLine key={line.label} {...line}/>)}
+    </div>
+  </div>;
+}
+
+function OverviewKpiCards({ data }) {
+  const iqcSite = (site) => {
+    const rows = data.iqc.siteMonthly?.[site] || [];
+    const y25 = yearTotalsFromMonthly(rows, 2025);
+    const y26 = yearTotalsFromMonthly(rows, 2026);
+    const r25 = rateFromTotals(y25, false);
+    const r26 = rateFromTotals(y26, false);
+    return { rate: r26, delta: Number((r26 - r25).toFixed(1)), qty: y26.qty };
+  };
+  const ipqcSite = (site) => {
+    const rows = data.ipqc.siteMonthly?.[site] || [];
+    const y25 = yearTotalsFromMonthly(rows, 2025);
+    const y26 = yearTotalsFromMonthly(rows, 2026);
+    const r25 = rateFromTotals(y25, true);
+    const r26 = rateFromTotals(y26, true);
+    return { rate: r26, delta: Number((r26 - r25).toFixed(2)), qty: y26.qty, bad: y26.bad };
+  };
+  const oqcOverall = (() => {
+    const detail = data.oqc.shipmentDetail?.overall;
+    if (detail?.y2026?.count) return {
+      five: detail.y2026.fiveRate,
+      low: detail.y2026.lowRate,
+      lowCount: detail.y2026.low,
+      count: detail.y2026.count,
+      deltaFive: Number((detail.y2026.fiveRate - detail.y2025.fiveRate).toFixed(1)),
+      deltaLow: Number((detail.y2026.lowRate - detail.y2025.lowRate).toFixed(1)),
+    };
+    const divisions = data.oqc.monthlySummary?.divisions || [];
+    const y2026Count = sumRows(divisions, (row) => row.y2026Count);
+    const y2025Count = sumRows(divisions, (row) => row.y2025Count);
+    const y2026Five = sumRows(divisions, (row) => row.y2026Five);
+    const y2025Five = sumRows(divisions, (row) => row.y2025Five);
+    const y2026Low = sumRows(divisions, (row) => row.y2026Low);
+    const y2025Low = sumRows(divisions, (row) => row.y2025Low);
+    const five = Number((y2026Five / Math.max(y2026Count, 1) * 100).toFixed(1));
+    const low = Number((y2026Low / Math.max(y2026Count, 1) * 100).toFixed(1));
+    const five25 = Number((y2025Five / Math.max(y2025Count, 1) * 100).toFixed(1));
+    const low25 = Number((y2025Low / Math.max(y2025Count, 1) * 100).toFixed(1));
+    return { five, low, lowCount: y2026Low, count: y2026Count, deltaFive: Number((five - five25).toFixed(1)), deltaLow: Number((low - low25).toFixed(1)) };
+  })();
+  const dqaRows = data.dqa.divisions || [];
+  const dqaReview = sumRows(dqaRows, (row) => row.review);
+  const dqaProduction = sumRows(dqaRows, (row) => row.production);
+  const dqaOnsite = sumRows(dqaRows, (row) => row.onsite);
+  const dqaBack = dqaProduction + dqaOnsite;
+  const shenzhenIqc = iqcSite("深圳");
+  const hangzhouIqc = iqcSite("杭州");
+  const shenzhenIpqc = ipqcSite("深圳");
+  const hangzhouIpqc = ipqcSite("杭州");
+
+  return <div className="overview-kpi-grid">
+    <OverviewQualityCard type="iqc" title="IQC 批次良率" subtitle="供应商加工件" mainValue={data.kpis[0]?.value || 0} delta={data.kpis[0]?.delta || 0} lines={[
+      { label: "深圳", value: percentText(shenzhenIqc.rate), tone: shenzhenIqc.delta >= 0 ? "good" : "bad", sub: signedText(shenzhenIqc.delta, "pp", 1) },
+      { label: "杭州", value: percentText(hangzhouIqc.rate), tone: hangzhouIqc.delta >= 0 ? "good" : "bad", sub: signedText(hangzhouIqc.delta, "pp", 1) },
+      { label: "2026检验", value: numberText(shenzhenIqc.qty + hangzhouIqc.qty), tone: "neutral" },
+    ]}/>
+    <OverviewQualityCard type="ipqc" title="IPQC 异常密度" subtitle="问题数量 ÷ 送检数" mainValue={data.kpis[1]?.value || 0} delta={data.kpis[1]?.delta || 0} goodWhenDown lines={[
+      { label: "深圳", value: percentText(shenzhenIpqc.rate, 2), tone: shenzhenIpqc.delta <= 0 ? "good" : "bad", sub: signedText(shenzhenIpqc.delta, "pp", 2) },
+      { label: "杭州", value: percentText(hangzhouIpqc.rate, 2), tone: hangzhouIpqc.delta <= 0 ? "good" : "bad", sub: signedText(hangzhouIpqc.delta, "pp", 2) },
+      { label: "2026问题", value: numberText(shenzhenIpqc.bad + hangzhouIpqc.bad), tone: "bad" },
+    ]}/>
+    <OverviewQualityCard type="oqc" title="OQC 5分率" subtitle="出货评分" mainValue={oqcOverall.five} delta={oqcOverall.deltaFive} lines={[
+      { label: "低分率", value: percentText(oqcOverall.low), tone: oqcOverall.deltaLow <= 0 ? "good" : "bad", sub: `${signedText(oqcOverall.deltaLow, "pp", 1)} / ${numberText(oqcOverall.lowCount)}台` },
+      { label: "评分数量", value: numberText(oqcOverall.count), tone: "neutral" },
+      { label: "5分同比", value: signedText(oqcOverall.deltaFive, "pp", 1), tone: oqcOverall.deltaFive >= 0 ? "good" : "bad" },
+    ]}/>
+    <OverviewQualityCard type="dqa" title="DQA 后端问题" subtitle="生产 + 现场，不含评审拦截" mainValue={dqaBack || data.kpis[3]?.value || 0} unit="项" delta={data.kpis[3]?.delta || 0} goodWhenDown lines={[
+      { label: "评审拦截", value: `${numberText(dqaReview)}项`, tone: "good" },
+      { label: "生产问题", value: `${numberText(dqaProduction)}项`, tone: "bad" },
+      { label: "现场问题", value: `${numberText(dqaOnsite)}项`, tone: "bad" },
+    ]}/>
+  </div>;
+}
+
 function OqcOverviewScore({ data }) {
   const rows = data.oqc.monthlySummary?.divisions || [];
   const text = {
@@ -782,6 +896,128 @@ function OqcOverviewScore({ data }) {
   </div>;
 }
 
+function ManagementReportPage({ data }) {
+  const [annotations] = useAnnotations();
+  const kpis = data.kpis || [];
+  const oqc = data.oqc.shipmentDetail?.overall?.y2026;
+  const iqcWorst = ["深圳", "杭州"].flatMap((site) => (data.iqc.mainSuppliers?.[site] || []).map((row) => ({ ...row, site })))
+    .sort((a, b) => (a.y2026Rate || 0) - (b.y2026Rate || 0)).slice(0, 3);
+  const ipqcRisk = ["深圳", "杭州"].flatMap((site) => (data.ipqc.workshopsBySite?.[site] || []).map((row) => ({ ...row, site })))
+    .sort((a, b) => (b.y2026Rate || 0) - (a.y2026Rate || 0)).slice(0, 3);
+  const dqaBack = (data.dqa.divisions || []).map((row) => ({ ...row, back: (row.production || 0) + (row.onsite || 0) }))
+    .sort((a, b) => b.back - a.back);
+  const dqaTotalReview = sumRows(data.dqa.divisions || [], (row) => row.review);
+  const dqaTotalBack = sumRows(data.dqa.divisions || [], (row) => (row.production || 0) + (row.onsite || 0));
+  const reportCards = [
+    { label: "IQC批次良率", value: `${kpis[0]?.value ?? "-"}%`, delta: kpis[0]?.delta, goodWhenDown: false, note: "供应商加工件质量" },
+    { label: "IPQC异常密度", value: `${kpis[1]?.value ?? "-"}%`, delta: kpis[1]?.delta, goodWhenDown: true, note: "过程问题数量÷送检数" },
+    { label: "OQC 5分率", value: `${kpis[2]?.value ?? "-"}%`, delta: kpis[2]?.delta, goodWhenDown: false, note: `低分率 ${oqc?.lowRate ?? "-"}%` },
+    { label: "DQA后端问题", value: `${Number(dqaTotalBack || kpis[3]?.value || 0).toLocaleString()}项`, delta: kpis[3]?.delta, goodWhenDown: true, note: `评审拦截 ${dqaTotalReview.toLocaleString()}项` },
+  ];
+  const deltaClass = (item) => (item.goodWhenDown ? (item.delta <= 0 ? "good" : "bad") : (item.delta >= 0 ? "good" : "bad"));
+  const reportRows = normalizeAnnotations(annotations)
+    .filter((row) => row.include !== false && String(row.content || "").trim())
+    .sort((a, b) => {
+      const moduleA = annotationModules.indexOf(a.module);
+      const moduleB = annotationModules.indexOf(b.module);
+      const typeA = annotationTypes.indexOf(a.type);
+      const typeB = annotationTypes.indexOf(b.type);
+      return (moduleA < 0 ? 999 : moduleA) - (moduleB < 0 ? 999 : moduleB) || (typeA < 0 ? 999 : typeA) - (typeB < 0 ? 999 : typeB);
+    });
+  const rowsByTypes = (types) => reportRows.filter((row) => types.includes(row.type));
+  const groupReportRows = (rows) => {
+    const moduleOrder = [...annotationModules, ...new Set(rows.map((row) => row.module).filter((module) => !annotationModules.includes(module)))];
+    return moduleOrder.map((module) => ({ module, rows: rows.filter((row) => row.module === module) })).filter((group) => group.rows.length);
+  };
+  const conclusionRows = rowsByTypes(["\u62a5\u544a\u91cd\u70b9", "\u5206\u6790\u7ed3\u8bba"]);
+  const riskRows = rowsByTypes(["\u98ce\u9669\u5224\u65ad"]);
+  const actionRows = rowsByTypes(["\u6539\u5584\u63aa\u65bd"]);
+  const todoRows = rowsByTypes(["\u5f85\u529e\u4e8b\u9879"]);
+  const sectionMeta = [
+    { label: "\u7ba1\u7406\u5c42\u7ed3\u8bba", count: conclusionRows.length },
+    { label: "TOP\u98ce\u9669", count: riskRows.length },
+    { label: "\u6539\u5584\u63aa\u65bd", count: actionRows.length },
+    { label: "\u5f85\u529e\u4e8b\u9879", count: todoRows.length },
+  ];
+  const renderAnnotationSection = ({ title, subtitle, rows, empty, className = "" }) => {
+    const groups = groupReportRows(rows);
+    return <Panel title={title} subtitle={subtitle} className={className}>
+      <div className="management-template-section">
+        {!groups.length && <div className="management-template-empty">{empty}</div>}
+        {groups.map((group) => <section className="management-template-group" key={`${title}-${group.module}`}>
+          <h4>{group.module}</h4>
+          {group.rows.map((row) => <article key={row.id}>
+            <div><span>{row.type}</span>{row.updatedAt && <em>{String(row.updatedAt).slice(0, 10)}</em>}</div>
+            <p>{row.content}</p>
+          </article>)}
+        </section>)}
+      </div>
+    </Panel>;
+  };
+  return <div className="management-report-page">
+    <section className="management-hero">
+      <div>
+        <span>管理层汇报</span>
+        <h2>半年度质量经营摘要</h2>
+        <p>面向二级以上管理层，聚焦核心指标、TOP风险和下半年资源投入方向。量化指标随经营驾驶舱当前日期区间同步更新，文字内容自动引用“已保存的分析改善措施”。</p>
+      </div>
+      <AppliedPeriodTag data={data}/>
+    </section>
+    <div className="management-card-grid">
+      {reportCards.map((item) => <div className="management-metric-card" key={item.label}>
+        <span>{item.label}</span>
+        <strong>{item.value}</strong>
+        <em className={deltaClass(item)}>{signedText(Number(item.delta || 0), Math.abs(item.delta || 0) < 10 ? "pp" : "%", Math.abs(item.delta || 0) < 10 ? 1 : 0)}</em>
+        <p>{item.note}</p>
+      </div>)}
+    </div>
+    <div className="management-template-summary">
+      <div>
+        <strong>自动成稿模板</strong>
+        <span>已纳入 {reportRows.length} 条批注素材；只统计“进入报告”的内容。</span>
+      </div>
+      <div className="management-template-tags">
+        {sectionMeta.map((item) => <em key={item.label}>{item.label}<b>{item.count}</b></em>)}
+      </div>
+    </div>
+    <div className="management-report-grid">
+      {renderAnnotationSection({
+        title: "一、管理层结论",
+        subtitle: "来自“报告重点”和“分析结论”，用于开场摘要",
+        rows: conclusionRows,
+        empty: "暂无管理层结论素材。请在各图表页面点击“分析改善措施”，填写“报告重点”或“分析结论”。",
+        className: "span-12",
+      })}
+      <Panel title="数据识别TOP风险" subtitle="用于管理层快速判断资源投入优先级">
+        <div className="management-risk-list">
+          <div><h4>IQC供应商</h4>{iqcWorst.map((row) => <p key={`${row.site}-${row.supplier}`}><b>{row.site}</b><span>{row.supplier}</span><em>{row.y2026Rate}%</em></p>)}</div>
+          <div><h4>IPQC工坊</h4>{ipqcRisk.map((row) => <p key={`${row.site}-${row.name}`}><b>{row.site}</b><span>{row.name}</span><em>{row.y2026Rate}%</em></p>)}</div>
+          <div><h4>DQA产品部</h4>{dqaBack.slice(0, 3).map((row) => <p key={row.name}><b>{row.name}</b><span>生产+现场</span><em>{row.back.toLocaleString()}项</em></p>)}</div>
+        </div>
+      </Panel>
+      {renderAnnotationSection({
+        title: "二、风险判断",
+        subtitle: "来自“风险判断”，按模块自动分组",
+        rows: riskRows,
+        empty: "暂无风险判断素材。建议记录TOP供应商、工坊、TPM、产品部的高风险原因。",
+      })}
+      {renderAnnotationSection({
+        title: "三、下半年改善措施",
+        subtitle: "来自“改善措施”，用于形成行动主线",
+        rows: actionRows,
+        empty: "暂无改善措施素材。建议写明对象、原因、措施、验证指标和完成时间。",
+      })}
+      {renderAnnotationSection({
+        title: "四、待办与责任推进",
+        subtitle: "来自“待办事项”，后续可转为质量工作台任务",
+        rows: todoRows,
+        empty: "暂无待办素材。建议把问题严重的组装工坊、交付经理、产品部和TPM写成具体责任事项。",
+        className: "span-12",
+      })}
+    </div>
+  </div>;
+}
+
 function ExecutiveDashboard({ data, files, onImport, onDeleteSource, view, onViewChange, dateRange, onDateRange, onRefreshDate, dateRefreshStatus, fontSize, onFontSize, analysisKey, labelControlsVisible, onToggleLabelControls, uiTheme, onThemeChange, sidebarCollapsed, onToggleSidebar }) {
   const [active, setActive] = useState("总览");
   const moduleView = ["IQC", "IPQC", "OQC", "DQA"].includes(active) ? active : null;
@@ -789,12 +1025,12 @@ function ExecutiveDashboard({ data, files, onImport, onDeleteSource, view, onVie
     <ExecutiveSidebar active={active} setActive={setActive} uiTheme={uiTheme} onThemeChange={onThemeChange} collapsed={sidebarCollapsed} onToggleCollapsed={onToggleSidebar} />
     <main className="executive-main">
       <header className="executive-topbar">
-        <div><h1>{moduleView ? `${moduleView} 专题分析` : active === "数据导入" ? "数据源管理" : active === "改善计划" ? "改善计划与闭环" : "经营驾驶舱"}</h1><p>{moduleView ? "从原始数据下钻到TOP问题与责任对象" : "全局质量运营总览"}</p></div>
+        <div><h1>{moduleView ? `${moduleView} 专题分析` : active === "数据导入" ? "数据源管理" : "经营驾驶舱"}</h1><p>{moduleView ? "从原始数据下钻到TOP问题与责任对象" : "全局质量运营总览"}</p></div>
         <div className="top-actions"><Switcher view={view} onChange={onViewChange} /><AnnotationEditButton defaultModule={moduleView || "\u603b\u89c8"} /><AnnotationViewButton /><ExportReportButton /><button className={`label-controls-toggle ${labelControlsVisible ? "active" : ""}`} onClick={onToggleLabelControls}>{labelControlsVisible ? "隐藏数值设置" : "显示数值设置"}</button><button className="import-btn" onClick={() => onImport(null)}><UploadSimple size={17} />导入数据</button></div>
       </header>
       <DateRangeFilter value={dateRange} onChange={onDateRange} onRefresh={onRefreshDate} refreshStatus={dateRefreshStatus} fontSize={fontSize} onFontSize={onFontSize}/>
-      {active === "数据导入" ? <DataSourcePage files={files} onImportModule={onImport} onDelete={onDeleteSource}/> : active === "改善计划" ? <ActionPage data={data} /> : active === "模板设置" ? <TemplatePage /> : moduleView ? <ModuleDetail key={`${moduleView}-${analysisKey}`} module={moduleView} data={data} /> : <>
-        <div className="kpi-grid">{data.kpis.map((item) => <KpiCard key={item.key} item={item} />)}</div>
+      {active === "数据导入" ? <DataSourcePage files={files} onImportModule={onImport} onDelete={onDeleteSource}/> : moduleView ? <ModuleDetail key={`${moduleView}-${analysisKey}`} module={moduleView} data={data} /> : <>
+        <OverviewKpiCards data={data}/>
         <div className="dashboard-grid">
           <MainSupplierOverview data={data}/>
           <Panel title="TOP 风险供应商（人工选择）" subtitle="不再由系统按良率自动生成；选择结果保存在当前电脑" className="span-12"><ManualRiskSuppliers data={data}/></Panel>
@@ -1297,10 +1533,163 @@ function OqcSummaryFocusCard({ row }) {
   </div>;
 }
 
-function OqcAnalysis({ data }) {
-  const summary = data.oqc.monthlySummary;
-  if (!summary) return <div className="module-page"><div className="module-summary"><KpiCard item={data.kpis[2]} /><div className="summary-note"><strong>待导入月度汇总表</strong><p>请导入“2025年-2026年评分按月汇总.xlsx”生成同期评分分析。</p></div></div></div>;
+const oqcDetailChartRows = (rows = []) => rows.map((row) => ({
+  ...row,
+  y2025Qty: row.y2025Count || 0,
+  y2026Qty: row.y2026Count || 0,
+  y2025Bad: row.y2025Low || 0,
+  y2026Bad: row.y2026Low || 0,
+  y2025Rate: row.y2025LowRate || 0,
+  y2026Rate: row.y2026LowRate || 0,
+}));
+
+function OqcShipmentMetricTable({ rows, nameLabel = "对象" }) {
+  const [sort, setSort] = useState({ key: "y2026LowRate", direction: "desc" });
+  const columns = [
+    ["name", nameLabel], ["y2025Count", "2025机台"], ["y2025Avg", "2025均分"], ["y2025FiveRate", "2025 5分率"], ["y2025LowRate", "2025低分率"],
+    ["y2026Count", "2026机台"], ["y2026Avg", "2026均分"], ["y2026FiveRate", "2026 5分率"], ["y2026LowRate", "2026低分率"],
+  ];
+  const sorted = useMemo(() => [...rows].sort((a, b) => {
+    const av = a[sort.key] ?? -Infinity;
+    const bv = b[sort.key] ?? -Infinity;
+    const result = typeof av === "string" ? av.localeCompare(bv, "zh-CN") : av - bv;
+    return sort.direction === "asc" ? result : -result;
+  }), [rows, sort]);
+  const changeSort = (key) => setSort((current) => ({ key, direction: current.key === key && current.direction === "desc" ? "asc" : "desc" }));
+  const value = (row, key) => key.includes("Rate") ? `${Number(row[key] || 0).toFixed(1)}%` : key.includes("Avg") ? Number(row[key] || 0).toFixed(2) : Number(row[key] || 0).toLocaleString();
+  return <div className="oqc-score-table oqc-shipment-table">
+    <div className="oqc-score-row oqc-score-head">{columns.map(([key, label]) => <button key={key} onClick={() => changeSort(key)}>{label}<span>{sort.key === key ? sort.direction === "asc" ? "▲" : "▼" : "↕"}</span></button>)}</div>
+    {sorted.map((row) => <div className="oqc-score-row" key={`${row.name}-${row.division || ""}-${row.machine || ""}`}>
+      <strong>{row.name}</strong>
+      {columns.slice(1).map(([key]) => <span key={key} className={key === "y2026LowRate" && row[key] >= 15 ? "rate-risk" : ""}>{value(row, key)}</span>)}
+    </div>)}
+  </div>;
+}
+
+function OqcRiskMatrix({ rows }) {
+  const maxLow = Math.max(1, ...rows.map((row) => row.y2026LowRate || 0));
+  const divisions = ["半导体&北美", "产品五部", "FPC事业部"].filter((division) => rows.some((row) => row.division === division));
+  return <div className="oqc-risk-matrix">
+    {divisions.map((division) => <div className="oqc-risk-division-row" key={division}>
+      <div className="oqc-risk-division-label">{division}</div>
+      <div className="oqc-risk-division-cells">
+        {rows.filter((row) => row.division === division).map((row) => {
+          const level = row.y2026LowRate >= 15 ? "high" : row.y2026LowRate >= 8 ? "mid" : "low";
+          return <div className={`oqc-risk-cell ${level}`} key={`${row.division}-${row.machine}`} style={{ "--risk-alpha": Math.min(.85, (row.y2026LowRate || 0) / maxLow) }}>
+            <b>{row.machine}</b>
+            <strong>{Number(row.y2026LowRate || 0).toFixed(1)}%</strong>
+            <em>低分 {Number(row.y2026Low || 0).toLocaleString()} / 机台 {Number(row.y2026Count || 0).toLocaleString()}</em>
+            <small>2025：{Number(row.y2025LowRate || 0).toFixed(1)}%</small>
+          </div>;
+        })}
+      </div>
+    </div>)}
+  </div>;
+}
+
+function OqcShareTable({ rows }) {
+  return <div className="oqc-share-table">
+    <div className="oqc-share-row head"><span>类别</span><span>2025机台/占比</span><span>2026机台/占比</span><span>占比变化</span></div>
+    {rows.map((row) => <div className="oqc-share-row" key={row.name}>
+      <strong>{row.name}</strong>
+      <span>{Number(row.y2025Count || 0).toLocaleString()} / {Number(row.y2025Share || 0).toFixed(1)}%</span>
+      <span>{Number(row.y2026Count || 0).toLocaleString()} / {Number(row.y2026Share || 0).toFixed(1)}%</span>
+      <b className={row.deltaShare >= 0 ? "up" : "down"}>{row.deltaShare >= 0 ? "↑" : "↓"} {Math.abs(row.deltaShare || 0).toFixed(1)}pp</b>
+    </div>)}
+  </div>;
+}
+
+function OqcImpactCard({ item }) {
+  const [expanded, setExpanded] = useState(false);
+  const signed = (value, digits = 2) => `${value >= 0 ? "+" : ""}${Number(value || 0).toFixed(digits)}`;
+  return <div className={`oqc-impact-card ${expanded ? "expanded" : ""}`}>
+    <button className="oqc-impact-card-main" onClick={() => setExpanded((current) => !current)}>
+      <div><span>{item.label}</span><strong>{item.totalDelta >= 0 ? "↑" : "↓"} {Math.abs(item.totalDelta).toFixed(2)}分</strong></div>
+      <p>2025平均分 {item.y2025Avg.toFixed(2)} → 2026平均分 {item.y2026Avg.toFixed(2)}</p>
+      <div className="oqc-impact-parts">
+        <em>质量改善贡献 <b className={item.qualityImpact >= 0 ? "up" : "down"}>{signed(item.qualityImpact)}</b></em>
+        <em>结构变化影响 <b className={item.structureImpact >= 0 ? "up" : "down"}>{signed(item.structureImpact)}</b></em>
+        <em>残差 <b>{signed(item.residual)}</b></em>
+      </div>
+      <small>{expanded ? "收起明细" : "展开明细"}</small>
+    </button>
+    {expanded && <div className="oqc-impact-detail">
+      <div className="oqc-impact-detail-row head"><span>对象</span><span>2025占比/均分</span><span>2026占比/均分</span><span>质量改善贡献</span><span>结构变化影响</span></div>
+      {item.rows.map((row) => <div className="oqc-impact-detail-row" key={`${item.label}-${row.name}`}>
+        <strong>{row.name}</strong>
+        <span>{Number(row.y2025Share || 0).toFixed(1)}% / {Number(row.y2025Avg || 0).toFixed(2)}</span>
+        <span>{Number(row.y2026Share || 0).toFixed(1)}% / {Number(row.y2026Avg || 0).toFixed(2)}</span>
+        <b className={row.qualityContribution >= 0 ? "up" : "down"}>{signed(row.qualityContribution)}</b>
+        <b className={row.mixContribution >= 0 ? "up" : "down"}>{signed(row.mixContribution)}</b>
+      </div>)}
+      <p className="oqc-impact-residual-note">残差 = 总评分提升 - 质量改善贡献 - 结构变化影响。它主要代表拆解公式近似、四舍五入、交叉项分摊后剩下的未解释部分；当前残差越接近0，说明拆解越完整。</p>
+    </div>}
+  </div>;
+}
+
+function OqcStructureImpact({ items }) {
+  return <div className="oqc-impact-grid">
+    {items.map((item) => <OqcImpactCard item={item} key={item.label}/>)}
+  </div>;
+}
+
+function OqcShipmentDetailAnalysis({ data }) {
+  const detail = data.oqc.shipmentDetail;
+  const [tpmDivision, setTpmDivision] = useState("全公司");
+  const machineAxis = useMachinedAxisRange("oqc-shipment-machine-low-axis-v1", { min: 0, max: 35 });
+  const tpmAxis = useMachinedAxisRange(`oqc-shipment-tpm-${tpmDivision}-low-axis-v1`, { min: 0, max: 45 });
+  const scoreStructureAxis = useMachinedAxisRange("oqc-shipment-score-structure-axis-v1", { min: 0, max: 100 });
+  const shareAxis = useMachinedAxisRange("oqc-shipment-share-axis-v1", { min: 0, max: 60 });
+  if (!detail) return <div className="summary-note"><strong>待导入出货明细</strong><p>请导入“2025年出货汇总.xlsx”和“2026年出货汇总.xlsx”生成明细分析。</p></div>;
+  const tpmRows = tpmDivision === "全公司" ? detail.tpmRows : detail.tpmRows.filter((row) => row.division === tpmDivision);
+  const topTpmRows = tpmRows.slice(0, 12);
+  const scoreValues = ["5分", "4分", "3分", "2分", "1分"];
+  return <div className="oqc-shipment-analysis">
+    <div className="iqc-summary-strip oqc-summary">
+      <OqcSummaryCountCard y2025={detail.overall.y2025.count} y2026={detail.overall.y2026.count} />
+      <OqcSummaryMetricCard item={{ label: "平均分", y2025: detail.overall.y2025.avg, y2026: detail.overall.y2026.avg, suffix: "", digits: 2, goodWhenDown: false }} />
+      <OqcSummaryMetricCard item={{ label: "5分比例", y2025: detail.overall.y2025.fiveRate, y2026: detail.overall.y2026.fiveRate, suffix: "%", digits: 1, goodWhenDown: false }} />
+      <OqcSummaryMetricCard item={{ label: "低分比例", y2025: detail.overall.y2025.lowRate, y2026: detail.overall.y2026.lowRate, suffix: "%", digits: 1, goodWhenDown: true }} />
+      <OqcSummaryFocusCard row={detail.tpmRows[0]} />
+    </div>
+    <div className="iqc-analysis-grid">
+      <div className="oqc-section-heading"><span className="section-number">3.D1</span><div><h2>机台分类评分对比</h2><p>按机台数量加权，定位治具与自动化出货质量差异</p></div></div>
+      <Panel title="治具 vs 自动化低分风险" subtitle="柱形为机台数/低分机台数，折线为低分率" className="iqc-wide" action={<MachinedAxisPanelControl axis={machineAxis}/>}>
+        <QuantityRateCombo rows={oqcDetailChartRows(detail.machineRows)} labelKey="name" qtyLabel="机台数量" badLabel="低分机台" rateLabel="低分率" height={380} chartKey="oqc-shipment-machine-low-rate" rateAxisOverride={machineAxis.effective} hideRateAxisControl/>
+        <OqcShipmentMetricTable rows={detail.machineRows} nameLabel="机台分类"/>
+      </Panel>
+
+      <div className="oqc-section-heading"><span className="section-number">3.D2</span><div><h2>产品部 × 机台分类低分率</h2><p>按产品部纵向排列；颜色越深表示2026低分率越高，数字显示低分机台数/机台数</p></div></div>
+      <Panel title="产品部 × 机台分类低分率" className="iqc-wide"><OqcRiskMatrix rows={detail.matrix}/></Panel>
+
+      <div className="oqc-section-heading sticky-switch-bar"><span className="section-number">3.D3</span><div><h2>TPM风险排名</h2><p>按低分率、低分机台数和机台数量排序，可切换产品部</p></div>
+        <div className="site-tabs">{["全公司", "半导体&北美", "产品五部", "FPC事业部"].map((name) => <button key={name} className={tpmDivision === name ? "active" : ""} onClick={() => preserveScrollPosition(() => setTpmDivision(name))}>{name}</button>)}</div>
+      </div>
+      <Panel title={`${tpmDivision} TPM低分风险TOP`} subtitle="柱形为机台数/低分机台数，折线为低分率" className="iqc-wide" action={<MachinedAxisPanelControl axis={tpmAxis}/>}>
+        <QuantityRateCombo rows={oqcDetailChartRows(topTpmRows)} labelKey="name" qtyLabel="机台数量" badLabel="低分机台" rateLabel="低分率" height={Math.max(360, topTpmRows.length * 42 + 150)} chartKey={`oqc-shipment-tpm-${tpmDivision}`} rateAxisOverride={tpmAxis.effective} hideRateAxisControl/>
+        <OqcShipmentMetricTable rows={tpmRows} nameLabel="TPM"/>
+      </Panel>
+
+      <div className="oqc-section-heading"><span className="section-number">3.D4</span><div><h2>评分结构迁移</h2><p>按5分到1分顺序展示，突出5分占比提升和低分收敛</p></div></div>
+      <Panel title="评分档位结构对比" className="iqc-wide" action={<MachinedAxisPanelControl axis={scoreStructureAxis}/>}>
+        <YearStackedCompare rows={detail.scoreStructureRows} values={scoreValues} height={Math.max(420, detail.scoreStructureRows.length * 82 + 120)} chartKey="oqc-shipment-score-structure" topToBottom rateAxisOverride={scoreStructureAxis.effective} hideRateAxisControl/>
+      </Panel>
+
+      <div className="oqc-section-heading"><span className="section-number">3.D5</span><div><h2>出货结构变化分析</h2><p>对比产品部与机台分类的出货占比，并拆解结构变化对平均分的影响</p></div><MachinedAxisPanelControl axis={shareAxis}/></div>
+      <div className="oqc-three-grid oqc-two-grid">
+        <Panel title="产品部出货占比变化"><BarCompare labels={detail.productShareRows.map((row) => row.name)} first={detail.productShareRows.map((row) => row.y2025Share)} second={detail.productShareRows.map((row) => row.y2026Share)} names={["2025占比", "2026占比"]} chartKey="oqc-product-share" rateAxisOverride={shareAxis.effective} hideRateAxisControl/><OqcShareTable rows={detail.productShareRows}/></Panel>
+        <Panel title="机台分类出货占比变化"><BarCompare labels={detail.machineShareRows.map((row) => row.name)} first={detail.machineShareRows.map((row) => row.y2025Share)} second={detail.machineShareRows.map((row) => row.y2026Share)} names={["2025占比", "2026占比"]} chartKey="oqc-machine-share" rateAxisOverride={shareAxis.effective} hideRateAxisControl/><OqcShareTable rows={detail.machineShareRows}/></Panel>
+      </div>
+      <Panel title="评分提升拆解" subtitle="质量改善贡献按2025结构加权；结构变化影响用于判断是否由出货结构变化带来" className="iqc-wide">
+        <OqcStructureImpact items={detail.structureImpact}/>
+      </Panel>
+    </div>
+  </div>;
+}
+
+function OqcSummaryAnalysis({ data, summary }) {
   const [focusDivision, setFocusDivision] = useState("FPC事业部");
+  if (!summary) return <div className="module-summary"><KpiCard item={data.kpis[2]} /><div className="summary-note"><strong>待导入月度汇总表</strong><p>请导入“2025年-2026年评分按月汇总.xlsx”生成同期评分分析。</p></div></div>;
   const monthly = summary.divisionMonthly?.[focusDivision] || summary.fpcMonthly || [];
   const overallMetrics = buildOqcOverallMetrics(summary.divisions);
   const total2025 = summary.divisions.reduce((sum, row) => sum + (Number(row.y2025Count) || 0), 0);
@@ -1309,12 +1698,8 @@ function OqcAnalysis({ data }) {
   const avgAxis = useMachinedAxisRange(`oqc-${focusDivision}-avg-axis-v1`, { min: 0, max: 5 });
   const fiveAxis = useMachinedAxisRange(`oqc-${focusDivision}-five-axis-v1`, { min: 0, max: 100 });
   const lowAxis = useMachinedAxisRange(`oqc-${focusDivision}-low-axis-v1`, { min: 0, max: 30 });
-  return <div className="module-page iqc-supplier-page oqc-page">
+  return <div className="oqc-summary-analysis">
     <FloatingTabs options={[{ value: "产品一部", label: "半导体&北美" }, { value: "产品五部", label: "产品五部" }, { value: "FPC事业部", label: "FPC事业部" }]} active={focusDivision} onChange={setFocusDivision}/>
-    <div className="iqc-section-title">
-      <div><span className="section-number">3</span><div><h2>OQC出货评分同期分析</h2><p>按顶部已应用日期范围进行同期对比；低分定义为评分≤3分</p></div></div>
-      <AppliedPeriodTag data={data}/>
-    </div>
     <div className="iqc-summary-strip oqc-summary">
       <OqcSummaryCountCard y2025={total2025} y2026={total2026} />
       <OqcSummaryMetricCard item={overallMetrics.avg} />
@@ -1349,6 +1734,23 @@ function OqcAnalysis({ data }) {
       </div>
       <Panel title="FPC TPM指标明细" subtitle="2025年无1分栏，按1分数量为0计算"><OqcScoreTable rows={summary.fpcTpm}/></Panel>
     </div>
+  </div>;
+}
+
+function OqcAnalysis({ data }) {
+  const [oqcTab, setOqcTab] = useState("summary");
+  const summary = data.oqc.monthlySummary;
+  const hasDetail = Boolean(data.oqc.shipmentDetail);
+  return <div className="module-page iqc-supplier-page oqc-page">
+    <div className="iqc-section-title">
+      <div><span className="section-number">3</span><div><h2>OQC出货评分同期分析</h2><p>按顶部已应用日期范围进行同期对比；低分定义为最终评分≤3分</p></div></div>
+      <AppliedPeriodTag data={data}/>
+    </div>
+    <div className="dqa-sub-tabs oqc-sub-tabs">
+      <button className={oqcTab === "summary" ? "active" : ""} onClick={() => setOqcTab("summary")}>评分汇总分析</button>
+      <button className={oqcTab === "detail" ? "active" : ""} onClick={() => setOqcTab("detail")}>出货明细分析{hasDetail ? "" : "（待导入）"}</button>
+    </div>
+    {oqcTab === "detail" ? <OqcShipmentDetailAnalysis data={data}/> : <OqcSummaryAnalysis data={data} summary={summary}/>}
   </div>;
 }
 
@@ -2464,10 +2866,16 @@ function IqcSupplierAnalysis({ data }) {
 
 export function App() {
   const machinedSourceVersion = "20260630-tpm-monthly-bridge-v1";
+  const oqcShipmentSourceVersion = "20260630-oqc-shipment-detail-v1";
+  const defaultSourceVersion = "20260701-overview-kpi-refresh-v3";
   const defaultDateRange = {
     start2025: "2025-01-01", end2025: "2025-05-31",
     start2026: "2026-01-01", end2026: "2026-05-31",
   };
+  const isSameDateRange = (left, right) => left?.start2025 === right?.start2025
+    && left?.end2025 === right?.end2025
+    && left?.start2026 === right?.start2026
+    && left?.end2026 === right?.end2026;
   let initialDateRange = defaultDateRange;
   try {
     const storedDateRange = JSON.parse(localStorage.getItem("qms-date-range-v202605") || "null");
@@ -2492,6 +2900,7 @@ export function App() {
   const [dateRange, setDateRange] = useState(initialDateRange);
   const [appliedDateRange, setAppliedDateRange] = useState(initialDateRange);
   const [analysisRevision, setAnalysisRevision] = useState(0);
+  const skipNextDateAnalysisRef = useRef(true);
 
   useEffect(() => { location.hash = view; }, [view]);
   useEffect(() => {
@@ -2503,16 +2912,70 @@ export function App() {
   useEffect(() => { seedDefaultAnnotations(); }, []);
   useEffect(() => {
     loadImportedSources().then(async (stored) => {
+      const userImportedSources = localStorage.getItem("qms-user-imported-sources-v2") === "true";
+      if (!userImportedSources) {
+        const defaultAnalysis = await loadDefaultAnalysis();
+        if (isSameDateRange(appliedDateRange, defaultDateRange) && defaultAnalysis?.data) {
+          await saveImportedSources(defaultAnalysis.files || []);
+          localStorage.setItem("qms-default-source-version", defaultSourceVersion);
+          localStorage.removeItem("qms-user-imported-sources");
+          setUsingDefaultAnalysis(true);
+          setFiles(defaultAnalysis.files || []);
+          setData(defaultAnalysis.data);
+          setStorageReady(true);
+          return;
+        }
+        const defaultFiles = await loadDefaultSources();
+        if (defaultFiles.length) {
+          await saveImportedSources(defaultFiles);
+          localStorage.setItem("qms-default-source-version", defaultSourceVersion);
+          localStorage.removeItem("qms-user-imported-sources");
+          setUsingDefaultAnalysis(false);
+          setFiles(defaultFiles);
+          setData(analyzeImported(defaultFiles, appliedDateRange));
+          setStorageReady(true);
+          return;
+        }
+      }
       if (stored.length) {
-        const hasMachinedPartsData = !!analyzeImported(stored, appliedDateRange)?.dqa?.machinedParts;
+        const isDefaultSourceCache = stored.every((file) => file.defaultSource);
+        if (isDefaultSourceCache) {
+          const defaultAnalysis = await loadDefaultAnalysis();
+          if (isSameDateRange(appliedDateRange, defaultDateRange) && defaultAnalysis?.data) {
+            saveImportedSources(defaultAnalysis.files || []).catch(() => {});
+            setUsingDefaultAnalysis(true);
+            setFiles(defaultAnalysis.files || []);
+            setData(defaultAnalysis.data);
+            setStorageReady(true);
+            return;
+          }
+          const defaultFiles = await loadDefaultSources();
+          setUsingDefaultAnalysis(false);
+          setFiles(defaultFiles);
+          if (defaultFiles.length) {
+            await saveImportedSources(defaultFiles);
+            setData(analyzeImported(defaultFiles, appliedDateRange));
+          }
+          setStorageReady(true);
+          return;
+        }
+        const hasMachinedPartsData = stored.some((file) => file.subKind === "DQA_MACHINED_PARTS" || file.kind === "DQA_MACHINED_PARTS");
+        const hasOqcShipmentDetail = stored.some((file) => file.kind === "OQC_SHIPMENT_DETAIL");
         const machinedVersionMatched = localStorage.getItem("qms-dqa-machined-source-version") === machinedSourceVersion;
-        if (!hasMachinedPartsData || !machinedVersionMatched) {
+        const oqcShipmentVersionMatched = localStorage.getItem("qms-oqc-shipment-source-version") === oqcShipmentSourceVersion;
+        if (!hasMachinedPartsData || !machinedVersionMatched || !hasOqcShipmentDetail || !oqcShipmentVersionMatched) {
           const defaultFiles = await loadDefaultSources();
           const defaultMachinedParts = defaultFiles.filter((file) => file.subKind === "DQA_MACHINED_PARTS");
-          if (defaultMachinedParts.length) {
-            const merged = [...stored.filter((file) => file.subKind !== "DQA_MACHINED_PARTS"), ...defaultMachinedParts];
+          const defaultOqcShipment = defaultFiles.filter((file) => file.kind === "OQC_SHIPMENT_DETAIL");
+          if (defaultMachinedParts.length || defaultOqcShipment.length) {
+            const merged = [
+              ...stored.filter((file) => file.subKind !== "DQA_MACHINED_PARTS" && file.kind !== "OQC_SHIPMENT_DETAIL"),
+              ...defaultMachinedParts,
+              ...defaultOqcShipment,
+            ];
             await saveImportedSources(merged);
-            localStorage.setItem("qms-dqa-machined-source-version", machinedSourceVersion);
+            if (defaultMachinedParts.length) localStorage.setItem("qms-dqa-machined-source-version", machinedSourceVersion);
+            if (defaultOqcShipment.length) localStorage.setItem("qms-oqc-shipment-source-version", oqcShipmentSourceVersion);
             setUsingDefaultAnalysis(false);
             setFiles(merged);
             setData(analyzeImported(merged, appliedDateRange));
@@ -2548,6 +3011,10 @@ export function App() {
   }, [fontSize]);
   useEffect(() => {
     if (storageReady && files.length && !usingDefaultAnalysis) {
+      if (skipNextDateAnalysisRef.current) {
+        skipNextDateAnalysisRef.current = false;
+        return;
+      }
       setData(analyzeImported(files, appliedDateRange));
       setAnalysisRevision((current) => current + 1);
     }
@@ -2564,6 +3031,7 @@ export function App() {
     setUsingDefaultAnalysis(false);
     setFiles(sources);
     await saveImportedSources(sources);
+    localStorage.setItem("qms-user-imported-sources-v2", "true");
     setData(sources.length ? analyzeImported(sources, appliedDateRange) : sampleData);
     setAnalysisRevision((current) => current + 1);
     const parts = [];

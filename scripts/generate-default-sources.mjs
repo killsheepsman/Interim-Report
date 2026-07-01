@@ -10,11 +10,12 @@ const sourceDirs = ["DQA", "IPQC", "IQC", "OQC"].map((name) => path.join(sourceR
 const { analyzeImported, parseFiles } = await import(pathToFileURL(path.join(projectRoot, "src", "dataEngine.js")).href);
 const gzipAsync = promisify(gzip);
 
-const writeGzipJson = async (filePath, value) => {
+const writeGzipJson = async (filePath, value, { keepRaw = false } = {}) => {
   const json = JSON.stringify(value);
-  await fs.writeFile(filePath, json, "utf8");
+  if (keepRaw) await fs.writeFile(filePath, json, "utf8");
   const gz = await gzipAsync(Buffer.from(json, "utf8"), { level: 9 });
   await fs.writeFile(`${filePath}.gz`, gz);
+  if (!keepRaw) await fs.rm(filePath, { force: true });
   return { rawBytes: Buffer.byteLength(json), gzBytes: gz.byteLength };
 };
 
@@ -67,7 +68,7 @@ const analysisSize = await writeGzipJson(analysisOutput, {
   dateRange: defaultDateRange,
   files: metaFiles,
   data: analysis,
-});
+}, { keepRaw: true });
 
 const summary = parsed.reduce((acc, file) => {
   acc[file.module] = (acc[file.module] || 0) + 1;

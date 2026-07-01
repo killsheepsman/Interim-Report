@@ -155,16 +155,17 @@ export function LineCompare({ data, height = 300, chartKey = data.series.map((it
     series: data.series.map((s, i) => ({ name: s.name, type: "line", smooth: true, symbolSize: 7, data: s.data, label: { show: labelVisible(positions[s.name]), position: labelPosition(positions[s.name]), formatter: "{c}", fontSize: 9 }, labelLayout: { hideOverlap: false, moveOverlap: "shiftY" }, lineStyle: { width: 3 }, itemStyle: { color: i ? cyan : blue }, areaStyle: i === 0 ? { color: "rgba(47,126,230,.07)" } : undefined })),
   }} /></div>;
 }
-export function BarCompare({ labels, first, second, names = ["2025", "2026"], percent = true, height = 310, chartKey = names.join("-") }) {
+export function BarCompare({ labels, first, second, names = ["2025", "2026"], percent = true, height = 310, chartKey = names.join("-"), rateAxisOverride = null, hideRateAxisControl = false }) {
   const [positions, setPositions] = usePersistentPositions("bar", chartKey, { [names[0]]: "top", [names[1]]: "top" });
   const [rateAxis, setRateAxis] = usePersistentAxisRange("bar", chartKey, { min: 0, max: 100 });
+  const effectiveRateAxis = rateAxisOverride || rateAxis;
   const changePosition = (name, value) => setPositions((current) => ({ ...current, [name]: value }));
-  return <div className="chart-config-wrap"><div className="chart-control-row">{percent && <RateAxisControl range={rateAxis} onChange={setRateAxis}/>}<LabelPositionControl positions={positions} onChange={changePosition}/></div><ScaledChart style={{ height }} option={{
+  return <div className="chart-config-wrap"><div className="chart-control-row">{percent && !hideRateAxisControl && <RateAxisControl range={rateAxis} onChange={setRateAxis}/>}<LabelPositionControl positions={positions} onChange={changePosition}/></div><ScaledChart style={{ height }} option={{
     tooltip: { trigger: "axis", axisPointer: { type: "shadow" }, valueFormatter: (v) => percent ? `${v}%` : v },
     legend: topLegend(6),
     grid: { left: 46, right: 18, top: 42, bottom: 54 },
     xAxis: { type: "category", data: labels, axisLabel: { interval: 0, rotate: labels.length > 7 ? 25 : 0, color: "#596273" }, axisLine: { lineStyle: { color: "#d8dee7" } } },
-    yAxis: { type: "value", min: percent ? Number(rateAxis.min) || 0 : undefined, max: percent ? Math.max(Number(rateAxis.max) || 100, (Number(rateAxis.min) || 0) + 0.1) : undefined, axisLabel: { formatter: percent ? "{value}%" : "{value}" }, splitLine: { lineStyle: { color: "#edf0f4" } } },
+    yAxis: { type: "value", min: percent ? Number(effectiveRateAxis.min) || 0 : undefined, max: percent ? Math.max(Number(effectiveRateAxis.max) || 100, (Number(effectiveRateAxis.min) || 0) + 0.1) : undefined, axisLabel: { formatter: percent ? "{value}%" : "{value}" }, splitLine: { lineStyle: { color: "#edf0f4" } } },
     series: [
       { name: names[0], type: "bar", data: first, barMaxWidth: 28, itemStyle: { color: blue, borderRadius: [4, 4, 0, 0] }, label: { show: labelVisible(positions[names[0]]), position: labelPosition(positions[names[0]]), formatter: percent ? "{c}%" : "{c}", fontSize: 10 }, labelLayout: { hideOverlap: false } },
       { name: names[1], type: "bar", data: second, barMaxWidth: 28, itemStyle: { color: orange, borderRadius: [4, 4, 0, 0] }, label: { show: labelVisible(positions[names[1]]), position: labelPosition(positions[names[1]]), formatter: percent ? "{c}%" : "{c}", fontSize: 10 }, labelLayout: { hideOverlap: false } },
@@ -589,7 +590,7 @@ export function ScoreMonthlyCombo({ rows, metric, label, numeratorKey, numerator
 }
 
 const stackedPalette = ["#2f7ee6", "#f5822a", "#50ad68", "#8b67c7", "#19a9d5", "#e05d8c", "#9a7b4f", "#6b7f91"];
-export function YearStackedCompare({ rows, values, height = 380, chartKey = values.join("-"), topToBottom = false }) {
+export function YearStackedCompare({ rows, values, height = 380, chartKey = values.join("-"), topToBottom = false, rateAxisOverride = null, hideRateAxisControl = false }) {
   // ECharts renders the first horizontal-category item at the bottom.
   // Keep 2025 visually above 2026 by feeding each entity in reverse year order.
   const axisRows = rows.flatMap((row) => [...row.years]
@@ -598,8 +599,9 @@ export function YearStackedCompare({ rows, values, height = 380, chartKey = valu
   const defaultPositions = Object.fromEntries(values.map((value) => [value, "inside"]));
   const [positions, setPositions] = usePersistentPositions("year-stacked", chartKey, defaultPositions);
   const [rateAxis, setRateAxis] = usePersistentAxisRange("year-stacked", chartKey, { min: 0, max: 100 });
+  const effectiveRateAxis = rateAxisOverride || rateAxis;
   const changePosition = (name, value) => setPositions((current) => ({ ...current, [name]: value }));
-  return <div className="chart-config-wrap"><div className="chart-control-row"><RateAxisControl range={rateAxis} onChange={setRateAxis}/><LabelPositionControl positions={positions} onChange={changePosition} options={["inside", "insideLeft", "insideRight", "left", "right", "none"]}/></div><ScaledChart style={{ height }} option={{
+  return <div className="chart-config-wrap"><div className="chart-control-row">{!hideRateAxisControl && <RateAxisControl range={rateAxis} onChange={setRateAxis}/>}<LabelPositionControl positions={positions} onChange={changePosition} options={["inside", "insideLeft", "insideRight", "left", "right", "none"]}/></div><ScaledChart style={{ height }} option={{
     tooltip: {
       trigger: "axis", axisPointer: { type: "shadow" },
       formatter: (params) => {
@@ -610,7 +612,7 @@ export function YearStackedCompare({ rows, values, height = 380, chartKey = valu
     },
     legend: isAppleTheme() ? { type: "scroll", top: 0, left: 8, right: 8 } : { type: "scroll", top: 0, left: 8, right: 8 },
     grid: { left: 130, right: 28, top: 48, bottom: 28, containLabel: true },
-    xAxis: { type: "value", min: Number(rateAxis.min) || 0, max: Math.max(Number(rateAxis.max) || 100, (Number(rateAxis.min) || 0) + 0.1), axisLabel: { formatter: "{value}%" }, splitLine: { lineStyle: { color: "#eef1f5" } } },
+    xAxis: { type: "value", min: Number(effectiveRateAxis.min) || 0, max: Math.max(Number(effectiveRateAxis.max) || 100, (Number(effectiveRateAxis.min) || 0) + 0.1), axisLabel: { formatter: "{value}%" }, splitLine: { lineStyle: { color: "#eef1f5" } } },
     yAxis: {
       type: "category",
       data: axisRows.map((row) => `${row.entity}  ${row.year}`),

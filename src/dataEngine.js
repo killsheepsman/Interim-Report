@@ -132,13 +132,31 @@ const oqcMonthlySummaryRows = (workbook) => {
           const monthNumber = Number(month.replace("月", ""));
           const score = Number(scoreText.replace("分", ""));
           const count = number(source[col]);
-          if (!monthNumber || monthNumber > 5 || !score || count <= 0) continue;
+          if (!monthNumber || !score || count <= 0) continue;
           rows.push({
             产品部: division, TPM: tpm, 年份: block.year, 月份: monthNumber,
             评分档位: score, 数量: count, 日期: new Date(block.year, monthNumber - 1, 1),
           });
         }
       }
+    });
+  });
+  return rows;
+};
+
+const oqcShipmentDetailRows = (workbook) => {
+  const rows = [];
+  workbook.SheetNames.forEach((name) => {
+    const matrix = XLSX.utils.sheet_to_json(workbook.Sheets[name], { header: 1, defval: "" });
+    const headerIndex = findHeader(matrix);
+    const headers = matrix[headerIndex].map(text);
+    matrix.slice(headerIndex + 1).forEach((values) => {
+      if (!values.some((v) => text(v))) return;
+      const row = { __sheet: name };
+      headers.forEach((h, i) => {
+        if (["日期", "产品部", "TPM", "机台分类", "机台数量", "最终评分"].includes(h)) row[h] = values[i];
+      });
+      if (Object.keys(row).length > 1) rows.push(row);
     });
   });
   return rows;
@@ -326,6 +344,7 @@ const detectModule = (fileName, rows) => {
   const columns = new Set(Object.keys(rows[0] || {}));
   if (columns.has("供应商") && columns.has("质检结果")) return "IQC";
   if ((columns.has("治具数量") || columns.has("送检数")) && (columns.has("异常问题数量") || columns.has("不良治具数量") || columns.has("不良数"))) return "IPQC";
+  if (fileName.includes("出货汇总") && columns.has("最终评分") && columns.has("机台数量")) return "OQC";
   if (columns.has("UUID") || (columns.has("设备评分") && columns.has("售后设备评分")) || fileName.includes("评分")) return "OQC";
   if (fileName.includes("加工件数量比例") || columns.has("__partKind")) return "DQA";
   if (columns.has("问题描述") || columns.has("评审问题数") || fileName.includes("研发问题") || fileName.includes("评审问题") || fileName.includes("ECN")) return "DQA";
@@ -338,10 +357,11 @@ export async function parseFiles(files) {
     const arrayBuffer = await file.arrayBuffer();
     const workbook = XLSX.read(arrayBuffer, { type: "array", cellDates: true });
     const isOqcMonthlySummary = file.name.includes("评分按月汇总");
+    const isOqcShipmentDetail = file.name.includes("出货汇总");
     const isMachinedParts = isMachinedPartsWorkbookStable(file.name, workbook) || isMachinedPartsWorkbook(file.name, workbook);
     const isEcnSummary = !isMachinedParts && file.name.includes("ECN");
     const isIqcProject = !isEcnSummary && !isOqcMonthlySummary && isIqcProjectWorkbook(workbook);
-    const rows = isOqcMonthlySummary ? oqcMonthlySummaryRows(workbook) : isMachinedParts ? machinedPartRowsStable(workbook, file.name) : isEcnSummary ? ecnRows(workbook) : isIqcProject ? iqcProjectRows(workbook, file.name) : sheetRows(workbook);
+    const rows = isOqcMonthlySummary ? oqcMonthlySummaryRows(workbook) : isOqcShipmentDetail ? oqcShipmentDetailRows(workbook) : isMachinedParts ? machinedPartRowsStable(workbook, file.name) : isEcnSummary ? ecnRows(workbook) : isIqcProject ? iqcProjectRows(workbook, file.name) : sheetRows(workbook);
     rows.forEach((row) => {
       if (row["治具数量"] == null && row["送检数"] != null) row["治具数量"] = row["送检数"];
       if (row["异常问题数量"] == null && row["不良数"] != null) row["异常问题数量"] = row["不良数"];
@@ -355,7 +375,7 @@ export async function parseFiles(files) {
       module: detectModule(file.name, rows),
       rows,
       sheets: workbook.SheetNames,
-      kind: isOqcMonthlySummary ? "OQC_MONTHLY_SUMMARY" : isMachinedParts ? "DQA_MACHINED_PARTS" : isIqcProject ? "IQC_FOCUS_PROJECT" : "STANDARD",
+      kind: isOqcMonthlySummary ? "OQC_MONTHLY_SUMMARY" : isOqcShipmentDetail ? "OQC_SHIPMENT_DETAIL" : isMachinedParts ? "DQA_MACHINED_PARTS" : isIqcProject ? "IQC_FOCUS_PROJECT" : "STANDARD",
       subKind: isMachinedParts ? "DQA_MACHINED_PARTS" : isEcnSummary ? "DQA_ECN" : isIqcProject ? "IQC_FOCUS_PROJECT" : undefined,
       projectName: isIqcProject ? iqcProjectName(file.name) : undefined,
       importedAt: new Date().toISOString(),
@@ -928,6 +948,220 @@ const buildOqcMonthlySummary = (rows, dateRange) => {
     fpcTpm,
     divisionMonthly: Object.fromEntries(allowedDivisions.map((division) => [division, monthly((row) => text(row["产品部"]) === division)])),
     fpcMonthly: monthly((row) => text(row["产品部"]) === "FPC事业部"),
+  };
+};
+
+const oqcDisplayDivision = (value) => {
+  const source = text(value);
+  if (/产品一部|半导体|北美|IC载[板版]/i.test(source)) return "半导体&北美";
+  if (/产品五部/.test(source)) return "产品五部";
+  if (/FPC/i.test(source)) return "FPC事业部";
+  return "";
+};
+
+const buildOqcShipmentDetail = (rows, dateRange) => {
+  const divisions = ["半导体&北美", "产品五部", "FPC事业部"];
+  const scoreValues = [1, 2, 3, 4, 5];
+  const records = rows.map((row) => {
+    const division = oqcDisplayDivision(row["产品部"]);
+    const qty = Math.max(0, number(row["机台数量"]) || 1);
+    return {
+      year: yearOf(row["日期"]),
+      month: monthOf(row["日期"]),
+      division,
+      rawDivision: text(row["产品部"]) || "未填写",
+      tpm: text(row["TPM"]) || "未分类",
+      machine: text(row["机台分类"]) || "未分类",
+      qty,
+      score: number(row["最终评分"]),
+    };
+  }).filter((row) => [2025, 2026].includes(row.year) && divisions.includes(row.division) && row.qty > 0 && row.score > 0);
+
+  const metric = (source) => {
+    const qty = source.reduce((sum, row) => sum + row.qty, 0);
+    const scoreTotal = source.reduce((sum, row) => sum + row.score * row.qty, 0);
+    const five = source.filter((row) => row.score === 5).reduce((sum, row) => sum + row.qty, 0);
+    const low = source.filter((row) => row.score <= 3).reduce((sum, row) => sum + row.qty, 0);
+    const four = source.filter((row) => row.score === 4).reduce((sum, row) => sum + row.qty, 0);
+    const counts = Object.fromEntries(scoreValues.map((score) => [`${score}分`, source.filter((row) => row.score === score).reduce((sum, row) => sum + row.qty, 0)]));
+    return {
+      count: qty,
+      scoreTotal,
+      avg: Number((scoreTotal / Math.max(qty, 1)).toFixed(2)),
+      five,
+      fiveRate: Number((five / Math.max(qty, 1) * 100).toFixed(1)),
+      low,
+      lowRate: Number((low / Math.max(qty, 1) * 100).toFixed(1)),
+      four,
+      fourRate: Number((four / Math.max(qty, 1) * 100).toFixed(1)),
+      counts,
+    };
+  };
+
+  const compareRows = (names, filterFactory) => names.map((name) => {
+    const result = { name };
+    [2025, 2026].forEach((year) => {
+      const value = metric(records.filter((row) => row.year === year && filterFactory(name)(row)));
+      result[`y${year}Count`] = value.count;
+      result[`y${year}ScoreTotal`] = value.scoreTotal;
+      result[`y${year}Avg`] = value.avg;
+      result[`y${year}Five`] = value.five;
+      result[`y${year}FiveRate`] = value.fiveRate;
+      result[`y${year}Low`] = value.low;
+      result[`y${year}LowRate`] = value.lowRate;
+      result[`y${year}Four`] = value.four;
+      result[`y${year}FourRate`] = value.fourRate;
+    });
+    result.deltaAvg = Number((result.y2026Avg - result.y2025Avg).toFixed(2));
+    result.deltaFiveRate = Number((result.y2026FiveRate - result.y2025FiveRate).toFixed(1));
+    result.deltaLowRate = Number((result.y2026LowRate - result.y2025LowRate).toFixed(1));
+    return result;
+  });
+
+  const allMetric = (year) => metric(records.filter((row) => row.year === year));
+  const machines = [...new Set(records.map((row) => row.machine))].filter(Boolean).sort((a, b) => a.localeCompare(b, "zh-CN"));
+  const tpmNames = [...new Set(records.map((row) => row.tpm))].filter(Boolean).sort((a, b) => a.localeCompare(b, "zh-CN"));
+
+  const machineRows = compareRows(machines, (name) => (row) => row.machine === name);
+  const divisionRows = compareRows(divisions, (name) => (row) => row.division === name);
+  const tpmRows = compareRows(tpmNames, (name) => (row) => row.tpm === name)
+    .map((row) => {
+      const current = records.find((item) => item.year === 2026 && item.tpm === row.name) || records.find((item) => item.tpm === row.name);
+      return { ...row, division: current?.division || "未分类" };
+    })
+    .sort((a, b) => (b.y2026LowRate - a.y2026LowRate) || (b.y2026Low - a.y2026Low) || (b.y2026Count - a.y2026Count));
+
+  const matrix = divisions.flatMap((division) => machines.map((machine) => {
+    const row = { name: `${division}-${machine}`, division, machine };
+    [2025, 2026].forEach((year) => {
+      const value = metric(records.filter((item) => item.year === year && item.division === division && item.machine === machine));
+      row[`y${year}Count`] = value.count;
+      row[`y${year}Avg`] = value.avg;
+      row[`y${year}FiveRate`] = value.fiveRate;
+      row[`y${year}Low`] = value.low;
+      row[`y${year}LowRate`] = value.lowRate;
+    });
+    return row;
+  }));
+
+  const scoreStructureRows = ["全公司", ...divisions].map((name) => ({
+    name,
+    years: [2025, 2026].map((year) => {
+      const value = metric(records.filter((row) => row.year === year && (name === "全公司" || row.division === name)));
+      return { year, total: value.count, counts: value.counts };
+    }),
+  }));
+
+  const shareRows = (names, filterFactory) => {
+    const totals = { 2025: allMetric(2025).count, 2026: allMetric(2026).count };
+    return names.map((name) => {
+      const result = { name };
+      [2025, 2026].forEach((year) => {
+        const qty = records.filter((row) => row.year === year && filterFactory(name)(row)).reduce((sum, row) => sum + row.qty, 0);
+        result[`y${year}Count`] = qty;
+        result[`y${year}Share`] = Number((qty / Math.max(totals[year], 1) * 100).toFixed(1));
+      });
+      result.deltaShare = Number((result.y2026Share - result.y2025Share).toFixed(1));
+      return result;
+    });
+  };
+
+  const mixImpact = (names, filterFactory, label) => {
+    const total25 = allMetric(2025).count;
+    const total26 = allMetric(2026).count;
+    const avg25 = allMetric(2025).avg;
+    const avg26 = allMetric(2026).avg;
+    const rows = names.map((name) => {
+      const src25 = records.filter((row) => row.year === 2025 && filterFactory(name)(row));
+      const src26 = records.filter((row) => row.year === 2026 && filterFactory(name)(row));
+      const m25 = metric(src25);
+      const m26 = metric(src26);
+      const share25 = m25.count / Math.max(total25, 1);
+      const share26 = m26.count / Math.max(total26, 1);
+      return {
+        name, share25, share26,
+        y2025Share: Number((share25 * 100).toFixed(1)),
+        y2026Share: Number((share26 * 100).toFixed(1)),
+        y2025Avg: m25.avg,
+        y2026Avg: m26.avg,
+        qualityContribution: (m26.avg - m25.avg) * share25,
+        mixContribution: (share26 - share25) * (m26.avg - avg26),
+      };
+    });
+    const qualityImpact = rows.reduce((sum, row) => sum + row.qualityContribution, 0);
+    const structureImpact = rows.reduce((sum, row) => sum + row.mixContribution, 0);
+    return {
+      label,
+      y2025Avg: avg25,
+      y2026Avg: avg26,
+      totalDelta: Number((avg26 - avg25).toFixed(2)),
+      qualityImpact: Number(qualityImpact.toFixed(2)),
+      structureImpact: Number(structureImpact.toFixed(2)),
+      residual: Number(((avg26 - avg25) - qualityImpact - structureImpact).toFixed(2)),
+      rows: rows.map((row) => ({
+        ...row,
+        qualityContribution: Number(row.qualityContribution.toFixed(2)),
+        mixContribution: Number(row.mixContribution.toFixed(2)),
+      })),
+    };
+  };
+
+  const summaryDivisionMap = [
+    { source: "半导体&北美", name: "产品一部" },
+    { source: "产品五部", name: "产品五部" },
+    { source: "FPC事业部", name: "FPC事业部" },
+  ];
+  const summaryCompareRows = (items, filterFactory) => items.map((item) => {
+    const result = { name: item.name };
+    [2025, 2026].forEach((year) => {
+      const value = metric(records.filter((row) => row.year === year && filterFactory(item)(row)));
+      result[`y${year}Count`] = value.count;
+      result[`y${year}ScoreTotal`] = value.scoreTotal;
+      result[`y${year}Five`] = value.five;
+      result[`y${year}Low`] = value.low;
+      result[`y${year}Avg`] = value.avg;
+      result[`y${year}FiveRate`] = value.fiveRate;
+      result[`y${year}LowRate`] = value.lowRate;
+    });
+    return result;
+  });
+  const summaryMonthly = (filter) => comparisonMonths(dateRange).map((month) => {
+    const result = { month: `${month}月` };
+    [2025, 2026].forEach((year) => {
+      const value = metric(records.filter((row) => row.year === year && row.month === month && filter(row)));
+      result[`y${year}Count`] = value.count;
+      result[`y${year}ScoreTotal`] = value.scoreTotal;
+      result[`y${year}Five`] = value.five;
+      result[`y${year}Low`] = value.low;
+      result[`y${year}Avg`] = value.avg;
+      result[`y${year}FiveRate`] = value.fiveRate;
+      result[`y${year}LowRate`] = value.lowRate;
+    });
+    return result;
+  });
+  const fpcTpms = [...new Set(records.filter((row) => row.division === "FPC事业部").map((row) => row.tpm))]
+    .filter(Boolean).sort((a, b) => a.localeCompare(b, "zh-CN"));
+  const monthlySummaryFromDetail = {
+    divisions: summaryCompareRows(summaryDivisionMap, (item) => (row) => row.division === item.source),
+    fpcTpm: summaryCompareRows(fpcTpms.map((name) => ({ name })), (item) => (row) => row.division === "FPC事业部" && row.tpm === item.name),
+    divisionMonthly: Object.fromEntries(summaryDivisionMap.map((item) => [item.name, summaryMonthly((row) => row.division === item.source)])),
+    fpcMonthly: summaryMonthly((row) => row.division === "FPC事业部"),
+  };
+
+  return {
+    overall: { y2025: allMetric(2025), y2026: allMetric(2026) },
+    monthlySummary: monthlySummaryFromDetail,
+    machineRows,
+    divisionRows,
+    matrix,
+    tpmRows,
+    scoreStructureRows,
+    productShareRows: shareRows(divisions, (name) => (row) => row.division === name),
+    machineShareRows: shareRows(machines, (name) => (row) => row.machine === name),
+    structureImpact: [
+      mixImpact(divisions, (name) => (row) => row.division === name, "产品部结构"),
+      mixImpact(machines, (name) => (row) => row.machine === name, "机台分类结构"),
+    ],
   };
 };
 
@@ -1578,8 +1812,17 @@ export function analyzeImported(files, dateRange) {
       next.kpis[2].value = oqcRate26;
       next.kpis[2].delta = Number((oqcRate26 - oqcRate25).toFixed(1));
     }
+    const shipmentDetailRows = files.filter((file) => file.module === "OQC" && file.kind === "OQC_SHIPMENT_DETAIL").flatMap((file) => file.rows);
+    if (shipmentDetailRows.length) {
+      next.oqc.shipmentDetail = buildOqcShipmentDetail(shipmentDetailRows, dateRange);
+      if (next.oqc.shipmentDetail.monthlySummary) next.oqc.monthlySummary = next.oqc.shipmentDetail.monthlySummary;
+      const y2025 = next.oqc.shipmentDetail.overall?.y2025 || {};
+      const y2026 = next.oqc.shipmentDetail.overall?.y2026 || {};
+      next.kpis[2].value = Number(y2026.fiveRate || 0);
+      next.kpis[2].delta = Number(((y2026.fiveRate || 0) - (y2025.fiveRate || 0)).toFixed(1));
+    }
     const unique = new Map();
-    const detailRows = oqc.filter((row) => row["评分档位"] == null);
+    const detailRows = oqc.filter((row) => row["评分档位"] == null && row["最终评分"] == null);
     detailRows.forEach((r) => {
       const id = text(r["UUID"]) || `${text(r["SN"])}-${text(r["PM"])}-${text(r["发货时间"])}`;
       if (!unique.has(id)) unique.set(id, r);
