@@ -18,6 +18,17 @@ const businessDate = (value) => {
   }
   return raw;
 };
+const xlsxReadOptions = {
+  type: "array",
+  cellDates: true,
+  dense: true,
+  cellFormula: false,
+  cellHTML: false,
+  cellNF: false,
+  cellStyles: false,
+};
+const sheetMatrix = (sheet) => XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "", blankrows: false });
+const yieldToMainThread = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 const classify = (value, rules) => {
   const source = text(value).toLowerCase().replace(/\s/g, "");
@@ -78,7 +89,7 @@ const findHeader = (rows) => {
 const sheetRows = (workbook) => {
   const rows = [];
   workbook.SheetNames.forEach((name) => {
-    const matrix = XLSX.utils.sheet_to_json(workbook.Sheets[name], { header: 1, defval: "" });
+    const matrix = sheetMatrix(workbook.Sheets[name]);
     const headerIndex = findHeader(matrix);
     const headers = matrix[headerIndex].map(text);
     matrix.slice(headerIndex + 1).forEach((values) => {
@@ -95,7 +106,7 @@ const ecnRows = (workbook) => {
   const rows = [];
   workbook.SheetNames.forEach((name) => {
     if (!name.includes("分子") && !name.includes("分母")) return;
-    const matrix = XLSX.utils.sheet_to_json(workbook.Sheets[name], { header: 1, defval: "" });
+    const matrix = sheetMatrix(workbook.Sheets[name]);
     const headerIndex = findHeader(matrix);
     const headers = matrix[headerIndex].map(text);
     matrix.slice(headerIndex + 1).forEach((values) => {
@@ -111,7 +122,7 @@ const ecnRows = (workbook) => {
 const oqcMonthlySummaryRows = (workbook) => {
   const rows = [];
   workbook.SheetNames.forEach((name) => {
-    const matrix = XLSX.utils.sheet_to_json(workbook.Sheets[name], { header: 1, defval: "" });
+    const matrix = sheetMatrix(workbook.Sheets[name]);
     const blocks = [
       { year: 2025, monthRow: 1, scoreRow: 2, startRow: 3, endRow: 13 },
       { year: 2026, monthRow: 18, scoreRow: 19, startRow: 20, endRow: 30 },
@@ -147,7 +158,7 @@ const oqcMonthlySummaryRows = (workbook) => {
 const oqcShipmentDetailRows = (workbook) => {
   const rows = [];
   workbook.SheetNames.forEach((name) => {
-    const matrix = XLSX.utils.sheet_to_json(workbook.Sheets[name], { header: 1, defval: "" });
+    const matrix = sheetMatrix(workbook.Sheets[name]);
     const headerIndex = findHeader(matrix);
     const headers = matrix[headerIndex].map(text);
     matrix.slice(headerIndex + 1).forEach((values) => {
@@ -170,7 +181,7 @@ const machinedPartRows = (workbook, fileName) => {
   workbook.SheetNames.forEach((sheetName) => {
     const sheetKind = sheetName.includes("非BOM") ? "非BOM" : sheetName.includes("ECN") ? "ECN" : "";
     if (!sheetKind) return;
-    const matrix = XLSX.utils.sheet_to_json(workbook.Sheets[sheetName], { header: 1, defval: "" });
+    const matrix = sheetMatrix(workbook.Sheets[sheetName]);
     const firstRow = matrix[0] || [];
     const secondRow = matrix[1] || [];
     let currentDivision = "";
@@ -253,7 +264,7 @@ const machinedPartRowsStable = (workbook, fileName) => {
     const normalizedSheet = text(sheetName);
     const sheetKind = normalizedSheet.includes(cn.nonBom) ? cn.nonBom : normalizedSheet.includes(cn.ecn) ? cn.ecn : "";
     if (!sheetKind) return;
-    const matrix = XLSX.utils.sheet_to_json(workbook.Sheets[sheetName], { header: 1, defval: "" });
+    const matrix = sheetMatrix(workbook.Sheets[sheetName]);
     const firstRow = matrix[0] || [];
     let currentDivision = "";
     matrix.slice(2).forEach((values) => {
@@ -307,14 +318,14 @@ const iqcProjectName = (fileName) => text(fileName)
 
 const isIqcProjectWorkbook = (workbook) => {
   if (workbook.SheetNames.length < 3) return false;
-  const firstMatrix = XLSX.utils.sheet_to_json(workbook.Sheets[workbook.SheetNames[0]], { header: 1, defval: "" });
+  const firstMatrix = sheetMatrix(workbook.Sheets[workbook.SheetNames[0]]);
   const firstHeaderIndex = findHeader(firstMatrix);
   const firstHeaders = new Set((firstMatrix[firstHeaderIndex] || []).map(text));
   const firstName = text(workbook.SheetNames[0]);
   const firstLooksSummary = firstName.includes("\u6c47\u603b") || (firstHeaders.has("\u5e74\u4efd") && firstHeaders.has("\u6765\u6599\u6279\u6b21"));
   if (!firstLooksSummary) return false;
   return workbook.SheetNames.slice(1, 3).some((sheetName) => {
-    const matrix = XLSX.utils.sheet_to_json(workbook.Sheets[sheetName], { header: 1, defval: "" });
+    const matrix = sheetMatrix(workbook.Sheets[sheetName]);
     const headerIndex = findHeader(matrix);
     const headers = new Set((matrix[headerIndex] || []).map(text));
     return headers.has("\u4f9b\u5e94\u5546") && headers.has("\u8d28\u68c0\u7ed3\u679c") && headers.has("\u68c0\u9a8c\u5f00\u59cb\u65f6\u95f4");
@@ -325,7 +336,7 @@ const iqcProjectRows = (workbook, fileName) => {
   const rows = [];
   const project = iqcProjectName(fileName);
   workbook.SheetNames.slice(1, 3).forEach((sheetName) => {
-    const matrix = XLSX.utils.sheet_to_json(workbook.Sheets[sheetName], { header: 1, defval: "" });
+    const matrix = sheetMatrix(workbook.Sheets[sheetName]);
     const headerIndex = findHeader(matrix);
     const headers = matrix[headerIndex].map(text);
     if (!headers.includes("\u4f9b\u5e94\u5546") || !headers.includes("\u8d28\u68c0\u7ed3\u679c")) return;
@@ -340,28 +351,104 @@ const iqcProjectRows = (workbook, fileName) => {
   return rows;
 };
 
+export const normalizeIpqcWorkshop = (value) => {
+  const source = text(value).replace(/\s/g, "");
+  if (!source) return "未分工坊";
+  if (source.includes("一")) return "一工坊";
+  if (source.includes("二")) return "二工坊";
+  if (source.includes("三")) return "三工坊";
+  if (source.includes("四")) return "四工坊";
+  if (source.includes("五")) return "五工坊";
+  if (source.includes("平台")) return "平台";
+  return source;
+};
+
+export const normalizeIpqcLeaderMapRows = (rows = []) => {
+  let lastSite = "";
+  let lastWorkshop = "";
+  let lastManager = "";
+  return rows.map((row) => {
+    const site = text(row["厂区"]) || lastSite;
+    const workshop = text(row["工坊"]) || lastWorkshop;
+    const manager = text(row["交付经理"]) || lastManager;
+    const leader = text(row["机长"]);
+    if (site) lastSite = site;
+    if (workshop) lastWorkshop = workshop;
+    if (manager) lastManager = manager;
+    return { site, workshop: normalizeIpqcWorkshop(workshop), manager, leader };
+  }).filter((row) => row.site && row.leader);
+};
+
+const isIpqcLeaderMapWorkbook = (fileName, workbook) => {
+  if (text(fileName).includes("工坊交付经理机长映射表")) return true;
+  return workbook.SheetNames.some((sheetName) => {
+    const matrix = sheetMatrix(workbook.Sheets[sheetName]);
+    const headers = new Set((matrix[0] || []).map(text));
+    return headers.has("厂区") && headers.has("工坊") && headers.has("交付经理") && headers.has("机长");
+  });
+};
+
+const ipqcLeaderMapRows = (workbook) => {
+  const rows = [];
+  workbook.SheetNames.forEach((sheetName) => {
+    const matrix = sheetMatrix(workbook.Sheets[sheetName]);
+    const headerIndex = matrix.findIndex((line) => {
+      const headers = new Set((line || []).map(text));
+      return headers.has("厂区") && headers.has("工坊") && headers.has("交付经理") && headers.has("机长");
+    });
+    if (headerIndex < 0) return;
+    const headers = matrix[headerIndex].map(text);
+    matrix.slice(headerIndex + 1).forEach((values) => {
+      if (!values.some((v) => text(v))) return;
+      const row = {};
+      headers.forEach((h, i) => { if (h) row[h] = values[i]; });
+      rows.push(row);
+    });
+  });
+  return normalizeIpqcLeaderMapRows(rows).map((row) => ({
+    "厂区": row.site,
+    "工坊": row.workshop,
+    "交付经理": row.manager,
+    "机长": row.leader,
+  }));
+};
+
+const rowColumns = (row) => new Set(Object.keys(row || {}));
+const hasIqcColumns = (columns) => columns.has("供应商") && columns.has("质检结果");
+const hasIpqcColumns = (columns) => (columns.has("治具数量") || columns.has("送检数")) && (columns.has("异常问题数量") || columns.has("不良治具数量") || columns.has("不良数"));
+const hasOqcColumns = (fileName, columns) => (fileName.includes("出货汇总") && columns.has("最终评分") && columns.has("机台数量"))
+  || columns.has("UUID") || (columns.has("设备评分") && columns.has("售后设备评分")) || fileName.includes("评分");
+const hasDqaColumns = (fileName, columns) => fileName.includes("加工件数量比例") || columns.has("__partKind")
+  || columns.has("问题描述") || columns.has("评审问题数") || fileName.includes("研发问题") || fileName.includes("评审问题") || fileName.includes("ECN");
 const detectModule = (fileName, rows) => {
-  const columns = new Set(Object.keys(rows[0] || {}));
+  const columnSets = rows.length ? rows.map(rowColumns) : [new Set()];
+  const columns = columnSets[0];
   if (columns.has("供应商") && columns.has("质检结果")) return "IQC";
   if ((columns.has("治具数量") || columns.has("送检数")) && (columns.has("异常问题数量") || columns.has("不良治具数量") || columns.has("不良数"))) return "IPQC";
   if (fileName.includes("出货汇总") && columns.has("最终评分") && columns.has("机台数量")) return "OQC";
   if (columns.has("UUID") || (columns.has("设备评分") && columns.has("售后设备评分")) || fileName.includes("评分")) return "OQC";
   if (fileName.includes("加工件数量比例") || columns.has("__partKind")) return "DQA";
   if (columns.has("问题描述") || columns.has("评审问题数") || fileName.includes("研发问题") || fileName.includes("评审问题") || fileName.includes("ECN")) return "DQA";
+  if (columnSets.some(hasIqcColumns)) return "IQC";
+  if (columnSets.some(hasIpqcColumns)) return "IPQC";
+  if (columnSets.some((set) => hasOqcColumns(fileName, set))) return "OQC";
+  if (columnSets.some((set) => hasDqaColumns(fileName, set))) return "DQA";
   return "UNKNOWN";
 };
 
 export async function parseFiles(files) {
   const parsed = [];
   for (const file of files) {
+    await yieldToMainThread();
     const arrayBuffer = await file.arrayBuffer();
-    const workbook = XLSX.read(arrayBuffer, { type: "array", cellDates: true });
+    const workbook = XLSX.read(arrayBuffer, xlsxReadOptions);
     const isOqcMonthlySummary = file.name.includes("评分按月汇总");
     const isOqcShipmentDetail = file.name.includes("出货汇总");
     const isMachinedParts = isMachinedPartsWorkbookStable(file.name, workbook) || isMachinedPartsWorkbook(file.name, workbook);
     const isEcnSummary = !isMachinedParts && file.name.includes("ECN");
     const isIqcProject = !isEcnSummary && !isOqcMonthlySummary && isIqcProjectWorkbook(workbook);
-    const rows = isOqcMonthlySummary ? oqcMonthlySummaryRows(workbook) : isOqcShipmentDetail ? oqcShipmentDetailRows(workbook) : isMachinedParts ? machinedPartRowsStable(workbook, file.name) : isEcnSummary ? ecnRows(workbook) : isIqcProject ? iqcProjectRows(workbook, file.name) : sheetRows(workbook);
+    const isIpqcLeaderMap = isIpqcLeaderMapWorkbook(file.name, workbook);
+    let rows = isIpqcLeaderMap ? ipqcLeaderMapRows(workbook) : isOqcMonthlySummary ? oqcMonthlySummaryRows(workbook) : isOqcShipmentDetail ? oqcShipmentDetailRows(workbook) : isMachinedParts ? machinedPartRowsStable(workbook, file.name) : isEcnSummary ? ecnRows(workbook) : isIqcProject ? iqcProjectRows(workbook, file.name) : sheetRows(workbook);
     rows.forEach((row) => {
       if (row["治具数量"] == null && row["送检数"] != null) row["治具数量"] = row["送检数"];
       if (row["异常问题数量"] == null && row["不良数"] != null) row["异常问题数量"] = row["不良数"];
@@ -369,17 +456,20 @@ export async function parseFiles(files) {
       if (file.name.includes("评审问题") && row["评审问题数"] == null && row["数量"] != null) row["评审问题数"] = row["数量"];
       if (file.name.includes("评审问题") && row["下单日期"] == null && row["时间"] != null) row["下单日期"] = row["时间"];
     });
+    const module = isIpqcLeaderMap ? "IPQC" : detectModule(file.name, rows);
+    if (module === "IPQC" && !isIpqcLeaderMap) rows = rows.filter((row) => hasIpqcColumns(rowColumns(row)));
     parsed.push({
       name: file.name,
       size: file.size,
-      module: detectModule(file.name, rows),
+      module,
       rows,
       sheets: workbook.SheetNames,
-      kind: isOqcMonthlySummary ? "OQC_MONTHLY_SUMMARY" : isOqcShipmentDetail ? "OQC_SHIPMENT_DETAIL" : isMachinedParts ? "DQA_MACHINED_PARTS" : isIqcProject ? "IQC_FOCUS_PROJECT" : "STANDARD",
-      subKind: isMachinedParts ? "DQA_MACHINED_PARTS" : isEcnSummary ? "DQA_ECN" : isIqcProject ? "IQC_FOCUS_PROJECT" : undefined,
+      kind: isIpqcLeaderMap ? "IPQC_LEADER_MAP" : isOqcMonthlySummary ? "OQC_MONTHLY_SUMMARY" : isOqcShipmentDetail ? "OQC_SHIPMENT_DETAIL" : isMachinedParts ? "DQA_MACHINED_PARTS" : isIqcProject ? "IQC_FOCUS_PROJECT" : "STANDARD",
+      subKind: isIpqcLeaderMap ? "IPQC_LEADER_MAP" : isMachinedParts ? "DQA_MACHINED_PARTS" : isEcnSummary ? "DQA_ECN" : isIqcProject ? "IQC_FOCUS_PROJECT" : undefined,
       projectName: isIqcProject ? iqcProjectName(file.name) : undefined,
       importedAt: new Date().toISOString(),
     });
+    await yieldToMainThread();
   }
   return parsed;
 }
@@ -449,7 +539,7 @@ const filterFilesByDate = (files, dateRange) => {
   if (!periods.length) return files;
   return files.map((file) => ({
     ...file,
-    rows: file.rows.filter((row) => {
+    rows: file.kind === "IPQC_LEADER_MAP" ? file.rows : file.rows.filter((row) => {
       let date = dateOfRow(row, file.module);
       if (date && file.module === "DQA" && file.name.startsWith("25年评审问题")) {
         date = new Date(2025, date.getMonth(), date.getDate());
@@ -484,6 +574,186 @@ const matchesProcessingType = (row, type) => {
 
 const iqcIssueText = (row) => row["异常原因"] ?? row["质检说明"] ?? row["异常描述"] ?? "";
 const ipqcSite = (fileName) => fileName.includes("杭州") ? "杭州" : "深圳";
+
+const firstValue = (row, keys) => {
+  for (const key of keys) {
+    const value = row?.[key];
+    if (value != null && text(value)) return value;
+  }
+  return "";
+};
+
+const ipqcDate = (row) => firstValue(row, ["日期", "检验日期", "发生日期"]);
+const ipqcWorkshopValue = (row) => firstValue(row, ["产品工坊", "工坊"]);
+const ipqcLeaderValue = (row) => firstValue(row, ["机长"]);
+const ipqcRawTypeValue = (row) => firstValue(row, ["不良类型"]) || "未分类";
+const ipqcManagerValue = (row) => firstValue(row, ["交付经理"]);
+
+const normalizeIpqcSiteName = (value, fallback = "深圳") => {
+  const source = text(value);
+  if (source.includes("杭州")) return "杭州";
+  if (source.includes("深圳")) return "深圳";
+  return fallback;
+};
+
+const buildIpqcLeaderAnalysis = (siteRows, mappingRows = []) => {
+  const normalizedMaps = normalizeIpqcLeaderMapRows(mappingRows);
+  const mapping = new Map(normalizedMaps.map((row) => [`${normalizeIpqcSiteName(row.site)}::${row.leader}`, {
+    ...row,
+    site: normalizeIpqcSiteName(row.site),
+    workshop: normalizeIpqcWorkshop(row.workshop),
+  }]));
+  const workshopManagers = new Map();
+  normalizedMaps.forEach((row) => {
+    const site = normalizeIpqcSiteName(row.site);
+    const workshop = normalizeIpqcWorkshop(row.workshop);
+    if (site && workshop && row.manager && !workshopManagers.has(`${site}::${workshop}`)) {
+      workshopManagers.set(`${site}::${workshop}`, row.manager);
+    }
+  });
+  const bySite = {};
+  ["全公司", "深圳", "杭州"].forEach((site) => {
+    const leaderMap = new Map();
+    const typeByLeader = new Map();
+    const sourceRows = site === "全公司" ? [...(siteRows.深圳 || []), ...(siteRows.杭州 || [])] : (siteRows[site] || []);
+    sourceRows.forEach((row) => {
+      if (yearOf(ipqcDate(row)) !== 2026) return;
+      const leader = text(ipqcLeaderValue(row));
+      if (!leader) return;
+      const recordSite = row.__ipqcSite || site;
+      const mapped = mapping.get(`${recordSite}::${leader}`);
+      const workshop = mapped?.workshop || normalizeIpqcWorkshop(ipqcWorkshopValue(row));
+      const workshopManager = workshopManagers.get(`${recordSite}::${workshop}`) || text(ipqcManagerValue(row)) || "未配置交付经理";
+      const manager = mapped?.manager || text(ipqcManagerValue(row)) || "未覆盖";
+      const leaderKey = site === "全公司" ? `${recordSite}::${leader}` : leader;
+      if (!leaderMap.has(leaderKey)) {
+        leaderMap.set(leaderKey, {
+          name: leader,
+          leader,
+          site: recordSite,
+          workshop,
+          manager,
+          workshopManager,
+          mapped: Boolean(mapped),
+          rows: 0,
+          qty: 0,
+          issues: 0,
+          goodQty: 0,
+        });
+      }
+      const target = leaderMap.get(leaderKey);
+      const qty = ipqcQty(row);
+      const issues = ipqcBad(row);
+      target.rows += 1;
+      target.qty += qty;
+      target.issues += issues;
+      target.goodQty += Math.max(qty - issues, 0);
+      if (issues > 0) {
+        const type = ipqcRawTypeValue(row);
+        const key = `${leaderKey}::${type}`;
+        typeByLeader.set(key, (typeByLeader.get(key) || 0) + issues);
+      }
+    });
+    const leaders = [...leaderMap.values()].map((row) => ({
+      ...row,
+      density: Number((row.issues / Math.max(row.qty, 1) * 100).toFixed(2)),
+      passRate: Number((row.goodQty / Math.max(row.qty, 1) * 100).toFixed(2)),
+    }));
+    const frontier = Math.max(0.000001, ...leaders.map((row) => row.goodQty / Math.max(row.qty + row.issues * 8, 1)));
+    leaders.forEach((row) => {
+      row.deaScore = Number(((row.goodQty / Math.max(row.qty + row.issues * 8, 1)) / frontier * 100).toFixed(1));
+      row.riskScore = Number(((100 - row.deaScore) * 0.55 + Math.min(row.density * 3, 100) * 0.45).toFixed(1));
+    });
+    leaders.sort((a, b) => b.riskScore - a.riskScore);
+    const managerMap = new Map();
+    const unassignedWorkshops = [];
+    sourceRows.forEach((row) => {
+      const year = yearOf(ipqcDate(row));
+      if (![2025, 2026].includes(year)) return;
+      const recordSite = row.__ipqcSite || site;
+      const workshop = normalizeIpqcWorkshop(ipqcWorkshopValue(row));
+      if (workshop === "未分工坊") {
+        unassignedWorkshops.push({
+          site: recordSite,
+          year,
+          date: text(ipqcDate(row)),
+          file: text(row.__sourceFile),
+          component: text(firstValue(row, ["组件类型", "治具类型", "组件名称"])),
+          taskNo: text(firstValue(row, ["任务单号", "工单号", "单号"])),
+          qty: ipqcQty(row),
+          issue: ipqcBad(row),
+          badContent: text(firstValue(row, ["不良内容"])),
+          badType: text(firstValue(row, ["不良类型"])),
+          leader: text(ipqcLeaderValue(row)),
+          manager: text(ipqcManagerValue(row)) || "未配置交付经理",
+        });
+      }
+      const manager = workshopManagers.get(`${recordSite}::${workshop}`) || text(ipqcManagerValue(row)) || "未配置交付经理";
+      const displayWorkshop = site === "全公司" ? `${recordSite}·${workshop}` : workshop;
+      const key = site === "全公司" ? `${recordSite}::${manager}::${workshop}` : `${manager}::${workshop}`;
+      if (!managerMap.has(key)) {
+        managerMap.set(key, {
+          name: manager,
+          manager,
+          workshop: displayWorkshop,
+          site: recordSite,
+          leaderCount: new Set(),
+          y2025Qty: 0,
+          y2025Bad: 0,
+          y2026Qty: 0,
+          y2026Bad: 0,
+        });
+      }
+      const item = managerMap.get(key);
+      const leader = text(ipqcLeaderValue(row));
+      if (leader) item.leaderCount.add(`${recordSite}::${leader}`);
+      item[`y${year}Qty`] += ipqcQty(row);
+      item[`y${year}Bad`] += ipqcBad(row);
+    });
+    const leaderScoreMap = new Map(leaders.map((row) => [`${row.site}::${row.leader}`, { score: row.deaScore, qty: row.qty }]));
+    const managers = [...managerMap.values()].map((row) => {
+      const deaBase = [...row.leaderCount].reduce((acc, key) => {
+        const item = leaderScoreMap.get(key);
+        if (!item) return acc;
+        return { score: acc.score + item.score * item.qty, qty: acc.qty + item.qty };
+      }, { score: 0, qty: 0 });
+      return {
+        ...row,
+        leaderCount: row.leaderCount.size,
+        y2025Rate: Number((row.y2025Bad / Math.max(row.y2025Qty, 1) * 100).toFixed(2)),
+        y2026Rate: Number((row.y2026Bad / Math.max(row.y2026Qty, 1) * 100).toFixed(2)),
+        deaScore: Number((deaBase.score / Math.max(deaBase.qty, 1)).toFixed(1)),
+      };
+    }).sort((a, b) => b.y2026Rate - a.y2026Rate);
+    const topLeaders = leaders.slice(0, 10);
+    const categories = [...new Set([...typeByLeader.keys()].map((key) => key.split("::").at(-1)))]
+      .map((name) => ({ name, count: [...typeByLeader.entries()].filter(([key]) => key.endsWith(`::${name}`)).reduce((sum, [, count]) => sum + count, 0) }))
+      .sort((a, b) => b.count - a.count).slice(0, 8).map((row) => row.name);
+    bySite[site] = {
+      mappingRows: site === "全公司" ? normalizedMaps : normalizedMaps.filter((row) => normalizeIpqcSiteName(row.site) === site),
+      leaders,
+      managers,
+      unmapped: leaders.filter((row) => !row.mapped).sort((a, b) => b.issues - a.issues),
+      heatmap: {
+        categories,
+        rows: topLeaders.map((leader) => ({
+          name: leader.name,
+          values: categories.map((category) => typeByLeader.get(`${site === "全公司" ? `${leader.site}::${leader.name}` : leader.name}::${category}`) || 0),
+        })).filter((row) => row.values.some((value) => value > 0)),
+      },
+      summary: {
+        leaderCount: leaders.length,
+        mappedCount: leaders.filter((row) => row.mapped).length,
+        unmappedCount: leaders.filter((row) => !row.mapped).length,
+        qty: leaders.reduce((sum, row) => sum + row.qty, 0),
+        issues: leaders.reduce((sum, row) => sum + row.issues, 0),
+        avgDea: Number((leaders.reduce((sum, row) => sum + row.deaScore * row.qty, 0) / Math.max(leaders.reduce((sum, row) => sum + row.qty, 0), 1)).toFixed(1)),
+      },
+      unassignedWorkshops,
+    };
+  });
+  return { bySite, mappingRows: normalizedMaps };
+};
 
 const iqcResult = (row) => text(row["质检结果"]);
 const iqcIsInternal = (row) => /一楼自制|内部加工/i.test(text(row["供应商"]));
@@ -790,10 +1060,12 @@ const buildIqcInternalAnalysis = (iqcFiles, dateRange, specialAsBad = false) => 
 
 const buildIpqcDetails = (ipqcFiles, dateRange) => {
   const siteRows = { 深圳: [], 杭州: [] };
-  ipqcFiles.forEach((file) => {
+  const mappingRows = ipqcFiles.filter((file) => file.kind === "IPQC_LEADER_MAP").flatMap((file) => file.rows || []);
+  ipqcFiles.filter((file) => file.kind !== "IPQC_LEADER_MAP").forEach((file) => {
     const site = ipqcSite(file.name);
-    file.rows.forEach((row) => siteRows[site].push(row));
+    file.rows.forEach((row) => siteRows[site].push({ ...row, __ipqcSite: site, __sourceFile: file.name }));
   });
+  siteRows.全公司 = [...siteRows.深圳, ...siteRows.杭州];
   const siteMonthly = {};
   const workshopsBySite = {};
   const rawTypesBySite = {};
@@ -818,11 +1090,15 @@ const buildIpqcDetails = (ipqcFiles, dateRange) => {
       return result;
     });
 
-    const workshopNames = [...new Set(rows.map((row) => text(row["产品工坊"]) || "未分类"))];
+    const workshopOf = (row) => {
+      const normalized = normalizeIpqcWorkshop(ipqcWorkshopValue(row)) || "未分类";
+      return site === "全公司" ? `${row.__ipqcSite || "未识别厂区"}·${normalized}` : normalized;
+    };
+    const workshopNames = [...new Set(rows.map(workshopOf))];
     workshopsBySite[site] = workshopNames.map((name) => {
       const result = { name };
       [2025, 2026].forEach((year) => {
-        const stats = summarize(rows.filter((row) => (text(row["产品工坊"]) || "未分类") === name), year);
+        const stats = summarize(rows.filter((row) => workshopOf(row) === name), year);
         result[`y${year}Qty`] = stats.qty;
         result[`y${year}Bad`] = stats.issues;
         result[`y${year}Rate`] = stats.rate;
@@ -859,7 +1135,7 @@ const buildIpqcDetails = (ipqcFiles, dateRange) => {
       rows: workshopNames.map((workshop) => ({
         name: workshop,
         values: categories.map((category) => rows.reduce((sum, row) => {
-          if ((text(row["产品工坊"]) || "未分类") !== workshop || (text(row["不良类型"]) || "未分类") !== category) return sum;
+          if (workshopOf(row) !== workshop || (text(row["不良类型"]) || "未分类") !== category) return sum;
           return sum + ipqcBad(row);
         }, 0)),
       })).filter((row) => row.values.some((value) => value > 0)),
@@ -892,7 +1168,7 @@ const buildIpqcDetails = (ipqcFiles, dateRange) => {
       };
     });
   });
-  return { siteMonthly, workshopsBySite, rawTypesBySite, heatmapBySite, improvementsBySite };
+  return { siteMonthly, workshopsBySite, rawTypesBySite, heatmapBySite, improvementsBySite, leaderAnalysis: buildIpqcLeaderAnalysis(siteRows, mappingRows) };
 };
 
 const buildOqcMonthlySummary = (rows, dateRange) => {
@@ -1910,3 +2186,4 @@ export function downloadJson(data, name = "质量分析数据.json") {
   a.href = url; a.download = name; a.click();
   URL.revokeObjectURL(url);
 }
+

@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useMemo, useRef, useState } from "react";
+import { createContext, startTransition, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import {
   ArrowRight, ArrowsClockwise, Bell, CaretDown, ChartBar, ChartPieSlice, CheckCircle,
@@ -7,7 +7,7 @@ import {
   Question, Rows, ShieldCheck, SidebarSimple, Sparkle, Table, Target, Trash,
   UploadSimple, User, Warning, WarningCircle, X,
 } from "@phosphor-icons/react";
-import { analyzeImported, downloadJson, parseFiles } from "./dataEngine.js";
+import { analyzeImported, downloadJson, normalizeIpqcLeaderMapRows, normalizeIpqcWorkshop, parseFiles } from "./dataEngine.js";
 import { loadDefaultAnalysis, loadDefaultAnnotations, loadDefaultSources, loadImportedSources, mergeImportedSources, saveImportedSources } from "./dataStore.js";
 import { sampleData } from "./sampleData.js";
 import { BarCompare, Donut, HorizontalRank, MachinedTpmCompareChart, Pareto, QuantityRateCombo, ScoreMonthlyCombo, ScoreYearCompare, StackedStage, WorkshopCategoryHeatmap, YearStackedCompare } from "./charts.jsx";
@@ -74,6 +74,8 @@ function ImportModal({ open, onClose, onSourcesChanged, files, dateRange, target
 
   if (!open) return null;
   const moduleCount = (name) => files.filter((f) => f.module === name).length;
+  const visibleFiles = targetModule ? files.filter((file) => file.module === targetModule) : files.filter((file) => file.module !== "UNKNOWN");
+  const recentVisibleFiles = visibleFiles.slice(-8);
   return <div className="modal-backdrop" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
     <div className="import-modal">
       <div className="modal-title">
@@ -103,11 +105,11 @@ function ImportModal({ open, onClose, onSourcesChanged, files, dateRange, target
         <input ref={inputRef} type="file" accept=".xlsx,.xls" multiple hidden onChange={(e) => handleFiles(e.target.files)} />
       </div>
       <div className="file-list">
-        {files.slice(-6).map((file, index) => <div className="file-row" key={`${file.name}-${index}`}>
+        {recentVisibleFiles.map((file, index) => <div className="file-row" key={`${file.name}-${index}`}>
           <FileXls size={19} /><div><strong>{file.name}</strong><span>{file.rows.length.toLocaleString()} 行 · {file.sheets.length} 个工作表</span></div>
           <span className={`module-pill ${file.module === "UNKNOWN" ? "unknown" : ""}`}>{file.module === "UNKNOWN" ? "需确认" : file.module}</span>
         </div>)}
-        {!files.length && <div className="empty-files">导入后，这里会显示模块识别结果与数据行数。</div>}
+        {!recentVisibleFiles.length && <div className="empty-files">{targetModule ? `尚未导入${targetModule}文件，导入后这里只显示${targetModule}数据源。` : "导入后，这里会显示模块识别结果与数据行数。"}</div>}
       </div>
       <div className="modal-foot"><span><ShieldCheck size={16} /> 自动识别失败的文件不会进入计算</span><button className="primary-btn" onClick={onClose}>完成导入</button></div>
     </div>
@@ -622,12 +624,128 @@ function ExecutiveSidebar({ active, setActive, uiTheme, onThemeChange, collapsed
 }
 
 const moduleLabels = { IQC: "来料检验", IPQC: "过程检验", OQC: "出货评分", DQA: "研发质量" };
-function DataSourcePage({ files, onImportModule, onDelete }) {
+
+const ipqcMapText = {
+  title: "IPQC 工坊-交付经理-机长映射设置",
+  desc: "映射表会作为 IPQC 配置保存。新增机长未覆盖时，可在这里直接补充，不必反复上传表格。",
+  export: "导出映射表",
+  add: "新增一行",
+  save: "保存映射",
+  import: "导入/替换映射表",
+  uncovered: "IPQC数据中未覆盖机长",
+};
+
+const ipqcFileSite = (fileName = "") => fileName.includes("杭州") ? "杭州" : "深圳";
+const rowText = (row, key) => row?.[key] == null ? "" : String(row[key]).trim();
+const yearFromValue = (value) => {
+  const date = value instanceof Date ? value : new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date.getFullYear();
+};
+
+function IpqcMappingSettings({ files, onImportModule, onSourcesChanged }) {
+  const mappingFile = files.find((file) => file.kind === "IPQC_LEADER_MAP");
+  const [collapsed, setCollapsed] = useState(true);
+  const [rows, setRows] = useState([]);
+  useEffect(() => {
+    setRows(normalizeIpqcLeaderMapRows(mappingFile?.rows || []).map((row) => ({
+      site: row.site,
+      workshop: row.workshop,
+      manager: row.manager,
+      leader: row.leader,
+    })));
+  }, [mappingFile?.importedAt, mappingFile?.rows?.length]);
+
+  const mappedKeys = useMemo(() => new Set(rows.filter((row) => row.site && row.leader).map((row) => `${row.site}::${row.leader}`)), [rows]);
+  const uncovered = useMemo(() => {
+    const map = new Map();
+    files.filter((file) => file.module === "IPQC" && file.kind !== "IPQC_LEADER_MAP").forEach((file) => {
+      const site = ipqcFileSite(file.name);
+      (file.rows || []).forEach((row) => {
+        const leader = rowText(row, "机长");
+        if (!leader || mappedKeys.has(`${site}::${leader}`)) return;
+        const year = yearFromValue(row["日期"]);
+        if (year && year !== 2026) return;
+        const workshop = normalizeIpqcWorkshop(rowText(row, "产品工坊") || rowText(row, "工坊"));
+        const key = `${site}::${leader}`;
+        if (!map.has(key)) map.set(key, { site, leader, workshop, count: 0 });
+        map.get(key).count += 1;
+      });
+    });
+    return [...map.values()].sort((a, b) => b.count - a.count);
+  }, [files, mappedKeys]);
+
+  const update = (index, key, value) => setRows((current) => current.map((row, i) => i === index ? { ...row, [key]: value } : row));
+  const remove = (index) => setRows((current) => current.filter((_, i) => i !== index));
+  const addRow = (row = {}) => setRows((current) => [...current, { site: row.site || "深圳", workshop: row.workshop || "一工坊", manager: row.manager || "", leader: row.leader || "" }]);
+  const save = async () => {
+    const normalized = normalizeIpqcLeaderMapRows(rows.map((row) => ({
+      厂区: row.site,
+      工坊: normalizeIpqcWorkshop(row.workshop),
+      交付经理: row.manager,
+      机长: row.leader,
+    })));
+    const source = {
+      name: mappingFile?.name || "IPQC工坊交付经理机长映射表_在线设置.xlsx",
+      size: JSON.stringify(normalized).length,
+      module: "IPQC",
+      kind: "IPQC_LEADER_MAP",
+      subKind: "IPQC_LEADER_MAP",
+      rows: normalized.map((row) => ({ 厂区: row.site, 工坊: row.workshop, 交付经理: row.manager, 机长: row.leader })),
+      sheets: ["在线设置"],
+      importedAt: new Date().toISOString(),
+    };
+    const next = [...files.filter((file) => file.kind !== "IPQC_LEADER_MAP"), source];
+    await onSourcesChanged(next, { added: mappingFile ? [] : [source.name], replaced: mappingFile ? [source.name] : [] });
+  };
+  const exportXlsx = async () => {
+    const XLSX = await import("xlsx");
+    const sheetRows = [["厂区", "工坊", "交付经理", "机长"], ...rows.map((row) => [row.site, normalizeIpqcWorkshop(row.workshop), row.manager, row.leader])];
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(sheetRows), "映射表");
+    XLSX.writeFile(wb, "工坊交付经理机长映射表.xlsx");
+  };
+  return <section className="ipqc-map-settings">
+    <header>
+      <div><h3>{ipqcMapText.title}</h3><p>{ipqcMapText.desc}</p></div>
+      <div className="ipqc-map-actions">
+        <button onClick={() => setCollapsed((current) => !current)}><CaretDown size={15} className={collapsed ? "" : "rotate"}/>{collapsed ? "展开设置" : "收起设置"}</button>
+        <button onClick={() => onImportModule("IPQC")}><UploadSimple size={15}/>{ipqcMapText.import}</button>
+        <button onClick={exportXlsx}><DownloadSimple size={15}/>{ipqcMapText.export}</button>
+        <button className="primary-btn" onClick={save}><FloppyDisk size={15}/>{ipqcMapText.save}</button>
+      </div>
+    </header>
+    {!collapsed && <div className="ipqc-map-body">
+      <div className="ipqc-map-table">
+        <div className="ipqc-map-row head"><span>厂区</span><span>工坊</span><span>交付经理</span><span>机长</span><span>操作</span></div>
+        {rows.map((row, index) => <div className="ipqc-map-row" key={`${row.site}-${row.leader}-${index}`}>
+          <select value={row.site} onChange={(event) => update(index, "site", event.target.value)}><option>深圳</option><option>杭州</option></select>
+          <input value={row.workshop} onChange={(event) => update(index, "workshop", event.target.value)} />
+          <input value={row.manager} onChange={(event) => update(index, "manager", event.target.value)} />
+          <input value={row.leader} onChange={(event) => update(index, "leader", event.target.value)} />
+          <button className="delete-source" onClick={() => remove(index)}><Trash size={14}/>删除</button>
+        </div>)}
+        <button className="ipqc-map-add" onClick={() => addRow()}><Plus size={15}/>{ipqcMapText.add}</button>
+      </div>
+      <aside className="ipqc-unmapped-box">
+        <h4>{ipqcMapText.uncovered}<small>{uncovered.length}人</small></h4>
+        <div>
+          {uncovered.slice(0, 18).map((item) => <button key={`${item.site}-${item.leader}`} onClick={() => addRow(item)}>
+            <strong>{item.leader}</strong><span>{item.site} · {item.workshop}</span><em>{item.count}行</em>
+          </button>)}
+          {!uncovered.length && <p>当前 IPQC 机长都已覆盖。</p>}
+        </div>
+      </aside>
+    </div>}
+  </section>;
+}
+
+function DataSourcePage({ files, onImportModule, onDelete, onSourcesChanged }) {
   const modules = ["IQC", "IPQC", "OQC", "DQA"];
   return <div className="data-source-page">
     <div className="data-source-hero">
       <div><Database size={30}/><div><h2>本地数据源管理</h2><p>数据已保存到当前电脑。相同模块且文件名相同再次导入时自动替换，也可以手动删除后重传。</p></div></div>
     </div>
+    <IpqcMappingSettings files={files} onImportModule={onImportModule} onSourcesChanged={onSourcesChanged}/>
     <div className="data-source-modules">
       {modules.map((module) => {
         const Icon = moduleIcons[module];
@@ -767,38 +885,79 @@ const rateFromTotals = (totals, goodWhenDown = false) => {
   return Number((totals.good / Math.max(totals.qty, 1) * 100).toFixed(1));
 };
 
-function OverviewMetricLine({ label, value, tone = "neutral", sub }) {
+function OverviewMetricLine({ label, y2026, y2025, delta, deltaUnit = "pp", deltaDigits = 1, tone = "neutral", goodWhenDown = false }) {
+  const deltaValue = Number(delta || 0);
+  const deltaTone = goodWhenDown ? (deltaValue <= 0 ? "good" : "bad") : (deltaValue >= 0 ? "good" : "bad");
   return <div className="overview-kpi-line">
     <span>{label}</span>
-    <b className={tone}>{value}</b>
-    {sub && <em>{sub}</em>}
+    <div className="overview-kpi-year-values">
+      <b>{y2025}</b>
+      <b className={tone}>{y2026}</b>
+    </div>
+    <strong className={deltaTone}>{signedText(deltaValue, deltaUnit, deltaDigits)}</strong>
   </div>;
 }
 
-function OverviewQualityCard({ type, title, subtitle, mainValue, unit = "%", delta, goodWhenDown = false, lines = [] }) {
+const compactMetricValue = (value, digits = 1) => value == null || value === "" ? "-"
+  : typeof value === "number"
+  ? Number(value || 0).toLocaleString(undefined, { maximumFractionDigits: digits })
+  : value;
+const metricWithUnit = (value, unit, digits = 1) => value == null || value === "" ? "-" : `${compactMetricValue(value, digits)}${unit}`;
+
+function OverviewQualityCard({ type, title, subtitle, mainValue, previousValue, unit = "%", previousUnit = unit, delta, deltaUnit = "pp", goodWhenDown = false, lines = [] }) {
   const deltaGood = goodWhenDown ? Number(delta || 0) <= 0 : Number(delta || 0) >= 0;
+  const mainDigits = unit === "项" || Number(mainValue || 0) > 100 ? 0 : 2;
+  const previousDigits = previousUnit === "项" || Number(previousValue || 0) > 100 ? 0 : 2;
   return <div className={`overview-kpi-card ${type}`}>
     <div className="overview-kpi-head">
       <div><span>{subtitle}</span><strong>{title}</strong></div>
-      <em className={deltaGood ? "good" : "bad"}>{signedText(delta || 0, "pp", Math.abs(delta || 0) < 10 ? 1 : 0)}</em>
+      <em className={deltaGood ? "good" : "bad"}>{signedText(delta || 0, deltaUnit, Math.abs(delta || 0) < 10 ? 1 : 0)}</em>
     </div>
     <div className={`overview-kpi-main ${type === "ipqc" || type === "dqa" ? "risk-main" : ""}`}>
-      <strong>{typeof mainValue === "number" ? Number(mainValue).toLocaleString(undefined, { maximumFractionDigits: mainValue > 100 ? 0 : 2 }) : mainValue}</strong><small>{unit}</small>
+      <strong>{compactMetricValue(mainValue, mainDigits)}</strong><small>{unit}</small>
+    </div>
+    <div className="overview-kpi-baseline">
+      <span>2025同期</span><b>{metricWithUnit(previousValue, previousUnit, previousDigits)}</b>
     </div>
     <div className="overview-kpi-lines">
+      <div className="overview-kpi-line-head"><span>指标</span><b>2025</b><b>2026</b><b>同比</b></div>
       {lines.map((line) => <OverviewMetricLine key={line.label} {...line}/>)}
     </div>
   </div>;
 }
 
 function OverviewKpiCards({ data }) {
+  const iqcOverall = (() => {
+    const rows = ["深圳", "杭州"].flatMap((site) => data.iqc.siteMonthly?.[site] || []);
+    const y25 = yearTotalsFromMonthly(rows, 2025);
+    const y26 = yearTotalsFromMonthly(rows, 2026);
+    return {
+      y2025Rate: rateFromTotals(y25, false),
+      y2026Rate: rateFromTotals(y26, false),
+      y2025Qty: y25.qty,
+      y2026Qty: y26.qty,
+    };
+  })();
+  const ipqcOverall = (() => {
+    const rows = ["深圳", "杭州"].flatMap((site) => data.ipqc.siteMonthly?.[site] || []);
+    const y25 = yearTotalsFromMonthly(rows, 2025);
+    const y26 = yearTotalsFromMonthly(rows, 2026);
+    return {
+      y2025Rate: rateFromTotals(y25, true),
+      y2026Rate: rateFromTotals(y26, true),
+      y2025Qty: y25.qty,
+      y2026Qty: y26.qty,
+      y2025Bad: y25.bad,
+      y2026Bad: y26.bad,
+    };
+  })();
   const iqcSite = (site) => {
     const rows = data.iqc.siteMonthly?.[site] || [];
     const y25 = yearTotalsFromMonthly(rows, 2025);
     const y26 = yearTotalsFromMonthly(rows, 2026);
     const r25 = rateFromTotals(y25, false);
     const r26 = rateFromTotals(y26, false);
-    return { rate: r26, delta: Number((r26 - r25).toFixed(1)), qty: y26.qty };
+    return { y2025Rate: r25, y2026Rate: r26, delta: Number((r26 - r25).toFixed(1)), y2025Qty: y25.qty, y2026Qty: y26.qty };
   };
   const ipqcSite = (site) => {
     const rows = data.ipqc.siteMonthly?.[site] || [];
@@ -806,14 +965,18 @@ function OverviewKpiCards({ data }) {
     const y26 = yearTotalsFromMonthly(rows, 2026);
     const r25 = rateFromTotals(y25, true);
     const r26 = rateFromTotals(y26, true);
-    return { rate: r26, delta: Number((r26 - r25).toFixed(2)), qty: y26.qty, bad: y26.bad };
+    return { y2025Rate: r25, y2026Rate: r26, delta: Number((r26 - r25).toFixed(2)), y2025Qty: y25.qty, y2026Qty: y26.qty, y2025Bad: y25.bad, y2026Bad: y26.bad };
   };
   const oqcOverall = (() => {
     const detail = data.oqc.shipmentDetail?.overall;
     if (detail?.y2026?.count) return {
+      five25: detail.y2025.fiveRate,
       five: detail.y2026.fiveRate,
+      low25: detail.y2025.lowRate,
       low: detail.y2026.lowRate,
+      lowCount25: detail.y2025.low,
       lowCount: detail.y2026.low,
+      count25: detail.y2025.count,
       count: detail.y2026.count,
       deltaFive: Number((detail.y2026.fiveRate - detail.y2025.fiveRate).toFixed(1)),
       deltaLow: Number((detail.y2026.lowRate - detail.y2025.lowRate).toFixed(1)),
@@ -829,38 +992,53 @@ function OverviewKpiCards({ data }) {
     const low = Number((y2026Low / Math.max(y2026Count, 1) * 100).toFixed(1));
     const five25 = Number((y2025Five / Math.max(y2025Count, 1) * 100).toFixed(1));
     const low25 = Number((y2025Low / Math.max(y2025Count, 1) * 100).toFixed(1));
-    return { five, low, lowCount: y2026Low, count: y2026Count, deltaFive: Number((five - five25).toFixed(1)), deltaLow: Number((low - low25).toFixed(1)) };
+    return { five25, five, low25, low, lowCount25: y2025Low, lowCount: y2026Low, count25: y2025Count, count: y2026Count, deltaFive: Number((five - five25).toFixed(1)), deltaLow: Number((low - low25).toFixed(1)) };
   })();
   const dqaRows = data.dqa.divisions || [];
   const dqaReview = sumRows(dqaRows, (row) => row.review);
   const dqaProduction = sumRows(dqaRows, (row) => row.production);
   const dqaOnsite = sumRows(dqaRows, (row) => row.onsite);
   const dqaBack = dqaProduction + dqaOnsite;
+  const dqaStage2025 = (() => {
+    const stageRows = data.dqa.yearCompare?.byDivision?.stages || [];
+    if (stageRows.length) {
+      return stageRows.reduce((result, row) => {
+        const y2025 = row.years?.find((item) => item.year === 2025) || { counts: {} };
+        result.review += y2025.counts?.评审 || 0;
+        result.production += y2025.counts?.生产 || 0;
+        result.onsite += y2025.counts?.现场 || 0;
+        return result;
+      }, { review: 0, production: 0, onsite: 0 });
+    }
+    const delta = Number(data.kpis[3]?.delta || 0);
+    return { review: 0, production: 0, onsite: Math.round((dqaBack || data.kpis[3]?.value || 0) / Math.max(1 + delta / 100, 0.01)) };
+  })();
+  const dqaBack2025 = dqaStage2025.production + dqaStage2025.onsite;
   const shenzhenIqc = iqcSite("深圳");
   const hangzhouIqc = iqcSite("杭州");
   const shenzhenIpqc = ipqcSite("深圳");
   const hangzhouIpqc = ipqcSite("杭州");
 
   return <div className="overview-kpi-grid">
-    <OverviewQualityCard type="iqc" title="IQC 批次良率" subtitle="供应商加工件" mainValue={data.kpis[0]?.value || 0} delta={data.kpis[0]?.delta || 0} lines={[
-      { label: "深圳", value: percentText(shenzhenIqc.rate), tone: shenzhenIqc.delta >= 0 ? "good" : "bad", sub: signedText(shenzhenIqc.delta, "pp", 1) },
-      { label: "杭州", value: percentText(hangzhouIqc.rate), tone: hangzhouIqc.delta >= 0 ? "good" : "bad", sub: signedText(hangzhouIqc.delta, "pp", 1) },
-      { label: "2026检验", value: numberText(shenzhenIqc.qty + hangzhouIqc.qty), tone: "neutral" },
+    <OverviewQualityCard type="iqc" title="IQC 批次良率" subtitle="供应商加工件" mainValue={iqcOverall.y2026Rate || data.kpis[0]?.value || 0} previousValue={iqcOverall.y2025Rate} delta={data.kpis[0]?.delta || 0} lines={[
+      { label: "深圳", y2026: percentText(shenzhenIqc.y2026Rate), y2025: percentText(shenzhenIqc.y2025Rate), tone: shenzhenIqc.delta >= 0 ? "good" : "bad", delta: shenzhenIqc.delta, deltaUnit: "pp", deltaDigits: 1 },
+      { label: "杭州", y2026: percentText(hangzhouIqc.y2026Rate), y2025: percentText(hangzhouIqc.y2025Rate), tone: hangzhouIqc.delta >= 0 ? "good" : "bad", delta: hangzhouIqc.delta, deltaUnit: "pp", deltaDigits: 1 },
+      { label: "检验批次", y2026: numberText(iqcOverall.y2026Qty), y2025: numberText(iqcOverall.y2025Qty), tone: "neutral", delta: (iqcOverall.y2026Qty || 0) - (iqcOverall.y2025Qty || 0), deltaUnit: "", deltaDigits: 0 },
     ]}/>
-    <OverviewQualityCard type="ipqc" title="IPQC 异常密度" subtitle="问题数量 ÷ 送检数" mainValue={data.kpis[1]?.value || 0} delta={data.kpis[1]?.delta || 0} goodWhenDown lines={[
-      { label: "深圳", value: percentText(shenzhenIpqc.rate, 2), tone: shenzhenIpqc.delta <= 0 ? "good" : "bad", sub: signedText(shenzhenIpqc.delta, "pp", 2) },
-      { label: "杭州", value: percentText(hangzhouIpqc.rate, 2), tone: hangzhouIpqc.delta <= 0 ? "good" : "bad", sub: signedText(hangzhouIpqc.delta, "pp", 2) },
-      { label: "2026问题", value: numberText(shenzhenIpqc.bad + hangzhouIpqc.bad), tone: "bad" },
+    <OverviewQualityCard type="ipqc" title="IPQC 异常密度" subtitle="问题数量 ÷ 送检数" mainValue={ipqcOverall.y2026Rate || data.kpis[1]?.value || 0} previousValue={ipqcOverall.y2025Rate} delta={data.kpis[1]?.delta || 0} goodWhenDown lines={[
+      { label: "深圳", y2026: percentText(shenzhenIpqc.y2026Rate, 2), y2025: percentText(shenzhenIpqc.y2025Rate, 2), tone: shenzhenIpqc.delta <= 0 ? "good" : "bad", delta: shenzhenIpqc.delta, deltaUnit: "pp", deltaDigits: 2, goodWhenDown: true },
+      { label: "杭州", y2026: percentText(hangzhouIpqc.y2026Rate, 2), y2025: percentText(hangzhouIpqc.y2025Rate, 2), tone: hangzhouIpqc.delta <= 0 ? "good" : "bad", delta: hangzhouIpqc.delta, deltaUnit: "pp", deltaDigits: 2, goodWhenDown: true },
+      { label: "问题数量", y2026: numberText(ipqcOverall.y2026Bad), y2025: numberText(ipqcOverall.y2025Bad), tone: "bad", delta: (ipqcOverall.y2026Bad || 0) - (ipqcOverall.y2025Bad || 0), deltaUnit: "", deltaDigits: 0, goodWhenDown: true },
     ]}/>
-    <OverviewQualityCard type="oqc" title="OQC 5分率" subtitle="出货评分" mainValue={oqcOverall.five} delta={oqcOverall.deltaFive} lines={[
-      { label: "低分率", value: percentText(oqcOverall.low), tone: oqcOverall.deltaLow <= 0 ? "good" : "bad", sub: `${signedText(oqcOverall.deltaLow, "pp", 1)} / ${numberText(oqcOverall.lowCount)}台` },
-      { label: "评分数量", value: numberText(oqcOverall.count), tone: "neutral" },
-      { label: "5分同比", value: signedText(oqcOverall.deltaFive, "pp", 1), tone: oqcOverall.deltaFive >= 0 ? "good" : "bad" },
+    <OverviewQualityCard type="oqc" title="OQC 5分率" subtitle="出货评分" mainValue={oqcOverall.five} previousValue={oqcOverall.five25} delta={oqcOverall.deltaFive} lines={[
+      { label: "低分率", y2026: percentText(oqcOverall.low), y2025: percentText(oqcOverall.low25), tone: oqcOverall.deltaLow <= 0 ? "good" : "bad", delta: oqcOverall.deltaLow, deltaUnit: "pp", deltaDigits: 1, goodWhenDown: true },
+      { label: "评分数量", y2026: numberText(oqcOverall.count), y2025: numberText(oqcOverall.count25), tone: "neutral", delta: (oqcOverall.count || 0) - (oqcOverall.count25 || 0), deltaUnit: "", deltaDigits: 0 },
+      { label: "5分率", y2026: percentText(oqcOverall.five), y2025: percentText(oqcOverall.five25), tone: oqcOverall.deltaFive >= 0 ? "good" : "bad", delta: oqcOverall.deltaFive, deltaUnit: "pp", deltaDigits: 1 },
     ]}/>
-    <OverviewQualityCard type="dqa" title="DQA 后端问题" subtitle="生产 + 现场，不含评审拦截" mainValue={dqaBack || data.kpis[3]?.value || 0} unit="项" delta={data.kpis[3]?.delta || 0} goodWhenDown lines={[
-      { label: "评审拦截", value: `${numberText(dqaReview)}项`, tone: "good" },
-      { label: "生产问题", value: `${numberText(dqaProduction)}项`, tone: "bad" },
-      { label: "现场问题", value: `${numberText(dqaOnsite)}项`, tone: "bad" },
+    <OverviewQualityCard type="dqa" title="DQA 后端问题" subtitle="生产 + 现场，不含评审拦截" mainValue={dqaBack || data.kpis[3]?.value || 0} previousValue={dqaBack2025} unit="项" delta={data.kpis[3]?.delta || 0} deltaUnit="%" goodWhenDown lines={[
+      { label: "评审拦截", y2026: `${numberText(dqaReview)}项`, y2025: `${numberText(dqaStage2025.review)}项`, tone: "good", delta: dqaReview - dqaStage2025.review, deltaUnit: "项", deltaDigits: 0 },
+      { label: "生产问题", y2026: `${numberText(dqaProduction)}项`, y2025: `${numberText(dqaStage2025.production)}项`, tone: "bad", delta: dqaProduction - dqaStage2025.production, deltaUnit: "项", deltaDigits: 0, goodWhenDown: true },
+      { label: "现场问题", y2026: `${numberText(dqaOnsite)}项`, y2025: `${numberText(dqaStage2025.onsite)}项`, tone: "bad", delta: dqaOnsite - dqaStage2025.onsite, deltaUnit: "项", deltaDigits: 0, goodWhenDown: true },
     ]}/>
   </div>;
 }
@@ -1018,7 +1196,7 @@ function ManagementReportPage({ data }) {
   </div>;
 }
 
-function ExecutiveDashboard({ data, files, onImport, onDeleteSource, view, onViewChange, dateRange, onDateRange, onRefreshDate, dateRefreshStatus, fontSize, onFontSize, analysisKey, labelControlsVisible, onToggleLabelControls, uiTheme, onThemeChange, sidebarCollapsed, onToggleSidebar }) {
+function ExecutiveDashboard({ data, files, onImport, onDeleteSource, onSourcesChanged, view, onViewChange, dateRange, onDateRange, onRefreshDate, dateRefreshStatus, fontSize, onFontSize, analysisKey, labelControlsVisible, onToggleLabelControls, uiTheme, onThemeChange, sidebarCollapsed, onToggleSidebar }) {
   const [active, setActive] = useState("总览");
   const moduleView = ["IQC", "IPQC", "OQC", "DQA"].includes(active) ? active : null;
   return <div className={`executive-shell theme-${uiTheme} ${sidebarCollapsed ? "sidebar-collapsed" : ""}`}>
@@ -1029,7 +1207,7 @@ function ExecutiveDashboard({ data, files, onImport, onDeleteSource, view, onVie
         <div className="top-actions"><Switcher view={view} onChange={onViewChange} /><AnnotationEditButton defaultModule={moduleView || "\u603b\u89c8"} /><AnnotationViewButton /><ExportReportButton /><button className={`label-controls-toggle ${labelControlsVisible ? "active" : ""}`} onClick={onToggleLabelControls}>{labelControlsVisible ? "隐藏数值设置" : "显示数值设置"}</button><button className="import-btn" onClick={() => onImport(null)}><UploadSimple size={17} />导入数据</button></div>
       </header>
       <DateRangeFilter value={dateRange} onChange={onDateRange} onRefresh={onRefreshDate} refreshStatus={dateRefreshStatus} fontSize={fontSize} onFontSize={onFontSize}/>
-      {active === "数据导入" ? <DataSourcePage files={files} onImportModule={onImport} onDelete={onDeleteSource}/> : moduleView ? <ModuleDetail key={`${moduleView}-${analysisKey}`} module={moduleView} data={data} /> : <>
+      {active === "数据导入" ? <DataSourcePage files={files} onImportModule={onImport} onDelete={onDeleteSource} onSourcesChanged={onSourcesChanged}/> : moduleView ? <ModuleDetail key={`${moduleView}-${analysisKey}`} module={moduleView} data={data} /> : <>
         <OverviewKpiCards data={data}/>
         <div className="dashboard-grid">
           <MainSupplierOverview data={data}/>
@@ -1389,8 +1567,238 @@ function ImprovementTable({ rows }) {
   </div>;
 }
 
+const leaderColumns = [
+  ["leader", "机长"], ["workshop", "工坊"], ["manager", "交付经理"], ["qty", "2026送检数"],
+  ["issues", "问题数量"], ["density", "异常密度"], ["passRate", "合格率"], ["deaScore", "DEA效率分"], ["riskScore", "综合风险"],
+];
+
+function IpqcLeaderRankTable({ rows }) {
+  const [sort, setSort] = useState({ key: "riskScore", direction: "desc" });
+  const sorted = useMemo(() => [...rows].sort((a, b) => {
+    const av = a[sort.key] ?? 0;
+    const bv = b[sort.key] ?? 0;
+    const result = typeof av === "string" ? av.localeCompare(bv, "zh-CN") : av - bv;
+    return sort.direction === "asc" ? result : -result;
+  }), [rows, sort]);
+  const changeSort = (key) => setSort((current) => ({ key, direction: current.key === key && current.direction === "desc" ? "asc" : "desc" }));
+  const format = (row, key) => {
+    if (["density", "passRate"].includes(key)) return `${Number(row[key] || 0).toFixed(2)}%`;
+    if (["deaScore", "riskScore"].includes(key)) return Number(row[key] || 0).toFixed(1);
+    if (["qty", "issues"].includes(key)) return Number(row[key] || 0).toLocaleString();
+    return row[key] || "—";
+  };
+  return <div className="ipqc-leader-table">
+    <div className="ipqc-leader-row head">{leaderColumns.map(([key, label]) => <button key={key} onClick={() => changeSort(key)}>{label}<span>{sort.key === key ? sort.direction === "asc" ? "▲" : "▼" : "↕"}</span></button>)}</div>
+    {sorted.map((row) => <div className="ipqc-leader-row" key={`${row.site}-${row.leader}`}>
+      {leaderColumns.map(([key]) => <span key={key} className={key === "deaScore" ? row[key] >= 90 ? "up" : row[key] < 70 ? "down" : "" : key === "riskScore" && row[key] >= 45 ? "rate-risk" : ""}>
+        {key === "leader" ? <strong>{format(row, key)}{!row.mapped && <em>未覆盖</em>}</strong> : format(row, key)}
+      </span>)}
+    </div>)}
+  </div>;
+}
+
+function IpqcUnmappedLeaders({ rows }) {
+  return <div className="ipqc-unmapped-list">
+    {rows.slice(0, 12).map((row) => <div key={`${row.site}-${row.leader}`}>
+      <strong>{row.leader}</strong><span>{row.workshop} · {row.manager}</span><b>{row.issues.toLocaleString()}个问题 / {row.density}%</b>
+    </div>)}
+    {!rows.length && <div className="source-empty">当前站点机长都已在映射表中覆盖。</div>}
+  </div>;
+}
+
+function IpqcUnassignedWorkshopRows({ rows }) {
+  const [open, setOpen] = useState(false);
+  if (!rows?.length) return null;
+  return <div className="ipqc-fold-note">
+    <button onClick={() => setOpen((current) => !current)}>未分工坊明细：{rows.length}条 <CaretDown size={14} className={open ? "rotate" : ""}/></button>
+    {open && <div className="ipqc-unassigned-table">
+      <div className="ipqc-unassigned-row head"><span>厂区</span><span>年份</span><span>日期</span><span>任务单号</span><span>组件类型</span><span>送检数</span><span>问题</span><span>机长</span><span>来源文件</span></div>
+      {rows.map((row, index) => <div className="ipqc-unassigned-row" key={`${row.file}-${row.taskNo}-${index}`}>
+        <span>{row.site}</span><span>{row.year}</span><span>{row.date}</span><strong>{row.taskNo || "—"}</strong><span>{row.component || "—"}</span>
+        <span>{Number(row.qty || 0).toLocaleString()}</span><span>{row.issue ? row.badContent || row.badType || "有问题" : "无"}</span><span>{row.leader || "—"}</span><em>{row.file || "—"}</em>
+      </div>)}
+    </div>}
+  </div>;
+}
+
+function IpqcDeaNote() {
+  const [open, setOpen] = useState(false);
+  return <div className="ipqc-fold-note dea-note">
+    <button onClick={() => setOpen((current) => !current)}>DEA效率分算法说明 <CaretDown size={14} className={open ? "rotate" : ""}/></button>
+    {open && <div className="ipqc-dea-content">
+      <p>当前为“CCR思路的相对效率评分”第一版，用于管理看板排序，不是完整线性规划求解版。</p>
+      <p>投入项：送检数 + 问题数量惩罚；产出项：合格数量。合格数量 = 送检数 - 问题数量。</p>
+      <p>效率分 = 当前对象效率 / 样本中最高效率 × 100。效率越高，代表在相近投入下问题更少、合格产出更好。</p>
+      <p>综合风险 = DEA低分风险 × 55% + 异常密度风险 × 45%。因此既不会只惩罚做得多的人，也不会放过高异常密度。</p>
+    </div>}
+  </div>;
+}
+
+function IpqcManagerQualityTable({ rows }) {
+  const [sort, setSort] = useState({ key: "y2026Rate", direction: "desc" });
+  const maxDensity = Math.max(0, ...rows.map((row) => row.y2026Rate || 0));
+  const minDea = Math.min(...rows.map((row) => row.deaScore || 100));
+  const sorted = useMemo(() => [...rows].sort((a, b) => {
+    const av = a[sort.key] ?? 0;
+    const bv = b[sort.key] ?? 0;
+    const result = typeof av === "string" ? av.localeCompare(bv, "zh-CN") : av - bv;
+    return sort.direction === "asc" ? result : -result;
+  }), [rows, sort]);
+  const changeSort = (key) => setSort((current) => ({ key, direction: current.key === key && current.direction === "desc" ? "asc" : "desc" }));
+  const columns = [
+    ["name", "交付经理"], ["workshop", "工坊"], ["leaderCount", "机长数"], ["y2025Qty", "2025送检"],
+    ["y2025Bad", "2025问题"], ["y2025Rate", "2025密度"], ["y2026Qty", "2026送检"],
+    ["y2026Bad", "2026问题"], ["y2026Rate", "2026密度"], ["deaScore", "DEA均分"],
+  ];
+  const format = (row, key) => {
+    if (key === "y2025Rate" || key === "y2026Rate") return `${Number(row[key] || 0).toFixed(2)}%`;
+    if (key === "deaScore") return Number(row[key] || 0).toFixed(1);
+    if (["leaderCount", "y2025Qty", "y2025Bad", "y2026Qty", "y2026Bad"].includes(key)) return Number(row[key] || 0).toLocaleString();
+    return row[key] || "—";
+  };
+  return <div className="ipqc-manager-table">
+    <div className="ipqc-manager-row head">{columns.map(([key, label]) => <button key={key} onClick={() => changeSort(key)}>{label}<span>{sort.key === key ? sort.direction === "asc" ? "▲" : "▼" : "↕"}</span></button>)}</div>
+    {sorted.map((row) => {
+      const densityRisk = row.y2026Rate === maxDensity || row.y2026Rate >= 10;
+      const deaRisk = row.deaScore === minDea || row.deaScore < 70;
+      return <div className={`ipqc-manager-row ${densityRisk && deaRisk ? "high-risk-row" : ""}`} key={`${row.manager}-${row.workshop}`}>
+        {columns.map(([key]) => <span key={key} className={(key === "y2026Rate" || key === "y2025Rate") && densityRisk ? "rate-risk" : key === "deaScore" && deaRisk ? "down" : ""}>
+          {key === "name" ? <strong>{format(row, key)}</strong> : format(row, key)}
+        </span>)}
+      </div>;
+    })}
+  </div>;
+}
+
+function IpqcLeaderSelector({ rows, selected, onChange }) {
+  const [open, setOpen] = useState(false);
+  const allKeys = rows.map((row) => `${row.site}::${row.leader}`);
+  const allChecked = allKeys.length > 0 && allKeys.every((key) => selected.includes(key));
+  const toggle = (key) => onChange(selected.includes(key) ? selected.filter((item) => item !== key) : [...selected, key]);
+  return <div className="ipqc-leader-selector">
+    <button onClick={() => setOpen((current) => !current)}><Funnel size={14}/>筛选机长<span>{selected.length}/{allKeys.length}</span></button>
+    {open && <div className="supplier-selector">
+      <label className="supplier-check all"><input type="checkbox" checked={allChecked} onChange={() => onChange(allChecked ? [] : allKeys)}/><span>全选</span></label>
+      {rows.map((row) => {
+        const key = `${row.site}::${row.leader}`;
+        return <label className="supplier-check" key={key}><input type="checkbox" checked={selected.includes(key)} onChange={() => toggle(key)}/><span>{row.site !== "全公司" ? `${row.site} · ` : ""}{row.leader}</span></label>;
+      })}
+    </div>}
+  </div>;
+}
+
+function IpqcLeaderAnalysis({ data, site }) {
+  const detail = data.ipqc.leaderAnalysis?.bySite?.[site];
+  const storageKey = `qms-ipqc-leader-selected-${site}-v1`;
+  const limitStorageKey = `qms-ipqc-leader-top-limit-${site}-v1`;
+  const leaderKeys = useMemo(() => (detail?.leaders || []).map((row) => `${row.site}::${row.leader}`), [detail?.leaders]);
+  const [selectedLeaders, setSelectedLeaders] = useState(() => safeParse(localStorage.getItem(storageKey), null));
+  const [topLimit, setTopLimit] = useState(() => localStorage.getItem(limitStorageKey) || "12");
+  useEffect(() => {
+    setSelectedLeaders((current) => {
+      const saved = safeParse(localStorage.getItem(storageKey), null);
+      return saved == null ? leaderKeys : saved.filter((key) => leaderKeys.includes(key));
+    });
+  }, [storageKey, leaderKeys.join("|")]);
+  useEffect(() => {
+    if (selectedLeaders) localStorage.setItem(storageKey, JSON.stringify(selectedLeaders));
+  }, [selectedLeaders, storageKey]);
+  useEffect(() => {
+    const saved = localStorage.getItem(limitStorageKey) || "12";
+    setTopLimit(saved);
+  }, [limitStorageKey]);
+  useEffect(() => {
+    localStorage.setItem(limitStorageKey, topLimit);
+  }, [limitStorageKey, topLimit]);
+  if (!detail) return <div className="summary-note"><strong>暂无机长分析数据</strong><p>请导入包含“机长”字段的2026年IPQC检验记录，并在数据导入页维护映射表。</p></div>;
+  const summary = detail.summary || {};
+  const activeLeaderKeys = selectedLeaders || leaderKeys;
+  const filteredLeaders = detail.leaders.filter((row) => activeLeaderKeys.includes(`${row.site}::${row.leader}`));
+  const displayCount = topLimit === "all" ? filteredLeaders.length : Number(topLimit || 12);
+  const displayLeaders = filteredLeaders.slice(0, displayCount);
+  const leaderChartRows = displayLeaders.map((row) => ({
+    ...row,
+    y2025Qty: 0,
+    y2025Bad: 0,
+    y2025Rate: 0,
+    y2026Qty: row.qty,
+    y2026Bad: row.issues,
+    y2026Rate: row.density,
+  }));
+  return <div className="iqc-analysis-grid ipqc-leader-analysis">
+    <div className="iqc-summary-strip ipqc-summary ipqc-leader-summary">
+      <div><span>2026送检数</span><strong>{Number(summary.qty || 0).toLocaleString()}</strong></div>
+      <div><span>问题数量</span><strong>{Number(summary.issues || 0).toLocaleString()}</strong></div>
+      <div><span>机长覆盖</span><strong>{Number(summary.mappedCount || 0)} / {Number(summary.leaderCount || 0)}</strong></div>
+      <div><span>未覆盖机长</span><strong className={summary.unmappedCount ? "red" : "green"}>{Number(summary.unmappedCount || 0)}</strong></div>
+      <div><span>DEA平均效率</span><strong className={summary.avgDea >= 85 ? "green" : "red"}>{Number(summary.avgDea || 0).toFixed(1)}</strong></div>
+    </div>
+    <AxisControlledPanel title="2.L1 交付经理/工坊质量对比" subtitle="工坊质量对应交付经理；二、二（外包）等统一归入二工坊" axisKey={`ipqc-leader-manager-${site}-axis-v1`} defaults={{ min: 0, max: 35 }}>
+      {(axis) => <>
+        <QuantityRateCombo rows={detail.managers} labelKey="name" rateLabel="异常密度" qtyLabel="送检数/问题数量" height={360} rateAxisOverride={axis.effective} hideRateAxisControl/>
+        <IpqcUnassignedWorkshopRows rows={detail.unassignedWorkshops || []}/>
+        <IpqcManagerQualityTable rows={detail.managers}/>
+      </>}
+    </AxisControlledPanel>
+    <AxisControlledPanel title="2.L2 机长质量风险TOP" subtitle="柱形为送检数/问题数量，折线为异常密度；下表用DEA效率分处理数量与质量冲突" axisKey={`ipqc-leader-top-${site}-axis-v1`} defaults={{ min: 0, max: 80 }}>
+      {(axis) => <>
+        <IpqcDeaNote/>
+        <div className="ipqc-leader-toolbar">
+          <IpqcLeaderSelector rows={detail.leaders} selected={activeLeaderKeys} onChange={setSelectedLeaders}/>
+          <label>显示数量<select value={topLimit} onChange={(event) => setTopLimit(event.target.value)}>
+            <option value="12">TOP 12</option>
+            <option value="20">TOP 20</option>
+            <option value="30">TOP 30</option>
+            <option value="all">全部</option>
+          </select></label>
+        </div>
+        <QuantityRateCombo rows={leaderChartRows} labelKey="leader" rateLabel="异常密度" qtyLabel="送检数/问题数量" height={Math.max(430, leaderChartRows.length * 32 + 190)} rateAxisOverride={axis.effective} hideRateAxisControl/>
+        <IpqcLeaderRankTable rows={displayLeaders}/>
+      </>}
+    </AxisControlledPanel>
+    <Panel title="2.L3 机长 × 原始不良类型热力图" subtitle="聚焦综合风险靠前机长，直接使用原始“不良类型”字段">
+      <WorkshopCategoryHeatmap data={detail.heatmap} height={Math.max(360, detail.heatmap.rows.length * 38 + 150)}/>
+    </Panel>
+    <Panel title="2.L4 未覆盖机长清单" subtitle="去“数据导入”页顶部映射设置中一键补充，保存后本页同步更新">
+      <IpqcUnmappedLeaders rows={detail.unmapped}/>
+    </Panel>
+  </div>;
+}
+
+function IpqcOverallStatus({ data, mode }) {
+  if (mode === "leader") {
+    const summary = data.ipqc.leaderAnalysis?.bySite?.全公司?.summary || {};
+    return <div className="ipqc-overall-status">
+      <div><span>全公司机长送检数</span><strong>{Number(summary.qty || 0).toLocaleString()}</strong></div>
+      <div><span>全公司问题数量</span><strong>{Number(summary.issues || 0).toLocaleString()}</strong></div>
+      <div><span>机长覆盖</span><strong>{Number(summary.mappedCount || 0)} / {Number(summary.leaderCount || 0)}</strong></div>
+      <div><span>未覆盖机长</span><strong className={summary.unmappedCount ? "red" : "green"}>{Number(summary.unmappedCount || 0)}</strong></div>
+      <div><span>DEA平均效率</span><strong className={summary.avgDea >= 85 ? "green" : "red"}>{Number(summary.avgDea || 0).toFixed(1)}</strong></div>
+    </div>;
+  }
+  const monthly = data.ipqc.siteMonthly?.全公司 || [];
+  const totals = monthly.reduce((acc, row) => ({
+    y2025Qty: acc.y2025Qty + (row.y2025Qty || 0),
+    y2025Bad: acc.y2025Bad + (row.y2025Bad || 0),
+    y2026Qty: acc.y2026Qty + (row.y2026Qty || 0),
+    y2026Bad: acc.y2026Bad + (row.y2026Bad || 0),
+  }), { y2025Qty: 0, y2025Bad: 0, y2026Qty: 0, y2026Bad: 0 });
+  const rate25 = Number((totals.y2025Bad / Math.max(totals.y2025Qty, 1) * 100).toFixed(2));
+  const rate26 = Number((totals.y2026Bad / Math.max(totals.y2026Qty, 1) * 100).toFixed(2));
+  const delta = Number((rate26 - rate25).toFixed(2));
+  const topWorkshop = (data.ipqc.workshopsBySite?.全公司 || [])[0];
+  return <div className="ipqc-overall-status">
+    <div><span>全公司2025送检数</span><strong>{totals.y2025Qty.toLocaleString()}</strong></div>
+    <div><span>全公司2026送检数</span><strong>{totals.y2026Qty.toLocaleString()}</strong></div>
+    <div><span>2025异常密度</span><strong>{rate25}%</strong></div>
+    <div><span>2026异常密度</span><strong className={delta <= 0 ? "green" : "red"}>{rate26}%</strong></div>
+    <div><span>TOP风险工坊</span><strong className="small">{topWorkshop?.name || "—"}</strong></div>
+  </div>;
+}
+
 function IpqcAnalysis({ data }) {
-  const [site, setSite] = useState("深圳");
+  const [site, setSite] = useState("全公司");
+  const [subView, setSubView] = useState("process");
   const monthly = data.ipqc.siteMonthly?.[site] || [];
   const workshops = data.ipqc.workshopsBySite?.[site] || data.ipqc.workshops || [];
   const rawTypes = data.ipqc.rawTypesBySite?.[site] || [];
@@ -1403,11 +1811,18 @@ function IpqcAnalysis({ data }) {
   const density = (year) => Number((totals[`y${year}Bad`] / Math.max(totals[`y${year}Qty`], 1) * 100).toFixed(2));
   const top = improvements[0];
   return <div className="module-page iqc-supplier-page ipqc-page">
-    <FloatingTabs options={["深圳", "杭州"]} active={site} onChange={setSite}/>
+    <FloatingTabs options={["全公司", "深圳", "杭州"]} active={site} onChange={setSite}/>
     <div className="iqc-section-title">
       <div><span className="section-number">2</span><div><h2>IPQC过程质量同比分析</h2><p>异常密度＝问题数量÷送检数；不良内容非空的一行计1个问题</p></div></div>
-      <div className="module-heading-actions sticky-switch-bar"><AppliedPeriodTag data={data}/><div className="site-tabs"><button className={site === "深圳" ? "active" : ""} onClick={() => preserveScrollPosition(() => setSite("深圳"))}>深圳</button><button className={site === "杭州" ? "active" : ""} onClick={() => preserveScrollPosition(() => setSite("杭州"))}>杭州</button></div></div>
+      <div className="module-heading-actions sticky-switch-bar"><AppliedPeriodTag data={data}/></div>
     </div>
+    <div className="dqa-sub-tabs ipqc-sub-tabs">
+      <button className={subView === "process" ? "active" : ""} onClick={() => setSubView("process")}>过程质量分析</button>
+      <button className={subView === "leader" ? "active" : ""} onClick={() => setSubView("leader")}>机长质量分析</button>
+    </div>
+    <IpqcOverallStatus data={data} mode={subView}/>
+    <div className="ipqc-site-switch sticky-switch-bar"><span>当前明细维度</span><div className="site-tabs"><button className={site === "全公司" ? "active" : ""} onClick={() => preserveScrollPosition(() => setSite("全公司"))}>全公司</button><button className={site === "深圳" ? "active" : ""} onClick={() => preserveScrollPosition(() => setSite("深圳"))}>深圳</button><button className={site === "杭州" ? "active" : ""} onClick={() => preserveScrollPosition(() => setSite("杭州"))}>杭州</button></div></div>
+    {subView === "leader" ? <IpqcLeaderAnalysis data={data} site={site}/> : <>
     <div className="iqc-summary-strip ipqc-summary">
       <div><span>2025送检数</span><strong>{totals.y2025Qty.toLocaleString()}</strong></div>
       <div><span>2026送检数</span><strong>{totals.y2026Qty.toLocaleString()}</strong></div>
@@ -1433,6 +1848,7 @@ function IpqcAnalysis({ data }) {
         <ImprovementTable rows={improvements}/>
       </Panel>
     </div>
+    </>}
   </div>;
 }
 
@@ -2901,6 +3317,17 @@ export function App() {
   const [appliedDateRange, setAppliedDateRange] = useState(initialDateRange);
   const [analysisRevision, setAnalysisRevision] = useState(0);
   const skipNextDateAnalysisRef = useRef(true);
+  const analyzeInBackground = useCallback((sources, range, fallback = sampleData) => new Promise((resolve) => {
+    setTimeout(() => resolve(sources.length ? analyzeImported(sources, range) : fallback), 0);
+  }), []);
+  const applyAnalyzedData = useCallback(async (sources, range, { fallback = sampleData, bumpRevision = true } = {}) => {
+    const nextData = await analyzeInBackground(sources, range, fallback);
+    startTransition(() => {
+      setData(nextData);
+      if (bumpRevision) setAnalysisRevision((current) => current + 1);
+    });
+    return nextData;
+  }, [analyzeInBackground]);
 
   useEffect(() => { location.hash = view; }, [view]);
   useEffect(() => {
@@ -2932,7 +3359,7 @@ export function App() {
           localStorage.removeItem("qms-user-imported-sources");
           setUsingDefaultAnalysis(false);
           setFiles(defaultFiles);
-          setData(analyzeImported(defaultFiles, appliedDateRange));
+          await applyAnalyzedData(defaultFiles, appliedDateRange, { bumpRevision: false });
           setStorageReady(true);
           return;
         }
@@ -2954,7 +3381,7 @@ export function App() {
           setFiles(defaultFiles);
           if (defaultFiles.length) {
             await saveImportedSources(defaultFiles);
-            setData(analyzeImported(defaultFiles, appliedDateRange));
+            await applyAnalyzedData(defaultFiles, appliedDateRange, { bumpRevision: false });
           }
           setStorageReady(true);
           return;
@@ -2978,14 +3405,14 @@ export function App() {
             if (defaultOqcShipment.length) localStorage.setItem("qms-oqc-shipment-source-version", oqcShipmentSourceVersion);
             setUsingDefaultAnalysis(false);
             setFiles(merged);
-            setData(analyzeImported(merged, appliedDateRange));
+            await applyAnalyzedData(merged, appliedDateRange, { bumpRevision: false });
             setStorageReady(true);
             return;
           }
         }
         setUsingDefaultAnalysis(false);
         setFiles(stored);
-        setData(analyzeImported(stored, appliedDateRange));
+        await applyAnalyzedData(stored, appliedDateRange, { bumpRevision: false });
         setStorageReady(true);
         return;
       }
@@ -3000,7 +3427,7 @@ export function App() {
       const defaultFiles = await loadDefaultSources();
       setUsingDefaultAnalysis(false);
       setFiles(defaultFiles);
-      if (defaultFiles.length) setData(analyzeImported(defaultFiles, appliedDateRange));
+      if (defaultFiles.length) await applyAnalyzedData(defaultFiles, appliedDateRange, { bumpRevision: false });
       setStorageReady(true);
     });
   }, []);
@@ -3015,8 +3442,7 @@ export function App() {
         skipNextDateAnalysisRef.current = false;
         return;
       }
-      setData(analyzeImported(files, appliedDateRange));
-      setAnalysisRevision((current) => current + 1);
+      applyAnalyzedData(files, appliedDateRange);
     }
   }, [appliedDateRange, storageReady, usingDefaultAnalysis]);
   useEffect(() => {
@@ -3032,8 +3458,7 @@ export function App() {
     setFiles(sources);
     await saveImportedSources(sources);
     localStorage.setItem("qms-user-imported-sources-v2", "true");
-    setData(sources.length ? analyzeImported(sources, appliedDateRange) : sampleData);
-    setAnalysisRevision((current) => current + 1);
+    await applyAnalyzedData(sources, appliedDateRange);
     const parts = [];
     if (result.added?.length) parts.push(`新增${result.added.length}个`);
     if (result.replaced?.length) parts.push(`替换${result.replaced.length}个`);
@@ -3076,22 +3501,26 @@ export function App() {
     }
     if (usingDefaultAnalysis) {
       setDateRefreshStatus("loading");
-      loadDefaultSources().then((defaultFiles) => {
+      loadDefaultSources().then(async (defaultFiles) => {
         setUsingDefaultAnalysis(false);
         setFiles(defaultFiles);
+        skipNextDateAnalysisRef.current = true;
         setAppliedDateRange({ ...selectedRange });
         localStorage.setItem("qms-date-range-v202605", JSON.stringify(selectedRange));
-        setData(defaultFiles.length ? analyzeImported(defaultFiles, selectedRange) : sampleData);
-        setAnalysisRevision((current) => current + 1);
+        await applyAnalyzedData(defaultFiles, selectedRange);
         setDateRefreshStatus("done");
         setTimeout(() => setDateRefreshStatus("idle"), 1800);
       });
       return;
     }
+    setDateRefreshStatus("loading");
+    skipNextDateAnalysisRef.current = true;
     setAppliedDateRange({ ...selectedRange });
     localStorage.setItem("qms-date-range-v202605", JSON.stringify(selectedRange));
-    setDateRefreshStatus("done");
-    setTimeout(() => setDateRefreshStatus("idle"), 1800);
+    applyAnalyzedData(files, selectedRange).then(() => {
+      setDateRefreshStatus("done");
+      setTimeout(() => setDateRefreshStatus("idle"), 1800);
+    });
   };
   const saveTemplate = () => {
     localStorage.setItem("qms-quality-template", JSON.stringify({ view, savedAt: Date.now(), data }));
@@ -3107,7 +3536,7 @@ export function App() {
 
   return <UiThemeContext.Provider value={uiTheme === "apple" ? "apple" : "classic"}>
     {view === "executive"
-      ? <ExecutiveDashboard data={data} files={files} onImport={openImport} onDeleteSource={deleteSource} view={view} onViewChange={setView} dateRange={dateRange} appliedDateRange={appliedDateRange} onDateRange={updateDateRange} onRefreshDate={refreshDateData} dateRefreshStatus={dateRefreshStatus} fontSize={fontSize} onFontSize={setFontSize} analysisKey={analysisRevision} labelControlsVisible={labelControlsVisible} onToggleLabelControls={() => setLabelControlsVisible((current) => !current)} uiTheme={uiTheme === "apple" ? "apple" : "classic"} onThemeChange={changeUiTheme} sidebarCollapsed={sidebarCollapsed} onToggleSidebar={() => setSidebarCollapsed((current) => !current)} />
+      ? <ExecutiveDashboard data={data} files={files} onImport={openImport} onDeleteSource={deleteSource} onSourcesChanged={applySources} view={view} onViewChange={setView} dateRange={dateRange} appliedDateRange={appliedDateRange} onDateRange={updateDateRange} onRefreshDate={refreshDateData} dateRefreshStatus={dateRefreshStatus} fontSize={fontSize} onFontSize={setFontSize} analysisKey={analysisRevision} labelControlsVisible={labelControlsVisible} onToggleLabelControls={() => setLabelControlsVisible((current) => !current)} uiTheme={uiTheme === "apple" ? "apple" : "classic"} onThemeChange={changeUiTheme} sidebarCollapsed={sidebarCollapsed} onToggleSidebar={() => setSidebarCollapsed((current) => !current)} />
       : <WorkspaceDashboard key={`workspace-${analysisRevision}`} data={data} files={files} onImport={() => openImport(null)} view={view} onViewChange={setView} onExport={exportData} onSave={saveTemplate} dateRange={dateRange} appliedDateRange={appliedDateRange} onDateRange={updateDateRange} onRefreshDate={refreshDateData} dateRefreshStatus={dateRefreshStatus} fontSize={fontSize} onFontSize={setFontSize} uiTheme={uiTheme === "apple" ? "apple" : "classic"} />}
     <ImportModal open={importOpen} onClose={() => setImportOpen(false)} onSourcesChanged={applySources} files={files} dateRange={appliedDateRange} targetModule={importModule} />
     {saved && <div className="toast"><CheckCircle size={19} weight="fill" />当前分析视图已保存为本机模板</div>}

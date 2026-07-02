@@ -19,6 +19,33 @@ const scaleOptionFonts = (value, scale, key = "") => {
   }
   return value;
 };
+const seriesDataSize = (series) => Array.isArray(series?.data) ? series.data.length : 0;
+const optimizeSeriesForLargeData = (series) => {
+  const size = seriesDataSize(series);
+  if (size < 120) return series;
+  const next = {
+    progressive: Math.max(series.progressive || 0, 400),
+    progressiveThreshold: Math.max(series.progressiveThreshold || 0, 120),
+    animation: series.animation ?? size < 600,
+    animationThreshold: Math.min(series.animationThreshold || 2000, 600),
+    ...series,
+  };
+  if (["bar", "scatter"].includes(next.type)) {
+    next.large = next.large ?? size >= 300;
+    next.largeThreshold = Math.max(next.largeThreshold || 0, 300);
+  }
+  if (next.type === "line") {
+    next.sampling = next.sampling || "lttb";
+    next.showSymbol = next.showSymbol ?? size < 80;
+  }
+  return next;
+};
+const optimizeChartOption = (option = {}) => ({
+  animationThreshold: Math.min(option.animationThreshold || 2000, 800),
+  useDirtyRect: true,
+  ...option,
+  series: asArray(option.series).map(optimizeSeriesForLargeData),
+});
 const useChartFontScale = () => {
   const current = () => fontScales[document.documentElement.dataset.fontSize] || 1;
   const [scale, setScale] = useState(current);
@@ -32,7 +59,8 @@ const useChartFontScale = () => {
 function ScaledChart({ option, ...props }) {
   const scale = useChartFontScale();
   const themedOption = isAppleTheme() ? applyAppleChartTheme(option) : option;
-  return <ReactECharts {...props} notMerge lazyUpdate option={{ textStyle: { fontSize: Math.round(12 * scale), color: isAppleTheme() ? "#526174" : undefined, fontFamily: "PingFang SC, Microsoft YaHei, sans-serif" }, ...scaleOptionFonts(themedOption, scale) }} />;
+  const optimizedOption = optimizeChartOption(themedOption);
+  return <ReactECharts {...props} notMerge lazyUpdate option={{ textStyle: { fontSize: Math.round(12 * scale), color: isAppleTheme() ? "#526174" : undefined, fontFamily: "PingFang SC, Microsoft YaHei, sans-serif" }, ...scaleOptionFonts(optimizedOption, scale) }} />;
 }
 const asArray = (value) => Array.isArray(value) ? value : value ? [value] : [];
 const themeAxis = (axis) => ({
