@@ -2,6 +2,45 @@ const DB_NAME = "qms-quality-analytics";
 const DB_VERSION = 1;
 const STORE_NAME = "app-state";
 const SOURCES_KEY = "imported-sources-v20260625-dqa-refresh";
+const REMOTE_SOURCES_KEY = "imported-sources";
+const ANALYSIS_CACHE_KEY = "analysis-cache-v1";
+const REMOTE_ANALYSIS_CACHE_KEY = "analysis-cache";
+
+const sharedApiBase = () => {
+  if (typeof window === "undefined") return "";
+  const configured = import.meta.env.VITE_API_BASE?.trim();
+  if (configured) return configured.replace(/\/$/, "");
+  if (!/^https?:$/.test(window.location.protocol)) return "";
+  return `${window.location.origin}/api`;
+};
+
+const requestSharedState = async (key, options = {}) => {
+  const base = sharedApiBase();
+  if (!base) return null;
+  try {
+    const response = await fetch(`${base}/state/${key}`, {
+      headers: { "Content-Type": "application/json", ...(options.headers || {}) },
+      ...options,
+    });
+    if (!response.ok) return null;
+    return await response.json();
+  } catch {
+    return null;
+  }
+};
+
+const loadRemoteState = async (key) => {
+  const payload = await requestSharedState(key, { method: "GET" });
+  return payload?.value ?? null;
+};
+
+const saveRemoteState = async (key, value) => {
+  const payload = await requestSharedState(key, {
+    method: "PUT",
+    body: JSON.stringify({ value }),
+  });
+  return payload?.value ?? null;
+};
 
 const openDatabase = () => new Promise((resolve, reject) => {
   const request = indexedDB.open(DB_NAME, DB_VERSION);
@@ -25,12 +64,45 @@ const transaction = async (mode, action) => {
   });
 };
 
-export const loadImportedSources = async () => {
+const loadImportedSourcesLocal = async () => {
   try {
     return await transaction("readonly", (store) => store.get(SOURCES_KEY)) || [];
   } catch {
     return [];
   }
+};
+
+const saveImportedSourcesLocal = async (sources) => {
+  await transaction("readwrite", (store) => store.put(sources, SOURCES_KEY));
+};
+
+const loadAnalysisCacheLocal = async () => {
+  try {
+    return await transaction("readonly", (store) => store.get(ANALYSIS_CACHE_KEY)) || null;
+  } catch {
+    return null;
+  }
+};
+
+const saveAnalysisCacheLocal = async (cache) => {
+  await transaction("readwrite", (store) => store.put(cache, ANALYSIS_CACHE_KEY));
+};
+
+export const loadImportedSources = async () => {
+  const localSources = await loadImportedSourcesLocal();
+  const remoteSources = await loadRemoteState(REMOTE_SOURCES_KEY);
+  if (Array.isArray(remoteSources)) {
+    if (remoteSources.length) {
+      saveImportedSourcesLocal(remoteSources).catch(() => {});
+      return remoteSources;
+    }
+    if (localSources.length && localSources.some((source) => !source.defaultSource)) {
+      saveRemoteState(REMOTE_SOURCES_KEY, localSources).catch(() => {});
+      return localSources;
+    }
+    return [];
+  }
+  return localSources;
 };
 
 export const loadDefaultSources = async () => {
@@ -63,8 +135,6 @@ const loadDefaultJson = async (fileName) => {
   const base = import.meta.env.BASE_URL || "./";
   const compressed = await fetchJsonGzip(`${base}${fileName}.gz`);
   if (compressed != null) return compressed;
-  // 兼容旧包或手工调试目录：如果压缩文件不存在，再尝试读取未压缩文件。
-  // 正常构建只保留 .gz，避免 80MB+ 原始 JSON 被开发服务器和桌面包反复扫描复制。
   const response = await fetch(`${base}${fileName}`, { cache: "no-store" });
   if (!response.ok) return null;
   return await response.json();
@@ -83,7 +153,25 @@ const fetchJsonGzip = async (url) => {
 };
 
 export const saveImportedSources = async (sources) => {
-  await transaction("readwrite", (store) => store.put(sources, SOURCES_KEY));
+  await saveImportedSourcesLocal(sources);
+  const remoteSaved = await saveRemoteState(REMOTE_SOURCES_KEY, sources);
+  return Array.isArray(remoteSaved) ? remoteSaved : sources;
+};
+
+export const loadCachedAnalysis = async () => {
+  const localCache = await loadAnalysisCacheLocal();
+  const remoteCache = await loadRemoteState(REMOTE_ANALYSIS_CACHE_KEY);
+  if (remoteCache && typeof remoteCache === "object" && remoteCache.data) {
+    saveAnalysisCacheLocal(remoteCache).catch(() => {});
+    return remoteCache;
+  }
+  return localCache;
+};
+
+export const saveCachedAnalysis = async (cache) => {
+  await saveAnalysisCacheLocal(cache);
+  const remoteSaved = await saveRemoteState(REMOTE_ANALYSIS_CACHE_KEY, cache);
+  return remoteSaved && typeof remoteSaved === "object" ? remoteSaved : cache;
 };
 
 export const clearImportedSources = async () => {

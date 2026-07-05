@@ -6,6 +6,36 @@ const number = (v) => {
   const n = Number(v);
   return Number.isFinite(n) ? n : 0;
 };
+const normalizeDqaEcnReason = (value) => {
+  const reason = text(value)
+    .replace(/[，,]/g, "，")
+    .replace(/[（(]/g, "（")
+    .replace(/[）)]/g, "）")
+    .replace(/_/g, "/")
+    .replace(/\s+/g, "");
+  if (!reason) return "未填写";
+  if (!reason.includes("")) return reason;
+
+  if ((reason.includes("分批")) and reason.includes("多人协作")) return "分批下单/多人协作下单";
+  if (reason.includes("已满足客户") && reason.includes("设计功能优化")) return "已满足客户需求，设计功能优化";
+  if (reason.includes("稳定性") && reason.includes("良率提升改善")) return "稳定性/良率提升改善";
+  if (reason.includes("客户需求") && reason.includes("变更")) return "客户需求变更";
+  if (reason.includes("物料型号替换") && (reason.includes("库存不足") || reason.includes("停产"))) return "物料型号替换，库存不足_停产";
+  if (reason.includes("设计干涉")) return "设计干涉";
+  if (reason.includes("加工件") && reason.includes("设计错误")) return "加工件设计错误";
+  if (reason.includes("装配3D更新") || (reason.includes("3D更新") && reason.includes("无物料变更"))) return "装配3D更新（无物料变更）";
+  if (reason.includes("BOM") && reason.includes("版本") && reason.includes("图号错误")) return "BOM引用版本/图号错误";
+  if (reason.includes("BOM") && reason.includes("参数")) return "BOM参数";
+  if (reason.includes("BOM") && reason.includes("漏做")) return "BOM漏做";
+  if (reason.includes("旧机") && reason.includes("BOM")) return "改制项目旧机入BOM";
+  if (reason.includes("PLM") && reason.includes("系统原因")) return "PLM系统原因";
+  if (reason.includes("标准件") && reason.includes("质量问题")) return "标准件质量问题";
+  if (reason.includes("标准件") && reason.includes("选型") && reason.includes("计算错误")) return "标准件选型原因/计算错误";
+  if (reason.includes("标准件") && reason.includes("禁用") && reason.includes("替换")) return "标准件禁用替换";
+  if (reason.includes("设计改善验证")) return "设计改善验证";
+  if (reason.includes("未填写")) return "未填写";
+  return reason.replace(/+/g, "");
+};
 const ipqcQty = (row) => number(row["送检数"] ?? row["治具数量"]);
 // IPQC异常按“不良内容”记录行数统计：内容非空的一行计1条。
 const ipqcBad = (row) => text(row["不良内容"]) ? 1 : 0;
@@ -1632,7 +1662,7 @@ const buildDqaEcn = (dqaFiles, dateRange) => {
           rawDivision,
           tpm,
           tpmKey,
-          reason: text(row["变更原因"]) || "未填写",
+          reason: normalizeDqaEcnReason(row["变更原因"]),
           attr: text(row["ECN属性"]) || "未填写",
         });
       } else if (isDenominator) {
