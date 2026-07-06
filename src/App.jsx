@@ -8,7 +8,7 @@ import {
   UploadSimple, User, Warning, WarningCircle, X,
 } from "@phosphor-icons/react";
 import { analyzeImported, downloadJson, normalizeIpqcLeaderMapRows, normalizeIpqcWorkshop, parseFiles } from "./dataEngine.js";
-import { loadDefaultAnalysis, loadDefaultAnnotations, loadDefaultSources, loadImportedSources, mergeImportedSources, saveImportedSources } from "./dataStore.js";
+import { createSourcesSignature, loadCachedAnalysis, loadDefaultAnalysis, loadDefaultAnnotations, loadDefaultSources, loadImportedSources, loadSharedDateRange, mergeImportedSources, saveCachedAnalysis, saveImportedSources, saveSharedDateRange, sourceRowCount, summarizeSources } from "./dataStore.js";
 import { sampleData } from "./sampleData.js";
 import { BarCompare, Donut, HorizontalRank, MachinedTpmCompareChart, Pareto, QuantityRateCombo, ScoreMonthlyCombo, ScoreYearCompare, StackedStage, WorkshopCategoryHeatmap, YearStackedCompare } from "./charts.jsx";
 
@@ -16,6 +16,7 @@ const moduleIcons = { IQC: Cube, IPQC: Pulse, OQC: ShieldCheck, DQA: ClipboardTe
 const moduleColor = { IQC: "green", IPQC: "blue", OQC: "orange", DQA: "amber" };
 const UiThemeContext = createContext("classic");
 const useUiTheme = () => useContext(UiThemeContext);
+const ANALYSIS_CACHE_VERSION = "server-analysis-cache-v1";
 const safeParse = (value, fallback) => {
   try { return value ? JSON.parse(value) : fallback; } catch { return fallback; }
 };
@@ -106,7 +107,7 @@ function ImportModal({ open, onClose, onSourcesChanged, files, dateRange, target
       </div>
       <div className="file-list">
         {recentVisibleFiles.map((file, index) => <div className="file-row" key={`${file.name}-${index}`}>
-          <FileXls size={19} /><div><strong>{file.name}</strong><span>{file.rows.length.toLocaleString()} 行 · {file.sheets.length} 个工作表</span></div>
+          <FileXls size={19} /><div><strong>{file.name}</strong><span>{sourceRowCount(file).toLocaleString()} 行 · {file.sheets.length} 个工作表</span></div>
           <span className={`module-pill ${file.module === "UNKNOWN" ? "unknown" : ""}`}>{file.module === "UNKNOWN" ? "需确认" : file.module}</span>
         </div>)}
         {!recentVisibleFiles.length && <div className="empty-files">{targetModule ? `尚未导入${targetModule}文件，导入后这里只显示${targetModule}数据源。` : "导入后，这里会显示模块识别结果与数据行数。"}</div>}
@@ -755,7 +756,7 @@ function DataSourcePage({ files, onImportModule, onDelete, onSourcesChanged }) {
           <div className="source-file-table">
             <div className="source-file-row source-file-head"><span>文件名</span><span>数据行数</span><span>工作表</span><span>导入时间</span><span>操作</span></div>
             {rows.map((file) => <div className="source-file-row" key={`${file.module}-${file.name}`}>
-              <strong><FileXls size={16}/>{file.name}</strong><span>{file.rows.length.toLocaleString()}</span><span>{file.sheets.length}</span>
+              <strong><FileXls size={16}/>{file.name}</strong><span>{sourceRowCount(file).toLocaleString()}</span><span>{file.sheets.length}</span>
               <span>{new Date(file.importedAt).toLocaleString("zh-CN", { hour12: false })}</span>
               <button className="delete-source" onClick={() => onDelete(file)}><Trash size={15}/>删除</button>
             </div>)}
@@ -3292,6 +3293,13 @@ export function App() {
     && left?.end2025 === right?.end2025
     && left?.start2026 === right?.start2026
     && left?.end2026 === right?.end2026;
+  const isValidDateRange = (range) => range?.start2025 && range?.end2025 && range?.start2026 && range?.end2026
+    && range.start2025 <= range.end2025 && range.start2026 <= range.end2026;
+  const cacheMatchesRange = (cache, range) => cache?.version === ANALYSIS_CACHE_VERSION
+    && cache?.data
+    && isSameDateRange(cache.dateRange, range);
+  const cacheMatchesSources = (cache, sources) => cache?.sourceSignature
+    && cache.sourceSignature === createSourcesSignature(sources);
   let initialDateRange = defaultDateRange;
   try {
     const storedDateRange = JSON.parse(localStorage.getItem("qms-date-range-v202605") || "null");
@@ -3328,6 +3336,17 @@ export function App() {
     });
     return nextData;
   }, [analyzeInBackground]);
+  const saveAnalysisCacheFor = useCallback((sources, range, nextData) => {
+    if (!sources?.length || !nextData) return;
+    saveCachedAnalysis({
+      version: ANALYSIS_CACHE_VERSION,
+      savedAt: new Date().toISOString(),
+      dateRange: { ...range },
+      sourceSignature: createSourcesSignature(sources),
+      files: summarizeSources(sources),
+      data: nextData,
+    }).catch(() => {});
+  }, []);
 
   useEffect(() => { location.hash = view; }, [view]);
   useEffect(() => {
@@ -3341,19 +3360,49 @@ export function App() {
     let cancelled = false;
     const initialize = async () => {
       try {
+        const sharedRange = await loadSharedDateRange();
+        const activeRange = isValidDateRange(sharedRange) ? {
+          start2025: sharedRange.start2025,
+          end2025: sharedRange.end2025,
+          start2026: sharedRange.start2026,
+          end2026: sharedRange.end2026,
+        } : appliedDateRange;
+        if (!isSameDateRange(activeRange, appliedDateRange)) {
+          setDateRange(activeRange);
+          setAppliedDateRange(activeRange);
+          localStorage.setItem("qms-date-range-v202605", JSON.stringify(activeRange));
+        }
+        const cached = await loadCachedAnalysis();
+        if (!cancelled && cacheMatchesRange(cached, activeRange)) {
+          setUsingDefaultAnalysis(false);
+          setFiles(cached.files || []);
+          setData(cached.data);
+          setStorageReady(true);
+          loadImportedSources().then(async (stored) => {
+            if (cancelled || !stored.length) return;
+            setFiles(stored);
+            if (!cacheMatchesSources(cached, stored)) {
+              const nextData = await applyAnalyzedData(stored, activeRange, { bumpRevision: false });
+              saveAnalysisCacheFor(stored, activeRange, nextData);
+            }
+          });
+          return;
+        }
+
         const stored = await loadImportedSources();
         if (cancelled) return;
         if (stored.length) {
           setUsingDefaultAnalysis(false);
           setFiles(stored);
-          await applyAnalyzedData(stored, appliedDateRange, { bumpRevision: false });
+          const nextData = await applyAnalyzedData(stored, activeRange, { bumpRevision: false });
+          saveAnalysisCacheFor(stored, activeRange, nextData);
           if (!cancelled) setStorageReady(true);
           return;
         }
 
         const defaultAnalysis = await loadDefaultAnalysis();
         if (cancelled) return;
-        if (isSameDateRange(appliedDateRange, defaultDateRange) && defaultAnalysis?.data) {
+        if (isSameDateRange(activeRange, defaultDateRange) && defaultAnalysis?.data) {
           setUsingDefaultAnalysis(true);
           setFiles(defaultAnalysis.files || []);
           setData(defaultAnalysis.data);
@@ -3366,7 +3415,7 @@ export function App() {
         setUsingDefaultAnalysis(false);
         setFiles(defaultFiles);
         if (defaultFiles.length) {
-          await applyAnalyzedData(defaultFiles, appliedDateRange, { bumpRevision: false });
+          await applyAnalyzedData(defaultFiles, activeRange, { bumpRevision: false });
         } else {
           setData(sampleData);
         }
@@ -3392,7 +3441,7 @@ export function App() {
         skipNextDateAnalysisRef.current = false;
         return;
       }
-      applyAnalyzedData(files, appliedDateRange);
+      applyAnalyzedData(files, appliedDateRange).then((nextData) => saveAnalysisCacheFor(files, appliedDateRange, nextData));
     }
   }, [appliedDateRange, storageReady, usingDefaultAnalysis]);
   useEffect(() => {
@@ -3408,7 +3457,8 @@ export function App() {
     setFiles(sources);
     await saveImportedSources(sources);
     localStorage.setItem("qms-user-imported-sources-v2", "true");
-    await applyAnalyzedData(sources, appliedDateRange);
+    const nextData = await applyAnalyzedData(sources, appliedDateRange);
+    saveAnalysisCacheFor(sources, appliedDateRange, nextData);
     const parts = [];
     if (result.added?.length) parts.push(`新增${result.added.length}个`);
     if (result.replaced?.length) parts.push(`替换${result.replaced.length}个`);
@@ -3457,7 +3507,9 @@ export function App() {
         skipNextDateAnalysisRef.current = true;
         setAppliedDateRange({ ...selectedRange });
         localStorage.setItem("qms-date-range-v202605", JSON.stringify(selectedRange));
-        await applyAnalyzedData(defaultFiles, selectedRange);
+        const nextData = await applyAnalyzedData(defaultFiles, selectedRange);
+        saveAnalysisCacheFor(defaultFiles, selectedRange, nextData);
+        await saveSharedDateRange(selectedRange).catch(() => {});
         setDateRefreshStatus("done");
         setTimeout(() => setDateRefreshStatus("idle"), 1800);
       });
@@ -3467,7 +3519,13 @@ export function App() {
     skipNextDateAnalysisRef.current = true;
     setAppliedDateRange({ ...selectedRange });
     localStorage.setItem("qms-date-range-v202605", JSON.stringify(selectedRange));
-    applyAnalyzedData(files, selectedRange).then(() => {
+    applyAnalyzedData(files, selectedRange).then((nextData) => {
+      saveAnalysisCacheFor(files, selectedRange, nextData);
+      return saveSharedDateRange(selectedRange);
+    }).then(() => {
+      setDateRefreshStatus("done");
+      setTimeout(() => setDateRefreshStatus("idle"), 1800);
+    }).catch(() => {
       setDateRefreshStatus("done");
       setTimeout(() => setDateRefreshStatus("idle"), 1800);
     });

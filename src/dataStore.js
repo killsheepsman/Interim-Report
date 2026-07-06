@@ -5,6 +5,7 @@ const SOURCES_KEY = "imported-sources-v20260625-dqa-refresh";
 const REMOTE_SOURCES_KEY = "imported-sources";
 const ANALYSIS_CACHE_KEY = "analysis-cache-v1";
 const REMOTE_ANALYSIS_CACHE_KEY = "analysis-cache";
+const REMOTE_ACTIVE_DATE_RANGE_KEY = "active-date-range";
 
 const sharedApiBase = () => {
   if (typeof window === "undefined") return "";
@@ -88,6 +89,40 @@ const saveAnalysisCacheLocal = async (cache) => {
   await transaction("readwrite", (store) => store.put(cache, ANALYSIS_CACHE_KEY));
 };
 
+const stableHash = (value) => {
+  let hash = 2166136261;
+  for (let i = 0; i < value.length; i += 1) {
+    hash ^= value.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(36);
+};
+
+export const sourceRowCount = (source) => Array.isArray(source?.rows) ? source.rows.length : Number(source?.rowCount || 0);
+
+export const createSourcesSignature = (sources = []) => {
+  const payload = sources
+    .map((source) => ({
+      module: source.module || "",
+      name: String(source.name || "").trim().toLowerCase(),
+      size: Number(source.size || 0),
+      kind: source.kind || "",
+      subKind: source.subKind || "",
+      projectName: source.projectName || "",
+      importedAt: source.importedAt || "",
+      rowCount: sourceRowCount(source),
+      sheets: Array.isArray(source.sheets) ? source.sheets : [],
+    }))
+    .sort((a, b) => `${a.module}::${a.name}::${a.kind}`.localeCompare(`${b.module}::${b.name}::${b.kind}`));
+  return `sources-v1:${stableHash(JSON.stringify(payload))}`;
+};
+
+export const summarizeSources = (sources = []) => sources.map(({ rows, ...source }) => ({
+  ...source,
+  rowCount: sourceRowCount({ rows, ...source }),
+  rows: [],
+}));
+
 export const loadImportedSources = async () => {
   const localSources = await loadImportedSourcesLocal();
   const remoteSources = await loadRemoteState(REMOTE_SOURCES_KEY);
@@ -160,6 +195,7 @@ export const loadCachedAnalysis = async () => {
     saveAnalysisCacheLocal(remoteCache).catch(() => {});
     return remoteCache;
   }
+  if (Array.isArray(remoteCache)) return null;
   return localCache;
 };
 
@@ -167,6 +203,17 @@ export const saveCachedAnalysis = async (cache) => {
   await saveAnalysisCacheLocal(cache);
   const remoteSaved = await saveRemoteState(REMOTE_ANALYSIS_CACHE_KEY, cache);
   return remoteSaved && typeof remoteSaved === "object" ? remoteSaved : cache;
+};
+
+export const loadSharedDateRange = async () => {
+  const remoteRange = await loadRemoteState(REMOTE_ACTIVE_DATE_RANGE_KEY);
+  return remoteRange && typeof remoteRange === "object" && !Array.isArray(remoteRange) ? remoteRange : null;
+};
+
+export const saveSharedDateRange = async (range) => {
+  const payload = { ...range, savedAt: new Date().toISOString() };
+  const remoteSaved = await saveRemoteState(REMOTE_ACTIVE_DATE_RANGE_KEY, payload);
+  return remoteSaved && typeof remoteSaved === "object" ? remoteSaved : payload;
 };
 
 export const clearImportedSources = async () => {

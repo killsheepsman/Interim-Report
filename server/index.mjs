@@ -11,7 +11,7 @@ const dataFile = path.join(dataDir, "shared-state.json");
 const port = Number(process.env.PORT || 4173);
 const host = process.env.HOST || "0.0.0.0";
 const maxBodyBytes = Number(process.env.MAX_BODY_MB || 1024) * 1024 * 1024;
-const allowedKeys = new Set(["imported-sources"]);
+const allowedKeys = new Set(["imported-sources", "analysis-cache", "active-date-range"]);
 
 const mimeTypes = {
   ".html": "text/html; charset=utf-8",
