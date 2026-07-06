@@ -24,6 +24,13 @@ body { margin: 0; min-width: 1180px; min-height: 100vh; -webkit-font-smoothing: 
 button, input { font: inherit; }
 button { cursor: pointer; }
 
+.app-loading-shell { min-height: 100vh; display: grid; place-items: center; background: #f5f7fa; color: #172033; font-family: "PingFang SC", "Microsoft YaHei UI", "Microsoft YaHei", Arial, sans-serif; }
+.app-loading-card { width: min(420px, calc(100vw - 40px)); padding: 28px 30px; text-align: center; border: 1px solid #dfe7f0; border-radius: 18px; background: #fff; box-shadow: 0 18px 45px rgba(16,24,40,.08); }
+.app-loading-card svg { color: #176ecf; margin-bottom: 10px; }
+.app-loading-card strong { display: block; margin-bottom: 8px; color: #172033; font-size: 18px; }
+.app-loading-card span { display: block; color: #64748b; font-size: 13px; line-height: 1.75; }
+.theme-apple .app-loading-card { border-radius: 24px; box-shadow: 0 22px 54px rgba(16,24,40,.09); }
+
 .executive-shell { min-height: 100vh; display: flex; background: #f5f7fa; }
 .executive-sidebar { position: fixed; inset: 0 auto 0 0; width: 166px; color: #fff; background: linear-gradient(180deg, #092f62 0%, #061e41 100%); display: flex; flex-direction: column; z-index: 20; transition: width .22s ease, background .22s ease, box-shadow .22s ease; }
 .brand { height: 84px; display: flex; align-items: center; gap: 10px; padding: 0 18px; border-bottom: 1px solid rgba(255,255,255,.12); }

@@ -16,7 +16,7 @@ const normalizeDqaEcnReason = (value) => {
   if (!reason) return "未填写";
   if (!reason.includes("")) return reason;
 
-  if ((reason.includes("分批")) and reason.includes("多人协作")) return "分批下单/多人协作下单";
+  if ((reason.includes("分批")) && reason.includes("多人协作")) return "分批下单/多人协作下单";
   if (reason.includes("已满足客户") && reason.includes("设计功能优化")) return "已满足客户需求，设计功能优化";
   if (reason.includes("稳定性") && reason.includes("良率提升改善")) return "稳定性/良率提升改善";
   if (reason.includes("客户需求") && reason.includes("变更")) return "客户需求变更";
@@ -34,7 +34,7 @@ const normalizeDqaEcnReason = (value) => {
   if (reason.includes("标准件") && reason.includes("禁用") && reason.includes("替换")) return "标准件禁用替换";
   if (reason.includes("设计改善验证")) return "设计改善验证";
   if (reason.includes("未填写")) return "未填写";
-  return reason.replace(/+/g, "");
+  return reason.replace(/\+/g, "");
 };
 const ipqcQty = (row) => number(row["送检数"] ?? row["治具数量"]);
 // IPQC异常按“不良内容”记录行数统计：内容非空的一行计1条。

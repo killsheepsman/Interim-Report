@@ -94,13 +94,8 @@ export const loadImportedSources = async () => {
   if (Array.isArray(remoteSources)) {
     if (remoteSources.length) {
       saveImportedSourcesLocal(remoteSources).catch(() => {});
-      return remoteSources;
     }
-    if (localSources.length && localSources.some((source) => !source.defaultSource)) {
-      saveRemoteState(REMOTE_SOURCES_KEY, localSources).catch(() => {});
-      return localSources;
-    }
-    return [];
+    return remoteSources;
   }
   return localSources;
 };

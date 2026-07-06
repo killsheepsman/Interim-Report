@@ -3300,7 +3300,7 @@ export function App() {
     initialDateRange = storedDateRange && !wasOldDefault ? storedDateRange : defaultDateRange;
   } catch { initialDateRange = defaultDateRange; }
   const [view, setView] = useState(() => location.hash.includes("workspace") ? "workspace" : "executive");
-  const [data, setData] = useState(sampleData);
+  const [data, setData] = useState(null);
   const [files, setFiles] = useState([]);
   const [importOpen, setImportOpen] = useState(false);
   const [importModule, setImportModule] = useState(null);
@@ -3338,98 +3338,48 @@ export function App() {
   useEffect(() => { localStorage.setItem("qms-sidebar-collapsed", sidebarCollapsed ? "true" : "false"); }, [sidebarCollapsed]);
   useEffect(() => { seedDefaultAnnotations(); }, []);
   useEffect(() => {
-    loadImportedSources().then(async (stored) => {
-      const userImportedSources = localStorage.getItem("qms-user-imported-sources-v2") === "true";
-      if (!userImportedSources) {
+    let cancelled = false;
+    const initialize = async () => {
+      try {
+        const stored = await loadImportedSources();
+        if (cancelled) return;
+        if (stored.length) {
+          setUsingDefaultAnalysis(false);
+          setFiles(stored);
+          await applyAnalyzedData(stored, appliedDateRange, { bumpRevision: false });
+          if (!cancelled) setStorageReady(true);
+          return;
+        }
+
         const defaultAnalysis = await loadDefaultAnalysis();
+        if (cancelled) return;
         if (isSameDateRange(appliedDateRange, defaultDateRange) && defaultAnalysis?.data) {
-          await saveImportedSources(defaultAnalysis.files || []);
-          localStorage.setItem("qms-default-source-version", defaultSourceVersion);
-          localStorage.removeItem("qms-user-imported-sources");
           setUsingDefaultAnalysis(true);
           setFiles(defaultAnalysis.files || []);
           setData(defaultAnalysis.data);
           setStorageReady(true);
           return;
         }
+
         const defaultFiles = await loadDefaultSources();
-        if (defaultFiles.length) {
-          await saveImportedSources(defaultFiles);
-          localStorage.setItem("qms-default-source-version", defaultSourceVersion);
-          localStorage.removeItem("qms-user-imported-sources");
-          setUsingDefaultAnalysis(false);
-          setFiles(defaultFiles);
-          await applyAnalyzedData(defaultFiles, appliedDateRange, { bumpRevision: false });
-          setStorageReady(true);
-          return;
-        }
-      }
-      if (stored.length) {
-        const isDefaultSourceCache = stored.every((file) => file.defaultSource);
-        if (isDefaultSourceCache) {
-          const defaultAnalysis = await loadDefaultAnalysis();
-          if (isSameDateRange(appliedDateRange, defaultDateRange) && defaultAnalysis?.data) {
-            saveImportedSources(defaultAnalysis.files || []).catch(() => {});
-            setUsingDefaultAnalysis(true);
-            setFiles(defaultAnalysis.files || []);
-            setData(defaultAnalysis.data);
-            setStorageReady(true);
-            return;
-          }
-          const defaultFiles = await loadDefaultSources();
-          setUsingDefaultAnalysis(false);
-          setFiles(defaultFiles);
-          if (defaultFiles.length) {
-            await saveImportedSources(defaultFiles);
-            await applyAnalyzedData(defaultFiles, appliedDateRange, { bumpRevision: false });
-          }
-          setStorageReady(true);
-          return;
-        }
-        const hasMachinedPartsData = stored.some((file) => file.subKind === "DQA_MACHINED_PARTS" || file.kind === "DQA_MACHINED_PARTS");
-        const hasOqcShipmentDetail = stored.some((file) => file.kind === "OQC_SHIPMENT_DETAIL");
-        const machinedVersionMatched = localStorage.getItem("qms-dqa-machined-source-version") === machinedSourceVersion;
-        const oqcShipmentVersionMatched = localStorage.getItem("qms-oqc-shipment-source-version") === oqcShipmentSourceVersion;
-        if (!hasMachinedPartsData || !machinedVersionMatched || !hasOqcShipmentDetail || !oqcShipmentVersionMatched) {
-          const defaultFiles = await loadDefaultSources();
-          const defaultMachinedParts = defaultFiles.filter((file) => file.subKind === "DQA_MACHINED_PARTS");
-          const defaultOqcShipment = defaultFiles.filter((file) => file.kind === "OQC_SHIPMENT_DETAIL");
-          if (defaultMachinedParts.length || defaultOqcShipment.length) {
-            const merged = [
-              ...stored.filter((file) => file.subKind !== "DQA_MACHINED_PARTS" && file.kind !== "OQC_SHIPMENT_DETAIL"),
-              ...defaultMachinedParts,
-              ...defaultOqcShipment,
-            ];
-            await saveImportedSources(merged);
-            if (defaultMachinedParts.length) localStorage.setItem("qms-dqa-machined-source-version", machinedSourceVersion);
-            if (defaultOqcShipment.length) localStorage.setItem("qms-oqc-shipment-source-version", oqcShipmentSourceVersion);
-            setUsingDefaultAnalysis(false);
-            setFiles(merged);
-            await applyAnalyzedData(merged, appliedDateRange, { bumpRevision: false });
-            setStorageReady(true);
-            return;
-          }
-        }
+        if (cancelled) return;
         setUsingDefaultAnalysis(false);
-        setFiles(stored);
-        await applyAnalyzedData(stored, appliedDateRange, { bumpRevision: false });
-        setStorageReady(true);
-        return;
+        setFiles(defaultFiles);
+        if (defaultFiles.length) {
+          await applyAnalyzedData(defaultFiles, appliedDateRange, { bumpRevision: false });
+        } else {
+          setData(sampleData);
+        }
+        if (!cancelled) setStorageReady(true);
+      } catch {
+        if (!cancelled) {
+          setData(sampleData);
+          setStorageReady(true);
+        }
       }
-      const defaultAnalysis = await loadDefaultAnalysis();
-      if (defaultAnalysis?.data) {
-        setUsingDefaultAnalysis(true);
-        setFiles(defaultAnalysis.files || []);
-        setData(defaultAnalysis.data);
-        setStorageReady(true);
-        return;
-      }
-      const defaultFiles = await loadDefaultSources();
-      setUsingDefaultAnalysis(false);
-      setFiles(defaultFiles);
-      if (defaultFiles.length) await applyAnalyzedData(defaultFiles, appliedDateRange, { bumpRevision: false });
-      setStorageReady(true);
-    });
+    };
+    initialize();
+    return () => { cancelled = true; };
   }, []);
   useEffect(() => {
     document.documentElement.dataset.fontSize = fontSize;
@@ -3533,6 +3483,19 @@ export function App() {
     localStorage.setItem("qms-ui-theme", theme);
     setUiTheme(theme);
   };
+
+  if (!storageReady || !data) {
+    const theme = uiTheme === "apple" ? "apple" : "classic";
+    return <UiThemeContext.Provider value={theme}>
+      <div className={`app-loading-shell theme-${theme}`}>
+        <div className="app-loading-card">
+          <ShieldCheck size={30} weight="fill" />
+          <strong>正在加载服务器最新数据</strong>
+          <span>系统会优先读取共享数据，加载完成后一次性呈现，避免先显示默认数据再刷新。</span>
+        </div>
+      </div>
+    </UiThemeContext.Provider>;
+  }
 
   return <UiThemeContext.Provider value={uiTheme === "apple" ? "apple" : "classic"}>
     {view === "executive"
