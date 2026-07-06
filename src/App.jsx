@@ -8,7 +8,7 @@ import {
   UploadSimple, User, Warning, WarningCircle, X,
 } from "@phosphor-icons/react";
 import { analyzeImported, downloadJson, normalizeIpqcLeaderMapRows, normalizeIpqcWorkshop, parseFiles } from "./dataEngine.js";
-import { createSourcesSignature, loadCachedAnalysis, loadDefaultAnalysis, loadDefaultAnnotations, loadDefaultSources, loadImportedSources, loadSharedDateRange, mergeImportedSources, saveCachedAnalysis, saveImportedSources, saveSharedDateRange, sourceRowCount, summarizeSources } from "./dataStore.js";
+import { createSourcesSignature, loadAppliedDateRange, loadCachedAnalysis, loadDefaultAnalysis, loadDefaultAnnotations, loadDefaultSources, loadImportedSources, mergeImportedSources, saveAppliedDateRange, saveCachedAnalysis, saveImportedSources, sourceRowCount, summarizeSources } from "./dataStore.js";
 import { sampleData } from "./sampleData.js";
 import { BarCompare, Donut, HorizontalRank, MachinedTpmCompareChart, Pareto, QuantityRateCombo, ScoreMonthlyCombo, ScoreYearCompare, StackedStage, WorkshopCategoryHeatmap, YearStackedCompare } from "./charts.jsx";
 
@@ -3360,33 +3360,43 @@ export function App() {
     let cancelled = false;
     const initialize = async () => {
       try {
-        const sharedRange = await loadSharedDateRange();
-        const activeRange = isValidDateRange(sharedRange) ? {
-          start2025: sharedRange.start2025,
-          end2025: sharedRange.end2025,
-          start2026: sharedRange.start2026,
-          end2026: sharedRange.end2026,
-        } : appliedDateRange;
-        if (!isSameDateRange(activeRange, appliedDateRange)) {
-          setDateRange(activeRange);
-          setAppliedDateRange(activeRange);
-          localStorage.setItem("qms-date-range-v202605", JSON.stringify(activeRange));
-        }
         const cached = await loadCachedAnalysis();
-        if (!cancelled && cacheMatchesRange(cached, activeRange)) {
+        const cachedRange = isValidDateRange(cached?.dateRange) ? {
+          start2025: cached.dateRange.start2025,
+          end2025: cached.dateRange.end2025,
+          start2026: cached.dateRange.start2026,
+          end2026: cached.dateRange.end2026,
+        } : null;
+        if (!cancelled && cached?.version === ANALYSIS_CACHE_VERSION && cached?.data && cachedRange) {
           setUsingDefaultAnalysis(false);
           setFiles(cached.files || []);
+          setDateRange(cachedRange);
+          setAppliedDateRange(cachedRange);
+          localStorage.setItem("qms-date-range-v202605", JSON.stringify(cachedRange));
           setData(cached.data);
           setStorageReady(true);
           loadImportedSources().then(async (stored) => {
             if (cancelled || !stored.length) return;
             setFiles(stored);
             if (!cacheMatchesSources(cached, stored)) {
-              const nextData = await applyAnalyzedData(stored, activeRange, { bumpRevision: false });
-              saveAnalysisCacheFor(stored, activeRange, nextData);
+              const nextData = await applyAnalyzedData(stored, cachedRange, { bumpRevision: false });
+              saveAnalysisCacheFor(stored, cachedRange, nextData);
             }
           });
           return;
+        }
+
+        const savedRange = await loadAppliedDateRange();
+        const activeRange = isValidDateRange(savedRange) ? {
+          start2025: savedRange.start2025,
+          end2025: savedRange.end2025,
+          start2026: savedRange.start2026,
+          end2026: savedRange.end2026,
+        } : appliedDateRange;
+        if (!isSameDateRange(activeRange, appliedDateRange)) {
+          setDateRange(activeRange);
+          setAppliedDateRange(activeRange);
+          localStorage.setItem("qms-date-range-v202605", JSON.stringify(activeRange));
         }
 
         const stored = await loadImportedSources();
@@ -3509,7 +3519,7 @@ export function App() {
         localStorage.setItem("qms-date-range-v202605", JSON.stringify(selectedRange));
         const nextData = await applyAnalyzedData(defaultFiles, selectedRange);
         saveAnalysisCacheFor(defaultFiles, selectedRange, nextData);
-        await saveSharedDateRange(selectedRange).catch(() => {});
+        await saveAppliedDateRange(selectedRange).catch(() => {});
         setDateRefreshStatus("done");
         setTimeout(() => setDateRefreshStatus("idle"), 1800);
       });
@@ -3521,7 +3531,7 @@ export function App() {
     localStorage.setItem("qms-date-range-v202605", JSON.stringify(selectedRange));
     applyAnalyzedData(files, selectedRange).then((nextData) => {
       saveAnalysisCacheFor(files, selectedRange, nextData);
-      return saveSharedDateRange(selectedRange);
+      return saveAppliedDateRange(selectedRange);
     }).then(() => {
       setDateRefreshStatus("done");
       setTimeout(() => setDateRefreshStatus("idle"), 1800);

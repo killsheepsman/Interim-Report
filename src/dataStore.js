@@ -5,7 +5,7 @@ const SOURCES_KEY = "imported-sources-v20260625-dqa-refresh";
 const REMOTE_SOURCES_KEY = "imported-sources";
 const ANALYSIS_CACHE_KEY = "analysis-cache-v1";
 const REMOTE_ANALYSIS_CACHE_KEY = "analysis-cache";
-const REMOTE_ACTIVE_DATE_RANGE_KEY = "active-date-range";
+const REMOTE_APPLIED_DATE_RANGE_KEY = "applied-date-range";
 
 const sharedApiBase = () => {
   if (typeof window === "undefined") return "";
@@ -205,14 +205,14 @@ export const saveCachedAnalysis = async (cache) => {
   return remoteSaved && typeof remoteSaved === "object" ? remoteSaved : cache;
 };
 
-export const loadSharedDateRange = async () => {
-  const remoteRange = await loadRemoteState(REMOTE_ACTIVE_DATE_RANGE_KEY);
+export const loadAppliedDateRange = async () => {
+  const remoteRange = await loadRemoteState(REMOTE_APPLIED_DATE_RANGE_KEY);
   return remoteRange && typeof remoteRange === "object" && !Array.isArray(remoteRange) ? remoteRange : null;
 };
 
-export const saveSharedDateRange = async (range) => {
+export const saveAppliedDateRange = async (range) => {
   const payload = { ...range, savedAt: new Date().toISOString() };
-  const remoteSaved = await saveRemoteState(REMOTE_ACTIVE_DATE_RANGE_KEY, payload);
+  const remoteSaved = await saveRemoteState(REMOTE_APPLIED_DATE_RANGE_KEY, payload);
   return remoteSaved && typeof remoteSaved === "object" ? remoteSaved : payload;
 };
 
