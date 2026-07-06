@@ -8,7 +8,7 @@ import {
   UploadSimple, User, Warning, WarningCircle, X,
 } from "@phosphor-icons/react";
 import { analyzeImported, downloadJson, normalizeIpqcLeaderMapRows, normalizeIpqcWorkshop, parseFiles } from "./dataEngine.js";
-import { createSourcesSignature, loadAppliedDateRange, loadCachedAnalysis, loadDefaultAnalysis, loadDefaultAnnotations, loadDefaultSources, loadImportedSources, mergeImportedSources, saveAppliedDateRange, saveCachedAnalysis, saveImportedSources, sourceRowCount, summarizeSources } from "./dataStore.js";
+import { createSourcesSignature, downloadSourceFiles, loadAppliedDateRange, loadCachedAnalysis, loadDefaultAnalysis, loadDefaultAnnotations, loadDefaultSources, loadImportedSources, mergeImportedSources, saveAppliedDateRange, saveCachedAnalysis, saveImportedSources, sourceRowCount, summarizeSources, uploadSourceFiles } from "./dataStore.js";
 import { sampleData } from "./sampleData.js";
 import { BarCompare, Donut, HorizontalRank, MachinedTpmCompareChart, Pareto, QuantityRateCombo, ScoreMonthlyCombo, ScoreYearCompare, StackedStage, WorkshopCategoryHeatmap, YearStackedCompare } from "./charts.jsx";
 
@@ -60,10 +60,12 @@ function ImportModal({ open, onClose, onSourcesChanged, files, dateRange, target
   const handleFiles = async (selected) => {
     setBusy(true);
     try {
-      const parsed = await parseFiles([...selected]);
+      const selectedFiles = [...selected];
+      const parsed = await parseFiles(selectedFiles);
       const valid = targetModule ? parsed.filter((file) => file.module === targetModule) : parsed.filter((file) => file.module !== "UNKNOWN");
       const rejected = parsed.filter((file) => targetModule ? file.module !== targetModule : file.module === "UNKNOWN");
-      const merged = mergeImportedSources(files, valid);
+      const uploaded = await uploadSourceFiles(valid, selectedFiles);
+      const merged = mergeImportedSources(files, uploaded);
       await onSourcesChanged(merged.sources, {
         added: merged.added, replaced: merged.replaced,
         rejected: rejected.map((file) => `${file.name}（识别为${file.module}）`),
@@ -577,7 +579,7 @@ function FontSizeControl({ value, onChange, dark = false }) {
   ].map(([key,label]) => <button key={key} className={value === key ? "active" : ""} onClick={() => onChange(key)}>{label}</button>)}</div>;
 }
 
-function DateRangeFilter({ value, onChange, onRefresh, fontSize, onFontSize, refreshStatus = "idle" }) {
+function DateRangeFilter({ value, onChange, onRefresh, fontSize, onFontSize, refreshStatus = "idle", refreshProgress }) {
   const invalid2025 = value.start2025 && value.end2025 && value.start2025 > value.end2025;
   const invalid2026 = value.start2026 && value.end2026 && value.start2026 > value.end2026;
   const invalid = invalid2025 || invalid2026 || !value.start2025 || !value.end2025 || !value.start2026 || !value.end2026;
@@ -598,7 +600,8 @@ function DateRangeFilter({ value, onChange, onRefresh, fontSize, onFontSize, ref
     <div className="date-presets"><b>快捷区间</b>{presets.map(([label, month]) => <button key={label} onClick={() => applyPreset(month)}>{label}</button>)}</div>
     <div className="year-date-group"><b>2025同期</b><label>开始<input type="date" value={value.start2025} onChange={(event) => onChange({ ...value, start2025: event.target.value })}/></label><i>—</i><label>结束<input type="date" value={value.end2025} onChange={(event) => onChange({ ...value, end2025: event.target.value })}/></label></div>
     <div className="year-date-group"><b>2026本期</b><label>开始<input type="date" value={value.start2026} onChange={(event) => onChange({ ...value, start2026: event.target.value })}/></label><i>—</i><label>结束<input type="date" value={value.end2026} onChange={(event) => onChange({ ...value, end2026: event.target.value })}/></label></div>
-    <button className={`date-refresh-btn ${refreshStatus}`} disabled={invalid} onClick={onRefresh}><ArrowsClockwise size={15}/>{refreshStatus === "done" ? "已刷新" : refreshStatus === "missing" ? "请先导入数据" : "刷新数据"}</button>
+    <button className={`date-refresh-btn ${refreshStatus}`} disabled={invalid || refreshStatus === "loading"} onClick={onRefresh}><ArrowsClockwise size={15}/>{refreshStatus === "loading" ? "加载中" : refreshStatus === "done" ? "已刷新" : refreshStatus === "missing" ? "请先导入数据" : "刷新数据"}</button>
+    {refreshStatus === "loading" && refreshProgress && <div className="date-refresh-progress"><span>{refreshProgress.label}</span><b>{Math.round(refreshProgress.percent || 0)}%</b><i style={{ width: `${Math.max(3, Math.min(100, refreshProgress.percent || 0))}%` }} /></div>}
     <FontSizeControl value={fontSize} onChange={onFontSize}/>
     {(invalid2025 || invalid2026) && <em>同一年度的开始日期不能晚于结束日期</em>}
   </div>;
@@ -1197,7 +1200,7 @@ function ManagementReportPage({ data }) {
   </div>;
 }
 
-function ExecutiveDashboard({ data, files, onImport, onDeleteSource, onSourcesChanged, view, onViewChange, dateRange, onDateRange, onRefreshDate, dateRefreshStatus, fontSize, onFontSize, analysisKey, labelControlsVisible, onToggleLabelControls, uiTheme, onThemeChange, sidebarCollapsed, onToggleSidebar }) {
+function ExecutiveDashboard({ data, files, onImport, onDeleteSource, onSourcesChanged, view, onViewChange, dateRange, onDateRange, onRefreshDate, dateRefreshStatus, refreshProgress, fontSize, onFontSize, analysisKey, labelControlsVisible, onToggleLabelControls, uiTheme, onThemeChange, sidebarCollapsed, onToggleSidebar }) {
   const [active, setActive] = useState("总览");
   const moduleView = ["IQC", "IPQC", "OQC", "DQA"].includes(active) ? active : null;
   return <div className={`executive-shell theme-${uiTheme} ${sidebarCollapsed ? "sidebar-collapsed" : ""}`}>
@@ -1207,7 +1210,7 @@ function ExecutiveDashboard({ data, files, onImport, onDeleteSource, onSourcesCh
         <div><h1>{moduleView ? `${moduleView} 专题分析` : active === "数据导入" ? "数据源管理" : "经营驾驶舱"}</h1><p>{moduleView ? "从原始数据下钻到TOP问题与责任对象" : "全局质量运营总览"}</p></div>
         <div className="top-actions"><Switcher view={view} onChange={onViewChange} /><AnnotationEditButton defaultModule={moduleView || "\u603b\u89c8"} /><AnnotationViewButton /><ExportReportButton /><button className={`label-controls-toggle ${labelControlsVisible ? "active" : ""}`} onClick={onToggleLabelControls}>{labelControlsVisible ? "隐藏数值设置" : "显示数值设置"}</button><button className="import-btn" onClick={() => onImport(null)}><UploadSimple size={17} />导入数据</button></div>
       </header>
-      <DateRangeFilter value={dateRange} onChange={onDateRange} onRefresh={onRefreshDate} refreshStatus={dateRefreshStatus} fontSize={fontSize} onFontSize={onFontSize}/>
+      <DateRangeFilter value={dateRange} onChange={onDateRange} onRefresh={onRefreshDate} refreshStatus={dateRefreshStatus} refreshProgress={refreshProgress} fontSize={fontSize} onFontSize={onFontSize}/>
       {active === "数据导入" ? <DataSourcePage files={files} onImportModule={onImport} onDelete={onDeleteSource} onSourcesChanged={onSourcesChanged}/> : moduleView ? <ModuleDetail key={`${moduleView}-${analysisKey}`} module={moduleView} data={data} /> : <>
         <OverviewKpiCards data={data}/>
         <div className="dashboard-grid">
@@ -3317,6 +3320,7 @@ export function App() {
   const [saved, setSaved] = useState(false);
   const [sourceNotice, setSourceNotice] = useState("");
   const [dateRefreshStatus, setDateRefreshStatus] = useState("idle");
+  const [refreshProgress, setRefreshProgress] = useState(null);
   const [fontSize, setFontSize] = useState(() => localStorage.getItem("qms-font-size") || "standard");
   const [labelControlsVisible, setLabelControlsVisible] = useState(() => localStorage.getItem("qms-chart-label-controls-visible-v2") === "true");
   const [uiTheme, setUiTheme] = useState(() => localStorage.getItem("qms-ui-theme") || "classic");
@@ -3336,16 +3340,31 @@ export function App() {
     });
     return nextData;
   }, [analyzeInBackground]);
+  const prepareSourcesForAnalysis = useCallback(async (sources, onProgress = () => {}) => {
+    if (!sources?.length || sources.every((source) => Array.isArray(source.rows) && source.rows.length)) return sources;
+    const downloadable = sources.filter((source) => source.serverFile);
+    if (!downloadable.length) return sources;
+    onProgress({ label: "正在从服务器读取原始Excel", percent: 18 });
+    const downloadedFiles = await downloadSourceFiles(downloadable);
+    if (!downloadedFiles.length) return sources;
+    onProgress({ label: "正在解析服务器原始数据", percent: 45 });
+    const parsed = await parseFiles(downloadedFiles);
+    const metaByKey = new Map(sources.map((source) => [`${source.module}::${source.name}`, source]));
+    const parsedKeys = new Set(parsed.map((source) => `${source.module}::${source.name}`));
+    const hydrated = parsed.map((source) => ({ ...source, ...(metaByKey.get(`${source.module}::${source.name}`) || {}), rows: source.rows }));
+    const rest = sources.filter((source) => !parsedKeys.has(`${source.module}::${source.name}`));
+    return [...rest, ...hydrated];
+  }, []);
   const saveAnalysisCacheFor = useCallback((sources, range, nextData) => {
-    if (!sources?.length || !nextData) return;
-    saveCachedAnalysis({
+    if (!sources?.length || !nextData) return Promise.resolve(null);
+    return saveCachedAnalysis({
       version: ANALYSIS_CACHE_VERSION,
       savedAt: new Date().toISOString(),
       dateRange: { ...range },
       sourceSignature: createSourcesSignature(sources),
       files: summarizeSources(sources),
       data: nextData,
-    }).catch(() => {});
+    }).catch(() => null);
   }, []);
 
   useEffect(() => { location.hash = view; }, [view]);
@@ -3379,8 +3398,11 @@ export function App() {
             if (cancelled || !stored.length) return;
             setFiles(stored);
             if (!cacheMatchesSources(cached, stored)) {
-              const nextData = await applyAnalyzedData(stored, cachedRange, { bumpRevision: false });
-              saveAnalysisCacheFor(stored, cachedRange, nextData);
+              const hydrated = await prepareSourcesForAnalysis(stored);
+              if (cancelled) return;
+              setFiles(hydrated);
+              const nextData = await applyAnalyzedData(hydrated, cachedRange, { bumpRevision: false });
+              saveAnalysisCacheFor(hydrated, cachedRange, nextData);
             }
           });
           return;
@@ -3404,8 +3426,11 @@ export function App() {
         if (stored.length) {
           setUsingDefaultAnalysis(false);
           setFiles(stored);
-          const nextData = await applyAnalyzedData(stored, activeRange, { bumpRevision: false });
-          saveAnalysisCacheFor(stored, activeRange, nextData);
+          const hydrated = await prepareSourcesForAnalysis(stored);
+          if (cancelled) return;
+          setFiles(hydrated);
+          const nextData = await applyAnalyzedData(hydrated, activeRange, { bumpRevision: false });
+          saveAnalysisCacheFor(hydrated, activeRange, nextData);
           if (!cancelled) setStorageReady(true);
           return;
         }
@@ -3511,33 +3536,45 @@ export function App() {
     }
     if (usingDefaultAnalysis) {
       setDateRefreshStatus("loading");
+      setRefreshProgress({ label: "正在加载默认数据源", percent: 15 });
       loadDefaultSources().then(async (defaultFiles) => {
         setUsingDefaultAnalysis(false);
         setFiles(defaultFiles);
         skipNextDateAnalysisRef.current = true;
         setAppliedDateRange({ ...selectedRange });
         localStorage.setItem("qms-date-range-v202605", JSON.stringify(selectedRange));
+        setRefreshProgress({ label: "正在计算分析结果", percent: 70 });
         const nextData = await applyAnalyzedData(defaultFiles, selectedRange);
-        saveAnalysisCacheFor(defaultFiles, selectedRange, nextData);
+        await saveAnalysisCacheFor(defaultFiles, selectedRange, nextData);
         await saveAppliedDateRange(selectedRange).catch(() => {});
+        setRefreshProgress({ label: "刷新完成", percent: 100 });
         setDateRefreshStatus("done");
-        setTimeout(() => setDateRefreshStatus("idle"), 1800);
+        setTimeout(() => { setDateRefreshStatus("idle"); setRefreshProgress(null); }, 1800);
       });
       return;
     }
     setDateRefreshStatus("loading");
+    setRefreshProgress({ label: "准备刷新数据", percent: 8 });
     skipNextDateAnalysisRef.current = true;
     setAppliedDateRange({ ...selectedRange });
     localStorage.setItem("qms-date-range-v202605", JSON.stringify(selectedRange));
-    applyAnalyzedData(files, selectedRange).then((nextData) => {
-      saveAnalysisCacheFor(files, selectedRange, nextData);
-      return saveAppliedDateRange(selectedRange);
+    prepareSourcesForAnalysis(files, setRefreshProgress).then((readySources) => {
+      setFiles(readySources);
+      setRefreshProgress({ label: "正在计算图表和数据表", percent: 78 });
+      return applyAnalyzedData(readySources, selectedRange).then((nextData) => ({ readySources, nextData }));
+    }).then(({ readySources, nextData }) => {
+      const canSaveGlobal = localStorage.getItem("qms-user-imported-sources-v2") === "true";
+      if (!canSaveGlobal) return null;
+      setRefreshProgress({ label: "正在保存到服务器", percent: 92 });
+      return Promise.all([saveAnalysisCacheFor(readySources, selectedRange, nextData), saveAppliedDateRange(selectedRange)]);
     }).then(() => {
+      setRefreshProgress({ label: "刷新完成", percent: 100 });
       setDateRefreshStatus("done");
-      setTimeout(() => setDateRefreshStatus("idle"), 1800);
+      setTimeout(() => { setDateRefreshStatus("idle"); setRefreshProgress(null); }, 1800);
     }).catch(() => {
+      setRefreshProgress({ label: "刷新完成", percent: 100 });
       setDateRefreshStatus("done");
-      setTimeout(() => setDateRefreshStatus("idle"), 1800);
+      setTimeout(() => { setDateRefreshStatus("idle"); setRefreshProgress(null); }, 1800);
     });
   };
   const saveTemplate = () => {
@@ -3567,7 +3604,7 @@ export function App() {
 
   return <UiThemeContext.Provider value={uiTheme === "apple" ? "apple" : "classic"}>
     {view === "executive"
-      ? <ExecutiveDashboard data={data} files={files} onImport={openImport} onDeleteSource={deleteSource} onSourcesChanged={applySources} view={view} onViewChange={setView} dateRange={dateRange} appliedDateRange={appliedDateRange} onDateRange={updateDateRange} onRefreshDate={refreshDateData} dateRefreshStatus={dateRefreshStatus} fontSize={fontSize} onFontSize={setFontSize} analysisKey={analysisRevision} labelControlsVisible={labelControlsVisible} onToggleLabelControls={() => setLabelControlsVisible((current) => !current)} uiTheme={uiTheme === "apple" ? "apple" : "classic"} onThemeChange={changeUiTheme} sidebarCollapsed={sidebarCollapsed} onToggleSidebar={() => setSidebarCollapsed((current) => !current)} />
+      ? <ExecutiveDashboard data={data} files={files} onImport={openImport} onDeleteSource={deleteSource} onSourcesChanged={applySources} view={view} onViewChange={setView} dateRange={dateRange} appliedDateRange={appliedDateRange} onDateRange={updateDateRange} onRefreshDate={refreshDateData} dateRefreshStatus={dateRefreshStatus} refreshProgress={refreshProgress} fontSize={fontSize} onFontSize={setFontSize} analysisKey={analysisRevision} labelControlsVisible={labelControlsVisible} onToggleLabelControls={() => setLabelControlsVisible((current) => !current)} uiTheme={uiTheme === "apple" ? "apple" : "classic"} onThemeChange={changeUiTheme} sidebarCollapsed={sidebarCollapsed} onToggleSidebar={() => setSidebarCollapsed((current) => !current)} />
       : <WorkspaceDashboard key={`workspace-${analysisRevision}`} data={data} files={files} onImport={() => openImport(null)} view={view} onViewChange={setView} onExport={exportData} onSave={saveTemplate} dateRange={dateRange} appliedDateRange={appliedDateRange} onDateRange={updateDateRange} onRefreshDate={refreshDateData} dateRefreshStatus={dateRefreshStatus} fontSize={fontSize} onFontSize={setFontSize} uiTheme={uiTheme === "apple" ? "apple" : "classic"} />}
     <ImportModal open={importOpen} onClose={() => setImportOpen(false)} onSourcesChanged={applySources} files={files} dateRange={appliedDateRange} targetModule={importModule} />
     {saved && <div className="toast"><CheckCircle size={19} weight="fill" />当前分析视图已保存为本机模板</div>}

@@ -9,6 +9,7 @@ const publicDir = path.join(rootDir, "dist");
 const dataDir = process.env.QMS_DATA_DIR || path.join(rootDir, "data");
 const dataFile = path.join(dataDir, "shared-state.json");
 const stateDir = path.join(dataDir, "state");
+const uploadDir = path.join(dataDir, "uploads");
 const port = Number(process.env.PORT || 4173);
 const host = process.env.HOST || "0.0.0.0";
 const maxBodyBytes = Number(process.env.MAX_BODY_MB || 1024) * 1024 * 1024;
@@ -46,6 +47,118 @@ const readBody = (req) => new Promise((resolve, reject) => {
   req.on("error", reject);
 });
 
+const readBufferBody = (req) => new Promise((resolve, reject) => {
+  const chunks = [];
+  let size = 0;
+  req.on("data", (chunk) => {
+    size += chunk.length;
+    if (size > maxBodyBytes) {
+      reject(new Error("Request body is too large"));
+      req.destroy();
+      return;
+    }
+    chunks.push(chunk);
+  });
+  req.on("end", () => resolve(Buffer.concat(chunks)));
+  req.on("error", reject);
+});
+
+const sanitizeSegment = (value) => String(value || "UNKNOWN")
+  .replace(/[<>:"/\\|?*\u0000-\u001f]/g, "_")
+  .replace(/\s+/g, " ")
+  .trim()
+  .slice(0, 180) || "UNKNOWN";
+
+const splitBuffer = (buffer, delimiter) => {
+  const parts = [];
+  let start = 0;
+  let index = buffer.indexOf(delimiter, start);
+  while (index !== -1) {
+    parts.push(buffer.subarray(start, index));
+    start = index + delimiter.length;
+    index = buffer.indexOf(delimiter, start);
+  }
+  parts.push(buffer.subarray(start));
+  return parts;
+};
+
+const parseMultipart = (buffer, contentType = "") => {
+  const boundary = contentType.match(/boundary=(?:"([^"]+)"|([^;]+))/)?.[1] || contentType.match(/boundary=(?:"([^"]+)"|([^;]+))/)?.[2];
+  if (!boundary) throw new Error("Missing multipart boundary");
+  const delimiter = Buffer.from(`--${boundary}`);
+  const headerDelimiter = Buffer.from("\r\n\r\n");
+  const fields = {};
+  const files = [];
+  splitBuffer(buffer, delimiter).forEach((rawPart) => {
+    let part = rawPart;
+    if (!part.length || part.equals(Buffer.from("--\r\n")) || part.equals(Buffer.from("--"))) return;
+    if (part.subarray(0, 2).toString() === "\r\n") part = part.subarray(2);
+    if (part.subarray(part.length - 2).toString() === "\r\n") part = part.subarray(0, part.length - 2);
+    if (part.subarray(part.length - 2).toString() === "--") part = part.subarray(0, part.length - 2);
+    const headerEnd = part.indexOf(headerDelimiter);
+    if (headerEnd < 0) return;
+    const headers = part.subarray(0, headerEnd).toString("utf8");
+    const content = part.subarray(headerEnd + headerDelimiter.length);
+    const disposition = headers.match(/content-disposition:\s*([^\r\n]+)/i)?.[1] || "";
+    const name = disposition.match(/name="([^"]+)"/)?.[1];
+    const filename = disposition.match(/filename="([^"]*)"/)?.[1];
+    if (!name) return;
+    if (filename) files.push({ fieldName: name, filename, content });
+    else fields[name] = content.toString("utf8");
+  });
+  return { fields, files };
+};
+
+const handleUpload = async (req, res) => {
+  if (req.method !== "POST") return sendJson(res, 405, { error: "Method not allowed" });
+  const body = await readBufferBody(req);
+  const { fields, files } = parseMultipart(body, req.headers["content-type"] || "");
+  const manifest = JSON.parse(fields.manifest || "[]");
+  const metaByName = new Map(manifest.map((item) => [`${item.module || "UNKNOWN"}::${item.name}`, item]));
+  const saved = [];
+  await fs.mkdir(uploadDir, { recursive: true });
+  for (const file of files) {
+    const candidates = manifest.filter((item) => item.name === file.filename);
+    const declared = candidates[0] || {};
+    const moduleName = sanitizeSegment(declared.module || "UNKNOWN");
+    const targetDir = path.join(uploadDir, moduleName);
+    await fs.mkdir(targetDir, { recursive: true });
+    const safeName = sanitizeSegment(file.filename);
+    const targetPath = path.join(targetDir, safeName);
+    await fs.writeFile(targetPath, file.content);
+    const manifestItem = metaByName.get(`${declared.module || moduleName}::${file.filename}`) || declared;
+    saved.push({
+      ...manifestItem,
+      name: file.filename,
+      module: declared.module || moduleName,
+      size: file.content.length,
+      serverFile: `/api/uploads/${encodeURIComponent(moduleName)}/${encodeURIComponent(safeName)}`,
+      uploadedAt: new Date().toISOString(),
+    });
+  }
+  return sendJson(res, 200, { files: saved });
+};
+
+const handleUploadedFile = async (req, res) => {
+  if (req.method !== "GET") return sendJson(res, 405, { error: "Method not allowed" });
+  const match = req.url.match(/^\/api\/uploads\/([^/]+)\/([^?#]+)/);
+  if (!match) return sendJson(res, 404, { error: "Upload not found" });
+  const moduleName = sanitizeSegment(decodeURIComponent(match[1]));
+  const fileName = sanitizeSegment(decodeURIComponent(match[2]));
+  const filePath = path.normalize(path.join(uploadDir, moduleName, fileName));
+  if (!filePath.startsWith(path.join(uploadDir, moduleName))) return sendJson(res, 403, { error: "Forbidden" });
+  try {
+    await fs.stat(filePath);
+  } catch {
+    return sendJson(res, 404, { error: "Upload not found" });
+  }
+  res.writeHead(200, {
+    "Content-Type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "Cache-Control": "no-store",
+  });
+  createReadStream(filePath).pipe(res);
+};
+
 const safeKeyPath = (key) => {
   if (!allowedKeys.has(key)) return null;
   return path.join(stateDir, `${key}.json`);
@@ -64,10 +177,17 @@ const backupCorruptFile = async (filePath, error) => {
   try {
     const stamp = new Date().toISOString().replace(/[:.]/g, "-");
     const backupPath = `${filePath}.corrupt-${stamp}`;
-    await fs.copyFile(filePath, backupPath);
+    await fs.rename(filePath, backupPath);
     console.error(`Corrupt JSON backed up: ${backupPath}`, error);
   } catch (backupError) {
-    console.error("Failed to backup corrupt JSON", backupError);
+    try {
+      const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+      const backupPath = `${filePath}.corrupt-copy-${stamp}`;
+      await fs.copyFile(filePath, backupPath);
+      console.error(`Corrupt JSON copied: ${backupPath}`, error);
+    } catch (copyError) {
+      console.error("Failed to backup corrupt JSON", backupError, copyError);
+    }
   }
 };
 
@@ -162,6 +282,8 @@ const serveStatic = async (req, res) => {
 
 const server = createServer(async (req, res) => {
   try {
+    if (req.url.startsWith("/api/uploads/")) return await handleUploadedFile(req, res);
+    if (req.url === "/api/uploads") return await handleUpload(req, res);
     if (req.url.startsWith("/api/")) return await handleApi(req, res);
     return await serveStatic(req, res);
   } catch (error) {

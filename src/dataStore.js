@@ -43,6 +43,18 @@ const saveRemoteState = async (key, value) => {
   return payload?.value ?? null;
 };
 
+const requestSharedApi = async (path, options = {}) => {
+  const base = sharedApiBase();
+  if (!base) return null;
+  try {
+    const response = await fetch(`${base}${path}`, options);
+    if (!response.ok) return null;
+    return response;
+  } catch {
+    return null;
+  }
+};
+
 const openDatabase = () => new Promise((resolve, reject) => {
   const request = indexedDB.open(DB_NAME, DB_VERSION);
   request.onupgradeneeded = () => {
@@ -123,6 +135,26 @@ export const summarizeSources = (sources = []) => sources.map(({ rows, ...source
   rows: [],
 }));
 
+export const uploadSourceFiles = async (sources = [], rawFiles = []) => {
+  const sourceByName = new Map(sources.map((source) => [source.name, source]));
+  const filesToUpload = rawFiles.filter((file) => sourceByName.has(file.name));
+  if (!filesToUpload.length) return sources;
+  const formData = new FormData();
+  formData.append("manifest", JSON.stringify(sources.map((source) => ({
+    ...summarizeSources([source])[0],
+    rows: undefined,
+  }))));
+  filesToUpload.forEach((file) => formData.append("files", file, file.name));
+  const response = await requestSharedApi("/uploads", { method: "POST", body: formData });
+  if (!response) return sources;
+  const payload = await response.json();
+  const uploadedByKey = new Map((payload.files || []).map((file) => [`${file.module}::${file.name}`, file]));
+  return sources.map((source) => {
+    const uploaded = uploadedByKey.get(`${source.module}::${source.name}`);
+    return uploaded ? { ...source, ...uploaded } : source;
+  });
+};
+
 export const loadImportedSources = async () => {
   const localSources = await loadImportedSourcesLocal();
   const remoteSources = await loadRemoteState(REMOTE_SOURCES_KEY);
@@ -184,8 +216,22 @@ const fetchJsonGzip = async (url) => {
 
 export const saveImportedSources = async (sources) => {
   await saveImportedSourcesLocal(sources);
-  const remoteSaved = await saveRemoteState(REMOTE_SOURCES_KEY, sources);
-  return Array.isArray(remoteSaved) ? remoteSaved : sources;
+  const remoteSources = summarizeSources(sources);
+  const remoteSaved = await saveRemoteState(REMOTE_SOURCES_KEY, remoteSources);
+  return Array.isArray(remoteSaved) ? remoteSaved : remoteSources;
+};
+
+export const downloadSourceFiles = async (sources = []) => {
+  const files = [];
+  for (const source of sources) {
+    if (!source.serverFile) continue;
+    const path = source.serverFile.startsWith("/api") ? source.serverFile.slice(4) : source.serverFile;
+    const response = await requestSharedApi(path, { method: "GET", cache: "no-store" });
+    if (!response) continue;
+    const blob = await response.blob();
+    files.push(new File([blob], source.name, { type: blob.type || "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }));
+  }
+  return files;
 };
 
 export const loadCachedAnalysis = async () => {
