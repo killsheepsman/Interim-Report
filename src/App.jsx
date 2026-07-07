@@ -8,7 +8,7 @@ import {
   UploadSimple, User, Warning, WarningCircle, X,
 } from "@phosphor-icons/react";
 import { analyzeImported, downloadJson, normalizeIpqcLeaderMapRows, normalizeIpqcWorkshop, parseFiles } from "./dataEngine.js";
-import { createSourcesSignature, downloadSourceFiles, loadAppliedDateRange, loadCachedAnalysis, loadDefaultAnalysis, loadDefaultAnnotations, loadDefaultSources, loadImportedSources, mergeImportedSources, saveAppliedDateRange, saveCachedAnalysis, saveImportedSources, sourceRowCount, summarizeSources, uploadSourceFiles } from "./dataStore.js";
+import { createSourcesSignature, downloadSourceFiles, loadAppliedDateRange, loadCachedAnalysis, loadCurrentUser, loadDefaultAnalysis, loadDefaultAnnotations, loadDefaultSources, loadImportedSources, loadPermissionConfig, mergeImportedSources, saveAppliedDateRange, saveCachedAnalysis, saveImportedSources, savePermissionConfig, sourceRowCount, summarizeSources, uploadSourceFiles } from "./dataStore.js";
 import { sampleData } from "./sampleData.js";
 import { BarCompare, Donut, HorizontalRank, MachinedTpmCompareChart, Pareto, QuantityRateCombo, ScoreMonthlyCombo, ScoreYearCompare, StackedStage, WorkshopCategoryHeatmap, YearStackedCompare } from "./charts.jsx";
 
@@ -19,6 +19,35 @@ const useUiTheme = () => useContext(UiThemeContext);
 const ANALYSIS_CACHE_VERSION = "server-analysis-cache-v1";
 const safeParse = (value, fallback) => {
   try { return value ? JSON.parse(value) : fallback; } catch { return fallback; }
+};
+const defaultFeaturePermissions = {
+  dataImport: { public: false, deputy: true, label: "数据导入" },
+  workspace: { public: false, deputy: true, label: "质量工作台" },
+  annotationEdit: { public: false, deputy: true, label: "分析改善措施" },
+  annotationView: { public: false, deputy: true, label: "分析显示" },
+  exportReport: { public: true, deputy: true, label: "导出报告" },
+  dateTemporaryRefresh: { public: true, deputy: true, label: "临时刷新日期" },
+};
+const defaultApiPermissions = {
+  "POST /api/uploads": { public: false, deputy: true, label: "上传原始Excel" },
+  "PUT /api/state/imported-sources": { public: false, deputy: true, label: "保存数据源清单" },
+  "PUT /api/state/analysis-cache": { public: false, deputy: true, label: "保存分析结果" },
+  "PUT /api/state/applied-date-range": { public: false, deputy: true, label: "保存默认日期" },
+  "PUT /api/permissions": { public: false, deputy: false, label: "保存权限设置" },
+  "GET /api/state/analysis-cache": { public: true, deputy: true, label: "读取分析结果" },
+  "GET /api/state/imported-sources": { public: true, deputy: true, label: "读取数据源清单" },
+  "GET /api/state/applied-date-range": { public: true, deputy: true, label: "读取默认日期" },
+  "GET /api/uploads/*": { public: true, deputy: true, label: "读取原始Excel" },
+};
+const normalizePermissions = (value = {}) => ({
+  deputyAdmins: Array.isArray(value.deputyAdmins) ? value.deputyAdmins : [],
+  features: Object.fromEntries(Object.entries(defaultFeaturePermissions).map(([key, item]) => [key, { ...item, ...(value.features?.[key] || {}) }])),
+  apis: Object.fromEntries(Object.entries(defaultApiPermissions).map(([key, item]) => [key, { ...item, ...(value.apis?.[key] || {}) }])),
+});
+const canUseFeature = (auth, permissions, key) => {
+  if (auth?.isAdmin) return true;
+  const rule = permissions?.features?.[key] || defaultFeaturePermissions[key];
+  return auth?.isDeputy ? rule?.deputy !== false : rule?.public === true;
 };
 
 function Delta({ value, goodWhenDown = false }) {
@@ -45,10 +74,10 @@ function Panel({ title, subtitle, action, children, className = "" }) {
   </section>;
 }
 
-function Switcher({ view, onChange }) {
+function Switcher({ view, onChange, canWorkspace = true }) {
   return <div className="view-switcher">
     <button className={view === "executive" ? "active" : ""} onClick={() => onChange("executive")}>经营驾驶舱</button>
-    <button className={view === "workspace" ? "active" : ""} onClick={() => onChange("workspace")}>质量工作台</button>
+    {canWorkspace && <button className={view === "workspace" ? "active" : ""} onClick={() => onChange("workspace")}>质量工作台</button>}
   </div>;
 }
 
@@ -579,7 +608,7 @@ function FontSizeControl({ value, onChange, dark = false }) {
   ].map(([key,label]) => <button key={key} className={value === key ? "active" : ""} onClick={() => onChange(key)}>{label}</button>)}</div>;
 }
 
-function DateRangeFilter({ value, onChange, onRefresh, fontSize, onFontSize, refreshStatus = "idle", refreshProgress }) {
+function DateRangeFilter({ value, onChange, onRefresh, fontSize, onFontSize, refreshStatus = "idle", refreshProgress, canRefresh = true }) {
   const invalid2025 = value.start2025 && value.end2025 && value.start2025 > value.end2025;
   const invalid2026 = value.start2026 && value.end2026 && value.start2026 > value.end2026;
   const invalid = invalid2025 || invalid2026 || !value.start2025 || !value.end2025 || !value.start2026 || !value.end2026;
@@ -600,7 +629,7 @@ function DateRangeFilter({ value, onChange, onRefresh, fontSize, onFontSize, ref
     <div className="date-presets"><b>快捷区间</b>{presets.map(([label, month]) => <button key={label} onClick={() => applyPreset(month)}>{label}</button>)}</div>
     <div className="year-date-group"><b>2025同期</b><label>开始<input type="date" value={value.start2025} onChange={(event) => onChange({ ...value, start2025: event.target.value })}/></label><i>—</i><label>结束<input type="date" value={value.end2025} onChange={(event) => onChange({ ...value, end2025: event.target.value })}/></label></div>
     <div className="year-date-group"><b>2026本期</b><label>开始<input type="date" value={value.start2026} onChange={(event) => onChange({ ...value, start2026: event.target.value })}/></label><i>—</i><label>结束<input type="date" value={value.end2026} onChange={(event) => onChange({ ...value, end2026: event.target.value })}/></label></div>
-    <button className={`date-refresh-btn ${refreshStatus}`} disabled={invalid || refreshStatus === "loading"} onClick={onRefresh}><ArrowsClockwise size={15}/>{refreshStatus === "loading" ? "加载中" : refreshStatus === "done" ? "已刷新" : refreshStatus === "missing" ? "请先导入数据" : "刷新数据"}</button>
+    {canRefresh && <button className={`date-refresh-btn ${refreshStatus}`} disabled={invalid || refreshStatus === "loading"} onClick={onRefresh}><ArrowsClockwise size={15}/>{refreshStatus === "loading" ? "加载中" : refreshStatus === "done" ? "已刷新" : refreshStatus === "missing" ? "请先导入数据" : "刷新数据"}</button>}
     {refreshStatus === "loading" && refreshProgress && <div className="date-refresh-progress"><span>{refreshProgress.label}</span><b>{Math.round(refreshProgress.percent || 0)}%</b><i style={{ width: `${Math.max(3, Math.min(100, refreshProgress.percent || 0))}%` }} /></div>}
     <FontSizeControl value={fontSize} onChange={onFontSize}/>
     {(invalid2025 || invalid2026) && <em>同一年度的开始日期不能晚于结束日期</em>}
@@ -614,10 +643,12 @@ function ThemeToggle({ value, onChange }) {
   </div>;
 }
 
-function ExecutiveSidebar({ active, setActive, uiTheme, onThemeChange, collapsed, onToggleCollapsed }) {
+function ExecutiveSidebar({ active, setActive, uiTheme, onThemeChange, collapsed, onToggleCollapsed, permissions, auth }) {
   const nav = [
     ["总览", House], ["IQC", Cube], ["IPQC", Pulse],
-    ["OQC", ShieldCheck], ["DQA", ClipboardText], ["数据导入", UploadSimple],
+    ["OQC", ShieldCheck], ["DQA", ClipboardText],
+    ...(canUseFeature(auth, permissions, "dataImport") ? [["数据导入", UploadSimple]] : []),
+    ...(auth?.isAdmin ? [["权限设置", GearSix]] : []),
   ];
   return <aside className={`executive-sidebar ${collapsed ? "collapsed" : ""}`}>
     <div className="brand"><div className="brand-logo"><ShieldCheck size={26} weight="fill" /></div><div><strong>品质智控</strong><span>质量分析平台</span></div></div>
@@ -768,6 +799,54 @@ function DataSourcePage({ files, onImportModule, onDelete, onSourcesChanged }) {
         </section>;
       })}
     </div>
+  </div>;
+}
+
+function PermissionTable({ rows, onChange, showKey = false }) {
+  return <div className="permission-table">
+    <div className={`permission-row permission-head ${showKey ? "with-key" : ""}`}><span>名称</span>{showKey && <span>接口</span>}<span>普通用户允许</span><span>副管理员允许</span></div>
+    {Object.entries(rows || {}).map(([key, row]) => <div className={`permission-row ${showKey ? "with-key" : ""}`} key={key}>
+      <strong>{row.label || key}</strong>
+      {showKey && <code>{key}</code>}
+      <label><input type="checkbox" checked={!!row.public} onChange={(event) => onChange(key, "public", event.target.checked)} />允许</label>
+      <label><input type="checkbox" checked={row.deputy !== false} onChange={(event) => onChange(key, "deputy", event.target.checked)} />允许</label>
+    </div>)}
+  </div>;
+}
+
+function PermissionSettingsPage({ auth, permissions, onPermissionsChanged }) {
+  const [draft, setDraft] = useState(() => normalizePermissions(permissions));
+  const [newIp, setNewIp] = useState("");
+  const [status, setStatus] = useState("");
+  useEffect(() => setDraft(normalizePermissions(permissions)), [permissions]);
+  const updateRule = (group, key, field, value) => setDraft((current) => ({
+    ...current,
+    [group]: { ...current[group], [key]: { ...current[group][key], [field]: value } },
+  }));
+  const addIp = () => {
+    const ip = newIp.trim();
+    if (!ip) return;
+    setDraft((current) => ({ ...current, deputyAdmins: [...new Set([...(current.deputyAdmins || []), ip])] }));
+    setNewIp("");
+  };
+  const removeIp = (ip) => setDraft((current) => ({ ...current, deputyAdmins: (current.deputyAdmins || []).filter((item) => item !== ip) }));
+  const save = async () => {
+    setStatus("保存中...");
+    const result = await savePermissionConfig(draft);
+    if (result?.permissions) {
+      onPermissionsChanged(result.permissions);
+      setStatus("已保存");
+    } else {
+      setStatus("保存失败，请确认当前IP是否为主管理员");
+    }
+    setTimeout(() => setStatus(""), 2600);
+  };
+  return <div className="permission-page">
+    <section className="permission-hero"><div><h2>权限设置</h2><p>当前访问IP：{auth?.ip || "-"}；角色：{auth?.role || "public"}。主管理员永远拥有全部权限，副管理员按下方开关授权。</p></div><button className="primary-btn" onClick={save}><FloppyDisk size={16}/>保存权限</button></section>
+    {status && <div className="permission-status">{status}</div>}
+    <section className="permission-card"><header><h3>副管理员 IP</h3><span>添加后，可通过“副管理员允许”列控制功能和接口。</span></header><div className="permission-ip-input"><input value={newIp} onChange={(event) => setNewIp(event.target.value)} placeholder="输入副管理员IP，例如 192.168.230.50" /><button onClick={addIp}><Plus size={15}/>添加</button></div><div className="permission-ip-list">{(draft.deputyAdmins || []).map((ip) => <span key={ip}>{ip}<button onClick={() => removeIp(ip)}><X size={13}/></button></span>)}{!(draft.deputyAdmins || []).length && <em>暂未设置副管理员 IP</em>}</div></section>
+    <section className="permission-card"><header><h3>功能权限</h3><span>控制普通用户/副管理员在界面上能看到哪些功能。</span></header><PermissionTable rows={draft.features} onChange={(key, field, value) => updateRule("features", key, field, value)} /></section>
+    <section className="permission-card"><header><h3>接口权限</h3><span>控制浏览器控制台直接调用接口时是否允许。</span></header><PermissionTable rows={draft.apis} onChange={(key, field, value) => updateRule("apis", key, field, value)} showKey /></section>
   </div>;
 }
 
@@ -1200,18 +1279,27 @@ function ManagementReportPage({ data }) {
   </div>;
 }
 
-function ExecutiveDashboard({ data, files, onImport, onDeleteSource, onSourcesChanged, view, onViewChange, dateRange, onDateRange, onRefreshDate, dateRefreshStatus, refreshProgress, fontSize, onFontSize, analysisKey, labelControlsVisible, onToggleLabelControls, uiTheme, onThemeChange, sidebarCollapsed, onToggleSidebar }) {
+function ExecutiveDashboard({ data, files, onImport, onDeleteSource, onSourcesChanged, view, onViewChange, dateRange, onDateRange, onRefreshDate, dateRefreshStatus, refreshProgress, fontSize, onFontSize, analysisKey, labelControlsVisible, onToggleLabelControls, uiTheme, onThemeChange, sidebarCollapsed, onToggleSidebar, auth, permissions, onPermissionsChanged }) {
   const [active, setActive] = useState("总览");
   const moduleView = ["IQC", "IPQC", "OQC", "DQA"].includes(active) ? active : null;
+  const allowImport = canUseFeature(auth, permissions, "dataImport");
+  const allowWorkspace = canUseFeature(auth, permissions, "workspace");
+  const allowAnnotationEdit = canUseFeature(auth, permissions, "annotationEdit");
+  const allowAnnotationView = canUseFeature(auth, permissions, "annotationView");
+  const allowExport = canUseFeature(auth, permissions, "exportReport");
+  const allowTemporaryRefresh = canUseFeature(auth, permissions, "dateTemporaryRefresh");
+  useEffect(() => {
+    if ((active === "数据导入" && !allowImport) || (active === "权限设置" && !auth?.isAdmin)) setActive("总览");
+  }, [active, allowImport, auth?.isAdmin]);
   return <div className={`executive-shell theme-${uiTheme} ${sidebarCollapsed ? "sidebar-collapsed" : ""}`}>
-    <ExecutiveSidebar active={active} setActive={setActive} uiTheme={uiTheme} onThemeChange={onThemeChange} collapsed={sidebarCollapsed} onToggleCollapsed={onToggleSidebar} />
+    <ExecutiveSidebar active={active} setActive={setActive} uiTheme={uiTheme} onThemeChange={onThemeChange} collapsed={sidebarCollapsed} onToggleCollapsed={onToggleSidebar} permissions={permissions} auth={auth} />
     <main className="executive-main">
       <header className="executive-topbar">
         <div><h1>{moduleView ? `${moduleView} 专题分析` : active === "数据导入" ? "数据源管理" : "经营驾驶舱"}</h1><p>{moduleView ? "从原始数据下钻到TOP问题与责任对象" : "全局质量运营总览"}</p></div>
-        <div className="top-actions"><Switcher view={view} onChange={onViewChange} /><AnnotationEditButton defaultModule={moduleView || "\u603b\u89c8"} /><AnnotationViewButton /><ExportReportButton /><button className={`label-controls-toggle ${labelControlsVisible ? "active" : ""}`} onClick={onToggleLabelControls}>{labelControlsVisible ? "隐藏数值设置" : "显示数值设置"}</button><button className="import-btn" onClick={() => onImport(null)}><UploadSimple size={17} />导入数据</button></div>
+        <div className="top-actions"><Switcher view={view} onChange={onViewChange} canWorkspace={allowWorkspace} />{allowAnnotationEdit && <AnnotationEditButton defaultModule={moduleView || "\u603b\u89c8"} />}{allowAnnotationView && <AnnotationViewButton />}{allowExport && <ExportReportButton />}<button className={`label-controls-toggle ${labelControlsVisible ? "active" : ""}`} onClick={onToggleLabelControls}>{labelControlsVisible ? "隐藏数值设置" : "显示数值设置"}</button>{allowImport && <button className="import-btn" onClick={() => onImport(null)}><UploadSimple size={17} />导入数据</button>}</div>
       </header>
-      <DateRangeFilter value={dateRange} onChange={onDateRange} onRefresh={onRefreshDate} refreshStatus={dateRefreshStatus} refreshProgress={refreshProgress} fontSize={fontSize} onFontSize={onFontSize}/>
-      {active === "数据导入" ? <DataSourcePage files={files} onImportModule={onImport} onDelete={onDeleteSource} onSourcesChanged={onSourcesChanged}/> : moduleView ? <ModuleDetail key={`${moduleView}-${analysisKey}`} module={moduleView} data={data} /> : <>
+      <DateRangeFilter value={dateRange} onChange={onDateRange} onRefresh={onRefreshDate} refreshStatus={dateRefreshStatus} refreshProgress={refreshProgress} canRefresh={allowTemporaryRefresh} fontSize={fontSize} onFontSize={onFontSize}/>
+      {active === "权限设置" && auth?.isAdmin ? <PermissionSettingsPage auth={auth} permissions={permissions} onPermissionsChanged={onPermissionsChanged}/> : active === "数据导入" && allowImport ? <DataSourcePage files={files} onImportModule={onImport} onDelete={onDeleteSource} onSourcesChanged={onSourcesChanged}/> : moduleView ? <ModuleDetail key={`${moduleView}-${analysisKey}`} module={moduleView} data={data} /> : <>
         <OverviewKpiCards data={data}/>
         <div className="dashboard-grid">
           <MainSupplierOverview data={data}/>
@@ -1226,10 +1314,13 @@ function ExecutiveDashboard({ data, files, onImport, onDeleteSource, onSourcesCh
   </div>;
 }
 
-function WorkspaceTop({ view, onViewChange }) {
+function WorkspaceTop({ view, onViewChange, auth, permissions }) {
+  const allowAnnotationEdit = canUseFeature(auth, permissions, "annotationEdit");
+  const allowAnnotationView = canUseFeature(auth, permissions, "annotationView");
+  const allowExport = canUseFeature(auth, permissions, "exportReport");
   return <header className="workspace-top summary-workspace-top">
     <div className="workspace-brand"><ShieldCheck size={24} weight="fill" /><strong>总结报告</strong></div>
-    <div className="workspace-actions"><Switcher view={view} onChange={onViewChange} /><AnnotationEditButton defaultModule="\u8d28\u91cf\u5de5\u4f5c\u53f0" /><AnnotationViewButton /><ExportReportButton /></div>
+    <div className="workspace-actions"><Switcher view={view} onChange={onViewChange} canWorkspace />{allowAnnotationEdit && <AnnotationEditButton defaultModule="\u8d28\u91cf\u5de5\u4f5c\u53f0" />}{allowAnnotationView && <AnnotationViewButton />}{allowExport && <ExportReportButton />}</div>
   </header>;
 }
 
@@ -1354,9 +1445,9 @@ function TodoTable({ rows, onChange }) {
   </div>;
 }
 
-function WorkspaceDashboard({ data, files, onImport, view, onViewChange, uiTheme }) {
+function WorkspaceDashboard({ data, files, onImport, view, onViewChange, uiTheme, auth, permissions }) {
   return <div className={`workspace-shell summary-report-shell annotation-only-workspace theme-${uiTheme}`}>
-    <WorkspaceTop onImport={onImport} view={view} onViewChange={onViewChange} />
+    <WorkspaceTop onImport={onImport} view={view} onViewChange={onViewChange} auth={auth} permissions={permissions} />
     <main className="workspace-main summary-report-page">
       <section className="dataset-section"><div className="section-label">数据集状态（与经营驾驶舱一致）<Question size={14} /></div><DatasetStatus files={files} /></section>
       <Panel title={annotationText.pool} subtitle={annotationText.poolSub} action={<AnnotationTransferActions />} className="report-todos-panel"><AnnotationReportPanel /></Panel>
@@ -2338,11 +2429,16 @@ function EcnKpiCards({ ecn }) {
   const y2025 = ecn.totals?.[2025] || { numerator: 0, denominator: 0, rate: 0 };
   const y2026 = ecn.totals?.[2026] || { numerator: 0, denominator: 0, rate: 0 };
   const delta = Number((y2026.rate - y2025.rate).toFixed(2));
+  const numeratorDelta = y2026.numerator - y2025.numerator;
+  const denominatorDelta = y2026.denominator - y2025.denominator;
+  const judgement = delta > 0.05 ? { text: "恶化", cls: "risk-up", hint: "ECN率同比上升" }
+    : delta < -0.05 ? { text: "改善", cls: "risk-down", hint: "ECN率同比下降" }
+    : { text: "持平", cls: "", hint: "ECN率同比基本持平" };
   return <div className="dqa-overview-kpis ecn-kpis">
     <div><span>2026 ECN率</span><strong>{y2026.rate}%</strong><p><b>2025：{y2025.rate}%</b><em className={delta > 0 ? "risk-up" : "risk-down"}>{delta > 0 ? "+" : ""}{delta}pp</em></p></div>
-    <div><span>2026 ECN条数</span><strong>{y2026.numerator.toLocaleString()}</strong><p><b>2025：{y2025.numerator.toLocaleString()}</b><em>分子</em></p></div>
-    <div><span>2026 物料款数</span><strong>{y2026.denominator.toLocaleString()}</strong><p><b>2025：{y2025.denominator.toLocaleString()}</b><em>分母</em></p></div>
-    <div className="review-card"><span>统计周期</span><strong>1-5月</strong><p><b>2026只统计到5月</b><em>分母空值剔除 {ecn.blankDenominatorRows || 0} 行</em></p></div>
+    <div><span>2026 ECN条数</span><strong>{y2026.numerator.toLocaleString()}</strong><p><b>2025：{y2025.numerator.toLocaleString()}</b><em className={numeratorDelta > 0 ? "risk-up" : "risk-down"}>{numeratorDelta > 0 ? "+" : ""}{numeratorDelta.toLocaleString()}</em></p></div>
+    <div><span>2026 物料款数</span><strong>{y2026.denominator.toLocaleString()}</strong><p><b>2025：{y2025.denominator.toLocaleString()}</b><em className={denominatorDelta > 0 ? "risk-up" : "risk-down"}>{denominatorDelta > 0 ? "+" : ""}{denominatorDelta.toLocaleString()}</em></p></div>
+    <div className="review-card"><span>同比判断</span><strong className={judgement.cls}>{judgement.text}</strong><p><b>{judgement.hint} {delta > 0 ? "+" : ""}{delta}pp</b><em>条数 {numeratorDelta > 0 ? "+" : ""}{numeratorDelta.toLocaleString()} / 物料 {denominatorDelta > 0 ? "+" : ""}{denominatorDelta.toLocaleString()}</em></p></div>
   </div>;
 }
 
@@ -3321,6 +3417,9 @@ export function App() {
   const [sourceNotice, setSourceNotice] = useState("");
   const [dateRefreshStatus, setDateRefreshStatus] = useState("idle");
   const [refreshProgress, setRefreshProgress] = useState(null);
+  const [auth, setAuth] = useState({ ip: "", role: "public", isAdmin: false, isDeputy: false, features: {} });
+  const [permissions, setPermissions] = useState(() => normalizePermissions({}));
+  const [authReady, setAuthReady] = useState(false);
   const [fontSize, setFontSize] = useState(() => localStorage.getItem("qms-font-size") || "standard");
   const [labelControlsVisible, setLabelControlsVisible] = useState(() => localStorage.getItem("qms-chart-label-controls-visible-v2") === "true");
   const [uiTheme, setUiTheme] = useState(() => localStorage.getItem("qms-ui-theme") || "classic");
@@ -3368,6 +3467,24 @@ export function App() {
   }, []);
 
   useEffect(() => { location.hash = view; }, [view]);
+  useEffect(() => {
+    let cancelled = false;
+    Promise.all([loadCurrentUser(), loadPermissionConfig()]).then(([user, payload]) => {
+      if (cancelled) return;
+      setAuth(user || { ip: "", role: "public", isAdmin: false, isDeputy: false });
+      setPermissions(normalizePermissions(payload?.permissions || payload || {}));
+      setAuthReady(true);
+    }).catch(() => {
+      if (cancelled) return;
+      setAuth({ ip: "", role: "public", isAdmin: false, isDeputy: false });
+      setPermissions(normalizePermissions({}));
+      setAuthReady(true);
+    });
+    return () => { cancelled = true; };
+  }, []);
+  useEffect(() => {
+    if (view === "workspace" && !canUseFeature(auth, permissions, "workspace")) setView("executive");
+  }, [view, auth, permissions]);
   useEffect(() => {
     const theme = uiTheme === "apple" ? "apple" : "classic";
     document.documentElement.dataset.uiTheme = theme;
@@ -3484,6 +3601,7 @@ export function App() {
     window.dispatchEvent(new CustomEvent("qms-chart-label-controls", { detail: labelControlsVisible }));
   }, [labelControlsVisible]);
   const openImport = (module = null) => {
+    if (!canUseFeature(auth, permissions, "dataImport")) return;
     setImportModule(module);
     setImportOpen(true);
   };
@@ -3563,7 +3681,7 @@ export function App() {
       setRefreshProgress({ label: "正在计算图表和数据表", percent: 78 });
       return applyAnalyzedData(readySources, selectedRange).then((nextData) => ({ readySources, nextData }));
     }).then(({ readySources, nextData }) => {
-      const canSaveGlobal = localStorage.getItem("qms-user-imported-sources-v2") === "true";
+      const canSaveGlobal = (auth?.isAdmin || auth?.isDeputy) && canUseFeature(auth, permissions, "dataImport") && localStorage.getItem("qms-user-imported-sources-v2") === "true";
       if (!canSaveGlobal) return null;
       setRefreshProgress({ label: "正在保存到服务器", percent: 92 });
       return Promise.all([saveAnalysisCacheFor(readySources, selectedRange, nextData), saveAppliedDateRange(selectedRange)]);
@@ -3589,7 +3707,7 @@ export function App() {
     setUiTheme(theme);
   };
 
-  if (!storageReady || !data) {
+  if (!storageReady || !data || !authReady) {
     const theme = uiTheme === "apple" ? "apple" : "classic";
     return <UiThemeContext.Provider value={theme}>
       <div className={`app-loading-shell theme-${theme}`}>
@@ -3604,8 +3722,8 @@ export function App() {
 
   return <UiThemeContext.Provider value={uiTheme === "apple" ? "apple" : "classic"}>
     {view === "executive"
-      ? <ExecutiveDashboard data={data} files={files} onImport={openImport} onDeleteSource={deleteSource} onSourcesChanged={applySources} view={view} onViewChange={setView} dateRange={dateRange} appliedDateRange={appliedDateRange} onDateRange={updateDateRange} onRefreshDate={refreshDateData} dateRefreshStatus={dateRefreshStatus} refreshProgress={refreshProgress} fontSize={fontSize} onFontSize={setFontSize} analysisKey={analysisRevision} labelControlsVisible={labelControlsVisible} onToggleLabelControls={() => setLabelControlsVisible((current) => !current)} uiTheme={uiTheme === "apple" ? "apple" : "classic"} onThemeChange={changeUiTheme} sidebarCollapsed={sidebarCollapsed} onToggleSidebar={() => setSidebarCollapsed((current) => !current)} />
-      : <WorkspaceDashboard key={`workspace-${analysisRevision}`} data={data} files={files} onImport={() => openImport(null)} view={view} onViewChange={setView} onExport={exportData} onSave={saveTemplate} dateRange={dateRange} appliedDateRange={appliedDateRange} onDateRange={updateDateRange} onRefreshDate={refreshDateData} dateRefreshStatus={dateRefreshStatus} fontSize={fontSize} onFontSize={setFontSize} uiTheme={uiTheme === "apple" ? "apple" : "classic"} />}
+      ? <ExecutiveDashboard data={data} files={files} onImport={openImport} onDeleteSource={deleteSource} onSourcesChanged={applySources} view={view} onViewChange={setView} dateRange={dateRange} appliedDateRange={appliedDateRange} onDateRange={updateDateRange} onRefreshDate={refreshDateData} dateRefreshStatus={dateRefreshStatus} refreshProgress={refreshProgress} fontSize={fontSize} onFontSize={setFontSize} analysisKey={analysisRevision} labelControlsVisible={labelControlsVisible} onToggleLabelControls={() => setLabelControlsVisible((current) => !current)} uiTheme={uiTheme === "apple" ? "apple" : "classic"} onThemeChange={changeUiTheme} sidebarCollapsed={sidebarCollapsed} onToggleSidebar={() => setSidebarCollapsed((current) => !current)} auth={auth} permissions={permissions} onPermissionsChanged={(next) => setPermissions(normalizePermissions(next))} />
+      : <WorkspaceDashboard key={`workspace-${analysisRevision}`} data={data} files={files} onImport={() => openImport(null)} view={view} onViewChange={setView} onExport={exportData} onSave={saveTemplate} dateRange={dateRange} appliedDateRange={appliedDateRange} onDateRange={updateDateRange} onRefreshDate={refreshDateData} dateRefreshStatus={dateRefreshStatus} fontSize={fontSize} onFontSize={setFontSize} uiTheme={uiTheme === "apple" ? "apple" : "classic"} auth={auth} permissions={permissions} />}
     <ImportModal open={importOpen} onClose={() => setImportOpen(false)} onSourcesChanged={applySources} files={files} dateRange={appliedDateRange} targetModule={importModule} />
     {saved && <div className="toast"><CheckCircle size={19} weight="fill" />当前分析视图已保存为本机模板</div>}
     {sourceNotice && <div className="toast"><Database size={19}/>{sourceNotice}</div>}

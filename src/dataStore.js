@@ -262,6 +262,40 @@ export const saveAppliedDateRange = async (range) => {
   return remoteSaved && typeof remoteSaved === "object" ? remoteSaved : payload;
 };
 
+export const loadCurrentUser = async () => {
+  try {
+    const response = await requestSharedApi("/me", { method: "GET", cache: "no-store" });
+    if (!response) return { ip: "", role: "public", isAdmin: false, isDeputy: false, features: {} };
+    const contentType = response.headers.get("content-type") || "";
+    if (!contentType.includes("application/json")) return { ip: "", role: "public", isAdmin: false, isDeputy: false, features: {} };
+    return await response.json();
+  } catch {
+    return { ip: "", role: "public", isAdmin: false, isDeputy: false, features: {} };
+  }
+};
+
+export const loadPermissionConfig = async () => {
+  try {
+    const response = await requestSharedApi("/permissions", { method: "GET", cache: "no-store" });
+    if (!response) return null;
+    const contentType = response.headers.get("content-type") || "";
+    if (!contentType.includes("application/json")) return null;
+    return await response.json();
+  } catch {
+    return null;
+  }
+};
+
+export const savePermissionConfig = async (permissions) => {
+  const response = await requestSharedApi("/permissions", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ permissions }),
+  });
+  if (!response) return null;
+  return await response.json();
+};
+
 export const clearImportedSources = async () => {
   await transaction("readwrite", (store) => store.delete(SOURCES_KEY));
 };

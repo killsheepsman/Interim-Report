@@ -10,11 +10,37 @@ const dataDir = process.env.QMS_DATA_DIR || path.join(rootDir, "data");
 const dataFile = path.join(dataDir, "shared-state.json");
 const stateDir = path.join(dataDir, "state");
 const uploadDir = path.join(dataDir, "uploads");
+const adminIpsFile = path.join(dataDir, "admin-ips.json");
+const permissionFile = path.join(dataDir, "permission-config.json");
 const port = Number(process.env.PORT || 4173);
 const host = process.env.HOST || "0.0.0.0";
 const maxBodyBytes = Number(process.env.MAX_BODY_MB || 1024) * 1024 * 1024;
 const allowedKeys = new Set(["imported-sources", "analysis-cache", "applied-date-range"]);
 const defaultValueFor = (key) => key === "analysis-cache" || key === "applied-date-range" ? null : [];
+const defaultPermissionConfig = {
+  deputyAdmins: [],
+  features: {
+    dataImport: { public: false, deputy: true, label: "数据导入" },
+    workspace: { public: false, deputy: true, label: "质量工作台" },
+    annotationEdit: { public: false, deputy: true, label: "分析改善措施" },
+    annotationView: { public: false, deputy: true, label: "分析显示" },
+    exportReport: { public: true, deputy: true, label: "导出报告" },
+    dateTemporaryRefresh: { public: true, deputy: true, label: "临时刷新日期" },
+  },
+  apis: {
+    "POST /api/uploads": { public: false, deputy: true, label: "上传原始Excel" },
+    "PUT /api/state/imported-sources": { public: false, deputy: true, label: "保存数据源清单" },
+    "PUT /api/state/analysis-cache": { public: false, deputy: true, label: "保存分析结果" },
+    "PUT /api/state/applied-date-range": { public: false, deputy: true, label: "保存默认日期" },
+    "PUT /api/permissions": { public: false, deputy: false, label: "保存权限设置" },
+    "GET /api/state/analysis-cache": { public: true, deputy: true, label: "读取分析结果" },
+    "GET /api/state/imported-sources": { public: true, deputy: true, label: "读取数据源清单" },
+    "GET /api/state/applied-date-range": { public: true, deputy: true, label: "读取默认日期" },
+    "GET /api/uploads/*": { public: true, deputy: true, label: "读取原始Excel" },
+    "GET /api/me": { public: true, deputy: true, label: "读取当前权限" },
+    "GET /api/permissions": { public: true, deputy: true, label: "读取权限配置" },
+  },
+};
 
 const mimeTypes = {
   ".html": "text/html; charset=utf-8",
@@ -32,6 +58,94 @@ const mimeTypes = {
 const sendJson = (res, status, body) => {
   res.writeHead(status, { "Content-Type": "application/json; charset=utf-8" });
   res.end(JSON.stringify(body));
+};
+
+const normalizeIp = (value = "") => String(value)
+  .split(",")[0]
+  .trim()
+  .replace(/^::ffff:/, "")
+  .replace(/^::1$/, "127.0.0.1");
+
+const clientIp = (req) => normalizeIp(req.headers["x-forwarded-for"] || req.headers["x-real-ip"] || req.socket.remoteAddress || "");
+
+const uniqueStrings = (items = []) => [...new Set(items.map((item) => String(item || "").trim()).filter(Boolean))];
+
+const mergePermissionConfig = (config = {}) => {
+  const merged = {
+    deputyAdmins: uniqueStrings(config.deputyAdmins || []),
+    features: {},
+    apis: {},
+  };
+  Object.entries(defaultPermissionConfig.features).forEach(([key, value]) => {
+    merged.features[key] = { ...value, ...(config.features?.[key] || {}) };
+  });
+  Object.entries(defaultPermissionConfig.apis).forEach(([key, value]) => {
+    merged.apis[key] = { ...value, ...(config.apis?.[key] || {}) };
+  });
+  Object.entries(config.features || {}).forEach(([key, value]) => {
+    if (!merged.features[key]) merged.features[key] = { label: key, public: false, deputy: true, ...value };
+  });
+  Object.entries(config.apis || {}).forEach(([key, value]) => {
+    if (!merged.apis[key]) merged.apis[key] = { label: key, public: false, deputy: true, ...value };
+  });
+  return merged;
+};
+
+const loadAdminIps = async () => {
+  try {
+    const parsed = await readJsonFile(adminIpsFile);
+    if (Array.isArray(parsed)) return uniqueStrings(parsed);
+    if (Array.isArray(parsed?.adminIps)) return uniqueStrings(parsed.adminIps);
+  } catch (error) {
+    console.error("Failed to load admin-ips.json", error);
+  }
+  return [];
+};
+
+const loadPermissionConfig = async () => {
+  try {
+    const parsed = await readJsonFile(permissionFile);
+    return mergePermissionConfig(parsed || {});
+  } catch (error) {
+    await backupCorruptFile(permissionFile, error);
+    return mergePermissionConfig({});
+  }
+};
+
+const savePermissionConfig = async (config) => {
+  const merged = mergePermissionConfig(config || {});
+  await fs.mkdir(dataDir, { recursive: true });
+  const tempFile = `${permissionFile}.${process.pid}.${Date.now()}.tmp`;
+  await fs.writeFile(tempFile, JSON.stringify(merged, null, 2), "utf8");
+  await fs.rename(tempFile, permissionFile);
+  return merged;
+};
+
+const currentUser = async (req) => {
+  const ip = clientIp(req);
+  const [adminIps, permissions] = await Promise.all([loadAdminIps(), loadPermissionConfig()]);
+  const isAdmin = adminIps.includes(ip);
+  const isDeputy = permissions.deputyAdmins.includes(ip);
+  return { ip, isAdmin, isDeputy, role: isAdmin ? "admin" : isDeputy ? "deputy" : "public", permissions };
+};
+
+const routeKey = (req) => {
+  const pathname = new URL(req.url, "http://local").pathname;
+  if (req.method === "GET" && pathname.startsWith("/api/uploads/")) return "GET /api/uploads/*";
+  if (pathname.startsWith("/api/state/")) return `${req.method} ${pathname}`;
+  return `${req.method} ${pathname}`;
+};
+
+const ensureApiAllowed = async (req, res) => {
+  const user = await currentUser(req);
+  if (user.isAdmin) return user;
+  const rule = user.permissions.apis[routeKey(req)];
+  const allowed = user.isDeputy ? rule?.deputy !== false : rule?.public === true;
+  if (!allowed) {
+    sendJson(res, 403, { error: "Forbidden", ip: user.ip, role: user.role });
+    return null;
+  }
+  return user;
 };
 
 const readBody = (req) => new Promise((resolve, reject) => {
@@ -111,6 +225,8 @@ const parseMultipart = (buffer, contentType = "") => {
 
 const handleUpload = async (req, res) => {
   if (req.method !== "POST") return sendJson(res, 405, { error: "Method not allowed" });
+  const user = await ensureApiAllowed(req, res);
+  if (!user) return;
   const body = await readBufferBody(req);
   const { fields, files } = parseMultipart(body, req.headers["content-type"] || "");
   const manifest = JSON.parse(fields.manifest || "[]");
@@ -141,6 +257,8 @@ const handleUpload = async (req, res) => {
 
 const handleUploadedFile = async (req, res) => {
   if (req.method !== "GET") return sendJson(res, 405, { error: "Method not allowed" });
+  const user = await ensureApiAllowed(req, res);
+  if (!user) return;
   const match = req.url.match(/^\/api\/uploads\/([^/]+)\/([^?#]+)/);
   if (!match) return sendJson(res, 404, { error: "Upload not found" });
   const moduleName = sanitizeSegment(decodeURIComponent(match[1]));
@@ -235,6 +353,8 @@ const handleApi = async (req, res) => {
   const match = req.url.match(/^\/api\/state\/([^/?#]+)/);
   const key = match?.[1];
   if (!key || !allowedKeys.has(key)) return sendJson(res, 404, { error: "Unknown state key" });
+  const user = await ensureApiAllowed(req, res);
+  if (!user) return;
 
   if (req.method === "GET") {
     const value = await loadStateValue(key);
@@ -247,6 +367,41 @@ const handleApi = async (req, res) => {
     return sendJson(res, 200, { key, value, updatedAt: new Date().toISOString() });
   }
 
+  return sendJson(res, 405, { error: "Method not allowed" });
+};
+
+const handleMe = async (req, res) => {
+  if (req.method !== "GET") return sendJson(res, 405, { error: "Method not allowed" });
+  const user = await currentUser(req);
+  return sendJson(res, 200, {
+    ip: user.ip,
+    role: user.role,
+    isAdmin: user.isAdmin,
+    isDeputy: user.isDeputy,
+    features: user.permissions.features,
+  });
+};
+
+const handlePermissions = async (req, res) => {
+  if (req.method === "GET") {
+    const user = await ensureApiAllowed(req, res);
+    if (!user) return;
+    return sendJson(res, 200, {
+      ip: user.ip,
+      role: user.role,
+      isAdmin: user.isAdmin,
+      isDeputy: user.isDeputy,
+      permissions: user.permissions,
+    });
+  }
+  if (req.method === "PUT") {
+    const user = await ensureApiAllowed(req, res);
+    if (!user) return;
+    if (!user.isAdmin) return sendJson(res, 403, { error: "Only primary admin can edit permissions" });
+    const payload = JSON.parse(await readBody(req) || "{}");
+    const permissions = await savePermissionConfig(payload.permissions || payload);
+    return sendJson(res, 200, { permissions, updatedAt: new Date().toISOString() });
+  }
   return sendJson(res, 405, { error: "Method not allowed" });
 };
 
@@ -282,6 +437,8 @@ const serveStatic = async (req, res) => {
 
 const server = createServer(async (req, res) => {
   try {
+    if (req.url === "/api/me") return await handleMe(req, res);
+    if (req.url === "/api/permissions") return await handlePermissions(req, res);
     if (req.url.startsWith("/api/uploads/")) return await handleUploadedFile(req, res);
     if (req.url === "/api/uploads") return await handleUpload(req, res);
     if (req.url.startsWith("/api/")) return await handleApi(req, res);
