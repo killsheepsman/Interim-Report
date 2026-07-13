@@ -618,6 +618,7 @@ const ipqcWorkshopValue = (row) => firstValue(row, ["产品工坊", "工坊"]);
 const ipqcLeaderValue = (row) => firstValue(row, ["机长"]);
 const ipqcRawTypeValue = (row) => firstValue(row, ["不良类型"]) || "未分类";
 const ipqcManagerValue = (row) => firstValue(row, ["交付经理"]);
+const isIpqcOutsourced = (row) => text(ipqcWorkshopValue(row)).replace(/\s/g, "").includes("外包");
 
 const normalizeIpqcSiteName = (value, fallback = "深圳") => {
   const source = text(value);
@@ -1098,6 +1099,7 @@ const buildIpqcDetails = (ipqcFiles, dateRange) => {
   siteRows.全公司 = [...siteRows.深圳, ...siteRows.杭州];
   const siteMonthly = {};
   const workshopsBySite = {};
+  const outsourcingBySite = {};
   const rawTypesBySite = {};
   const heatmapBySite = {};
   const improvementsBySite = {};
@@ -1136,6 +1138,32 @@ const buildIpqcDetails = (ipqcFiles, dateRange) => {
       return result;
     }).filter((row) => row.y2025Qty + row.y2026Qty > 0)
       .sort((a, b) => b.y2026Bad - a.y2026Bad);
+
+    const qualityRow = (name, source) => {
+      const result = { name };
+      [2025, 2026].forEach((year) => {
+        const stats = summarize(source, year);
+        result[`y${year}Qty`] = stats.qty;
+        result[`y${year}Bad`] = stats.issues;
+        result[`y${year}Rate`] = stats.rate;
+      });
+      return result;
+    };
+    const outsourcedRows = rows.filter(isIpqcOutsourced);
+    const inhouseRows = rows.filter((row) => !isIpqcOutsourced(row));
+    const outsourceWorkshopOf = (row) => {
+      const name = `${normalizeIpqcWorkshop(ipqcWorkshopValue(row)) || "未分工坊"}（外包）`;
+      return site === "全公司" ? `${row.__ipqcSite || "未识别厂区"}·${name}` : name;
+    };
+    const outsourcedWorkshopNames = [...new Set(outsourcedRows.map(outsourceWorkshopOf))];
+    outsourcingBySite[site] = {
+      summary: qualityRow("外包", outsourcedRows),
+      compare: [qualityRow("外包", outsourcedRows), qualityRow("自制", inhouseRows)]
+        .filter((row) => row.y2025Qty + row.y2026Qty > 0),
+      workshops: outsourcedWorkshopNames.map((name) => qualityRow(name, outsourcedRows.filter((row) => outsourceWorkshopOf(row) === name)))
+        .filter((row) => row.y2025Qty + row.y2026Qty > 0)
+        .sort((a, b) => (b.y2026Bad || 0) - (a.y2026Bad || 0)),
+    };
 
     const categoryRows = (getter) => {
       const maps = { 2025: new Map(), 2026: new Map() };
@@ -1198,7 +1226,7 @@ const buildIpqcDetails = (ipqcFiles, dateRange) => {
       };
     });
   });
-  return { siteMonthly, workshopsBySite, rawTypesBySite, heatmapBySite, improvementsBySite, leaderAnalysis: buildIpqcLeaderAnalysis(siteRows, mappingRows) };
+  return { siteMonthly, workshopsBySite, outsourcingBySite, rawTypesBySite, heatmapBySite, improvementsBySite, leaderAnalysis: buildIpqcLeaderAnalysis(siteRows, mappingRows) };
 };
 
 const buildOqcMonthlySummary = (rows, dateRange) => {

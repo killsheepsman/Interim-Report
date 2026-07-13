@@ -16,7 +16,7 @@ const moduleIcons = { IQC: Cube, IPQC: Pulse, OQC: ShieldCheck, DQA: ClipboardTe
 const moduleColor = { IQC: "green", IPQC: "blue", OQC: "orange", DQA: "amber" };
 const UiThemeContext = createContext("classic");
 const useUiTheme = () => useContext(UiThemeContext);
-const ANALYSIS_CACHE_VERSION = "server-analysis-cache-v1";
+const ANALYSIS_CACHE_VERSION = "server-analysis-cache-v2";
 const safeParse = (value, fallback) => {
   try { return value ? JSON.parse(value) : fallback; } catch { return fallback; }
 };
@@ -1620,10 +1620,10 @@ const workshopColumns = [
   ["y2026Rate", "2026异常密度"], ["delta", "同比变化"],
 ];
 
-function WorkshopCompare({ rows }) {
+function WorkshopCompare({ rows, axisKey = "ipqc-workshop-compare-axis-v1", nameLabel = "工坊", axisDefaults = { min: 0, max: 80 } }) {
   const [selected, setSelected] = useState(() => rows.map((row) => row.name));
   const [sort, setSort] = useState({ key: "y2026Rate", direction: "desc" });
-  const axis = useMachinedAxisRange("ipqc-workshop-compare-axis-v1", { min: 0, max: 80 });
+  const axis = useMachinedAxisRange(axisKey, axisDefaults);
   useEffect(() => setSelected(rows.map((row) => row.name)), [rows]);
   const visibleRows = useMemo(() => rows.filter((row) => selected.includes(row.name))
     .map((row) => ({ ...row, delta: row.y2026Rate - row.y2025Rate }))
@@ -1641,7 +1641,7 @@ function WorkshopCompare({ rows }) {
     <MachinedAxisPanelControl axis={axis}/>
     {visibleRows.length ? <QuantityRateCombo rows={visibleRows} labelKey="name" rateLabel="异常密度" qtyLabel="送检数/问题数量" height={400} rateAxisOverride={axis.effective} hideRateAxisControl/> : <div className="supplier-empty">请至少选择一个工坊</div>}
     <div className="workshop-table">
-      <div className="workshop-row workshop-head">{workshopColumns.map(([key, label]) => <button key={key} onClick={() => changeSort(key)}>{label}<span>{sort.key === key ? sort.direction === "asc" ? "▲" : "▼" : "↕"}</span></button>)}</div>
+      <div className="workshop-row workshop-head">{workshopColumns.map(([key, label]) => <button key={key} onClick={() => changeSort(key)}>{key === "name" ? nameLabel : label}<span>{sort.key === key ? sort.direction === "asc" ? "▲" : "▼" : "↕"}</span></button>)}</div>
       {visibleRows.map((row) => <div className="workshop-row" key={row.name}>
         <strong>{row.name}</strong><span>{row.y2025Qty.toLocaleString()}</span><span>{row.y2025Bad.toLocaleString()}</span><span>{row.y2025Rate}%</span>
         <span>{row.y2026Qty.toLocaleString()}</span><span>{row.y2026Bad.toLocaleString()}</span><span className={row.y2026Rate >= 10 ? "rate-risk" : ""}>{row.y2026Rate}%</span>
@@ -1660,6 +1660,47 @@ function ImprovementTable({ rows }) {
       <span>{row.workshop}</span><span>{row.owner}</span><p>{row.action}</p>
     </div>)}
   </div>;
+}
+
+function IpqcOutsourcingAnalysis({ data, site }) {
+  const [open, setOpen] = useState(false);
+  const detail = data.ipqc.outsourcingBySite?.[site] || { summary: {}, compare: [], workshops: [] };
+  const summary = detail.summary || {};
+  const rate25 = Number(summary.y2025Rate || 0);
+  const rate26 = Number(summary.y2026Rate || 0);
+  const hasData = detail.compare?.length || detail.workshops?.length;
+  const initialAxisMax = (rows, fallback = 30) => {
+    const maxRate = Math.max(0, ...rows.flatMap((row) => [Number(row.y2025Rate || 0), Number(row.y2026Rate || 0)]));
+    return Math.max(fallback, Math.ceil(maxRate * 1.15 / 10) * 10);
+  };
+  const compareAxisDefaults = { min: 0, max: initialAxisMax(detail.compare) };
+  const workshopAxisDefaults = { min: 0, max: initialAxisMax(detail.workshops) };
+  return <section className="ipqc-outsourcing-analysis">
+    <button className="ipqc-outsourcing-toggle" onClick={() => setOpen((current) => !current)}>
+      <span><b>2.6</b><strong>外包工坊专项分析</strong><em>外包数据已纳入原工坊总览；此处单独识别外包风险，不改变既有统计口径</em></span>
+      <span className="ipqc-outsourcing-toggle-action">{open ? "收起" : "展开"}<CaretDown size={16} className={open ? "rotate" : ""}/></span>
+    </button>
+    {open && <div className="ipqc-outsourcing-body">
+      {!hasData ? <div className="source-empty">当前日期范围内未识别到“产品工坊”字段含“外包”的IPQC记录。</div> : <>
+        <div className="iqc-summary-strip ipqc-summary ipqc-outsourcing-summary">
+          <div><span>2025外包送检数</span><strong>{Number(summary.y2025Qty || 0).toLocaleString()}</strong></div>
+          <div><span>2026外包送检数</span><strong>{Number(summary.y2026Qty || 0).toLocaleString()}</strong></div>
+          <div><span>2025外包问题数量</span><strong>{Number(summary.y2025Bad || 0).toLocaleString()}</strong></div>
+          <div><span>2026外包问题数量</span><strong>{Number(summary.y2026Bad || 0).toLocaleString()}</strong></div>
+          <div><span>外包异常密度同比</span><strong className={rate26 <= rate25 ? "green" : "red"}>{rate25}% → {rate26}%</strong></div>
+        </div>
+        <div className="ipqc-outsourcing-insight"><strong>口径说明</strong><span>{site === "全公司" ? "图表按“厂区·工坊（外包）”展示，避免深圳、杭州同名工坊被合并。" : `${site}外包工坊按原始工坊拆分展示。`} 外包与自制的异常密度均按“问题数量÷送检数”计算。</span></div>
+        <div className="iqc-analysis-grid ipqc-outsourcing-grid">
+          <AxisControlledPanel title="2.6.1 外包 vs 自制异常密度" subtitle={`${site} · 柱形为送检数/问题数量，折线为异常密度`} axisKey={`ipqc-outsourcing-${site}-compare-axis-v1`} defaults={compareAxisDefaults}>
+            {(axis) => <QuantityRateCombo rows={detail.compare} labelKey="name" rateLabel="异常密度" qtyLabel="送检数/问题数量" height={370} rateAxisOverride={axis.effective} hideRateAxisControl/>}
+          </AxisControlledPanel>
+          <Panel title="2.6.2 外包工坊质量表现" subtitle="仅统计原始“产品工坊”字段中包含“外包”的记录；可勾选、排序和调整比例轴">
+            <WorkshopCompare rows={detail.workshops} axisKey={`ipqc-outsourcing-${site}-workshop-axis-v1`} nameLabel="外包工坊" axisDefaults={workshopAxisDefaults}/>
+          </Panel>
+        </div>
+      </>}
+    </div>}
+  </section>;
 }
 
 const leaderColumns = [
@@ -1943,6 +1984,7 @@ function IpqcAnalysis({ data }) {
         <ImprovementTable rows={improvements}/>
       </Panel>
     </div>
+    <IpqcOutsourcingAnalysis data={data} site={site}/>
     </>}
   </div>;
 }
