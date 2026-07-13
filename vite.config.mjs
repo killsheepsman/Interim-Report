@@ -9,6 +9,12 @@ export default defineConfig({
   server: {
     hmr: { overlay: true },
     strictPort: true,
+    proxy: {
+      "/api": {
+        target: "http://127.0.0.1:4174",
+        changeOrigin: true,
+      },
+    },
   },
   build: {
     chunkSizeWarningLimit: 900,

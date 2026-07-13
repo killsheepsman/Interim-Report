@@ -22,7 +22,7 @@ $ready = $false
 for ($attempt = 0; $attempt -lt 30; $attempt++) {
   Start-Sleep -Milliseconds 500
   try {
-    $response = Invoke-WebRequest -UseBasicParsing "http://127.0.0.1:$port/src/App.jsx" -TimeoutSec 2
+    $response = Invoke-WebRequest -UseBasicParsing "http://127.0.0.1:$port/api/me" -TimeoutSec 2
     if ($response.StatusCode -eq 200) {
       $ready = $true
       break
