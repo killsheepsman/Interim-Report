@@ -8,15 +8,15 @@ import {
   UploadSimple, User, Warning, WarningCircle, X,
 } from "@phosphor-icons/react";
 import { analyzeImported, downloadJson, normalizeIpqcLeaderMapRows, normalizeIpqcWorkshop, parseFiles } from "./dataEngine.js";
-import { createSourcesSignature, downloadSourceFiles, loadAppliedDateRange, loadCachedAnalysis, loadCurrentUser, loadDefaultAnalysis, loadDefaultAnnotations, loadDefaultSources, loadImportedSources, loadPermissionConfig, mergeImportedSources, saveAppliedDateRange, saveCachedAnalysis, saveImportedSources, savePermissionConfig, sourceRowCount, summarizeSources, uploadSourceFiles } from "./dataStore.js";
+import { createSourcesSignature, downloadSourceFiles, loadAppliedDateRange, loadCachedAnalysis, loadCurrentUser, loadDefaultAnalysis, loadDefaultAnnotations, loadDefaultQmsSources, loadDefaultSources, loadImportedSources, loadPermissionConfig, mergeImportedSources, saveAppliedDateRange, saveCachedAnalysis, saveImportedSources, savePermissionConfig, sourceRowCount, summarizeSources, uploadSourceFiles } from "./dataStore.js";
 import { sampleData } from "./sampleData.js";
-import { BarCompare, Donut, HorizontalRank, MachinedTpmCompareChart, Pareto, QuantityRateCombo, ScoreMonthlyCombo, ScoreYearCompare, StackedStage, WorkshopCategoryHeatmap, YearStackedCompare } from "./charts.jsx";
+import { BarCompare, Donut, HorizontalRank, MachinedTpmCompareChart, Pareto, QmsDivisionCombo, QmsScoreCompare, QmsTpmRank, QmsTrendCombo, QuantityRateCombo, ScoreMonthlyCombo, ScoreYearCompare, StackedStage, WorkshopCategoryHeatmap, YearStackedCompare } from "./charts.jsx";
 
-const moduleIcons = { IQC: Cube, IPQC: Pulse, OQC: ShieldCheck, DQA: ClipboardText };
-const moduleColor = { IQC: "green", IPQC: "blue", OQC: "orange", DQA: "amber" };
+const moduleIcons = { IQC: Cube, IPQC: Pulse, OQC: ShieldCheck, DQA: ClipboardText, QMS: ListChecks };
+const moduleColor = { IQC: "green", IPQC: "blue", OQC: "orange", DQA: "amber", QMS: "purple" };
 const UiThemeContext = createContext("classic");
 const useUiTheme = () => useContext(UiThemeContext);
-const ANALYSIS_CACHE_VERSION = "server-analysis-cache-v2";
+const ANALYSIS_CACHE_VERSION = "server-analysis-cache-v5";
 const safeParse = (value, fallback) => {
   try { return value ? JSON.parse(value) : fallback; } catch { return fallback; }
 };
@@ -115,7 +115,7 @@ function ImportModal({ open, onClose, onSourcesChanged, files, dateRange, target
         <button className="icon-btn" onClick={onClose}><X size={20} /></button>
       </div>
       <div className="module-upload-grid">
-        {(targetModule ? [targetModule] : ["IQC", "IPQC", "OQC", "DQA"]).map((name) => {
+        {(targetModule ? [targetModule] : ["IQC", "IPQC", "OQC", "DQA", "QMS"]).map((name) => {
           const Icon = moduleIcons[name];
           const count = moduleCount(name);
           return <div className={`module-upload ${count ? "ready" : ""}`} key={name}>
@@ -329,7 +329,7 @@ const annotationStorageKey = "qms-page-annotations-v1";
 const annotationTypes = [
   "\u5206\u6790\u7ed3\u8bba", "\u98ce\u9669\u5224\u65ad", "\u6539\u5584\u63aa\u65bd", "\u5f85\u529e\u4e8b\u9879", "\u62a5\u544a\u91cd\u70b9",
 ];
-const annotationModules = ["\u603b\u89c8", "IQC", "IPQC", "OQC", "DQA", "\u6570\u636e\u5bfc\u5165", "\u8d28\u91cf\u5de5\u4f5c\u53f0"];
+const annotationModules = ["\u603b\u89c8", "IQC", "IPQC", "OQC", "DQA", "QMS", "\u6570\u636e\u5bfc\u5165", "\u8d28\u91cf\u5de5\u4f5c\u53f0"];
 const annotationText = {
   button: "\u5206\u6790\u6539\u5584\u63aa\u65bd",
   showButton: "\u5206\u6790\u663e\u793a",
@@ -646,7 +646,7 @@ function ThemeToggle({ value, onChange }) {
 function ExecutiveSidebar({ active, setActive, uiTheme, onThemeChange, collapsed, onToggleCollapsed, permissions, auth }) {
   const nav = [
     ["总览", House], ["IQC", Cube], ["IPQC", Pulse],
-    ["OQC", ShieldCheck], ["DQA", ClipboardText],
+    ["OQC", ShieldCheck], ["DQA", ClipboardText], ["QMS", ListChecks],
     ...(canUseFeature(auth, permissions, "dataImport") ? [["数据导入", UploadSimple]] : []),
     ...(auth?.isAdmin ? [["权限设置", GearSix]] : []),
   ];
@@ -658,7 +658,7 @@ function ExecutiveSidebar({ active, setActive, uiTheme, onThemeChange, collapsed
   </aside>;
 }
 
-const moduleLabels = { IQC: "来料检验", IPQC: "过程检验", OQC: "出货评分", DQA: "研发质量" };
+const moduleLabels = { IQC: "来料检验", IPQC: "过程检验", OQC: "出货评分", DQA: "研发质量", QMS: "客户满意度" };
 
 const ipqcMapText = {
   title: "IPQC 工坊-交付经理-机长映射设置",
@@ -775,7 +775,7 @@ function IpqcMappingSettings({ files, onImportModule, onSourcesChanged }) {
 }
 
 function DataSourcePage({ files, onImportModule, onDelete, onSourcesChanged }) {
-  const modules = ["IQC", "IPQC", "OQC", "DQA"];
+  const modules = ["IQC", "IPQC", "OQC", "DQA", "QMS"];
   return <div className="data-source-page">
     <div className="data-source-hero">
       <div><Database size={30}/><div><h2>本地数据源管理</h2><p>数据已保存到当前电脑。相同模块且文件名相同再次导入时自动替换，也可以手动删除后重传。</p></div></div>
@@ -1281,7 +1281,7 @@ function ManagementReportPage({ data }) {
 
 function ExecutiveDashboard({ data, files, onImport, onDeleteSource, onSourcesChanged, view, onViewChange, dateRange, onDateRange, onRefreshDate, dateRefreshStatus, refreshProgress, fontSize, onFontSize, analysisKey, labelControlsVisible, onToggleLabelControls, uiTheme, onThemeChange, sidebarCollapsed, onToggleSidebar, auth, permissions, onPermissionsChanged }) {
   const [active, setActive] = useState("总览");
-  const moduleView = ["IQC", "IPQC", "OQC", "DQA"].includes(active) ? active : null;
+  const moduleView = ["IQC", "IPQC", "OQC", "DQA", "QMS"].includes(active) ? active : null;
   const allowImport = canUseFeature(auth, permissions, "dataImport");
   const allowWorkspace = canUseFeature(auth, permissions, "workspace");
   const allowAnnotationEdit = canUseFeature(auth, permissions, "annotationEdit");
@@ -3079,11 +3079,106 @@ function DqaAnalysis({ data }) {
   </div>;
 }
 
+
+const qmsOneDecimal = (value) => value == null || !Number.isFinite(Number(value)) ? "—" : Number(value).toFixed(1);
+const qmsMetric = (row, periodKey) => row?.periods?.[periodKey] || { samples: 0, avg: null, lowRate: null, highRate: null };
+const qmsValue = (row, key) => {
+  if (key === "rank") return row.rank || 999;
+  if (key === "name" || key === "division") return row[key] || "";
+  const [periodKey, metric] = key.split(".");
+  const value = row.periods?.[periodKey]?.[metric];
+  return value == null ? -Infinity : value;
+};
+const qmsSorted = (rows, sort) => [...rows].sort((a, b) => {
+  const av = qmsValue(a, sort.key); const bv = qmsValue(b, sort.key);
+  const result = typeof av === "string" ? av.localeCompare(bv, "zh-CN") : av - bv;
+  return sort.direction === "asc" ? result : -result;
+});
+function QmsSortButton({ label, sortKey, sort, onSort }) {
+  const active = sort.key === sortKey;
+  return <button className={active ? "active" : ""} onClick={() => onSort(sortKey)}>{label}<span>{active ? (sort.direction === "asc" ? "↑" : "↓") : "↕"}</span></button>;
+}
+function QmsKpiCard({ label, periods = [], metric, unit, tone = "blue", detail }) {
+  const current = periods.at(-1) || {};
+  const mainValue = metric === "samples" ? (current.samples || 0) : qmsOneDecimal(current[metric]);
+  return <article className={"qms-kpi-card "+tone}>
+    <span>{label}</span><strong>{mainValue}<small>{unit}</small></strong>
+    <div className="qms-kpi-periods">{periods.map((period) => <span key={period.key}><em>{period.period}</em><b>{metric === "samples" ? period.samples : qmsOneDecimal(period[metric])}{unit}</b></span>)}</div>
+    {detail && <p>{detail}</p>}
+  </article>;
+}
+function QmsPeriodSummary({ metric }) {
+  return <span className="qms-period-summary"><b>{metric.samples || 0}份 / {qmsOneDecimal(metric.avg)}分</b><small>低分 {qmsOneDecimal(metric.lowRate)}% · 高满意 {qmsOneDecimal(metric.highRate)}%</small></span>;
+}
+function QmsTpmTable({ rows, periods, sort, onSort }) {
+  return <div className="qms-table-wrap"><div className="qms-table qms-tpm-table">
+    <div className="qms-table-row head"><QmsSortButton label="排名" sortKey="rank" sort={sort} onSort={onSort}/><QmsSortButton label="TPM" sortKey="name" sort={sort} onSort={onSort}/><QmsSortButton label="产品部" sortKey="division" sort={sort} onSort={onSort}/>{periods.map((period) => <QmsSortButton key={period.key} label={period.period} sortKey={period.key+".avg"} sort={sort} onSort={onSort}/>)}</div>
+    {rows.map((row) => <div className={"qms-table-row "+(row.eligible ? "qms-rank-eligible" : "qms-rank-ineligible")} key={row.division+"-"+row.name}>
+      <span>{row.eligible ? "#"+row.rank : "—"}</span><strong>{row.name}</strong><span>{row.division}</span>{periods.map((period) => <QmsPeriodSummary key={period.key} metric={qmsMetric(row, period.key)}/>)}
+      {!row.eligible && <small>2026年上半年样本不足3份，不参与突出排名</small>}
+    </div>)}
+  </div></div>;
+}
+function QmsDimensionTable({ rows, periods }) {
+  return <div className="qms-table-wrap"><div className="qms-dimension-table">
+    <div className="qms-dimension-row head"><span>评分维度</span>{periods.map((period) => <span key={period.key}>{period.period}</span>)}</div>
+    {rows.map((row) => <div className="qms-dimension-row" key={row.name}><strong>{row.name}</strong>{periods.map((period) => <span key={period.key}>{qmsOneDecimal(row.periods?.[period.key])}</span>)}</div>)}
+  </div></div>;
+}
+function QmsAnalysis({ data }) {
+  const qms = data.qms;
+  const [division, setDivision] = useState("全公司");
+  const [tpmSort, setTpmSort] = useState({ key: "rank", direction: "asc" });
+  const [riskSort, setRiskSort] = useState({ key: "score", direction: "asc" });
+  const [riskPeriod, setRiskPeriod] = useState("全部");
+  const [riskExpanded, setRiskExpanded] = useState(false);
+  const [suggestionFilters, setSuggestionFilters] = useState({ period: "全部", division: "全部", tpm: "全部", customer: "全部" });
+  if (!qms?.current) return <div className="module-page qms-page"><div className="qms-empty"><ListChecks size={34}/><h2>暂无客户满意度数据</h2><p>请在数据导入页面上传客户满意度调查表。</p></div></div>;
+  const periods = qms.periods || [];
+  const changeTpmSort = (key) => setTpmSort((old) => ({ key, direction: old.key === key && old.direction === "asc" ? "desc" : "asc" }));
+  const allTpmRows = qmsSorted(qms.tpmByDivision?.[division] || [], tpmSort);
+  const chartTpmRows = allTpmRows.filter((row) => row.eligible);
+  const riskValue = (row, key) => key === "score" || key === "lowestScore" ? Number(row[key]) : String(row[key] || "");
+  const changeRiskSort = (key) => setRiskSort((old) => ({ key, direction: old.key === key && old.direction === "asc" ? "desc" : "asc" }));
+  const riskRows = (qms.risks || []).filter((row) => riskPeriod === "全部" || row.period === riskPeriod).sort((a,b) => { const av=riskValue(a,riskSort.key), bv=riskValue(b,riskSort.key); const result=typeof av === "string" ? av.localeCompare(bv,"zh-CN") : av-bv; return riskSort.direction === "asc" ? result : -result; });
+  const options = (key) => key === "period"
+    ? ["全部", ...periods.map((row) => row.period)]
+    : ["全部", ...new Set((qms.suggestions || []).map((row) => row[key]).filter(Boolean))];
+  const suggestionRows = (qms.suggestions || []).filter((row) => Object.entries(suggestionFilters).every(([key,value]) => value === "全部" || row[key] === value));
+  return <div className="module-page qms-page">
+    <div className="iqc-section-title"><div><span className="section-number">5</span><div><h2>QMS 客户满意度分析</h2><p>2025年上半年、2025年下半年、2026年上半年三期独立对比</p></div></div><div className="applied-period-tag">调查周期：3个半年度</div></div>
+    <div className="qms-kpi-grid">
+      <QmsKpiCard label="平均分" periods={periods} metric="avg" unit="分" tone="blue" detail="三期分别统计，不合并2025年数据"/>
+      <QmsKpiCard label="有效样本" periods={periods} metric="samples" unit="份" tone="purple" detail="问卷有效明细数量"/>
+      <QmsKpiCard label="低分率" periods={periods} metric="lowRate" unit="%" tone="red" detail="总体得分＜4分"/>
+      <QmsKpiCard label="高满意率" periods={periods} metric="highRate" unit="%" tone="green" detail="总体得分≥4.5分"/>
+    </div>
+    <div className="qms-grid two">
+      <Panel title="客户满意度总体趋势" subtitle="柱形图为有效样本数，折线为总体平均分"><QmsTrendCombo rows={periods}/><div className="qms-compact-table"><div className="head"><span>周期</span><span>样本</span><span>平均分</span><span>低分率</span><span>高满意率</span></div>{periods.map((row)=><div key={row.period}><strong>{row.period}</strong><span>{row.samples}</span><span>{qmsOneDecimal(row.avg)}</span><span>{qmsOneDecimal(row.lowRate)}%</span><span>{qmsOneDecimal(row.highRate)}%</span></div>)}</div></Panel>
+      <Panel title="三大产品部三期对比" subtitle="产品三部不纳入总体对比，但保留在客户、项目和建议原文明细"><QmsDivisionCombo rows={qms.divisionCompare} periods={periods}/><div className="qms-compact-table qms-division-period-table"><div className="head"><span>产品部</span>{periods.map((period)=><span key={period.key}>{period.period}</span>)}</div>{qms.divisionCompare.map((row)=><div key={row.name}><strong>{row.name}</strong>{periods.map((period)=><QmsPeriodSummary key={period.key} metric={qmsMetric(row,period.key)}/>)}</div>)}</div><p className="qms-scope-note">三大产品部图表已排除产品三部；全部已导入问卷中的产品三部明细 {qms.productThreeRows || 0} 条仍可在下方查阅。</p></Panel>
+    </div>
+    <Panel title="TPM 客户满意度排名" subtitle="2026年上半年样本数≥3才突出排名；三期全部数据仍完整保留在表中" action={<div className="qms-tabs">{["全公司",...(qms.divisionNames||[])].map((name)=><button key={name} className={division===name?"active":""} onClick={()=>setDivision(name)}>{name}</button>)}</div>}>
+      {chartTpmRows.length ? <QmsTpmRank rows={chartTpmRows} periods={periods} chartKey={"qms-tpm-three-periods-"+division} height={Math.max(380,chartTpmRows.length*68+100)}/> : <div className="qms-chart-empty">当前产品部没有满足“样本数≥3”的TPM，完整数据请查看下表。</div>}
+      <QmsTpmTable rows={allTpmRows} periods={periods} sort={tpmSort} onSort={changeTpmSort}/>
+    </Panel>
+    <Panel title="完整15项评分维度" subtitle="2025年上半年未设置的5项显示为“—”，不按0分处理"><QmsScoreCompare rows={qms.completeDimensions} periods={periods} chartKey="qms-dimensions-complete-three-periods" height={800}/><QmsDimensionTable rows={qms.completeDimensions} periods={periods}/></Panel>
+    <Panel title="客户 / 项目低分风险明细" subtitle="总体得分＜4分使用红色突出；可按调查周期筛选并点击表头排序" action={<div className="qms-risk-actions"><label><span>调查周期</span><select value={riskPeriod} onChange={(event)=>setRiskPeriod(event.target.value)}>{["全部",...periods.map((row)=>row.period)].map((value)=><option key={value}>{value}</option>)}</select></label><button className={riskExpanded?"expanded":""} onClick={()=>setRiskExpanded((value)=>!value)}><CaretDown size={15}/>{riskExpanded?"收起明细":"展开明细"}<em>{riskRows.length}</em></button></div>}>
+      {riskExpanded ? (riskRows.length ? <div className="qms-table-wrap"><div className="qms-risk-table"><div className="qms-risk-row head">{[["period","周期"],["division","产品部"],["tpm","TPM"],["pm","PM"],["customer","客户"],["project","项目"],["score","总体得分"],["lowestScore","最低维度"],["suggestion","建议摘要"]].map(([key,label])=><QmsSortButton key={key} label={label} sortKey={key} sort={riskSort} onSort={changeRiskSort}/>)}</div>{riskRows.map((row,index)=><div className={"qms-risk-row "+(row.score<4?"qms-low-row":"")} key={row.period+"-"+row.customer+"-"+row.project+"-"+index}><span>{row.period}</span><span>{row.division}</span><span>{row.tpm}</span><span>{row.pm||"—"}</span><strong>{row.customer||"—"}</strong><span>{row.project||"—"}</span><b>{qmsOneDecimal(row.score)}</b><span>{row.lowestDimension} / {qmsOneDecimal(row.lowestScore)}</span><em title={row.suggestion}>{row.suggestion||"—"}</em></div>)}</div></div> : <div className="qms-risk-collapsed">当前调查周期暂无风险明细</div>) : <div className="qms-risk-collapsed">已收起，共 {riskRows.length} 条记录；点击“展开明细”查看。</div>}
+    </Panel>
+    <Panel title="客户建议原文" subtitle="可按三个调查周期、产品部、TPM和客户筛选；普通查看用户可查看原文">
+      <div className="qms-suggestion-filters">{[["period","调查周期"],["division","产品部"],["tpm","TPM"],["customer","客户"]].map(([key,label])=><label key={key}><span>{label}</span><select value={suggestionFilters[key]} onChange={(event)=>setSuggestionFilters((old)=>({...old,[key]:event.target.value}))}>{options(key).map((value)=><option key={value}>{value}</option>)}</select></label>)}<b>当前 {suggestionRows.length} 条</b></div>
+      <div className="qms-suggestion-list">{suggestionRows.map((row,index)=><article className="qms-suggestion-card" key={row.period+"-"+row.customer+"-"+row.type+"-"+index}><header><div><strong>{row.customer||"未填写客户"}</strong><span>{row.project||"未填写项目"}</span></div><em>{row.period}</em></header><div className="qms-suggestion-meta"><span>{row.division}</span><span>{row.tpm}</span><span>{row.type}</span><b>{row.category}</b></div><p>{row.content}</p></article>)}</div>
+    </Panel>
+  </div>;
+}
+
 function ModuleDetail({ module, data }) {
   if (module === "IQC") return <IqcSupplierAnalysis data={data} />;
   if (module === "IPQC") return <IpqcAnalysis data={data} />;
   if (module === "OQC") return <OqcAnalysis data={data} />;
-  return <DqaAnalysis data={data}/>;
+  if (module === "DQA") return <DqaAnalysis data={data}/>;
+  if (module === "QMS") return <QmsAnalysis data={data}/>;
+  return null;
 }
 
 const supplierColumns = [
@@ -3481,6 +3576,11 @@ export function App() {
     });
     return nextData;
   }, [analyzeInBackground]);
+  const ensureQmsSources = useCallback(async (sources = []) => {
+    if (sources.some((source) => source.module === "QMS")) return sources;
+    const qmsDefaults = await loadDefaultQmsSources();
+    return qmsDefaults.length ? [...sources, ...qmsDefaults] : sources;
+  }, []);
   const prepareSourcesForAnalysis = useCallback(async (sources, onProgress = () => {}) => {
     if (!sources?.length || sources.every((source) => Array.isArray(source.rows) && source.rows.length)) return sources;
     const downloadable = sources.filter((source) => source.serverFile);
@@ -3555,9 +3655,11 @@ export function App() {
           setStorageReady(true);
           loadImportedSources().then(async (stored) => {
             if (cancelled || !stored.length) return;
-            setFiles(stored);
-            if (!cacheMatchesSources(cached, stored)) {
-              const hydrated = await prepareSourcesForAnalysis(stored);
+            const sourcesWithQms = await ensureQmsSources(stored);
+            if (cancelled) return;
+            setFiles(sourcesWithQms);
+            if (!cacheMatchesSources(cached, sourcesWithQms)) {
+              const hydrated = await prepareSourcesForAnalysis(sourcesWithQms);
               if (cancelled) return;
               setFiles(hydrated);
               const nextData = await applyAnalyzedData(hydrated, cachedRange, { bumpRevision: false });
@@ -3584,8 +3686,10 @@ export function App() {
         if (cancelled) return;
         if (stored.length) {
           setUsingDefaultAnalysis(false);
-          setFiles(stored);
-          const hydrated = await prepareSourcesForAnalysis(stored);
+          const sourcesWithQms = await ensureQmsSources(stored);
+          if (cancelled) return;
+          setFiles(sourcesWithQms);
+          const hydrated = await prepareSourcesForAnalysis(sourcesWithQms);
           if (cancelled) return;
           setFiles(hydrated);
           const nextData = await applyAnalyzedData(hydrated, activeRange, { bumpRevision: false });
@@ -3596,9 +3700,18 @@ export function App() {
 
         const defaultAnalysis = await loadDefaultAnalysis();
         if (cancelled) return;
-        if (isSameDateRange(activeRange, defaultDateRange) && defaultAnalysis?.data) {
+        if (defaultAnalysis?.data) {
+          const bundledRange = isValidDateRange(defaultAnalysis.dateRange) ? {
+            start2025: defaultAnalysis.dateRange.start2025,
+            end2025: defaultAnalysis.dateRange.end2025,
+            start2026: defaultAnalysis.dateRange.start2026,
+            end2026: defaultAnalysis.dateRange.end2026,
+          } : defaultDateRange;
           setUsingDefaultAnalysis(true);
           setFiles(defaultAnalysis.files || []);
+          setDateRange(bundledRange);
+          setAppliedDateRange(bundledRange);
+          localStorage.setItem("qms-date-range-v202605", JSON.stringify(bundledRange));
           setData(defaultAnalysis.data);
           setStorageReady(true);
           return;

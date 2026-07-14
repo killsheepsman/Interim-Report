@@ -6,7 +6,7 @@ import { promisify } from "node:util";
 
 const projectRoot = path.resolve(process.cwd());
 const sourceRoot = path.resolve(projectRoot, "..");
-const sourceDirs = ["DQA", "IPQC", "IQC", "OQC"].map((name) => path.join(sourceRoot, name));
+const sourceDirs = ["DQA", "IPQC", "IQC", "OQC", "QMS"].map((name) => path.join(sourceRoot, name));
 const { analyzeImported, parseFiles } = await import(pathToFileURL(path.join(projectRoot, "src", "dataEngine.js")).href);
 const gzipAsync = promisify(gzip);
 
@@ -52,6 +52,8 @@ for (const source of parsed) {
 }
 
 await fs.mkdir(path.join(projectRoot, "public"), { recursive: true });
+const qmsSourcesOutput = path.join(projectRoot, "public", "defaultQmsSources.json");
+const qmsSourcesSize = await writeGzipJson(qmsSourcesOutput, parsed.filter((source) => source.module === "QMS"));
 const sourcesOutput = path.join(projectRoot, "public", "defaultSources.json");
 const sourcesSize = await writeGzipJson(sourcesOutput, parsed);
 const defaultDateRange = {
@@ -80,8 +82,10 @@ console.log(JSON.stringify({
   summary,
   output: `${sourcesOutput}.gz`,
   analysisOutput: `${analysisOutput}.gz`,
+  qmsSourcesOutput: `${qmsSourcesOutput}.gz`,
   compression: {
     sources: sourcesSize,
+    qmsSources: qmsSourcesSize,
     analysis: analysisSize,
   },
 }, null, 2));

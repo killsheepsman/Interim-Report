@@ -201,6 +201,87 @@ export function BarCompare({ labels, first, second, names = ["2025", "2026"], pe
   }} /></div>;
 }
 
+
+const qmsPeriodColors = ["#8aaee8", "#f3a24f", "#50ad68"];
+const qmsPeriodLineColors = ["#3777c7", "#dc761f", "#248f49"];
+const qmsOneDecimal = (value) => value == null || !Number.isFinite(Number(value)) ? "—" : Number(value).toFixed(1);
+const qmsPeriodMetric = (row, periodKey, metric) => row?.periods?.[periodKey]?.[metric] ?? null;
+const qmsOutsideBarLabelPosition = (position) => String(position || "right").startsWith("inside") ? "right" : position;
+
+export function QmsTrendCombo({ rows = [], height = 330, chartKey = "qms-overall-trend" }) {
+  const [positions, setPositions] = usePersistentPositions("qms-trend", chartKey, { "有效样本": "top", "平均分": "top" });
+  const changePosition = (name, value) => setPositions((current) => ({ ...current, [name]: value }));
+  return <div className="chart-config-wrap"><div className="chart-control-row"><LabelPositionControl positions={positions} onChange={changePosition}/></div><ScaledChart style={{ height }} option={{
+    tooltip: { trigger: "axis", axisPointer: { type: "shadow" }, formatter: (params) => params[0]?.name + "<br/>" + params.map((item) => item.marker + item.seriesName + "：" + (item.seriesName === "平均分" ? qmsOneDecimal(item.value) + "分" : item.value + "份")).join("<br/>") },
+    legend: topLegend(8),
+    grid: { left: 48, right: 50, top: 48, bottom: 38, containLabel: true },
+    xAxis: { type: "category", data: rows.map((row) => row.period), axisLabel: { interval: 0 } },
+    yAxis: [
+      { type: "value", name: "样本数", min: 0, minInterval: 1, splitLine: { lineStyle: { color: "#eef1f5" } } },
+      { type: "value", name: "平均分", min: 0, max: 5, interval: 1, splitLine: { show: false } },
+    ],
+    series: [
+      { name: "有效样本", type: "bar", data: rows.map((row) => row.samples), barMaxWidth: 34, itemStyle: { color: blue, borderRadius: [6, 6, 0, 0] }, label: { show: labelVisible(positions["有效样本"]), position: labelPosition(positions["有效样本"]), distance: 16, formatter: ({ value }) => value + "份", fontWeight: 800 }, labelLayout: { hideOverlap: false, moveOverlap: "shiftY" } },
+      { name: "平均分", type: "line", yAxisIndex: 1, data: rows.map((row) => row.avg), smooth: true, symbolSize: 8, itemStyle: { color: green }, lineStyle: { width: 3, color: green }, label: { show: labelVisible(positions["平均分"]), position: labelPosition(positions["平均分"]), formatter: ({ value }) => qmsOneDecimal(value), backgroundColor: "rgba(255,255,255,.92)", borderRadius: 6, padding: [2, 5], fontWeight: 800 }, labelLayout: { hideOverlap: false, moveOverlap: "shiftY" } },
+    ],
+  }} /></div>;
+}
+
+export function QmsDivisionCombo({ rows = [], periods = [], height = 350, chartKey = "qms-division-compare" }) {
+  const resolvedDefaults = Object.fromEntries(periods.flatMap((period) => [[period.period + "样本", "top"], [period.period + "平均分", "top"]]));
+  const [positions, setPositions] = usePersistentPositions("qms-division", chartKey, resolvedDefaults);
+  const changePosition = (name, value) => setPositions((current) => ({ ...current, [name]: value }));
+  return <div className="chart-config-wrap"><div className="chart-control-row"><LabelPositionControl positions={positions} onChange={changePosition}/></div><ScaledChart style={{ height }} option={{
+    tooltip: { trigger: "axis", axisPointer: { type: "shadow" }, formatter: (params) => params[0]?.name + "<br/>" + params.map((item) => item.marker + item.seriesName + "：" + (item.seriesName.endsWith("样本") ? item.value + "份" : qmsOneDecimal(item.value) + "分")).join("<br/>") },
+    legend: topLegend(8),
+    grid: { left: 48, right: 52, top: 76, bottom: 42, containLabel: true },
+    xAxis: { type: "category", data: rows.map((row) => row.name), axisLabel: { interval: 0 } },
+    yAxis: [
+      { type: "value", name: "样本数", min: 0, minInterval: 1, splitLine: { lineStyle: { color: "#eef1f5" } } },
+      { type: "value", name: "平均分", min: 0, max: 5, interval: 1, splitLine: { show: false } },
+    ],
+    series: periods.flatMap((period, index) => {
+      const sampleName = period.period + "样本";
+      const scoreName = period.period + "平均分";
+      return [
+        { name: sampleName, type: "bar", data: rows.map((row) => qmsPeriodMetric(row, period.key, "samples") ?? 0), barMaxWidth: 16, itemStyle: { color: qmsPeriodColors[index % qmsPeriodColors.length], borderRadius: [4,4,0,0] }, label: { show: labelVisible(positions[sampleName]), position: labelPosition(positions[sampleName]), distance: 14, formatter: "{c}", fontSize: 10 }, labelLayout: { hideOverlap: false, moveOverlap: "shiftY" } },
+        { name: scoreName, type: "line", yAxisIndex: 1, data: rows.map((row) => qmsPeriodMetric(row, period.key, "avg")), smooth: true, symbolSize: 7, itemStyle: { color: qmsPeriodLineColors[index % qmsPeriodLineColors.length] }, lineStyle: { color: qmsPeriodLineColors[index % qmsPeriodLineColors.length], width: 2.5 }, label: { show: labelVisible(positions[scoreName]), position: labelPosition(positions[scoreName]), formatter: ({ value }) => qmsOneDecimal(value), backgroundColor: "rgba(255,255,255,.92)", borderRadius: 4, padding: [1,4], fontSize: 9 }, labelLayout: { hideOverlap: false, moveOverlap: "shiftY" } },
+      ];
+    }),
+  }} /></div>;
+}
+
+export function QmsScoreCompare({ rows = [], periods = [], height = 360, chartKey = "qms-score-compare" }) {
+  const defaults = Object.fromEntries(periods.map((period) => [period.period, "right"]));
+  const [positions, setPositions] = usePersistentPositions("qms-score", chartKey, defaults);
+  const changePosition = (name, value) => setPositions((current) => ({ ...current, [name]: value }));
+  return <div className="chart-config-wrap"><div className="chart-control-row"><LabelPositionControl positions={positions} onChange={changePosition} options={["right", "left", "none"]}/></div><ScaledChart style={{ height }} option={{
+    tooltip: { trigger: "axis", axisPointer: { type: "shadow" }, valueFormatter: (value) => value == null ? "—" : qmsOneDecimal(value) + "分" },
+    legend: topLegend(8),
+    grid: { left: 156, right: 112, top: 68, bottom: 26, containLabel: true },
+    xAxis: { type: "value", min: 0, max: 5, interval: 1, axisLabel: { formatter: "{value}分" }, splitLine: { lineStyle: { color: "#eef1f5" } } },
+    yAxis: { type: "category", inverse: true, data: rows.map((row) => row.name), axisLabel: { width: 142, overflow: "truncate" } },
+    series: periods.map((period, index) => ({ name: period.period, type: "bar", data: rows.map((row) => row.periods?.[period.key] ?? null), barWidth: 13, barGap: "22%", barCategoryGap: "18%", clip: false, itemStyle: { color: qmsPeriodColors[index % qmsPeriodColors.length], borderRadius: [0,4,4,0] }, label: { show: labelVisible(positions[period.period]), position: qmsOutsideBarLabelPosition(positions[period.period]), distance: 18, formatter: ({ value }) => value == null ? "" : qmsOneDecimal(value), color: "#172033", fontSize: 10 }, labelLayout: { hideOverlap: false, moveOverlap: "shiftY" } })),
+  }} /></div>;
+}
+
+export function QmsTpmRank({ rows = [], periods = [], height = 370, chartKey = "qms-tpm-rank" }) {
+  const defaults = Object.fromEntries(periods.map((period) => [period.period + "平均分", "right"]));
+  const [positions, setPositions] = usePersistentPositions("qms-tpm", chartKey, defaults);
+  const changePosition = (name, value) => setPositions((current) => ({ ...current, [name]: value }));
+  return <div className="chart-config-wrap"><div className="chart-control-row"><LabelPositionControl positions={positions} onChange={changePosition} options={["right", "left", "none"]}/></div><ScaledChart style={{ height }} option={{
+    tooltip: { trigger: "axis", axisPointer: { type: "shadow" }, formatter: (params) => { const row = rows[params[0]?.dataIndex] || {}; return [row.name, ...periods.map((period) => { const metric = row.periods?.[period.key] || {}; return period.period + "：" + (metric.samples || 0) + "份 / " + qmsOneDecimal(metric.avg) + "分"; })].join("<br/>"); } },
+    legend: topLegend(8),
+    grid: { left: 96, right: 128, top: 68, bottom: 24, containLabel: true },
+    xAxis: { type: "value", min: 0, max: 5, interval: 1, axisLabel: { formatter: "{value}分" }, splitLine: { lineStyle: { color: "#eef1f5" } } },
+    yAxis: { type: "category", inverse: true, data: rows.map((row) => row.name) },
+    series: periods.map((period, index) => {
+      const name = period.period + "平均分";
+      return { name, type: "bar", data: rows.map((row) => qmsPeriodMetric(row, period.key, "avg")), barWidth: 15, barGap: "20%", barCategoryGap: "24%", clip: false, itemStyle: { color: qmsPeriodColors[index % qmsPeriodColors.length], borderRadius: [0,4,4,0] }, label: { show: labelVisible(positions[name]), position: qmsOutsideBarLabelPosition(positions[name]), distance: 18, formatter: ({ value, dataIndex }) => value == null ? "" : qmsOneDecimal(value) + " / " + (qmsPeriodMetric(rows[dataIndex], period.key, "samples") || 0) + "份", color: "#172033", fontSize: 10 }, labelLayout: { hideOverlap: false, moveOverlap: "shiftY" } };
+    }),
+  }} /></div>;
+}
+
 export function HorizontalRank({ rows, height = 330, chartKey = "five-rate-rank" }) {
   const data = [...rows].sort((a, b) => a.fiveRate - b.fiveRate);
   const [positions, setPositions] = usePersistentPositions("horizontal-rank", chartKey, { "5分率": "right" });

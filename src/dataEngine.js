@@ -132,6 +132,81 @@ const sheetRows = (workbook) => {
   return rows;
 };
 
+const QMS_DIMENSIONS_10 = [
+  "设备稳定性", "使用便捷性", "安全性能", "交付日期", "整机外观",
+  "售后人力配置", "投诉/抱怨处理时效", "异常关闭及时率", "售后响应及时率", "SOP培训",
+];
+const QMS_DIMENSIONS_15 = [
+  "设备稳定性", "设备到货质量", "使用便捷性", "安全性能", "交付日期",
+  "架设效率", "整机外观", "售后人力配置", "投诉/抱怨处理时效", "异常关闭及时率",
+  "专业技能（MTTR）", "备品准备", "沟通能力", "售后响应及时率", "SOP培训",
+];
+const qmsPeriodFromName = (fileName, matrix = []) => {
+  const source = `${text(fileName)} ${text(matrix?.[0]?.[0])}`;
+  const year = Number(source.match(/20\d{2}/)?.[0]) || null;
+  const half = source.includes("下半年") ? 2 : source.includes("上半年") ? 1 : null;
+  return { year, half };
+};
+const isQmsCustomerSurveyWorkbook = (fileName, workbook) => {
+  if (text(fileName).includes("客户满意度调查")) return true;
+  return workbook.SheetNames.some((sheetName) => {
+    const matrix = sheetMatrix(workbook.Sheets[sheetName]);
+    const headers = new Set((matrix[1] || []).map(text));
+    return headers.has("序号") && headers.has("产品部") && headers.has("TPM")
+      && headers.has("客户名称") && headers.has("项目名称") && headers.has("得分");
+  });
+};
+const qmsSurveyRows = (workbook, fileName) => {
+  const sheetName = workbook.SheetNames[0];
+  const matrix = sheetMatrix(workbook.Sheets[sheetName]);
+  const { year, half } = qmsPeriodFromName(fileName, matrix);
+  if (!year || !half) return [];
+  const scoreMarkerRow = matrix[4] || [];
+  const scoreColumns = scoreMarkerRow.map((value, index) => text(value) === "单项得分" ? index : -1).filter((index) => index >= 9);
+  const dimensions = scoreColumns.length >= 15 ? QMS_DIMENSIONS_15 : QMS_DIMENSIONS_10;
+  const suggestionColumns = (matrix[2] || []).map((value, index) => text(value).includes("建议") ? index : -1).filter((index) => index >= 0).slice(0, 4);
+  const suggestionKeys = ["产品质量建议", "产品交付防护建议", "售后过程与异常处理建议", "其他建议"];
+  const period = `${year}年${half === 1 ? "上半年" : "下半年"}`;
+  const periodStart = `${year}-${half === 1 ? "01-01" : "07-01"}`;
+  const periodEnd = `${year}-${half === 1 ? "06-30" : "12-31"}`;
+  let lastDivision = "";
+  let lastTpm = "";
+  let lastPm = "";
+  const rows = [];
+  let started = false;
+  for (let rowIndex = 5; rowIndex < matrix.length; rowIndex += 1) {
+    const values = matrix[rowIndex] || [];
+    const sequence = values[0];
+    if (sequence === "" || sequence == null) {
+      if (started) break;
+      continue;
+    }
+    if (!Number.isFinite(Number(sequence))) continue;
+    started = true;
+    const division = text(values[1]) || lastDivision;
+    const tpm = text(values[2]) || lastTpm;
+    const pm = text(values[3]) || lastPm;
+    if (division) lastDivision = division;
+    if (tpm) lastTpm = tpm;
+    if (pm) lastPm = pm;
+    const dimensionScores = {};
+    scoreColumns.slice(0, dimensions.length).forEach((column, index) => {
+      const score = Number(values[column]);
+      if (Number.isFinite(score) && score > 0) dimensionScores[dimensions[index]] = score;
+    });
+    const row = {
+      "序号": Number(sequence), "产品部": division, TPM: tpm, PM: pm,
+      "客户名称": text(values[4]), "客户姓名": text(values[5]), "客户岗位": text(values[6]),
+      "项目名称": text(values[7]), "总体得分": number(values[8]), "问卷平均分": number(values[scoreColumns.at(-1) + 2]),
+      __dimensions: dimensionScores, __surveyYear: year, __surveyHalf: half, __surveyPeriod: period,
+      __periodStart: periodStart, __periodEnd: periodEnd, __sourceSheet: sheetName,
+    };
+    suggestionKeys.forEach((key, index) => { row[key] = text(values[suggestionColumns[index]]); });
+    rows.push(row);
+  }
+  return rows;
+};
+
 const ecnRows = (workbook) => {
   const rows = [];
   workbook.SheetNames.forEach((name) => {
@@ -450,9 +525,12 @@ const hasOqcColumns = (fileName, columns) => (fileName.includes("出货汇总") 
   || columns.has("UUID") || (columns.has("设备评分") && columns.has("售后设备评分")) || fileName.includes("评分");
 const hasDqaColumns = (fileName, columns) => fileName.includes("加工件数量比例") || columns.has("__partKind")
   || columns.has("问题描述") || columns.has("评审问题数") || fileName.includes("研发问题") || fileName.includes("评审问题") || fileName.includes("ECN");
+const hasQmsColumns = (fileName, columns) => fileName.includes("客户满意度调查")
+  || (columns.has("总体得分") && columns.has("客户名称") && columns.has("项目名称") && columns.has("__surveyPeriod"));
 const detectModule = (fileName, rows) => {
   const columnSets = rows.length ? rows.map(rowColumns) : [new Set()];
   const columns = columnSets[0];
+  if (hasQmsColumns(fileName, columns)) return "QMS";
   if (columns.has("供应商") && columns.has("质检结果")) return "IQC";
   if ((columns.has("治具数量") || columns.has("送检数")) && (columns.has("异常问题数量") || columns.has("不良治具数量") || columns.has("不良数"))) return "IPQC";
   if (fileName.includes("出货汇总") && columns.has("最终评分") && columns.has("机台数量")) return "OQC";
@@ -463,6 +541,7 @@ const detectModule = (fileName, rows) => {
   if (columnSets.some(hasIpqcColumns)) return "IPQC";
   if (columnSets.some((set) => hasOqcColumns(fileName, set))) return "OQC";
   if (columnSets.some((set) => hasDqaColumns(fileName, set))) return "DQA";
+  if (columnSets.some((set) => hasQmsColumns(fileName, set))) return "QMS";
   return "UNKNOWN";
 };
 
@@ -472,13 +551,14 @@ export async function parseFiles(files) {
     await yieldToMainThread();
     const arrayBuffer = await file.arrayBuffer();
     const workbook = XLSX.read(arrayBuffer, xlsxReadOptions);
-    const isOqcMonthlySummary = file.name.includes("评分按月汇总");
-    const isOqcShipmentDetail = file.name.includes("出货汇总");
+    const isQmsSurvey = isQmsCustomerSurveyWorkbook(file.name, workbook);
+    const isOqcMonthlySummary = !isQmsSurvey && file.name.includes("评分按月汇总");
+    const isOqcShipmentDetail = !isQmsSurvey && file.name.includes("出货汇总");
     const isMachinedParts = isMachinedPartsWorkbookStable(file.name, workbook) || isMachinedPartsWorkbook(file.name, workbook);
     const isEcnSummary = !isMachinedParts && file.name.includes("ECN");
     const isIqcProject = !isEcnSummary && !isOqcMonthlySummary && isIqcProjectWorkbook(workbook);
     const isIpqcLeaderMap = isIpqcLeaderMapWorkbook(file.name, workbook);
-    let rows = isIpqcLeaderMap ? ipqcLeaderMapRows(workbook) : isOqcMonthlySummary ? oqcMonthlySummaryRows(workbook) : isOqcShipmentDetail ? oqcShipmentDetailRows(workbook) : isMachinedParts ? machinedPartRowsStable(workbook, file.name) : isEcnSummary ? ecnRows(workbook) : isIqcProject ? iqcProjectRows(workbook, file.name) : sheetRows(workbook);
+    let rows = isQmsSurvey ? qmsSurveyRows(workbook, file.name) : isIpqcLeaderMap ? ipqcLeaderMapRows(workbook) : isOqcMonthlySummary ? oqcMonthlySummaryRows(workbook) : isOqcShipmentDetail ? oqcShipmentDetailRows(workbook) : isMachinedParts ? machinedPartRowsStable(workbook, file.name) : isEcnSummary ? ecnRows(workbook) : isIqcProject ? iqcProjectRows(workbook, file.name) : sheetRows(workbook);
     rows.forEach((row) => {
       if (row["治具数量"] == null && row["送检数"] != null) row["治具数量"] = row["送检数"];
       if (row["异常问题数量"] == null && row["不良数"] != null) row["异常问题数量"] = row["不良数"];
@@ -494,8 +574,8 @@ export async function parseFiles(files) {
       module,
       rows,
       sheets: workbook.SheetNames,
-      kind: isIpqcLeaderMap ? "IPQC_LEADER_MAP" : isOqcMonthlySummary ? "OQC_MONTHLY_SUMMARY" : isOqcShipmentDetail ? "OQC_SHIPMENT_DETAIL" : isMachinedParts ? "DQA_MACHINED_PARTS" : isIqcProject ? "IQC_FOCUS_PROJECT" : "STANDARD",
-      subKind: isIpqcLeaderMap ? "IPQC_LEADER_MAP" : isMachinedParts ? "DQA_MACHINED_PARTS" : isEcnSummary ? "DQA_ECN" : isIqcProject ? "IQC_FOCUS_PROJECT" : undefined,
+      kind: isQmsSurvey ? "QMS_CUSTOMER_SATISFACTION" : isIpqcLeaderMap ? "IPQC_LEADER_MAP" : isOqcMonthlySummary ? "OQC_MONTHLY_SUMMARY" : isOqcShipmentDetail ? "OQC_SHIPMENT_DETAIL" : isMachinedParts ? "DQA_MACHINED_PARTS" : isIqcProject ? "IQC_FOCUS_PROJECT" : "STANDARD",
+      subKind: isQmsSurvey ? "QMS_CUSTOMER_SATISFACTION" : isIpqcLeaderMap ? "IPQC_LEADER_MAP" : isMachinedParts ? "DQA_MACHINED_PARTS" : isEcnSummary ? "DQA_ECN" : isIqcProject ? "IQC_FOCUS_PROJECT" : undefined,
       projectName: isIqcProject ? iqcProjectName(file.name) : undefined,
       importedAt: new Date().toISOString(),
     });
@@ -549,6 +629,7 @@ const MODULE_DATE_FIELDS = {
   IPQC: ["日期", "检验日期", "发生日期"],
   OQC: ["发货时间", "日期", "评分日期"],
   DQA: ["发生日期", "下单日期", "时间", "日期", "申请日期", "制单日期"],
+  QMS: ["__periodStart"],
 };
 
 const dateOfRow = (row, module) => {
@@ -570,6 +651,11 @@ const filterFilesByDate = (files, dateRange) => {
   return files.map((file) => ({
     ...file,
     rows: file.kind === "IPQC_LEADER_MAP" ? file.rows : file.rows.filter((row) => {
+      if (file.module === "QMS") {
+        const start = businessDate(row.__periodStart);
+        const end = businessDate(row.__periodEnd);
+        return start && end && periods.some((period) => start <= period.end && end >= period.start);
+      }
       let date = dateOfRow(row, file.module);
       if (date && file.module === "DQA" && file.name.startsWith("25年评审问题")) {
         date = new Date(2025, date.getMonth(), date.getDate());
@@ -2039,8 +2125,133 @@ const buildDqaMachinedPartsStable = (dqaFiles) => {
   };
 };
 
+const qmsNormalizeDivision = (value, year) => {
+  const division = text(value) || "未填写";
+  if (year === 2025 && division === "产品一部") return "半导体&北美";
+  if (year === 2026 && ["北美项目部", "传感器产品部", "IC载板产品部", "IC载版产品部"].includes(division)) return "半导体&北美";
+  return division;
+};
+const qmsMetrics = (rows = []) => {
+  const scored = rows.filter((row) => number(row["总体得分"]) > 0);
+  const scoreTotal = scored.reduce((sum, row) => sum + number(row["总体得分"]), 0);
+  const lowCount = scored.filter((row) => number(row["总体得分"]) < 4).length;
+  const highCount = scored.filter((row) => number(row["总体得分"]) >= 4.5).length;
+  return {
+    samples: scored.length,
+    avg: scored.length ? Number((scoreTotal / scored.length).toFixed(1)) : null,
+    lowCount,
+    lowRate: scored.length ? Number((lowCount / scored.length * 100).toFixed(1)) : null,
+    highCount,
+    highRate: scored.length ? Number((highCount / scored.length * 100).toFixed(1)) : null,
+  };
+};
+const qmsSuggestionCategory = (value) => {
+  const source = text(value).toLowerCase().replace(/\s/g, "");
+  if (!source) return "其他";
+  const rules = [
+    ["设备稳定性", ["稳定", "故障", "异常", "mtbf", "宕机", "停机"]],
+    ["交付", ["交付", "交货", "到货", "延期", "包装", "防护"]],
+    ["售后响应", ["响应", "及时", "处理", "售后", "服务"]],
+    ["培训", ["培训", "讲解", "sop", "原理", "指导"]],
+    ["操作便捷性", ["操作", "便捷", "易用", "界面", "维护"]],
+    ["备件", ["备件", "备品", "易损件", "零件"]],
+    ["沟通", ["沟通", "对接", "协作", "反馈"]],
+  ];
+  return rules.find(([, keys]) => keys.some((key) => source.includes(key)))?.[0] || "其他";
+};
+const qmsDimensionAverage = (rows, dimension) => {
+  const values = rows.map((row) => Number(row.__dimensions?.[dimension])).filter((value) => Number.isFinite(value) && value > 0);
+  return values.length ? Number((values.reduce((sum, value) => sum + value, 0) / values.length).toFixed(1)) : null;
+};
+const rowPeriodMetric = (row, periodKey, metric) => Number(row?.periods?.[periodKey]?.[metric]) || 0;
+const buildQmsAnalysis = (qmsFiles = []) => {
+  const rows = qmsFiles.flatMap((file) => file.rows || []).map((row) => ({
+    ...row,
+    normalizedDivision: qmsNormalizeDivision(row["产品部"], Number(row.__surveyYear)),
+  }));
+  const periodDefinitions = [
+    { key: "p2025h1", period: "2025年上半年", year: 2025, half: 1 },
+    { key: "p2025h2", period: "2025年下半年", year: 2025, half: 2 },
+    { key: "p2026h1", period: "2026年上半年", year: 2026, half: 1 },
+  ];
+  const rowsByPeriod = Object.fromEntries(periodDefinitions.map((item) => [item.key, rows.filter((row) => row.__surveyPeriod === item.period)]));
+  const periods = periodDefinitions.map((item) => ({ ...item, ...qmsMetrics(rowsByPeriod[item.key]) }));
+  const currentPeriod = periods.at(-1) || null;
+  const basePeriod = currentPeriod
+    ? periods.find((item) => item.year === currentPeriod.year - 1 && item.half === currentPeriod.half) || periods[0] || null
+    : null;
+  const divisionNames = ["半导体&北美", "产品五部", "FPC事业部"];
+  const buildPeriodMetrics = (predicate) => Object.fromEntries(periodDefinitions.map((item) => [
+    item.key,
+    qmsMetrics(rowsByPeriod[item.key].filter(predicate)),
+  ]));
+  const divisionCompare = divisionNames.map((name) => ({
+    name,
+    periods: buildPeriodMetrics((row) => row.normalizedDivision === name),
+  }));
+  const buildTpmRows = (division) => {
+    const inDivision = (row) => division === "全公司" ? divisionNames.includes(row.normalizedDivision) : row.normalizedDivision === division;
+    const relevant = rows.filter(inDivision);
+    const names = [...new Set(relevant.map((row) => text(row.TPM) || "未填写"))];
+    const result = names.map((name) => {
+      const periodMetrics = buildPeriodMetrics((row) => inDivision(row) && (text(row.TPM) || "未填写") === name);
+      const currentMetric = periodMetrics[currentPeriod?.key] || { samples: 0, avg: null };
+      const currentDivision = [...periodDefinitions].reverse()
+        .map((item) => rowsByPeriod[item.key].find((row) => (text(row.TPM) || "未填写") === name && inDivision(row)))
+        .find(Boolean)?.normalizedDivision || division;
+      return { name, division: currentDivision, periods: periodMetrics, eligible: currentMetric.samples >= 3, rank: null };
+    });
+    const eligible = result.filter((row) => row.eligible).sort((a, b) => {
+      const aa = rowPeriodMetric(a, currentPeriod?.key, "avg");
+      const bb = rowPeriodMetric(b, currentPeriod?.key, "avg");
+      const as = rowPeriodMetric(a, currentPeriod?.key, "samples");
+      const bs = rowPeriodMetric(b, currentPeriod?.key, "samples");
+      return bb - aa || bs - as;
+    });
+    eligible.forEach((row, index) => { row.rank = index + 1; });
+    return result.sort((a, b) => (a.rank || 999) - (b.rank || 999)
+      || rowPeriodMetric(b, currentPeriod?.key, "samples") - rowPeriodMetric(a, currentPeriod?.key, "samples")
+      || a.name.localeCompare(b.name, "zh-CN"));
+  };
+  const buildDimensionRows = (dimensions) => dimensions.map((name) => ({
+    name,
+    periods: Object.fromEntries(periodDefinitions.map((item) => [item.key, qmsDimensionAverage(rowsByPeriod[item.key], name)])),
+  }));
+  const comparableDimensions = buildDimensionRows(QMS_DIMENSIONS_10);
+  const completeDimensions = buildDimensionRows(QMS_DIMENSIONS_15);
+  const suggestionTypes = ["产品质量建议", "产品交付防护建议", "售后过程与异常处理建议", "其他建议"];
+  const suggestions = rows.flatMap((row) => suggestionTypes.map((type) => ({
+    period: row.__surveyPeriod, division: row.normalizedDivision, rawDivision: row["产品部"], tpm: text(row.TPM) || "未填写",
+    customer: text(row["客户名称"]), project: text(row["项目名称"]), type, content: text(row[type]), category: qmsSuggestionCategory(row[type]),
+  })).filter((item) => item.content));
+  const risks = rows.map((row) => {
+    const dimensions = Object.entries(row.__dimensions || {}).filter(([, value]) => Number(value) > 0).sort((a, b) => a[1] - b[1]);
+    const suggestion = suggestionTypes.map((key) => text(row[key])).filter(Boolean).join("；");
+    return {
+      period: row.__surveyPeriod, division: row.normalizedDivision, rawDivision: row["产品部"], tpm: text(row.TPM) || "未填写", pm: text(row.PM),
+      customer: text(row["客户名称"]), project: text(row["项目名称"]), score: Number(number(row["总体得分"]).toFixed(1)),
+      lowestDimension: dimensions[0]?.[0] || "无", lowestScore: dimensions[0]?.[1] ? Number(Number(dimensions[0][1]).toFixed(1)) : 0, suggestion,
+    };
+  }).sort((a, b) => a.score - b.score || a.customer.localeCompare(b.customer, "zh-CN"));
+  return {
+    thresholds: { low: 4, high: 4.5, tpmMinimum: 3 },
+    periods,
+    current: currentPeriod,
+    base: basePeriod,
+    divisionNames,
+    divisionCompare,
+    tpmByDivision: Object.fromEntries(["全公司", ...divisionNames].map((division) => [division, buildTpmRows(division)])),
+    comparableDimensions,
+    completeDimensions,
+    risks,
+    suggestions,
+    productThreeRows: rows.filter((row) => row.normalizedDivision === "产品三部").length,
+  };
+};
+
 export function analyzeImported(files, dateRange) {
   if (!files.length) return sampleData;
+  const allQmsFiles = files.filter((file) => file.module === "QMS");
   files = filterFilesByDate(files, dateRange);
   const next = structuredClone(sampleData);
   next.appliedDateRange = { ...dateRange };
@@ -2229,6 +2440,8 @@ export function analyzeImported(files, dateRange) {
       };
     });
   }
+
+  if (allQmsFiles.length) next.qms = buildQmsAnalysis(allQmsFiles);
 
   next.updatedAt = new Date().toLocaleString("zh-CN", { hour12: false });
   if (dateRange?.start2025 && dateRange?.end2025 && dateRange?.start2026 && dateRange?.end2026) {
