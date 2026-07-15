@@ -20,6 +20,12 @@ const ANALYSIS_CACHE_VERSION = "server-analysis-cache-v5";
 const safeParse = (value, fallback) => {
   try { return value ? JSON.parse(value) : fallback; } catch { return fallback; }
 };
+const formatSyncDateTime = (value) => {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  const part = (number) => String(number).padStart(2, "0");
+  return `${date.getFullYear()}-${part(date.getMonth() + 1)}-${part(date.getDate())} ${part(date.getHours())}:${part(date.getMinutes())}`;
+};
 const defaultFeaturePermissions = {
   dataImport: { public: false, deputy: true, label: "数据导入" },
   workspace: { public: false, deputy: true, label: "质量工作台" },
@@ -39,12 +45,24 @@ const defaultApiPermissions = {
   "GET /api/state/applied-date-range": { public: true, deputy: true, label: "读取默认日期" },
   "GET /api/uploads/*": { public: true, deputy: true, label: "读取原始Excel" },
 };
+const normalizePermissionMembers = (items = []) => {
+  const byIp = new Map();
+  (Array.isArray(items) ? items : []).forEach((item) => {
+    const ip = String(typeof item === "string" ? item : item?.ip || "").trim();
+    if (!ip) return;
+    byIp.set(ip, { ip, name: String(typeof item === "string" ? "" : item?.name || "").trim() });
+  });
+  return [...byIp.values()];
+};
 const normalizePermissions = (value = {}) => ({
-  deputyAdmins: Array.isArray(value.deputyAdmins) ? value.deputyAdmins : [],
+  deputyAdmins: normalizePermissionMembers(value.deputyAdmins),
+  ordinaryUsers: normalizePermissionMembers(value.ordinaryUsers),
+  allowIntranetUsers: value.allowIntranetUsers === true,
   features: Object.fromEntries(Object.entries(defaultFeaturePermissions).map(([key, item]) => [key, { ...item, ...(value.features?.[key] || {}) }])),
   apis: Object.fromEntries(Object.entries(defaultApiPermissions).map(([key, item]) => [key, { ...item, ...(value.apis?.[key] || {}) }])),
 });
 const canUseFeature = (auth, permissions, key) => {
+  if (!auth?.isAuthorized) return false;
   if (auth?.isAdmin) return true;
   const rule = permissions?.features?.[key] || defaultFeaturePermissions[key];
   return auth?.isDeputy ? rule?.deputy !== false : rule?.public === true;
@@ -85,20 +103,26 @@ function ImportModal({ open, onClose, onSourcesChanged, files, dateRange, target
   const inputRef = useRef(null);
   const [busy, setBusy] = useState(false);
   const [drag, setDrag] = useState(false);
+  const [saveStage, setSaveStage] = useState({ state: "idle", label: "等待导入" });
 
   const handleFiles = async (selected) => {
     setBusy(true);
     try {
+      setSaveStage({ state: "loading", label: "正在解析 Excel" });
       const selectedFiles = [...selected];
       const parsed = await parseFiles(selectedFiles);
       const valid = targetModule ? parsed.filter((file) => file.module === targetModule) : parsed.filter((file) => file.module !== "UNKNOWN");
       const rejected = parsed.filter((file) => targetModule ? file.module !== targetModule : file.module === "UNKNOWN");
+      setSaveStage({ state: "loading", label: "正在上传原始文件" });
       const uploaded = await uploadSourceFiles(valid, selectedFiles);
       const merged = mergeImportedSources(files, uploaded);
       await onSourcesChanged(merged.sources, {
         added: merged.added, replaced: merged.replaced,
         rejected: rejected.map((file) => `${file.name}（识别为${file.module}）`),
-      });
+      }, setSaveStage);
+      setSaveStage({ state: "success", label: "已保存到服务器" });
+    } catch {
+      setSaveStage({ state: "error", label: "保存失败，请重新导入" });
     } finally {
       setBusy(false);
     }
@@ -143,7 +167,7 @@ function ImportModal({ open, onClose, onSourcesChanged, files, dateRange, target
         </div>)}
         {!recentVisibleFiles.length && <div className="empty-files">{targetModule ? `尚未导入${targetModule}文件，导入后这里只显示${targetModule}数据源。` : "导入后，这里会显示模块识别结果与数据行数。"}</div>}
       </div>
-      <div className="modal-foot"><span><ShieldCheck size={16} /> 自动识别失败的文件不会进入计算</span><button className="primary-btn" onClick={onClose}>完成导入</button></div>
+      <div className="modal-foot"><span className={`import-save-state ${saveStage.state}`}>{saveStage.state === "success" ? <CheckCircle size={16} weight="fill"/> : saveStage.state === "error" ? <WarningCircle size={16} weight="fill"/> : <ShieldCheck size={16}/>} {saveStage.label}</span><button className="primary-btn" onClick={onClose} disabled={busy}>{busy ? "请稍候" : "完成导入"}</button></div>
     </div>
   </div>;
 }
@@ -608,7 +632,7 @@ function FontSizeControl({ value, onChange, dark = false }) {
   ].map(([key,label]) => <button key={key} className={value === key ? "active" : ""} onClick={() => onChange(key)}>{label}</button>)}</div>;
 }
 
-function DateRangeFilter({ value, onChange, onRefresh, fontSize, onFontSize, refreshStatus = "idle", refreshProgress, canRefresh = true }) {
+function DateRangeFilter({ value, onChange, onRefresh, fontSize, onFontSize, refreshStatus = "idle", refreshProgress, canRefresh = true, teamDefaultRange, lastServerSavedAt }) {
   const invalid2025 = value.start2025 && value.end2025 && value.start2025 > value.end2025;
   const invalid2026 = value.start2026 && value.end2026 && value.start2026 > value.end2026;
   const invalid = invalid2025 || invalid2026 || !value.start2025 || !value.end2025 || !value.start2026 || !value.end2026;
@@ -633,7 +657,13 @@ function DateRangeFilter({ value, onChange, onRefresh, fontSize, onFontSize, ref
     {refreshStatus === "loading" && refreshProgress && <div className="date-refresh-progress"><span>{refreshProgress.label}</span><b>{Math.round(refreshProgress.percent || 0)}%</b><i style={{ width: `${Math.max(3, Math.min(100, refreshProgress.percent || 0))}%` }} /></div>}
     <FontSizeControl value={fontSize} onChange={onFontSize}/>
     {(invalid2025 || invalid2026) && <em>同一年度的开始日期不能晚于结束日期</em>}
+    {teamDefaultRange && <div className="team-default-range"><CheckCircle size={14} weight="fill"/><span>统计周期：{teamDefaultRange.start2025}—{teamDefaultRange.end2025} / {teamDefaultRange.start2026}—{teamDefaultRange.end2026}</span>{lastServerSavedAt && <b>服务器保存于 {formatSyncDateTime(lastServerSavedAt)}</b>}</div>}
   </div>;
+}
+
+function ServerSyncBadge({ value }) {
+  const state = value?.state || "idle";
+  return <div className={`server-sync-badge ${state}`} title={value?.detail || "服务器同步状态"}>{state === "saving" ? <ArrowsClockwise size={14}/> : state === "error" ? <WarningCircle size={14} weight="fill"/> : <CheckCircle size={14} weight="fill"/>}<span>{value?.label || "等待服务器同步"}</span></div>;
 }
 
 function ThemeToggle({ value, onChange }) {
@@ -814,22 +844,50 @@ function PermissionTable({ rows, onChange, showKey = false }) {
   </div>;
 }
 
+function PermissionMemberList({ title, description, members, blockedMembers = [], onChange }) {
+  const [name, setName] = useState("");
+  const [ip, setIp] = useState("");
+  const [error, setError] = useState("");
+  const add = () => {
+    const nextName = name.trim();
+    const nextIp = ip.trim();
+    if (!nextName || !nextIp) {
+      setError("请同时填写姓名和 IP 地址");
+      return;
+    }
+    if ([...(members || []), ...blockedMembers].some((member) => member.ip === nextIp)) {
+      setError("该 IP 已在其他或当前名单中");
+      return;
+    }
+    onChange([...(members || []), { name: nextName, ip: nextIp }]);
+    setName("");
+    setIp("");
+    setError("");
+  };
+  const remove = (memberIp) => onChange((members || []).filter((member) => member.ip !== memberIp));
+  return <section className="permission-card">
+    <header><div><h3>{title}</h3><span>{description}</span></div><b>{(members || []).length} 人</b></header>
+    <div className="permission-member-form">
+      <label><span>姓名</span><input value={name} onChange={(event) => { setName(event.target.value); setError(""); }} placeholder="例如：张三" /></label>
+      <label><span>IP 地址</span><input value={ip} onChange={(event) => { setIp(event.target.value); setError(""); }} placeholder="例如：192.168.230.50" onKeyDown={(event) => { if (event.key === "Enter") add(); }} /></label>
+      <button onClick={add}><Plus size={15}/>添加</button>
+    </div>
+    {error && <div className="permission-form-error" role="alert">{error}</div>}
+    <div className="permission-member-list">
+      {(members || []).map((member) => <div key={member.ip}><span><User size={16}/><strong>{member.name || "未填写姓名"}</strong><code>{member.ip}</code></span><button aria-label={`移除${member.name || member.ip}`} onClick={() => remove(member.ip)}><Trash size={15}/>移除</button></div>)}
+      {!(members || []).length && <em>暂未添加人员</em>}
+    </div>
+  </section>;
+}
+
 function PermissionSettingsPage({ auth, permissions, onPermissionsChanged }) {
   const [draft, setDraft] = useState(() => normalizePermissions(permissions));
-  const [newIp, setNewIp] = useState("");
   const [status, setStatus] = useState("");
   useEffect(() => setDraft(normalizePermissions(permissions)), [permissions]);
   const updateRule = (group, key, field, value) => setDraft((current) => ({
     ...current,
     [group]: { ...current[group], [key]: { ...current[group][key], [field]: value } },
   }));
-  const addIp = () => {
-    const ip = newIp.trim();
-    if (!ip) return;
-    setDraft((current) => ({ ...current, deputyAdmins: [...new Set([...(current.deputyAdmins || []), ip])] }));
-    setNewIp("");
-  };
-  const removeIp = (ip) => setDraft((current) => ({ ...current, deputyAdmins: (current.deputyAdmins || []).filter((item) => item !== ip) }));
   const save = async () => {
     setStatus("保存中...");
     const result = await savePermissionConfig(draft);
@@ -842,9 +900,16 @@ function PermissionSettingsPage({ auth, permissions, onPermissionsChanged }) {
     setTimeout(() => setStatus(""), 2600);
   };
   return <div className="permission-page">
-    <section className="permission-hero"><div><h2>权限设置</h2><p>当前访问IP：{auth?.ip || "-"}；角色：{auth?.role || "public"}。主管理员永远拥有全部权限，副管理员按下方开关授权。</p></div><button className="primary-btn" onClick={save}><FloppyDisk size={16}/>保存权限</button></section>
+    <section className="permission-hero"><div><h2>权限设置</h2><p>当前访问：{auth?.name || "主管理员"}（{auth?.ip || "-"}）。只有名单内人员可查看公司数据，主管理员始终拥有全部权限。</p></div><button className="primary-btn" onClick={save}><FloppyDisk size={16}/>保存权限</button></section>
     {status && <div className="permission-status">{status}</div>}
-    <section className="permission-card"><header><h3>副管理员 IP</h3><span>添加后，可通过“副管理员允许”列控制功能和接口。</span></header><div className="permission-ip-input"><input value={newIp} onChange={(event) => setNewIp(event.target.value)} placeholder="输入副管理员IP，例如 192.168.230.50" /><button onClick={addIp}><Plus size={15}/>添加</button></div><div className="permission-ip-list">{(draft.deputyAdmins || []).map((ip) => <span key={ip}>{ip}<button onClick={() => removeIp(ip)}><X size={13}/></button></span>)}{!(draft.deputyAdmins || []).length && <em>暂未设置副管理员 IP</em>}</div></section>
+    <section className={`permission-open-card ${draft.allowIntranetUsers ? "enabled" : ""}`}>
+      <div><ShieldCheck size={22} weight={draft.allowIntranetUsers ? "fill" : "regular"}/><span><strong>完全开放公司内网普通用户</strong><small>开启后，公司私有内网 IP 无需逐个登记即可查看；公网 IP 始终无法访问。</small></span></div>
+      <label className="permission-switch"><input type="checkbox" checked={draft.allowIntranetUsers} onChange={(event) => setDraft((current) => ({ ...current, allowIntranetUsers: event.target.checked }))} /><span aria-hidden="true"></span><em>{draft.allowIntranetUsers ? "已开启" : "已关闭"}</em></label>
+    </section>
+    <div className="permission-member-grid">
+      <PermissionMemberList title="副管理员" description="可按下方开关使用管理功能和写入接口。" members={draft.deputyAdmins} blockedMembers={draft.ordinaryUsers} onChange={(members) => setDraft((current) => ({ ...current, deputyAdmins: members }))} />
+      <PermissionMemberList title="普通用户" description="仅可查看被允许的功能和数据，不能修改权限。" members={draft.ordinaryUsers} blockedMembers={draft.deputyAdmins} onChange={(members) => setDraft((current) => ({ ...current, ordinaryUsers: members }))} />
+    </div>
     <section className="permission-card"><header><h3>功能权限</h3><span>控制普通用户/副管理员在界面上能看到哪些功能。</span></header><PermissionTable rows={draft.features} onChange={(key, field, value) => updateRule("features", key, field, value)} /></section>
     <section className="permission-card"><header><h3>接口权限</h3><span>控制浏览器控制台直接调用接口时是否允许。</span></header><PermissionTable rows={draft.apis} onChange={(key, field, value) => updateRule("apis", key, field, value)} showKey /></section>
   </div>;
@@ -1279,7 +1344,7 @@ function ManagementReportPage({ data }) {
   </div>;
 }
 
-function ExecutiveDashboard({ data, files, onImport, onDeleteSource, onSourcesChanged, view, onViewChange, dateRange, onDateRange, onRefreshDate, dateRefreshStatus, refreshProgress, fontSize, onFontSize, analysisKey, labelControlsVisible, onToggleLabelControls, uiTheme, onThemeChange, sidebarCollapsed, onToggleSidebar, auth, permissions, onPermissionsChanged }) {
+function ExecutiveDashboard({ data, files, onImport, onDeleteSource, onSourcesChanged, view, onViewChange, dateRange, teamDefaultRange, lastServerSavedAt, serverSyncStatus, onDateRange, onRefreshDate, dateRefreshStatus, refreshProgress, fontSize, onFontSize, analysisKey, labelControlsVisible, onToggleLabelControls, uiTheme, onThemeChange, sidebarCollapsed, onToggleSidebar, auth, permissions, onPermissionsChanged }) {
   const [active, setActive] = useState("总览");
   const moduleView = ["IQC", "IPQC", "OQC", "DQA", "QMS"].includes(active) ? active : null;
   const allowImport = canUseFeature(auth, permissions, "dataImport");
@@ -1291,14 +1356,14 @@ function ExecutiveDashboard({ data, files, onImport, onDeleteSource, onSourcesCh
   useEffect(() => {
     if ((active === "数据导入" && !allowImport) || (active === "权限设置" && !auth?.isAdmin)) setActive("总览");
   }, [active, allowImport, auth?.isAdmin]);
-  return <div className={`executive-shell theme-${uiTheme} ${sidebarCollapsed ? "sidebar-collapsed" : ""}`}>
+  return <div className={`executive-shell theme-${uiTheme} ${sidebarCollapsed ? "sidebar-collapsed" : ""} ${active === "权限设置" ? "permission-active" : ""}`}>
     <ExecutiveSidebar active={active} setActive={setActive} uiTheme={uiTheme} onThemeChange={onThemeChange} collapsed={sidebarCollapsed} onToggleCollapsed={onToggleSidebar} permissions={permissions} auth={auth} />
     <main className="executive-main">
       <header className="executive-topbar">
         <div><h1>{moduleView ? `${moduleView} 专题分析` : active === "数据导入" ? "数据源管理" : "经营驾驶舱"}</h1><p>{moduleView ? "从原始数据下钻到TOP问题与责任对象" : "全局质量运营总览"}</p></div>
-        <div className="top-actions"><Switcher view={view} onChange={onViewChange} canWorkspace={allowWorkspace} />{allowAnnotationEdit && <AnnotationEditButton defaultModule={moduleView || "\u603b\u89c8"} />}{allowAnnotationView && <AnnotationViewButton />}{allowExport && <ExportReportButton />}<button className={`label-controls-toggle ${labelControlsVisible ? "active" : ""}`} onClick={onToggleLabelControls}>{labelControlsVisible ? "隐藏数值设置" : "显示数值设置"}</button>{allowImport && <button className="import-btn" onClick={() => onImport(null)}><UploadSimple size={17} />导入数据</button>}</div>
+        <div className="top-actions"><ServerSyncBadge value={serverSyncStatus}/><Switcher view={view} onChange={onViewChange} canWorkspace={allowWorkspace} />{allowAnnotationEdit && <AnnotationEditButton defaultModule={moduleView || "\u603b\u89c8"} />}{allowAnnotationView && <AnnotationViewButton />}{allowExport && <ExportReportButton />}<button className={`label-controls-toggle ${labelControlsVisible ? "active" : ""}`} onClick={onToggleLabelControls}>{labelControlsVisible ? "隐藏数值设置" : "显示数值设置"}</button>{allowImport && <button className="import-btn" onClick={() => onImport(null)}><UploadSimple size={17} />导入数据</button>}</div>
       </header>
-      <DateRangeFilter value={dateRange} onChange={onDateRange} onRefresh={onRefreshDate} refreshStatus={dateRefreshStatus} refreshProgress={refreshProgress} canRefresh={allowTemporaryRefresh} fontSize={fontSize} onFontSize={onFontSize}/>
+      <DateRangeFilter value={dateRange} teamDefaultRange={teamDefaultRange} lastServerSavedAt={lastServerSavedAt} onChange={onDateRange} onRefresh={onRefreshDate} refreshStatus={dateRefreshStatus} refreshProgress={refreshProgress} canRefresh={allowTemporaryRefresh} fontSize={fontSize} onFontSize={onFontSize}/>
       {active === "权限设置" && auth?.isAdmin ? <PermissionSettingsPage auth={auth} permissions={permissions} onPermissionsChanged={onPermissionsChanged}/> : active === "数据导入" && allowImport ? <DataSourcePage files={files} onImportModule={onImport} onDelete={onDeleteSource} onSourcesChanged={onSourcesChanged}/> : moduleView ? <ModuleDetail key={`${moduleView}-${analysisKey}`} module={moduleView} data={data} /> : <>
         <OverviewKpiCards data={data}/>
         <div className="dashboard-grid">
@@ -1626,7 +1691,12 @@ function WorkshopCompare({ rows, axisKey = "ipqc-workshop-compare-axis-v1", name
   const axis = useMachinedAxisRange(axisKey, axisDefaults);
   useEffect(() => setSelected(rows.map((row) => row.name)), [rows]);
   const visibleRows = useMemo(() => rows.filter((row) => selected.includes(row.name))
-    .map((row) => ({ ...row, delta: row.y2026Rate - row.y2025Rate }))
+    .map((row) => ({
+      ...row,
+      y2025Qty: Number(row.y2025Qty || 0), y2025Bad: Number(row.y2025Bad || 0), y2025Rate: Number(row.y2025Rate || 0),
+      y2026Qty: Number(row.y2026Qty || 0), y2026Bad: Number(row.y2026Bad || 0), y2026Rate: Number(row.y2026Rate || 0),
+      delta: Number(row.y2026Rate || 0) - Number(row.y2025Rate || 0),
+    }))
     .sort((a, b) => {
       const av = a[sort.key] ?? 0; const bv = b[sort.key] ?? 0;
       const result = typeof av === "string" ? av.localeCompare(bv, "zh-CN") : av - bv;
@@ -3554,7 +3624,7 @@ export function App() {
   const [sourceNotice, setSourceNotice] = useState("");
   const [dateRefreshStatus, setDateRefreshStatus] = useState("idle");
   const [refreshProgress, setRefreshProgress] = useState(null);
-  const [auth, setAuth] = useState({ ip: "", role: "public", isAdmin: false, isDeputy: false, features: {} });
+  const [auth, setAuth] = useState({ ip: "", name: "", role: "unauthorized", isAdmin: false, isDeputy: false, isOrdinary: false, isAuthorized: false, features: {} });
   const [permissions, setPermissions] = useState(() => normalizePermissions({}));
   const [authReady, setAuthReady] = useState(false);
   const [fontSize, setFontSize] = useState(() => localStorage.getItem("qms-font-size") || "standard");
@@ -3563,6 +3633,9 @@ export function App() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => localStorage.getItem("qms-sidebar-collapsed") === "true");
   const [dateRange, setDateRange] = useState(initialDateRange);
   const [appliedDateRange, setAppliedDateRange] = useState(initialDateRange);
+  const [teamDefaultRange, setTeamDefaultRange] = useState(initialDateRange);
+  const [lastServerSavedAt, setLastServerSavedAt] = useState(null);
+  const [serverSyncStatus, setServerSyncStatus] = useState({ state: "idle", label: "等待服务器同步" });
   const [analysisRevision, setAnalysisRevision] = useState(0);
   const skipNextDateAnalysisRef = useRef(true);
   const analyzeInBackground = useCallback((sources, range, fallback = sampleData) => new Promise((resolve) => {
@@ -3613,12 +3686,13 @@ export function App() {
     let cancelled = false;
     Promise.all([loadCurrentUser(), loadPermissionConfig()]).then(([user, payload]) => {
       if (cancelled) return;
-      setAuth(user || { ip: "", role: "public", isAdmin: false, isDeputy: false });
+      const nextUser = user || { ip: "", name: "", role: "unauthorized", isAdmin: false, isDeputy: false, isOrdinary: false, isAuthorized: false };
+      setAuth({ ...nextUser, isAuthorized: nextUser.isAuthorized ?? !!(nextUser.isAdmin || nextUser.isDeputy || nextUser.isOrdinary) });
       setPermissions(normalizePermissions(payload?.permissions || payload || {}));
       setAuthReady(true);
     }).catch(() => {
       if (cancelled) return;
-      setAuth({ ip: "", role: "public", isAdmin: false, isDeputy: false });
+      setAuth({ ip: "", name: "", role: "unauthorized", isAdmin: false, isDeputy: false, isOrdinary: false, isAuthorized: false });
       setPermissions(normalizePermissions({}));
       setAuthReady(true);
     });
@@ -3635,6 +3709,7 @@ export function App() {
   useEffect(() => { localStorage.setItem("qms-sidebar-collapsed", sidebarCollapsed ? "true" : "false"); }, [sidebarCollapsed]);
   useEffect(() => { seedDefaultAnnotations(); }, []);
   useEffect(() => {
+    if (!authReady || !auth.isAuthorized) return undefined;
     let cancelled = false;
     const initialize = async () => {
       try {
@@ -3650,6 +3725,9 @@ export function App() {
           setFiles(cached.files || []);
           setDateRange(cachedRange);
           setAppliedDateRange(cachedRange);
+          setTeamDefaultRange(cachedRange);
+          setLastServerSavedAt(cached.savedAt || null);
+          setServerSyncStatus({ state: "success", label: cached.savedAt ? `服务器已同步 · ${formatSyncDateTime(cached.savedAt)}` : "服务器已同步" });
           localStorage.setItem("qms-date-range-v202605", JSON.stringify(cachedRange));
           setData(cached.data);
           setStorageReady(true);
@@ -3681,6 +3759,8 @@ export function App() {
           setAppliedDateRange(activeRange);
           localStorage.setItem("qms-date-range-v202605", JSON.stringify(activeRange));
         }
+        setTeamDefaultRange(activeRange);
+        if (savedRange?.savedAt) setLastServerSavedAt(savedRange.savedAt);
 
         const stored = await loadImportedSources();
         if (cancelled) return;
@@ -3736,7 +3816,7 @@ export function App() {
     };
     initialize();
     return () => { cancelled = true; };
-  }, []);
+  }, [authReady, auth.isAuthorized]);
   useEffect(() => {
     document.documentElement.dataset.fontSize = fontSize;
     localStorage.setItem("qms-font-size", fontSize);
@@ -3760,13 +3840,29 @@ export function App() {
     setImportModule(module);
     setImportOpen(true);
   };
-  const applySources = async (sources, result = {}) => {
+  const applySources = async (sources, result = {}, onProgress = () => {}) => {
     setUsingDefaultAnalysis(false);
     setFiles(sources);
-    await saveImportedSources(sources);
+    onProgress({ state: "loading", label: "正在保存数据源清单" });
+    setServerSyncStatus({ state: "saving", label: "正在保存到服务器" });
+    const savedSources = await saveImportedSources(sources);
+    if (!savedSources) {
+      setServerSyncStatus({ state: "error", label: "服务器保存失败" });
+      throw new Error("Failed to save imported sources to server");
+    }
     localStorage.setItem("qms-user-imported-sources-v2", "true");
+    onProgress({ state: "loading", label: "正在生成分析图表" });
     const nextData = await applyAnalyzedData(sources, appliedDateRange);
-    saveAnalysisCacheFor(sources, appliedDateRange, nextData);
+    onProgress({ state: "loading", label: "正在保存分析结果" });
+    const savedCache = await saveAnalysisCacheFor(sources, appliedDateRange, nextData);
+    if (!savedCache) {
+      setServerSyncStatus({ state: "error", label: "服务器保存失败" });
+      throw new Error("Failed to save analysis cache to server");
+    }
+    const savedAt = savedCache.savedAt || new Date().toISOString();
+    setLastServerSavedAt(savedAt);
+    setTeamDefaultRange(appliedDateRange);
+    setServerSyncStatus({ state: "success", label: `服务器已同步 · ${formatSyncDateTime(savedAt)}` });
     const parts = [];
     if (result.added?.length) parts.push(`新增${result.added.length}个`);
     if (result.replaced?.length) parts.push(`替换${result.replaced.length}个`);
@@ -3818,11 +3914,21 @@ export function App() {
         localStorage.setItem("qms-date-range-v202605", JSON.stringify(selectedRange));
         setRefreshProgress({ label: "正在计算分析结果", percent: 70 });
         const nextData = await applyAnalyzedData(defaultFiles, selectedRange);
-        await saveAnalysisCacheFor(defaultFiles, selectedRange, nextData);
-        await saveAppliedDateRange(selectedRange).catch(() => {});
+        setServerSyncStatus({ state: "saving", label: "正在保存到服务器" });
+        const [savedCache, savedRange] = await Promise.all([saveAnalysisCacheFor(defaultFiles, selectedRange, nextData), saveAppliedDateRange(selectedRange)]);
+        if (!savedCache || !savedRange) throw new Error("Failed to save refreshed default analysis");
+        const savedAt = savedRange.savedAt || savedCache.savedAt || new Date().toISOString();
+        setTeamDefaultRange(selectedRange);
+        setLastServerSavedAt(savedAt);
+        setServerSyncStatus({ state: "success", label: `服务器已同步 · ${formatSyncDateTime(savedAt)}` });
         setRefreshProgress({ label: "刷新完成", percent: 100 });
         setDateRefreshStatus("done");
         setTimeout(() => { setDateRefreshStatus("idle"); setRefreshProgress(null); }, 1800);
+      }).catch(() => {
+        setServerSyncStatus({ state: "error", label: "服务器保存失败，请重试" });
+        setRefreshProgress({ label: "服务器保存失败", percent: 100 });
+        setDateRefreshStatus("missing");
+        setTimeout(() => { setDateRefreshStatus("idle"); setRefreshProgress(null); }, 2600);
       });
       return;
     }
@@ -3836,15 +3942,24 @@ export function App() {
       setRefreshProgress({ label: "正在计算图表和数据表", percent: 78 });
       return applyAnalyzedData(readySources, selectedRange).then((nextData) => ({ readySources, nextData }));
     }).then(({ readySources, nextData }) => {
-      const canSaveGlobal = (auth?.isAdmin || auth?.isDeputy) && canUseFeature(auth, permissions, "dataImport") && localStorage.getItem("qms-user-imported-sources-v2") === "true";
+      const canSaveGlobal = (auth?.isAdmin || auth?.isDeputy) && canUseFeature(auth, permissions, "dataImport");
       if (!canSaveGlobal) return null;
       setRefreshProgress({ label: "正在保存到服务器", percent: 92 });
+      setServerSyncStatus({ state: "saving", label: "正在保存到服务器" });
       return Promise.all([saveAnalysisCacheFor(readySources, selectedRange, nextData), saveAppliedDateRange(selectedRange)]);
-    }).then(() => {
+    }).then((saved) => {
+      if (saved && (!saved[0] || !saved[1])) throw new Error("Failed to save refreshed analysis");
+      if (saved) {
+        const savedAt = saved[1].savedAt || saved[0].savedAt || new Date().toISOString();
+        setTeamDefaultRange(selectedRange);
+        setLastServerSavedAt(savedAt);
+        setServerSyncStatus({ state: "success", label: `服务器已同步 · ${formatSyncDateTime(savedAt)}` });
+      }
       setRefreshProgress({ label: "刷新完成", percent: 100 });
       setDateRefreshStatus("done");
       setTimeout(() => { setDateRefreshStatus("idle"); setRefreshProgress(null); }, 1800);
     }).catch(() => {
+      setServerSyncStatus({ state: "error", label: "服务器保存失败，请重试" });
       setRefreshProgress({ label: "刷新完成", percent: 100 });
       setDateRefreshStatus("done");
       setTimeout(() => { setDateRefreshStatus("idle"); setRefreshProgress(null); }, 1800);
@@ -3862,6 +3977,21 @@ export function App() {
     setUiTheme(theme);
   };
 
+  if (authReady && !auth.isAuthorized) {
+    const theme = uiTheme === "apple" ? "apple" : "classic";
+    return <UiThemeContext.Provider value={theme}>
+      <div className={`access-denied-shell theme-${theme}`}>
+        <section className="access-denied-card">
+          <ShieldCheck size={34} weight="fill" />
+          <span>访问受限</span>
+          <h1>当前设备未获得查看权限</h1>
+          <p>请联系主管理员，将以下 IP 和使用人姓名添加到普通用户或副管理员名单。</p>
+          <div><small>当前 IP</small><strong>{auth.ip || "无法识别"}</strong></div>
+        </section>
+      </div>
+    </UiThemeContext.Provider>;
+  }
+
   if (!storageReady || !data || !authReady) {
     const theme = uiTheme === "apple" ? "apple" : "classic";
     return <UiThemeContext.Provider value={theme}>
@@ -3877,7 +4007,7 @@ export function App() {
 
   return <UiThemeContext.Provider value={uiTheme === "apple" ? "apple" : "classic"}>
     {view === "executive"
-      ? <ExecutiveDashboard data={data} files={files} onImport={openImport} onDeleteSource={deleteSource} onSourcesChanged={applySources} view={view} onViewChange={setView} dateRange={dateRange} appliedDateRange={appliedDateRange} onDateRange={updateDateRange} onRefreshDate={refreshDateData} dateRefreshStatus={dateRefreshStatus} refreshProgress={refreshProgress} fontSize={fontSize} onFontSize={setFontSize} analysisKey={analysisRevision} labelControlsVisible={labelControlsVisible} onToggleLabelControls={() => setLabelControlsVisible((current) => !current)} uiTheme={uiTheme === "apple" ? "apple" : "classic"} onThemeChange={changeUiTheme} sidebarCollapsed={sidebarCollapsed} onToggleSidebar={() => setSidebarCollapsed((current) => !current)} auth={auth} permissions={permissions} onPermissionsChanged={(next) => setPermissions(normalizePermissions(next))} />
+      ? <ExecutiveDashboard data={data} files={files} onImport={openImport} onDeleteSource={deleteSource} onSourcesChanged={applySources} view={view} onViewChange={setView} dateRange={dateRange} teamDefaultRange={teamDefaultRange} lastServerSavedAt={lastServerSavedAt} serverSyncStatus={serverSyncStatus} appliedDateRange={appliedDateRange} onDateRange={updateDateRange} onRefreshDate={refreshDateData} dateRefreshStatus={dateRefreshStatus} refreshProgress={refreshProgress} fontSize={fontSize} onFontSize={setFontSize} analysisKey={analysisRevision} labelControlsVisible={labelControlsVisible} onToggleLabelControls={() => setLabelControlsVisible((current) => !current)} uiTheme={uiTheme === "apple" ? "apple" : "classic"} onThemeChange={changeUiTheme} sidebarCollapsed={sidebarCollapsed} onToggleSidebar={() => setSidebarCollapsed((current) => !current)} auth={auth} permissions={permissions} onPermissionsChanged={(next) => setPermissions(normalizePermissions(next))} />
       : <WorkspaceDashboard key={`workspace-${analysisRevision}`} data={data} files={files} onImport={() => openImport(null)} view={view} onViewChange={setView} onExport={exportData} onSave={saveTemplate} dateRange={dateRange} appliedDateRange={appliedDateRange} onDateRange={updateDateRange} onRefreshDate={refreshDateData} dateRefreshStatus={dateRefreshStatus} fontSize={fontSize} onFontSize={setFontSize} uiTheme={uiTheme === "apple" ? "apple" : "classic"} auth={auth} permissions={permissions} />}
     <ImportModal open={importOpen} onClose={() => setImportOpen(false)} onSourcesChanged={applySources} files={files} dateRange={appliedDateRange} targetModule={importModule} />
     {saved && <div className="toast"><CheckCircle size={19} weight="fill" />当前分析视图已保存为本机模板</div>}

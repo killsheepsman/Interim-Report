@@ -14,11 +14,14 @@ const adminIpsFile = path.join(dataDir, "admin-ips.json");
 const permissionFile = path.join(dataDir, "permission-config.json");
 const port = Number(process.env.PORT || 4173);
 const host = process.env.HOST || "0.0.0.0";
+const trustProxy = process.env.TRUST_PROXY === "true";
 const maxBodyBytes = Number(process.env.MAX_BODY_MB || 1024) * 1024 * 1024;
 const allowedKeys = new Set(["imported-sources", "analysis-cache", "applied-date-range"]);
 const defaultValueFor = (key) => key === "analysis-cache" || key === "applied-date-range" ? null : [];
 const defaultPermissionConfig = {
   deputyAdmins: [],
+  ordinaryUsers: [],
+  allowIntranetUsers: false,
   features: {
     dataImport: { public: false, deputy: true, label: "数据导入" },
     workspace: { public: false, deputy: true, label: "质量工作台" },
@@ -66,13 +69,42 @@ const normalizeIp = (value = "") => String(value)
   .replace(/^::ffff:/, "")
   .replace(/^::1$/, "127.0.0.1");
 
-const clientIp = (req) => normalizeIp(req.headers["x-forwarded-for"] || req.headers["x-real-ip"] || req.socket.remoteAddress || "");
+const clientIp = (req) => normalizeIp(trustProxy
+  ? req.headers["x-forwarded-for"] || req.headers["x-real-ip"] || req.socket.remoteAddress || ""
+  : req.socket.remoteAddress || "");
 
 const uniqueStrings = (items = []) => [...new Set(items.map((item) => String(item || "").trim()).filter(Boolean))];
 
+const normalizeMembers = (items = []) => {
+  const byIp = new Map();
+  (Array.isArray(items) ? items : []).forEach((item) => {
+    const ip = normalizeIp(typeof item === "string" ? item : item?.ip);
+    if (!ip) return;
+    byIp.set(ip, { ip, name: String(typeof item === "string" ? "" : item?.name || "").trim() });
+  });
+  return [...byIp.values()];
+};
+
+const isPrivateNetworkIp = (value) => {
+  const ip = normalizeIp(value).toLowerCase();
+  if (ip === "127.0.0.1" || ip === "::1") return true;
+  if (ip.startsWith("fc") || ip.startsWith("fd") || ip.startsWith("fe80:")) return true;
+  const parts = ip.split(".").map(Number);
+  if (parts.length !== 4 || parts.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) return false;
+  return parts[0] === 10
+    || (parts[0] === 172 && parts[1] >= 16 && parts[1] <= 31)
+    || (parts[0] === 192 && parts[1] === 168)
+    || (parts[0] === 169 && parts[1] === 254)
+    || parts[0] === 127;
+};
+
 const mergePermissionConfig = (config = {}) => {
+  const deputyAdmins = normalizeMembers(config.deputyAdmins);
+  const deputyIps = new Set(deputyAdmins.map((member) => member.ip));
   const merged = {
-    deputyAdmins: uniqueStrings(config.deputyAdmins || []),
+    deputyAdmins,
+    ordinaryUsers: normalizeMembers(config.ordinaryUsers).filter((member) => !deputyIps.has(member.ip)),
+    allowIntranetUsers: config.allowIntranetUsers === true,
     features: {},
     apis: {},
   };
@@ -125,8 +157,23 @@ const currentUser = async (req) => {
   const ip = clientIp(req);
   const [adminIps, permissions] = await Promise.all([loadAdminIps(), loadPermissionConfig()]);
   const isAdmin = adminIps.includes(ip);
-  const isDeputy = permissions.deputyAdmins.includes(ip);
-  return { ip, isAdmin, isDeputy, role: isAdmin ? "admin" : isDeputy ? "deputy" : "public", permissions };
+  const deputy = permissions.deputyAdmins.find((member) => member.ip === ip);
+  const ordinary = permissions.ordinaryUsers.find((member) => member.ip === ip);
+  const isIntranetUser = permissions.allowIntranetUsers && isPrivateNetworkIp(ip);
+  const isDeputy = !!deputy;
+  const isOrdinary = !!ordinary || isIntranetUser;
+  const isAuthorized = isAdmin || isDeputy || isOrdinary;
+  return {
+    ip,
+    name: deputy?.name || ordinary?.name || (isAdmin ? "主管理员" : isIntranetUser ? "公司内网用户" : ""),
+    isAdmin,
+    isDeputy,
+    isOrdinary,
+    isIntranetUser,
+    isAuthorized,
+    role: isAdmin ? "admin" : isDeputy ? "deputy" : isOrdinary ? "public" : "unauthorized",
+    permissions,
+  };
 };
 
 const routeKey = (req) => {
@@ -139,6 +186,10 @@ const routeKey = (req) => {
 const ensureApiAllowed = async (req, res) => {
   const user = await currentUser(req);
   if (user.isAdmin) return user;
+  if (!user.isAuthorized) {
+    sendJson(res, 403, { error: "Access denied: IP is not registered", ip: user.ip, role: user.role });
+    return null;
+  }
   const rule = user.permissions.apis[routeKey(req)];
   const allowed = user.isDeputy ? rule?.deputy !== false : rule?.public === true;
   if (!allowed) {
@@ -375,9 +426,13 @@ const handleMe = async (req, res) => {
   const user = await currentUser(req);
   return sendJson(res, 200, {
     ip: user.ip,
+    name: user.name,
     role: user.role,
     isAdmin: user.isAdmin,
     isDeputy: user.isDeputy,
+    isOrdinary: user.isOrdinary,
+    isIntranetUser: user.isIntranetUser,
+    isAuthorized: user.isAuthorized,
     features: user.permissions.features,
   });
 };
@@ -388,9 +443,12 @@ const handlePermissions = async (req, res) => {
     if (!user) return;
     return sendJson(res, 200, {
       ip: user.ip,
+      name: user.name,
       role: user.role,
       isAdmin: user.isAdmin,
       isDeputy: user.isDeputy,
+      isOrdinary: user.isOrdinary,
+      isAuthorized: user.isAuthorized,
       permissions: user.permissions,
     });
   }
@@ -425,6 +483,11 @@ const serveStatic = async (req, res) => {
     if (stat.isDirectory()) filePath = path.join(filePath, "index.html");
   } catch {
     filePath = path.join(publicDir, "index.html");
+  }
+
+  if (/^default(?:Analysis|Sources|QmsSources)\.json(?:\.gz)?$/i.test(path.basename(filePath))) {
+    const user = await currentUser(req);
+    if (!user.isAuthorized) return sendJson(res, 403, { error: "Access denied: IP is not registered", ip: user.ip });
   }
 
   const ext = path.extname(filePath).toLowerCase();

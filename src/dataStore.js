@@ -230,7 +230,8 @@ export const saveImportedSources = async (sources) => {
   await saveImportedSourcesLocal(sources);
   const remoteSources = summarizeSources(sources);
   const remoteSaved = await saveRemoteState(REMOTE_SOURCES_KEY, remoteSources);
-  return Array.isArray(remoteSaved) ? remoteSaved : remoteSources;
+  if (!sharedApiBase()) return remoteSources;
+  return Array.isArray(remoteSaved) ? remoteSaved : null;
 };
 
 export const downloadSourceFiles = async (sources = []) => {
@@ -260,7 +261,8 @@ export const loadCachedAnalysis = async () => {
 export const saveCachedAnalysis = async (cache) => {
   await saveAnalysisCacheLocal(cache);
   const remoteSaved = await saveRemoteState(REMOTE_ANALYSIS_CACHE_KEY, cache);
-  return remoteSaved && typeof remoteSaved === "object" ? remoteSaved : cache;
+  if (!sharedApiBase()) return cache;
+  return remoteSaved && typeof remoteSaved === "object" ? remoteSaved : null;
 };
 
 export const loadAppliedDateRange = async () => {
@@ -271,18 +273,21 @@ export const loadAppliedDateRange = async () => {
 export const saveAppliedDateRange = async (range) => {
   const payload = { ...range, savedAt: new Date().toISOString() };
   const remoteSaved = await saveRemoteState(REMOTE_APPLIED_DATE_RANGE_KEY, payload);
-  return remoteSaved && typeof remoteSaved === "object" ? remoteSaved : payload;
+  if (!sharedApiBase()) return payload;
+  return remoteSaved && typeof remoteSaved === "object" ? remoteSaved : null;
 };
 
 export const loadCurrentUser = async () => {
+  const localAccess = { ip: "local", name: "本机用户", role: "local", isAdmin: false, isDeputy: false, isOrdinary: true, isAuthorized: true, features: {} };
   try {
+    if (!sharedApiBase()) return localAccess;
     const response = await requestSharedApi("/me", { method: "GET", cache: "no-store" });
-    if (!response) return { ip: "", role: "public", isAdmin: false, isDeputy: false, features: {} };
+    if (!response) return { ip: "", name: "", role: "unauthorized", isAdmin: false, isDeputy: false, isOrdinary: false, isAuthorized: false, features: {} };
     const contentType = response.headers.get("content-type") || "";
-    if (!contentType.includes("application/json")) return { ip: "", role: "public", isAdmin: false, isDeputy: false, features: {} };
+    if (!contentType.includes("application/json")) return { ip: "", name: "", role: "unauthorized", isAdmin: false, isDeputy: false, isOrdinary: false, isAuthorized: false, features: {} };
     return await response.json();
   } catch {
-    return { ip: "", role: "public", isAdmin: false, isDeputy: false, features: {} };
+    return { ip: "", name: "", role: "unauthorized", isAdmin: false, isDeputy: false, isOrdinary: false, isAuthorized: false, features: {} };
   }
 };
 
