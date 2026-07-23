@@ -37,7 +37,11 @@ button { cursor: pointer; }
 .brand-logo { width: 34px; height: 34px; border-radius: 50%; background: #fff; color: var(--navy); display: grid; place-items: center; }
 .brand strong { display: block; font-size: 17px; letter-spacing: .5px; }
 .brand span { display: block; font-size: 11px; opacity: .75; margin-top: 3px; }
-.executive-sidebar nav { padding: 18px 8px; display: grid; gap: 6px; }
+.executive-sidebar nav { flex: 1 1 auto; min-height: 0; padding: 18px 8px; display: grid; align-content: start; gap: 6px; overflow-x: hidden; overflow-y: auto; scrollbar-gutter: stable; scrollbar-width: thin; scrollbar-color: rgba(255,255,255,.35) transparent; }
+.executive-sidebar nav::-webkit-scrollbar { width: 7px; }
+.executive-sidebar nav::-webkit-scrollbar-track { background: transparent; }
+.executive-sidebar nav::-webkit-scrollbar-thumb { border-radius: 999px; background: rgba(255,255,255,.35); }
+.executive-sidebar nav::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,.58); }
 .executive-sidebar nav button, .collapse-nav { border: 0; background: transparent; color: #d7e5f8; height: 48px; border-radius: 6px; display: flex; align-items: center; gap: 13px; padding: 0 15px; font-size: 14px; text-align: left; }
 .executive-sidebar nav button:hover { background: rgba(255,255,255,.08); color: #fff; }
 .executive-sidebar nav button.active { background: #1262d5; color: #fff; box-shadow: 0 6px 16px rgba(0,77,188,.32); }
