@@ -11,6 +11,8 @@ import { analyzeImported, downloadJson, normalizeIpqcLeaderMapRows, normalizeIpq
 import { createSourcesSignature, downloadSourceFiles, loadAiConfig, loadAiModels, loadAppliedDateRange, loadCachedAnalysis, loadCurrentUser, loadDefaultAnalysis, loadDefaultAnnotations, loadDefaultQmsSources, loadDefaultSources, loadImportedSources, loadPermissionConfig, mergeImportedSources, requestAiChat, saveAiConfig, saveAiReport, saveAppliedDateRange, saveCachedAnalysis, saveImportedSources, savePermissionConfig, sourceRowCount, summarizeSources, testAiConfig, uploadSourceFiles } from "./dataStore.js";
 import { sampleData } from "./sampleData.js";
 import { BarCompare, Donut, HorizontalRank, MachinedTpmCompareChart, Pareto, QmsDivisionCombo, QmsScoreCompare, QmsTpmRank, QmsTrendCombo, QuantityRateCombo, ScoreMonthlyCombo, ScoreYearCompare, StackedStage, WorkshopCategoryHeatmap, YearStackedCompare } from "./charts.jsx";
+import * as XLSX from "xlsx";
+import "./qmdp.css";
 
 const moduleIcons = { IQC: Cube, IPQC: Pulse, OQC: ShieldCheck, DQA: ClipboardText, QMS: ListChecks };
 const moduleColor = { IQC: "green", IPQC: "blue", OQC: "orange", DQA: "amber", QMS: "purple" };
@@ -2160,8 +2162,121 @@ function ManagementReportPage({ data }) {
 
 const qmdpKnowledgeKey = "qms-qmdp-knowledge-files-v1";
 const qmdpQuestionsKey = "qms-qmdp-question-bank-v1";
+const qmdpExamRecordsKey = "qms-qmdp-exam-records-v1";
 const qmdpSystemKey = "qms-qmdp-system-config-v1";
 const qmdpReportTasksKey = "qms-qmdp-report-tasks-v1";
+
+const decodeKnowledgeText = (buffer) => {
+  const bytes = buffer instanceof Uint8Array ? buffer : new Uint8Array(buffer);
+  const utf8 = new TextDecoder("utf-8").decode(bytes);
+  const replacementCount = (utf8.match(/\ufffd/g) || []).length;
+  if (replacementCount > 0 && typeof TextDecoder !== "undefined") {
+    try { return new TextDecoder("gb18030").decode(bytes); } catch { /* use UTF-8 fallback */ }
+  }
+  return utf8;
+};
+
+const unzipLocalEntries = async (buffer) => {
+  const bytes = new Uint8Array(buffer);
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const entries = new Map();
+  let offset = 0;
+  while (offset + 30 <= bytes.length && view.getUint32(offset, true) === 0x04034b50) {
+    const method = view.getUint16(offset + 8, true);
+    const compressedSize = view.getUint32(offset + 18, true);
+    const nameLength = view.getUint16(offset + 26, true);
+    const extraLength = view.getUint16(offset + 28, true);
+    const nameStart = offset + 30;
+    const name = new TextDecoder("utf-8").decode(bytes.subarray(nameStart, nameStart + nameLength));
+    const dataStart = nameStart + nameLength + extraLength;
+    const compressed = bytes.subarray(dataStart, dataStart + compressedSize);
+    let content = compressed;
+    if (method === 8) {
+      if (typeof DecompressionStream === "undefined") throw new Error("当前浏览器不支持 Office 文档解压，请使用最新版 Chrome/Edge");
+      const stream = new Blob([compressed]).stream().pipeThrough(new DecompressionStream("deflate-raw"));
+      content = new Uint8Array(await new Response(stream).arrayBuffer());
+    } else if (method !== 0) {
+      offset = dataStart + compressedSize;
+      continue;
+    }
+    entries.set(name, content);
+    offset = dataStart + compressedSize;
+  }
+  return entries;
+};
+
+const decodeXml = (value) => String(value || "").replace(/<[^>]+>/g, " ").replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/\s+/g, " ").trim();
+const officeParagraphs = (xml, tag = "w:p", textTag = "w:t") => (String(xml || "").match(new RegExp(`<${tag}\\b[\\s\\S]*?<\\/${tag}>`, "g")) || []).map((block) => decodeXml((block.match(new RegExp(`<${textTag}\\b[^>]*>([\\s\\S]*?)<\\/${textTag}>`, "g")) || []).map((item) => item.replace(new RegExp(`^<[\\s\\S]*?>|<\\/${textTag}>$`, "g"), "")).join(" "))).filter(Boolean);
+
+const readKnowledgeFile = async (file) => {
+  const ext = file.name.split(".").pop()?.toLowerCase();
+  if (["docx", "pptx"].includes(ext)) {
+    const entries = await unzipLocalEntries(await file.arrayBuffer());
+    const names = [...entries.keys()].filter((name) => ext === "docx" ? name === "word/document.xml" : /^ppt\/slides\/slide\d+\.xml$/i.test(name)).sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+    const paragraphs = names.flatMap((name) => officeParagraphs(decodeKnowledgeText(entries.get(name)), ext === "docx" ? "w:p" : "a:p", ext === "docx" ? "w:t" : "a:t"));
+    return { contentType: ext === "docx" ? "word" : "ppt", segments: paragraphs.length ? paragraphs : ["文档中没有可提取的文本"], preview: paragraphs.join("\n").slice(0, 80000) };
+  }
+  if (["xlsx", "xls", "xlsm"].includes(ext)) {
+    const workbook = XLSX.read(await file.arrayBuffer(), { type: "array", cellDates: true });
+    const lines = workbook.SheetNames.flatMap((sheetName) => {
+      const rows = XLSX.utils.sheet_to_json(workbook.Sheets[sheetName], { header: 1, defval: "", blankrows: false });
+      return rows.map((row) => `${sheetName} | ${row.map((cell) => String(cell ?? "").trim()).filter(Boolean).join(" | ")}`).filter((line) => line.length > sheetName.length + 3);
+    });
+    return { contentType: "excel", segments: lines, preview: lines.join("\n").slice(0, 80000) };
+  }
+  const text = decodeKnowledgeText(await file.arrayBuffer()).replace(/\r/g, "").trim();
+  const segments = text ? text.match(/[\\s\\S]{1,3500}/g) || [] : [];
+  return { contentType: ext === "pdf" ? "pdf" : "text", segments, preview: text.slice(0, 80000) };
+};
+
+const questionHeaderAliases = {
+  stem: ["题干", "问题", "题目", "QuestionText", "Question"], type: ["类型", "题型", "题目类型", "Type"],
+  optionA: ["选项A", "A选项", "答案A", "选项1", "OptionA"], optionB: ["选项B", "B选项", "答案B", "选项2", "OptionB"],
+  optionC: ["选项C", "C选项", "答案C", "选项3", "OptionC"], optionD: ["选项D", "D选项", "答案D", "选项4", "OptionD"],
+  options: ["选项", "备选项", "答案选项", "选项内容", "Options"], answer: ["正确答案", "正确选项", "标准答案", "答案", "CorrectAnswer", "Answer"],
+  explanation: ["解析", "说明", "Explanation"], roles: ["适用角色", "ApplicableRoles"], categories: ["问题类别", "IssueCategories"], knowledge: ["知识标题", "KnowledgeTitle"],
+};
+const normalizedHeader = (value) => String(value ?? "").trim().replace(/\s+/g, "").toLowerCase();
+const parseQuestionType = (value) => /判断|truefalse/i.test(String(value || "")) ? "TrueFalse" : /多选|multichoice/i.test(String(value || "")) ? "MultiChoice" : /简答|shortanswer/i.test(String(value || "")) ? "ShortAnswer" : "SingleChoice";
+const parseOptions = (row, header, type) => {
+  if (type === "TrueFalse") return ["正确", "错误"];
+  const direct = ["optionA", "optionB", "optionC", "optionD"].map((key) => row[header[key]]).map((value) => String(value ?? "").trim()).filter(Boolean);
+  if (direct.length) return direct;
+  const combined = String(row[header.options] ?? "").replace(/[；;|]/g, "\n");
+  return combined.split(/\r?\n/).map((value) => value.replace(/^\s*[A-DＡ-Ｄ][.．、:：)）]\s*/i, "").trim()).filter(Boolean);
+};
+const parseAnswerIndexes = (value, options, type) => {
+  const text = String(value ?? "").trim();
+  if (type === "ShortAnswer") return { answer: -1, correctAnswers: [], answerText: text };
+  const parts = type === "MultiChoice" ? text.split(/[、,，;；\s]+/).filter(Boolean) : [text];
+  const indexes = parts.map((part) => {
+    const normalized = part.replace(/^选项/, "").trim().toUpperCase();
+    if (/^[A-D]$/.test(normalized)) return normalized.charCodeAt(0) - 65;
+    if (/^\d+$/.test(normalized)) { const number = Number(normalized); return number < options.length ? number : number - 1; }
+    if (/正确|是|TRUE/i.test(normalized)) return 0;
+    if (/错误|否|FALSE/i.test(normalized)) return 1;
+    return options.findIndex((option) => option === part || option.includes(part) || part.includes(option));
+  }).filter((index) => index >= 0 && index < options.length);
+  return { answer: indexes[0] ?? -1, correctAnswers: [...new Set(indexes)], answerText: text };
+};
+
+const parseQuestionWorkbook = async (file) => {
+  const workbook = XLSX.read(await file.arrayBuffer(), { type: "array", cellDates: true });
+  const rows = XLSX.utils.sheet_to_json(workbook.Sheets[workbook.SheetNames[0]], { header: 1, defval: "", blankrows: false });
+  const headerRow = rows.findIndex((row) => row.some((cell) => questionHeaderAliases.stem.some((alias) => normalizedHeader(alias) === normalizedHeader(cell))));
+  if (headerRow < 0) throw new Error("无法识别题干列，请使用题干、问题、题目或 QuestionText 作为表头");
+  const headers = rows[headerRow].map(normalizedHeader);
+  const header = Object.fromEntries(Object.entries(questionHeaderAliases).map(([key, aliases]) => [key, headers.findIndex((cell) => aliases.some((alias) => normalizedHeader(alias) === cell))]).filter(([, index]) => index >= 0));
+  return rows.slice(headerRow + 1).map((row, index) => {
+    const stem = String(row[header.stem] ?? "").trim();
+    if (!stem) return null;
+    const type = parseQuestionType(row[header.type]);
+    const options = parseOptions(row, header, type);
+    const answer = parseAnswerIndexes(row[header.answer], options, type);
+    if (type !== "ShortAnswer" && (!options.length || answer.answer < 0)) return null;
+    return { id: `${file.name}-${Date.now()}-${index}`, stem, type, options, answer: answer.answer, correctAnswers: answer.correctAnswers, answerText: answer.answerText, explanation: String(row[header.explanation] ?? "").trim(), roles: String(row[header.roles] ?? "").trim(), categories: String(row[header.categories] ?? "").trim(), knowledge: String(row[header.knowledge] ?? "").trim(), sourceFileName: file.name };
+  }).filter(Boolean);
+};
 
 function QmdpPageHeader({ icon: Icon = Database, eyebrow, title, description, action }) {
   return <div className="qmdp-page-header"><div className="qmdp-page-title"><span className="qmdp-page-icon"><Icon size={23}/></span><div><small>{eyebrow}</small><h2>{title}</h2><p>{description}</p></div></div>{action}</div>;
@@ -2182,19 +2297,22 @@ function KnowledgeBasePage() {
     if (!selected.length) return;
     const next = [];
     for (const file of selected) {
-      let preview = "";
-      try { preview = (await file.text()).slice(0, 2400); } catch { /* metadata remains usable */ }
-      next.push({ id: `${file.name}-${file.lastModified}-${Math.random().toString(16).slice(2)}`, name: file.name, category, size: file.size, importedAt: new Date().toISOString(), preview });
+      try {
+        const parsed = await readKnowledgeFile(file);
+        next.push({ id: `${file.name}-${file.lastModified}-${Math.random().toString(16).slice(2)}`, name: file.name, category, size: file.size, importedAt: new Date().toISOString(), contentType: parsed.contentType, segmentCount: parsed.segments.length, segments: parsed.segments.slice(0, 80), preview: parsed.preview });
+      } catch (error) {
+        setStatus(`${file.name} 导入失败：${error.message || "无法解析文件"}`);
+      }
     }
     setFiles((current) => [...next, ...current.filter((item) => !next.some((candidate) => candidate.name === item.name))]);
-    setStatus(`已导入 ${next.length} 个知识文件`);
+    if (next.length) setStatus(`已导入 ${next.length} 个知识文件，已提取 ${next.reduce((sum, item) => sum + item.segmentCount, 0)} 个知识片段`);
     event.target.value = "";
   };
   const visible = files.filter((file) => (!query || `${file.name} ${file.preview}`.toLowerCase().includes(query.toLowerCase())) && (!category || category === "全部" || file.category === category));
   return <div className="qmdp-page"><QmdpPageHeader icon={Database} eyebrow="知识管理 / Knowledge Base" title="知识库" description="沉淀研发规范、装配工艺、SOP 与 Lesson Learned，支持按类别检索和删除。" action={<label className="qmdp-primary-btn"><UploadSimple size={16}/>导入知识文件<input type="file" multiple accept=".doc,.docx,.pdf,.txt,.md,.xlsx,.xls" onChange={importFiles}/></label>}/>
     <QmdpStatStrip items={[{ label: "知识文件", value: files.length, note: "本机已登记" }, { label: "规范类别", value: new Set(files.map((file) => file.category)).size, note: "按类别归档" }, { label: "可检索文本", value: files.filter((file) => file.preview).length, note: "已提取预览" }]} />
     <div className="qmdp-toolbar"><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索文件名或文本片段"/><select value={category} onChange={(event) => setCategory(event.target.value)}>{["全部", "研发设计规范", "组装工艺", "研发 Lesson Learned", "调试 SOP"].map((item) => <option key={item}>{item}</option>)}</select><span>{status || `当前显示 ${visible.length} 个文件`}</span></div>
-    <div className="qmdp-card-grid">{visible.map((file) => <article className="qmdp-file-card" key={file.id}><header><FileXls size={21}/><span>{file.category}</span></header><h3>{file.name}</h3><p>{file.preview || "尚未提取文本；可作为知识文件留档。"}</p><footer><small>{Math.max(1, Math.round(file.size / 1024))} KB · {formatSyncDateTime(file.importedAt)}</small><button className="qmdp-danger-btn" onClick={() => setFiles((current) => current.filter((item) => item.id !== file.id))}><Trash size={14}/>删除</button></footer></article>)}{!visible.length && <div className="qmdp-empty"><Database size={30}/><strong>暂无匹配知识文件</strong><span>导入规范、SOP 或经验文档后会显示在这里。</span></div>}</div>
+    <div className="qmdp-card-grid">{visible.map((file) => <article className="qmdp-file-card" key={file.id}><header><FileXls size={21}/><span>{file.category}</span></header><h3>{file.name}</h3><p>{file.preview || "尚未提取文本；可作为知识文件留档。"}</p><footer><small>{file.contentType || "text"} · {file.segmentCount || 0} 片段 · {Math.max(1, Math.round(file.size / 1024))} KB</small><button className="qmdp-danger-btn" onClick={() => setFiles((current) => current.filter((item) => item.id !== file.id))}><Trash size={14}/>删除</button></footer></article>)}{!visible.length && <div className="qmdp-empty"><Database size={30}/><strong>暂无匹配知识文件</strong><span>导入规范、SOP 或经验文档后会显示在这里。</span></div>}</div>
   </div>;
 }
 
@@ -2208,41 +2326,78 @@ function QuestionBankPage() {
     const file = event.target.files?.[0];
     if (!file) return;
     let parsed = [];
+    let parseError = "";
     try {
-      const raw = await file.text();
-      if (/\.json$/i.test(file.name)) {
+      if (/\.(xlsx|xls|xlsm)$/i.test(file.name)) {
+        parsed = await parseQuestionWorkbook(file);
+      } else {
+        const raw = decodeKnowledgeText(await file.arrayBuffer());
+        if (/\.json$/i.test(file.name)) {
         const value = JSON.parse(raw);
         parsed = Array.isArray(value) ? value : value.questions || [];
-      } else {
-        parsed = raw.split(/\r?\n/).filter(Boolean).slice(1).map((line) => { const [stem, a, b, c, d, answer, category] = line.split(","); return { stem, options: [a, b, c, d].filter(Boolean), answer: Math.max(0, Number(answer || 0)), category: category || "导入题库" }; });
+        } else {
+          parsed = raw.split(/\r?\n/).filter(Boolean).slice(1).map((line) => { const [stem, a, b, c, d, answer, category] = line.split(","); const options = [a, b, c, d].filter(Boolean); const answerInfo = parseAnswerIndexes(answer, options, "SingleChoice"); return { stem, type: "SingleChoice", options, answer: answerInfo.answer, correctAnswers: answerInfo.correctAnswers, category: category || "导入题库" }; });
+        }
       }
-    } catch { parsed = []; }
-    if (!parsed.length) parsed = [{ ...defaultQuestion }];
-    const normalized = parsed.map((item, index) => ({ id: `${file.name}-${Date.now()}-${index}`, stem: item.stem || item.question || defaultQuestion.stem, options: Array.isArray(item.options) && item.options.length ? item.options.slice(0, 4) : defaultQuestion.options, answer: Number.isFinite(Number(item.answer)) ? Number(item.answer) : 0, category: item.category || "导入题库" }));
+    } catch (error) {
+      parseError = `${file.name} 导入失败：${error.message || "无法识别 Excel 表头"}`;
+      setStatus(parseError);
+    }
+    if (!parsed.length && !parseError) setStatus("没有导入有效题目，请检查题干、选项和正确答案列");
+    const normalized = parsed.map((item, index) => ({ id: item.id || `${file.name}-${Date.now()}-${index}`, stem: item.stem || item.question || defaultQuestion.stem, type: item.type || "SingleChoice", options: Array.isArray(item.options) && item.options.length ? item.options.slice(0, 4) : defaultQuestion.options, answer: Number.isFinite(Number(item.answer)) ? Number(item.answer) : 0, correctAnswers: Array.isArray(item.correctAnswers) && item.correctAnswers.length ? item.correctAnswers : [Number(item.answer) || 0], answerText: item.answerText || "", explanation: item.explanation || "", roles: item.roles || item.applicableRoles || "", categories: item.categories || item.category || "导入题库", knowledge: item.knowledge || "", sourceFileName: item.sourceFileName || file.name }));
     setQuestions((current) => [...normalized, ...current]);
-    setSelectedId(normalized[0].id);
-    setStatus(`已导入 ${normalized.length} 道题目`);
+    if (normalized.length) { setSelectedId(normalized[0].id); setStatus(`已从 ${file.name} 导入 ${normalized.length} 道题目`); }
     event.target.value = "";
   };
   const selected = questions.find((item) => item.id === selectedId);
-  return <div className="qmdp-page"><QmdpPageHeader icon={Question} eyebrow="知识管理 / Question Bank" title="题库管理" description="导入题库、检查题目内容，并为知识考试提供统一题源。" action={<label className="qmdp-primary-btn"><UploadSimple size={16}/>导入题库<input type="file" accept=".json,.csv,.txt" onChange={importQuestions}/></label>}/><QmdpStatStrip items={[{ label: "题目总数", value: questions.length, note: "本地题库" }, { label: "分类数", value: new Set(questions.map((item) => item.category)).size, note: "题目分类" }, { label: "当前状态", value: status ? "已更新" : "可用", note: status || "等待导入" }]} />
-    <div className="qmdp-split"><section className="qmdp-list-panel"><header><strong>题目文件与题目</strong><span>{questions.length} 道</span></header>{questions.map((item) => <button key={item.id} className={item.id === selectedId ? "selected" : ""} onClick={() => setSelectedId(item.id)}><span>{item.category}</span><strong>{item.stem}</strong></button>)}{!questions.length && <div className="qmdp-empty compact"><Question size={27}/><span>暂无题目，先导入 JSON 或 CSV。</span></div>}</section><section className="qmdp-detail-panel">{selected ? <><div className="qmdp-detail-meta"><span>{selected.category}</span><button className="qmdp-danger-btn" onClick={() => setQuestions((current) => current.filter((item) => item.id !== selected.id))}><Trash size={14}/>删除题目</button></div><h3>{selected.stem}</h3><div className="qmdp-options">{selected.options.map((option, index) => <div className={index === selected.answer ? "correct" : ""} key={`${selected.id}-${index}`}><b>{String.fromCharCode(65 + index)}</b><span>{option}</span>{index === selected.answer && <CheckCircle size={16} weight="fill"/>}</div>)}</div></> : <div className="qmdp-empty"><Question size={30}/><strong>选择题目查看详情</strong></div>}</section></div>
+  return <div className="qmdp-page"><QmdpPageHeader icon={Question} eyebrow="知识管理 / Question Bank" title="题库管理" description="按 QMDP 题库模板导入 Excel，识别题干、类型、选项、正确答案、解析和适用范围。" action={<label className="qmdp-primary-btn"><UploadSimple size={16}/>导入 Excel 题库<input type="file" accept=".xlsx,.xls,.xlsm,.json,.csv,.txt" onChange={importQuestions}/></label>}/><QmdpStatStrip items={[{ label: "题目总数", value: questions.length, note: "本地题库" }, { label: "分类数", value: new Set(questions.map((item) => item.categories || item.category)).size, note: "题目分类" }, { label: "当前状态", value: status ? "已更新" : "可用", note: status || "等待导入" }]} />
+    <div className="qmdp-split"><section className="qmdp-list-panel"><header><strong>题目文件与题目</strong><span>{questions.length} 道</span></header>{questions.map((item) => <button key={item.id} className={item.id === selectedId ? "selected" : ""} onClick={() => setSelectedId(item.id)}><span>{item.categories || item.category} · {item.type}</span><strong>{item.stem}</strong></button>)}{!questions.length && <div className="qmdp-empty compact"><Question size={27}/><span>暂无题目，请导入 QMDP Excel 题库。</span></div>}</section><section className="qmdp-detail-panel">{selected ? <><div className="qmdp-detail-meta"><span>{selected.categories || selected.category} · {selected.type}</span><button className="qmdp-danger-btn" onClick={() => setQuestions((current) => current.filter((item) => item.id !== selected.id))}><Trash size={14}/>删除题目</button></div><h3>{selected.stem}</h3><div className="qmdp-options">{selected.options.map((option, index) => <div className={(selected.correctAnswers || [selected.answer]).includes(index) ? "correct" : ""} key={`${selected.id}-${index}`}><b>{String.fromCharCode(65 + index)}</b><span>{option}</span>{(selected.correctAnswers || [selected.answer]).includes(index) && <CheckCircle size={16} weight="fill"/>}</div>)}</div>{selected.explanation && <p className="qmdp-question-explanation">解析：{selected.explanation}</p>}</> : <div className="qmdp-empty"><Question size={30}/><strong>选择题目查看详情</strong></div>}</section></div>
   </div>;
 }
 
+const normalizeExamText = (value) => String(value ?? "").trim().replace(/\s+/g, "").toLowerCase();
+const examAnswerCorrect = (question, answer) => {
+  if (question.type === "ShortAnswer") {
+    const expected = normalizeExamText(question.answerText || question.correctAnswer || "");
+    return Boolean(expected && normalizeExamText(answer) === expected);
+  }
+  const expected = (question.correctAnswers?.length ? question.correctAnswers : [question.answer]).map(Number).sort((a, b) => a - b);
+  const actual = (Array.isArray(answer) ? answer : [answer]).map(Number).filter(Number.isFinite).sort((a, b) => a - b);
+  return expected.length > 0 && expected.length === actual.length && expected.every((value, index) => value === actual[index]);
+};
+
 function KnowledgeExamPage() {
   const questions = safeParse(localStorage.getItem(qmdpQuestionsKey), []);
+  const [examQuestions, setExamQuestions] = useState([]);
   const [active, setActive] = useState(false);
   const [index, setIndex] = useState(0);
   const [answers, setAnswers] = useState([]);
   const [finished, setFinished] = useState(false);
-  const current = questions[index];
-  const start = () => { setAnswers(Array(questions.length).fill(-1)); setIndex(0); setFinished(false); setActive(true); };
-  const choose = (value) => setAnswers((currentAnswers) => currentAnswers.map((item, itemIndex) => itemIndex === index ? value : item));
-  const finish = () => { setFinished(true); setActive(false); };
-  const score = questions.length ? Math.round(answers.reduce((sum, answer, itemIndex) => sum + (answer === questions[itemIndex]?.answer ? 1 : 0), 0) / questions.length * 100) : 0;
-  return <div className="qmdp-page"><QmdpPageHeader icon={Target} eyebrow="知识管理 / Knowledge Exam" title="知识考试" description="按题库生成练习，记录得分并定位错题。" action={!active && <button className="qmdp-primary-btn" onClick={start} disabled={!questions.length}><Target size={16}/>开始考试</button>}/><QmdpStatStrip items={[{ label: "题目数", value: questions.length, note: "来自题库" }, { label: "考试状态", value: finished ? "已完成" : active ? `${index + 1}/${questions.length}` : "未开始", note: finished ? `得分 ${score}` : "" }, { label: "合格线", value: "80", note: "百分制" }]} />
-    {!questions.length ? <div className="qmdp-empty"><Question size={32}/><strong>题库为空</strong><span>请先在“题库管理”导入题目。</span></div> : active && current ? <section className="exam-card"><div className="exam-progress"><span>第 {index + 1} 题 / 共 {questions.length} 题</span><i><b style={{ width: `${((index + 1) / questions.length) * 100}%` }}/></i></div><span className="exam-category">{current.category}</span><h3>{current.stem}</h3><div className="exam-options">{current.options.map((option, optionIndex) => <button className={answers[index] === optionIndex ? "selected" : ""} key={option} onClick={() => choose(optionIndex)}><b>{String.fromCharCode(65 + optionIndex)}</b>{option}</button>)}</div><footer><button onClick={() => setIndex((value) => Math.max(0, value - 1))} disabled={index === 0}>上一题</button>{index < questions.length - 1 ? <button className="qmdp-primary-btn" onClick={() => setIndex((value) => value + 1)}>下一题</button> : <button className="qmdp-primary-btn" onClick={finish}>提交考试</button>}</footer></section> : finished ? <section className={`exam-result ${score >= 80 ? "pass" : "fail"}`}><CheckCircle size={40} weight="fill"/><strong>{score} 分</strong><span>{score >= 80 ? "考试合格" : "未达到合格线，请复习错题后重试"}</span><button className="qmdp-primary-btn" onClick={start}>重新考试</button></section> : <div className="qmdp-empty"><Target size={32}/><strong>准备好后开始考试</strong><span>系统会按当前题库逐题记录答案。</span></div>}
+  const [result, setResult] = useState(null);
+  const [records, setRecords] = useState(() => safeParse(localStorage.getItem(qmdpExamRecordsKey), []));
+  const current = examQuestions[index];
+  const start = () => {
+    const pool = [...questions].sort(() => Math.random() - 0.5).slice(0, Math.min(10, questions.length));
+    setExamQuestions(pool);
+    setAnswers(pool.map((question) => question.type === "MultiChoice" ? [] : question.type === "ShortAnswer" ? "" : -1));
+    setIndex(0); setFinished(false); setResult(null); setActive(pool.length > 0);
+  };
+  const choose = (value) => setAnswers((currentAnswers) => currentAnswers.map((item, itemIndex) => {
+    if (itemIndex !== index) return item;
+    if (current.type === "MultiChoice") return Array.isArray(item) ? (item.includes(value) ? item.filter((option) => option !== value) : [...item, value]) : [value];
+    return value;
+  }));
+  const finish = () => {
+    const details = examQuestions.map((question, questionIndex) => ({ question: question.stem, selected: answers[questionIndex], correct: examAnswerCorrect(question, answers[questionIndex]), explanation: question.explanation || "" }));
+    const correct = details.filter((item) => item.correct).length;
+    const score = examQuestions.length ? Math.round(correct / examQuestions.length * 100) : 0;
+    const record = { id: `EXAM-${Date.now()}`, submittedAt: new Date().toISOString(), total: examQuestions.length, correct, score, passed: score >= 80, details };
+    setRecords((currentRecords) => { const next = [record, ...currentRecords].slice(0, 50); localStorage.setItem(qmdpExamRecordsKey, JSON.stringify(next)); return next; });
+    setResult(record); setFinished(true); setActive(false);
+  };
+  const selected = (optionIndex) => Array.isArray(answers[index]) ? answers[index].includes(optionIndex) : answers[index] === optionIndex;
+  return <div className="qmdp-page"><QmdpPageHeader icon={Target} eyebrow="知识管理 / Knowledge Exam" title="知识考试" description="按 QMDP 题库随机抽取题目，支持单选、判断、多选和简答，提交后记录考试结果。" action={!active && <button className="qmdp-primary-btn" onClick={start} disabled={!questions.length}><Target size={16}/>开始考试</button>}/><QmdpStatStrip items={[{ label: "题目数", value: questions.length, note: "来自题库" }, { label: "考试状态", value: finished ? "已完成" : active ? `${index + 1}/${examQuestions.length}` : "未开始", note: result ? `得分 ${result.score}` : "" }, { label: "合格线", value: "80", note: "百分制" }]} />
+    {!questions.length ? <div className="qmdp-empty"><Question size={32}/><strong>题库为空</strong><span>请先在“题库管理”导入 QMDP Excel 题库。</span></div> : active && current ? <section className="exam-card"><div className="exam-progress"><span>第 {index + 1} 题 / 共 {examQuestions.length} 题</span><i><b style={{ width: `${((index + 1) / examQuestions.length) * 100}%` }}/></i></div><span className="exam-category">{current.categories || current.category} · {current.type}</span><h3>{current.stem}</h3>{current.type === "ShortAnswer" ? <textarea className="exam-short-answer" value={answers[index] || ""} onChange={(event) => setAnswers((currentAnswers) => currentAnswers.map((item, itemIndex) => itemIndex === index ? event.target.value : item))} placeholder="请输入答案"/> : <div className="exam-options">{current.options.map((option, optionIndex) => <button className={selected(optionIndex) ? "selected" : ""} key={option} onClick={() => choose(optionIndex)}><b>{String.fromCharCode(65 + optionIndex)}</b>{option}</button>)}</div>}<footer><button onClick={() => setIndex((value) => Math.max(0, value - 1))} disabled={index === 0}>上一题</button>{index < examQuestions.length - 1 ? <button className="qmdp-primary-btn" onClick={() => setIndex((value) => value + 1)}>下一题</button> : <button className="qmdp-primary-btn" onClick={finish}>提交考试</button>}</footer></section> : finished && result ? <><section className={`exam-result ${result.passed ? "pass" : "fail"}`}><CheckCircle size={40} weight="fill"/><strong>{result.score} 分</strong><span>{result.passed ? "考试合格" : "未达到合格线，请复习错题后重试"} · {result.correct}/{result.total} 题正确</span><button className="qmdp-primary-btn" onClick={start}>重新考试</button></section><section className="exam-history"><header><strong>最近考试记录</strong><span>{records.length} 条</span></header>{result.details.map((item, itemIndex) => <div key={`${result.id}-${itemIndex}`} className={item.correct ? "correct" : "wrong"}><b>{item.correct ? "正确" : "错误"}</b><span>{item.question}</span>{!item.correct && item.explanation && <small>{item.explanation}</small>}</div>)}</section></> : <section className="exam-history"><header><strong>最近考试记录</strong><span>{records.length} 条</span></header>{records.slice(0, 5).map((record) => <div key={record.id} className={record.passed ? "correct" : "wrong"}><b>{record.passed ? "合格" : "未合格"}</b><span>{formatSyncDateTime(record.submittedAt)} · {record.correct}/{record.total} 题 · {record.score} 分</span></div>)}{!records.length && <div className="qmdp-empty compact">还没有考试记录。</div>}</section>}
   </div>;
 }
 
