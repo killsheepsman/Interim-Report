@@ -677,7 +677,18 @@ function ThemeToggle({ value, onChange }) {
   </div>;
 }
 
+const qmdpMenuGroups = [
+  { label: "知识管理", icon: Database, children: ["知识库", "题库管理", "知识考试"] },
+  { label: "质量报告", icon: ChartBar, children: ["IPQC操作报告", "机长报告", "交付经理报告", "供应链经理报告", "研发工程师报告", "PM报告", "TPM报告", "产总报告", "董事长报告", "报告任务中心"] },
+  { label: "系统管理", icon: GearSix, children: ["组织映射", "供应链映射", "员工信息", "评分权重", "企业微信", "操作日志"] },
+];
+
 function ExecutiveSidebar({ active, setActive, uiTheme, onThemeChange, collapsed, onToggleCollapsed, permissions, auth }) {
+  const [openGroups, setOpenGroups] = useState(() => {
+    const saved = safeParse(localStorage.getItem("qms-qmdp-menu-open-v1"), null);
+    return saved && typeof saved === "object" ? saved : { 知识管理: true, 质量报告: true, 系统管理: true };
+  });
+  useEffect(() => { localStorage.setItem("qms-qmdp-menu-open-v1", JSON.stringify(openGroups)); }, [openGroups]);
   const nav = [
     ["总览", House], ["IQC", Cube], ["IPQC", Pulse],
     ["OQC", ShieldCheck], ["DQA", ClipboardText], ["QMS", ListChecks],
@@ -688,7 +699,22 @@ function ExecutiveSidebar({ active, setActive, uiTheme, onThemeChange, collapsed
   ];
   return <aside className={`executive-sidebar ${collapsed ? "collapsed" : ""}`}>
     <div className="brand"><div className="brand-logo"><ShieldCheck size={26} weight="fill" /></div><div><strong>品质智控</strong><span>质量分析平台</span></div></div>
-    <nav>{nav.map(([name, Icon]) => <button key={name} className={active === name ? "active" : ""} onClick={() => setActive(name)}><Icon size={20} /><span>{name}</span></button>)}</nav>
+    <nav>
+      {nav.map(([name, Icon]) => <button key={name} className={active === name ? "active" : ""} onClick={() => setActive(name)}><Icon size={20} /><span>{name}</span></button>)}
+      <div className="qmdp-nav-groups">
+        {qmdpMenuGroups.map((group) => {
+          const GroupIcon = group.icon;
+          const expanded = openGroups[group.label] !== false;
+          const groupActive = group.children.includes(active);
+          return <div className={`qmdp-nav-group ${expanded ? "expanded" : ""} ${groupActive ? "has-active" : ""}`} key={group.label}>
+            <button className={`qmdp-nav-parent ${groupActive ? "active-parent" : ""}`} onClick={() => setOpenGroups((current) => ({ ...current, [group.label]: !expanded }))}>
+              <GroupIcon size={19}/><span>{group.label}</span><CaretDown size={14} className={expanded ? "rotate" : ""}/>
+            </button>
+            {expanded && <div className="qmdp-nav-children">{group.children.map((child) => <button key={child} className={active === child ? "active" : ""} onClick={() => setActive(child)}><span>{child}</span></button>)}</div>}
+          </div>;
+        })}
+      </div>
+    </nav>
     <div className="sidebar-bottom"><ThemeToggle value={uiTheme} onChange={onThemeChange}/></div>
     <button className="sidebar-drawer-toggle" aria-label={collapsed ? "展开导航" : "收起导航"} onClick={onToggleCollapsed}><SidebarSimple size={18} /></button>
   </aside>;
@@ -2132,9 +2158,159 @@ function ManagementReportPage({ data }) {
   </div>;
 }
 
+const qmdpKnowledgeKey = "qms-qmdp-knowledge-files-v1";
+const qmdpQuestionsKey = "qms-qmdp-question-bank-v1";
+const qmdpSystemKey = "qms-qmdp-system-config-v1";
+const qmdpReportTasksKey = "qms-qmdp-report-tasks-v1";
+
+function QmdpPageHeader({ icon: Icon = Database, eyebrow, title, description, action }) {
+  return <div className="qmdp-page-header"><div className="qmdp-page-title"><span className="qmdp-page-icon"><Icon size={23}/></span><div><small>{eyebrow}</small><h2>{title}</h2><p>{description}</p></div></div>{action}</div>;
+}
+
+function QmdpStatStrip({ items }) {
+  return <div className="qmdp-stat-strip">{items.map((item) => <div key={item.label}><span>{item.label}</span><strong className={item.tone || ""}>{item.value}</strong><small>{item.note || ""}</small></div>)}</div>;
+}
+
+function KnowledgeBasePage() {
+  const [files, setFiles] = useState(() => safeParse(localStorage.getItem(qmdpKnowledgeKey), []));
+  const [category, setCategory] = useState("研发设计规范");
+  const [query, setQuery] = useState("");
+  const [status, setStatus] = useState("");
+  useEffect(() => { localStorage.setItem(qmdpKnowledgeKey, JSON.stringify(files)); }, [files]);
+  const importFiles = async (event) => {
+    const selected = [...(event.target.files || [])];
+    if (!selected.length) return;
+    const next = [];
+    for (const file of selected) {
+      let preview = "";
+      try { preview = (await file.text()).slice(0, 2400); } catch { /* metadata remains usable */ }
+      next.push({ id: `${file.name}-${file.lastModified}-${Math.random().toString(16).slice(2)}`, name: file.name, category, size: file.size, importedAt: new Date().toISOString(), preview });
+    }
+    setFiles((current) => [...next, ...current.filter((item) => !next.some((candidate) => candidate.name === item.name))]);
+    setStatus(`已导入 ${next.length} 个知识文件`);
+    event.target.value = "";
+  };
+  const visible = files.filter((file) => (!query || `${file.name} ${file.preview}`.toLowerCase().includes(query.toLowerCase())) && (!category || category === "全部" || file.category === category));
+  return <div className="qmdp-page"><QmdpPageHeader icon={Database} eyebrow="知识管理 / Knowledge Base" title="知识库" description="沉淀研发规范、装配工艺、SOP 与 Lesson Learned，支持按类别检索和删除。" action={<label className="qmdp-primary-btn"><UploadSimple size={16}/>导入知识文件<input type="file" multiple accept=".doc,.docx,.pdf,.txt,.md,.xlsx,.xls" onChange={importFiles}/></label>}/>
+    <QmdpStatStrip items={[{ label: "知识文件", value: files.length, note: "本机已登记" }, { label: "规范类别", value: new Set(files.map((file) => file.category)).size, note: "按类别归档" }, { label: "可检索文本", value: files.filter((file) => file.preview).length, note: "已提取预览" }]} />
+    <div className="qmdp-toolbar"><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索文件名或文本片段"/><select value={category} onChange={(event) => setCategory(event.target.value)}>{["全部", "研发设计规范", "组装工艺", "研发 Lesson Learned", "调试 SOP"].map((item) => <option key={item}>{item}</option>)}</select><span>{status || `当前显示 ${visible.length} 个文件`}</span></div>
+    <div className="qmdp-card-grid">{visible.map((file) => <article className="qmdp-file-card" key={file.id}><header><FileXls size={21}/><span>{file.category}</span></header><h3>{file.name}</h3><p>{file.preview || "尚未提取文本；可作为知识文件留档。"}</p><footer><small>{Math.max(1, Math.round(file.size / 1024))} KB · {formatSyncDateTime(file.importedAt)}</small><button className="qmdp-danger-btn" onClick={() => setFiles((current) => current.filter((item) => item.id !== file.id))}><Trash size={14}/>删除</button></footer></article>)}{!visible.length && <div className="qmdp-empty"><Database size={30}/><strong>暂无匹配知识文件</strong><span>导入规范、SOP 或经验文档后会显示在这里。</span></div>}</div>
+  </div>;
+}
+
+const defaultQuestion = { stem: "质量问题关闭前必须具备什么证据？", options: ["只有口头说明", "措施、责任人与验证结果", "只填写截止日期", "不需要证据"], answer: 1, category: "质量基础" };
+function QuestionBankPage() {
+  const [questions, setQuestions] = useState(() => safeParse(localStorage.getItem(qmdpQuestionsKey), []));
+  const [selectedId, setSelectedId] = useState(questions[0]?.id || "");
+  const [status, setStatus] = useState("");
+  useEffect(() => { localStorage.setItem(qmdpQuestionsKey, JSON.stringify(questions)); if (!questions.some((item) => item.id === selectedId)) setSelectedId(questions[0]?.id || ""); }, [questions, selectedId]);
+  const importQuestions = async (event) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    let parsed = [];
+    try {
+      const raw = await file.text();
+      if (/\.json$/i.test(file.name)) {
+        const value = JSON.parse(raw);
+        parsed = Array.isArray(value) ? value : value.questions || [];
+      } else {
+        parsed = raw.split(/\r?\n/).filter(Boolean).slice(1).map((line) => { const [stem, a, b, c, d, answer, category] = line.split(","); return { stem, options: [a, b, c, d].filter(Boolean), answer: Math.max(0, Number(answer || 0)), category: category || "导入题库" }; });
+      }
+    } catch { parsed = []; }
+    if (!parsed.length) parsed = [{ ...defaultQuestion }];
+    const normalized = parsed.map((item, index) => ({ id: `${file.name}-${Date.now()}-${index}`, stem: item.stem || item.question || defaultQuestion.stem, options: Array.isArray(item.options) && item.options.length ? item.options.slice(0, 4) : defaultQuestion.options, answer: Number.isFinite(Number(item.answer)) ? Number(item.answer) : 0, category: item.category || "导入题库" }));
+    setQuestions((current) => [...normalized, ...current]);
+    setSelectedId(normalized[0].id);
+    setStatus(`已导入 ${normalized.length} 道题目`);
+    event.target.value = "";
+  };
+  const selected = questions.find((item) => item.id === selectedId);
+  return <div className="qmdp-page"><QmdpPageHeader icon={Question} eyebrow="知识管理 / Question Bank" title="题库管理" description="导入题库、检查题目内容，并为知识考试提供统一题源。" action={<label className="qmdp-primary-btn"><UploadSimple size={16}/>导入题库<input type="file" accept=".json,.csv,.txt" onChange={importQuestions}/></label>}/><QmdpStatStrip items={[{ label: "题目总数", value: questions.length, note: "本地题库" }, { label: "分类数", value: new Set(questions.map((item) => item.category)).size, note: "题目分类" }, { label: "当前状态", value: status ? "已更新" : "可用", note: status || "等待导入" }]} />
+    <div className="qmdp-split"><section className="qmdp-list-panel"><header><strong>题目文件与题目</strong><span>{questions.length} 道</span></header>{questions.map((item) => <button key={item.id} className={item.id === selectedId ? "selected" : ""} onClick={() => setSelectedId(item.id)}><span>{item.category}</span><strong>{item.stem}</strong></button>)}{!questions.length && <div className="qmdp-empty compact"><Question size={27}/><span>暂无题目，先导入 JSON 或 CSV。</span></div>}</section><section className="qmdp-detail-panel">{selected ? <><div className="qmdp-detail-meta"><span>{selected.category}</span><button className="qmdp-danger-btn" onClick={() => setQuestions((current) => current.filter((item) => item.id !== selected.id))}><Trash size={14}/>删除题目</button></div><h3>{selected.stem}</h3><div className="qmdp-options">{selected.options.map((option, index) => <div className={index === selected.answer ? "correct" : ""} key={`${selected.id}-${index}`}><b>{String.fromCharCode(65 + index)}</b><span>{option}</span>{index === selected.answer && <CheckCircle size={16} weight="fill"/>}</div>)}</div></> : <div className="qmdp-empty"><Question size={30}/><strong>选择题目查看详情</strong></div>}</section></div>
+  </div>;
+}
+
+function KnowledgeExamPage() {
+  const questions = safeParse(localStorage.getItem(qmdpQuestionsKey), []);
+  const [active, setActive] = useState(false);
+  const [index, setIndex] = useState(0);
+  const [answers, setAnswers] = useState([]);
+  const [finished, setFinished] = useState(false);
+  const current = questions[index];
+  const start = () => { setAnswers(Array(questions.length).fill(-1)); setIndex(0); setFinished(false); setActive(true); };
+  const choose = (value) => setAnswers((currentAnswers) => currentAnswers.map((item, itemIndex) => itemIndex === index ? value : item));
+  const finish = () => { setFinished(true); setActive(false); };
+  const score = questions.length ? Math.round(answers.reduce((sum, answer, itemIndex) => sum + (answer === questions[itemIndex]?.answer ? 1 : 0), 0) / questions.length * 100) : 0;
+  return <div className="qmdp-page"><QmdpPageHeader icon={Target} eyebrow="知识管理 / Knowledge Exam" title="知识考试" description="按题库生成练习，记录得分并定位错题。" action={!active && <button className="qmdp-primary-btn" onClick={start} disabled={!questions.length}><Target size={16}/>开始考试</button>}/><QmdpStatStrip items={[{ label: "题目数", value: questions.length, note: "来自题库" }, { label: "考试状态", value: finished ? "已完成" : active ? `${index + 1}/${questions.length}` : "未开始", note: finished ? `得分 ${score}` : "" }, { label: "合格线", value: "80", note: "百分制" }]} />
+    {!questions.length ? <div className="qmdp-empty"><Question size={32}/><strong>题库为空</strong><span>请先在“题库管理”导入题目。</span></div> : active && current ? <section className="exam-card"><div className="exam-progress"><span>第 {index + 1} 题 / 共 {questions.length} 题</span><i><b style={{ width: `${((index + 1) / questions.length) * 100}%` }}/></i></div><span className="exam-category">{current.category}</span><h3>{current.stem}</h3><div className="exam-options">{current.options.map((option, optionIndex) => <button className={answers[index] === optionIndex ? "selected" : ""} key={option} onClick={() => choose(optionIndex)}><b>{String.fromCharCode(65 + optionIndex)}</b>{option}</button>)}</div><footer><button onClick={() => setIndex((value) => Math.max(0, value - 1))} disabled={index === 0}>上一题</button>{index < questions.length - 1 ? <button className="qmdp-primary-btn" onClick={() => setIndex((value) => value + 1)}>下一题</button> : <button className="qmdp-primary-btn" onClick={finish}>提交考试</button>}</footer></section> : finished ? <section className={`exam-result ${score >= 80 ? "pass" : "fail"}`}><CheckCircle size={40} weight="fill"/><strong>{score} 分</strong><span>{score >= 80 ? "考试合格" : "未达到合格线，请复习错题后重试"}</span><button className="qmdp-primary-btn" onClick={start}>重新考试</button></section> : <div className="qmdp-empty"><Target size={32}/><strong>准备好后开始考试</strong><span>系统会按当前题库逐题记录答案。</span></div>}
+  </div>;
+}
+
+function KnowledgeManagementPage({ active }) {
+  if (active === "题库管理") return <QuestionBankPage/>;
+  if (active === "知识考试") return <KnowledgeExamPage/>;
+  return <KnowledgeBasePage/>;
+}
+
+const roleReportNames = ["IPQC操作报告", "机长报告", "交付经理报告", "供应链经理报告", "研发工程师报告", "PM报告", "TPM报告", "产总报告", "董事长报告"];
+function roleReportRows(data, role) {
+  const ipqc = data?.ipqc || {};
+  const dqa = data?.dqa || {};
+  const oqc = data?.oqc || {};
+  const source = /IPQC|机长|交付经理/.test(role) ? (ipqc.workshopsBySite?.深圳 || []).concat(ipqc.workshopsBySite?.杭州 || []) : /TPM|研发|PM|产总|董事长/.test(role) ? dqa.tpmStages || [] : oqc.tpm || [];
+  return source.slice(0, 8).map((row, index) => ({ name: row.name || row.workshop || row.category || `责任对象 ${index + 1}`, value: Number(row.y2026Rate ?? row.onsite ?? row.production ?? row.fiveRate ?? 0), detail: row.owner || row.division || "按当前数据范围汇总" }));
+}
+function RoleQualityReportPage({ data, dateRange, role, onRoleChange }) {
+  const rows = roleReportRows(data, role);
+  const total = rows.reduce((sum, row) => sum + row.value, 0);
+  const savedKey = `qms-qmdp-role-report-${role}`;
+  const [savedAt, setSavedAt] = useState(() => localStorage.getItem(savedKey) || "");
+  const save = () => { const stamp = new Date().toISOString(); localStorage.setItem(savedKey, stamp); setSavedAt(stamp); };
+  return <div className="qmdp-page"><QmdpPageHeader icon={ChartBar} eyebrow="质量报告 / Role Report" title="角色质量报告" description="按角色与管理范围重新取数，输出指标、风险对象和改善重点。" action={<button className="qmdp-secondary-btn" onClick={save}><FloppyDisk size={16}/>保存报告</button>}/><div className="qmdp-report-controls"><label>报告角色<select value={role} onChange={(event) => onRoleChange(event.target.value)}>{roleReportNames.map((item) => <option key={item}>{item}</option>)}</select></label><span>统计周期：{dateRange.start2026}—{dateRange.end2026}</span>{savedAt && <small>已保存 · {formatSyncDateTime(savedAt)}</small>}</div><QmdpStatStrip items={[{ label: "责任对象", value: rows.length, note: "当前角色范围" }, { label: "累计风险值", value: total.toLocaleString(), note: "按当前口径汇总", tone: total > 300 ? "danger" : "" }, { label: "报告状态", value: savedAt ? "已保存" : "未保存", note: "可重复打开" }]} /><section className="qmdp-report-sheet"><header><div><span>2026 半年度质量报告</span><h3>{role}</h3><p>结果 → 过程 → 根因 → 责任 → 行动</p></div><span className="qmdp-report-badge">管理范围重算</span></header><div className="qmdp-report-table"><div className="qmdp-report-row head"><span>责任对象</span><span>2026指标</span><span>证据/说明</span><span>建议行动</span></div>{rows.map((row) => <div className="qmdp-report-row" key={row.name}><strong>{row.name}</strong><b className={row.value > 50 ? "danger" : ""}>{row.value.toLocaleString()}</b><span>{row.detail}</span><span>纳入本角色待办，30天内完成责任确认与验证。</span></div>)}{!rows.length && <div className="qmdp-empty compact">当前范围暂无可用数据。</div>}</div></section></div>;
+}
+function ReportTaskCenterPage({ data }) {
+  const [tasks, setTasks] = useState(() => safeParse(localStorage.getItem(qmdpReportTasksKey), []));
+  const [query, setQuery] = useState("");
+  useEffect(() => { localStorage.setItem(qmdpReportTasksKey, JSON.stringify(tasks)); }, [tasks]);
+  const addTask = () => setTasks((current) => [{ id: `RPT-${Date.now()}`, role: "待选择", recipient: "待填写", module: "质量报告", date: new Date().toISOString(), status: "待发送" }, ...current]);
+  const visible = tasks.filter((item) => !query || `${item.role} ${item.recipient} ${item.module}`.toLowerCase().includes(query.toLowerCase()));
+  return <div className="qmdp-page"><QmdpPageHeader icon={Rows} eyebrow="质量报告 / Task Center" title="报告任务中心" description="集中查看报告生成、保存和发送记录，支持按角色、收件人和日期筛选。" action={<button className="qmdp-primary-btn" onClick={addTask}><Plus size={16}/>新建发送任务</button>}/><QmdpStatStrip items={[{ label: "任务总数", value: tasks.length, note: "本机记录" }, { label: "待发送", value: tasks.filter((item) => item.status === "待发送").length, note: "需要处理" }, { label: "已发送", value: tasks.filter((item) => item.status === "已发送").length, note: "历史记录" }]} /><div className="qmdp-toolbar"><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="按角色、收件人或模块搜索"/><span>当前显示 {visible.length} 条</span></div><section className="qmdp-task-table"><div className="qmdp-task-row head"><span>报告模块</span><span>角色</span><span>收件人</span><span>生成时间</span><span>状态</span><span>操作</span></div>{visible.map((item) => <div className="qmdp-task-row" key={item.id}><select value={item.module} onChange={(event) => setTasks((current) => current.map((row) => row.id === item.id ? { ...row, module: event.target.value } : row))}><option>质量报告</option><option>AI分析</option><option>跨模块复盘</option></select><input value={item.role} onChange={(event) => setTasks((current) => current.map((row) => row.id === item.id ? { ...row, role: event.target.value } : row))}/><input value={item.recipient} onChange={(event) => setTasks((current) => current.map((row) => row.id === item.id ? { ...row, recipient: event.target.value } : row))}/><span>{formatSyncDateTime(item.date)}</span><select value={item.status} onChange={(event) => setTasks((current) => current.map((row) => row.id === item.id ? { ...row, status: event.target.value } : row))}><option>待发送</option><option>已发送</option><option>已取消</option></select><button className="qmdp-danger-btn" onClick={() => setTasks((current) => current.filter((row) => row.id !== item.id))}><Trash size={14}/>删除</button></div>)}{!visible.length && <div className="qmdp-empty compact">暂无报告任务记录。</div>}</section></div>;
+}
+
+function QualityReportsPage({ active, data, dateRange, onRoleChange }) {
+  if (active === "报告任务中心") return <ReportTaskCenterPage data={data}/>;
+  return <RoleQualityReportPage data={data} dateRange={dateRange} role={active} onRoleChange={onRoleChange}/>;
+}
+
+const defaultQmdpSystemConfig = { orgMappings: [{ productDept: "产品部", productionDirector: "待配置", tpm: "待配置", pm: "待配置", active: true }], supplyMappings: [], employees: [], weights: { ecn: 20, issue: 20, severity: 20, review: 15, nonBom: 15, open: 10 }, wecom: { corpId: "", agentId: "", secret: "" }, logs: [] };
+function SystemManagementPage({ active, data, auth }) {
+  const [tab, setTab] = useState(active);
+  const [config, setConfig] = useState(() => ({ ...defaultQmdpSystemConfig, ...safeParse(localStorage.getItem(qmdpSystemKey), {}) }));
+  const [status, setStatus] = useState("");
+  useEffect(() => { localStorage.setItem(qmdpSystemKey, JSON.stringify(config)); }, [config]);
+  useEffect(() => { setTab(active); }, [active]);
+  const editable = auth?.isAdmin || auth?.isDeputy;
+  const log = (message) => setConfig((current) => ({ ...current, logs: [{ id: Date.now(), message, at: new Date().toISOString() }, ...(current.logs || [])].slice(0, 100) }));
+  const setField = (section, index, field, value) => setConfig((current) => ({ ...current, [section]: current[section].map((row, rowIndex) => rowIndex === index ? { ...row, [field]: value } : row) }));
+  const addRow = (section, row) => { setConfig((current) => ({ ...current, [section]: [...(current[section] || []), row] })); log(`新增${section}记录`); };
+  const saveMessage = (message) => { log(message); setStatus(message); setTimeout(() => setStatus(""), 2200); };
+  const mappings = config.orgMappings || [];
+  const supply = config.supplyMappings || [];
+  const employees = config.employees || [];
+  const renderMapping = () => <div className="qmdp-admin-table"><div className="qmdp-admin-row head"><span>产品部/厂区</span><span>负责人</span><span>TPM</span><span>PM/交付经理</span><span>状态</span></div>{mappings.map((row, index) => <div className="qmdp-admin-row" key={index}><input disabled={!editable} value={row.productDept || ""} onChange={(event) => setField("orgMappings", index, "productDept", event.target.value)}/><input disabled={!editable} value={row.productionDirector || ""} onChange={(event) => setField("orgMappings", index, "productionDirector", event.target.value)}/><input disabled={!editable} value={row.tpm || ""} onChange={(event) => setField("orgMappings", index, "tpm", event.target.value)}/><input disabled={!editable} value={row.pm || ""} onChange={(event) => setField("orgMappings", index, "pm", event.target.value)}/><select disabled={!editable} value={row.active ? "启用" : "停用"} onChange={(event) => setField("orgMappings", index, "active", event.target.value === "启用")}><option>启用</option><option>停用</option></select></div>)}</div>;
+  const renderSupply = () => <div className="qmdp-admin-table"><div className="qmdp-admin-row head"><span>厂区</span><span>工坊</span><span>交付经理</span><span>机长</span><span>状态</span></div>{supply.map((row, index) => <div className="qmdp-admin-row" key={index}><input disabled={!editable} value={row.site || ""} onChange={(event) => setField("supplyMappings", index, "site", event.target.value)}/><input disabled={!editable} value={row.workshop || ""} onChange={(event) => setField("supplyMappings", index, "workshop", event.target.value)}/><input disabled={!editable} value={row.manager || ""} onChange={(event) => setField("supplyMappings", index, "manager", event.target.value)}/><input disabled={!editable} value={row.leader || ""} onChange={(event) => setField("supplyMappings", index, "leader", event.target.value)}/><select disabled={!editable} value={row.active ? "启用" : "停用"} onChange={(event) => setField("supplyMappings", index, "active", event.target.value === "启用")}><option>启用</option><option>停用</option></select></div>)}</div>;
+  const renderEmployees = () => <div className="qmdp-admin-table"><div className="qmdp-admin-row head"><span>工号</span><span>姓名</span><span>部门</span><span>职位</span><span>企业微信 userid</span></div>{employees.map((row, index) => <div className="qmdp-admin-row" key={index}>{["id", "name", "dept", "role", "wecom"].map((field) => <input key={field} disabled={!editable} value={row[field] || ""} onChange={(event) => setField("employees", index, field, event.target.value)}/>)}</div>)}</div>;
+  const content = tab === "组织映射" ? <><Panel title="组织映射维护" subtitle="产品部、产总、TPM、PM 的责任关系">{renderMapping()}<button className="qmdp-secondary-btn" disabled={!editable} onClick={() => addRow("orgMappings", { productDept: "新产品部", productionDirector: "", tpm: "", pm: "", active: true })}><Plus size={15}/>新增映射</button></Panel></> : tab === "供应链映射" ? <><Panel title="供应链人员映射" subtitle="厂区、工坊、交付经理与机长">{renderSupply()}<button className="qmdp-secondary-btn" disabled={!editable} onClick={() => addRow("supplyMappings", { site: "深圳", workshop: "", manager: "", leader: "", active: true })}><Plus size={15}/>新增映射</button></Panel></> : tab === "员工信息" ? <><Panel title="员工信息 / 企业微信 userid">{renderEmployees()}<button className="qmdp-secondary-btn" disabled={!editable} onClick={() => addRow("employees", { id: "", name: "", dept: "", role: "", wecom: "" })}><Plus size={15}/>新增员工</button></Panel></> : tab === "评分权重" ? <Panel title="质量风险评分权重" subtitle="权重总和应为 100"><div className="qmdp-weight-grid">{[["ecn", "ECN个人占比"], ["issue", "研发问题数量"], ["severity", "高严重度问题"], ["review", "设计评审问题占比"], ["nonBom", "非BOM加工件比例"], ["open", "未关闭问题数量"]].map(([key, label]) => <label key={key}><span>{label}</span><input type="number" min="0" max="100" value={config.weights?.[key] ?? 0} disabled={!editable} onChange={(event) => setConfig((current) => ({ ...current, weights: { ...current.weights, [key]: Number(event.target.value) } }))}/></label>)}</div><div className="qmdp-weight-total">当前权重合计：<strong>{Object.values(config.weights || {}).reduce((sum, value) => sum + Number(value || 0), 0)}%</strong><button className="qmdp-primary-btn" disabled={!editable} onClick={() => saveMessage("质量评分权重已保存")}>保存权重</button></div></Panel> : tab === "企业微信" ? <Panel title="企业微信应用配置" subtitle="用于报告发送，密钥只保存在本机状态"><div className="qmdp-form-grid">{[["corpId", "CorpId"], ["agentId", "AgentId"], ["secret", "Secret"]].map(([key, label]) => <label key={key}><span>{label}</span><input type={key === "secret" ? "password" : "text"} value={config.wecom?.[key] || ""} disabled={!editable} onChange={(event) => setConfig((current) => ({ ...current, wecom: { ...current.wecom, [key]: event.target.value } }))}/></label>)}</div><button className="qmdp-primary-btn" disabled={!editable} onClick={() => saveMessage("企业微信配置已保存")}>保存配置</button></Panel> : <Panel title="操作日志" subtitle="记录映射、权重与发送配置的变更"><div className="qmdp-log-list">{(config.logs || []).map((item) => <div key={item.id}><span>{formatSyncDateTime(item.at)}</span><strong>{item.message}</strong></div>)}{!(config.logs || []).length && <div className="qmdp-empty compact">暂无操作日志。</div>}</div></Panel>;
+  return <div className="qmdp-page"><QmdpPageHeader icon={GearSix} eyebrow="系统管理 / Administration" title={tab} description={editable ? "副管理员和主管理员可维护映射、权重与发送配置。" : "当前账号仅可查看系统配置。"} action={status && <span className="qmdp-inline-status"><CheckCircle size={15}/>{status}</span>}/><div className="qmdp-admin-tabs">{qmdpMenuGroups.find((group) => group.label === "系统管理").children.map((item) => <button key={item} className={tab === item ? "active" : ""} onClick={() => setTab(item)}>{item}</button>)}</div>{content}<div className="qmdp-note"><Database size={15}/>系统管理数据与现有数据导入、IPQC过程管控、研发质量分析相互隔离。</div></div>;
+}
+
 function ExecutiveDashboard({ data, files, onImport, onDeleteSource, onSourcesChanged, view, onViewChange, dateRange, teamDefaultRange, lastServerSavedAt, serverSyncStatus, onDateRange, onRefreshDate, dateRefreshStatus, refreshProgress, fontSize, onFontSize, analysisKey, labelControlsVisible, onToggleLabelControls, uiTheme, onThemeChange, sidebarCollapsed, onToggleSidebar, auth, permissions, onPermissionsChanged }) {
   const [active, setActive] = useState("总览");
   const moduleView = ["IQC", "IPQC", "OQC", "DQA", "QMS"].includes(active) ? active : null;
+  const qmdpKnowledgeView = ["知识库", "题库管理", "知识考试"].includes(active);
+  const qmdpReportView = ["IPQC操作报告", "机长报告", "交付经理报告", "供应链经理报告", "研发工程师报告", "PM报告", "TPM报告", "产总报告", "董事长报告", "报告任务中心"].includes(active);
+  const qmdpSystemView = ["组织映射", "供应链映射", "员工信息", "评分权重", "企业微信", "操作日志"].includes(active);
+  const qmdpView = qmdpKnowledgeView || qmdpReportView || qmdpSystemView;
   const allowImport = canUseFeature(auth, permissions, "dataImport");
   const allowWorkspace = canUseFeature(auth, permissions, "workspace");
   const allowAnnotationEdit = canUseFeature(auth, permissions, "annotationEdit");
@@ -2148,11 +2324,11 @@ function ExecutiveDashboard({ data, files, onImport, onDeleteSource, onSourcesCh
     <ExecutiveSidebar active={active} setActive={setActive} uiTheme={uiTheme} onThemeChange={onThemeChange} collapsed={sidebarCollapsed} onToggleCollapsed={onToggleSidebar} permissions={permissions} auth={auth} />
     <main className="executive-main">
       <header className="executive-topbar">
-        <div><h1>{moduleView ? `${moduleView} 专题分析` : active === "AI分析" ? "AI质量经营分析" : active === "AI接口" ? "AI接口配置" : active === "数据导入" ? "数据源管理" : "经营驾驶舱"}</h1><p>{moduleView ? "从原始数据下钻到TOP问题与责任对象" : active === "AI分析" ? "展示 generate-quality-review-report 正式审核版结论" : active === "AI接口" ? "配置本机第三方模型网关并验证调用" : "全局质量运营总览"}</p></div>
+        <div><h1>{moduleView ? `${moduleView} 专题分析` : qmdpView ? active : active === "AI分析" ? "AI质量经营分析" : active === "AI接口" ? "AI接口配置" : active === "数据导入" ? "数据源管理" : "经营驾驶舱"}</h1><p>{moduleView ? "从原始数据下钻到TOP问题与责任对象" : qmdpKnowledgeView ? "知识文件、题库与考试" : qmdpReportView ? "按角色和管理范围生成质量报告" : qmdpSystemView ? "组织、人员、评分与发送配置" : active === "AI分析" ? "展示 generate-quality-review-report 正式审核版结论" : active === "AI接口" ? "配置本机第三方模型网关并验证调用" : "全局质量运营总览"}</p></div>
         <div className="top-actions"><ServerSyncBadge value={serverSyncStatus}/><Switcher view={view} onChange={onViewChange} canWorkspace={allowWorkspace} />{allowAnnotationEdit && <AnnotationEditButton defaultModule={moduleView || "\u603b\u89c8"} />}{allowAnnotationView && <AnnotationViewButton />}{allowExport && <ExportReportButton />}<button className={`label-controls-toggle ${labelControlsVisible ? "active" : ""}`} onClick={onToggleLabelControls}>{labelControlsVisible ? "隐藏数值设置" : "显示数值设置"}</button>{allowImport && <button className="import-btn" onClick={() => onImport(null)}><UploadSimple size={17} />导入数据</button>}</div>
       </header>
-      <DateRangeFilter value={dateRange} teamDefaultRange={teamDefaultRange} lastServerSavedAt={lastServerSavedAt} onChange={onDateRange} onRefresh={onRefreshDate} refreshStatus={dateRefreshStatus} refreshProgress={refreshProgress} canRefresh={allowTemporaryRefresh} fontSize={fontSize} onFontSize={onFontSize}/>
-      {active === "权限设置" && auth?.isAdmin ? <PermissionSettingsPage auth={auth} permissions={permissions} onPermissionsChanged={onPermissionsChanged}/> : active === "AI接口" && canUseFeature(auth, permissions, "aiInterface") ? <AiInterfacePage/> : active === "数据导入" && allowImport ? <DataSourcePage files={files} onImportModule={onImport} onDelete={onDeleteSource} onSourcesChanged={onSourcesChanged}/> : active === "AI分析" && canUseFeature(auth, permissions, "aiAnalysis") ? <AiAnalysisPage data={data} dateRange={dateRange} analysisKey={analysisKey}/> : moduleView ? <ModuleDetail key={`${moduleView}-${analysisKey}`} module={moduleView} data={data} /> : <>
+      {!qmdpView && <DateRangeFilter value={dateRange} teamDefaultRange={teamDefaultRange} lastServerSavedAt={lastServerSavedAt} onChange={onDateRange} onRefresh={onRefreshDate} refreshStatus={dateRefreshStatus} refreshProgress={refreshProgress} canRefresh={allowTemporaryRefresh} fontSize={fontSize} onFontSize={onFontSize}/>}
+      {active === "权限设置" && auth?.isAdmin ? <PermissionSettingsPage auth={auth} permissions={permissions} onPermissionsChanged={onPermissionsChanged}/> : qmdpKnowledgeView ? <KnowledgeManagementPage active={active}/> : qmdpReportView ? <QualityReportsPage active={active} data={data} dateRange={dateRange} onRoleChange={setActive}/> : qmdpSystemView ? <SystemManagementPage active={active} data={data} auth={auth}/> : active === "AI接口" && canUseFeature(auth, permissions, "aiInterface") ? <AiInterfacePage/> : active === "数据导入" && allowImport ? <DataSourcePage files={files} onImportModule={onImport} onDelete={onDeleteSource} onSourcesChanged={onSourcesChanged}/> : active === "AI分析" && canUseFeature(auth, permissions, "aiAnalysis") ? <AiAnalysisPage data={data} dateRange={dateRange} analysisKey={analysisKey}/> : moduleView ? <ModuleDetail key={`${moduleView}-${analysisKey}`} module={moduleView} data={data} /> : <>
         <OverviewKpiCards data={data}/>
         <div className="dashboard-grid">
           <MainSupplierOverview data={data}/>
