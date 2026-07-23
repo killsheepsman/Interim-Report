@@ -1,14 +1,14 @@
-import { createContext, startTransition, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, createContext, startTransition, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import {
   ArrowRight, ArrowsClockwise, Bell, CaretDown, ChartBar, ChartPieSlice, CheckCircle,
   ClipboardText, ClockCountdown, Cube, Database, DownloadSimple, Eye, FileXls,
-  FloppyDisk, Funnel, GearSix, House, Kanban, ListChecks, Plus, Pulse,
+  FloppyDisk, Funnel, GearSix, House, Kanban, ListChecks, Plus, Pulse, Brain,
   Question, Rows, ShieldCheck, SidebarSimple, Sparkle, Table, Target, Trash,
   UploadSimple, User, Warning, WarningCircle, X,
 } from "@phosphor-icons/react";
 import { analyzeImported, downloadJson, normalizeIpqcLeaderMapRows, normalizeIpqcWorkshop, parseFiles } from "./dataEngine.js";
-import { createSourcesSignature, downloadSourceFiles, loadAppliedDateRange, loadCachedAnalysis, loadCurrentUser, loadDefaultAnalysis, loadDefaultAnnotations, loadDefaultQmsSources, loadDefaultSources, loadImportedSources, loadPermissionConfig, mergeImportedSources, saveAppliedDateRange, saveCachedAnalysis, saveImportedSources, savePermissionConfig, sourceRowCount, summarizeSources, uploadSourceFiles } from "./dataStore.js";
+import { createSourcesSignature, downloadSourceFiles, loadAiConfig, loadAiModels, loadAppliedDateRange, loadCachedAnalysis, loadCurrentUser, loadDefaultAnalysis, loadDefaultAnnotations, loadDefaultQmsSources, loadDefaultSources, loadImportedSources, loadPermissionConfig, mergeImportedSources, requestAiChat, saveAiConfig, saveAiReport, saveAppliedDateRange, saveCachedAnalysis, saveImportedSources, savePermissionConfig, sourceRowCount, summarizeSources, testAiConfig, uploadSourceFiles } from "./dataStore.js";
 import { sampleData } from "./sampleData.js";
 import { BarCompare, Donut, HorizontalRank, MachinedTpmCompareChart, Pareto, QmsDivisionCombo, QmsScoreCompare, QmsTpmRank, QmsTrendCombo, QuantityRateCombo, ScoreMonthlyCombo, ScoreYearCompare, StackedStage, WorkshopCategoryHeatmap, YearStackedCompare } from "./charts.jsx";
 
@@ -20,6 +20,8 @@ const ANALYSIS_CACHE_VERSION = "server-analysis-cache-v5";
 const safeParse = (value, fallback) => {
   try { return value ? JSON.parse(value) : fallback; } catch { return fallback; }
 };
+const aiEndpointHistoryKey = "qms-ai-endpoint-history-v1";
+const normalizeAiEndpointHistory = (items = []) => [...new Set((Array.isArray(items) ? items : []).map((item) => String(item || "").trim()).filter(Boolean))].slice(0, 12);
 const formatSyncDateTime = (value) => {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "";
@@ -31,8 +33,10 @@ const defaultFeaturePermissions = {
   workspace: { public: false, deputy: true, label: "质量工作台" },
   annotationEdit: { public: false, deputy: true, label: "分析改善措施" },
   annotationView: { public: false, deputy: true, label: "分析显示" },
-  exportReport: { public: true, deputy: true, label: "导出报告" },
+  exportReport: { public: true, deputy: true, label: "保存报告" },
   dateTemporaryRefresh: { public: true, deputy: true, label: "临时刷新日期" },
+  aiAnalysis: { public: false, deputy: true, label: "AI分析" },
+  aiInterface: { public: false, deputy: true, label: "AI接口" },
 };
 const defaultApiPermissions = {
   "POST /api/uploads": { public: false, deputy: true, label: "上传原始Excel" },
@@ -493,7 +497,7 @@ function AnnotationReportPanel() {
   const grouped = annotationModules.map((module) => ({ module, rows: reportRows.filter((row) => row.module === module) })).filter((group) => group.rows.length);
   if (!draftRows.length) return <div className="annotation-empty">{annotationText.empty}</div>;
   return <div className="annotation-report-panel">
-    <div className="annotation-save-bar"><span>{saved ? annotationText.saved : "修改后请点击保存，导出报告会使用已保存内容。"}</span><button onClick={save}><FloppyDisk size={15}/>{annotationText.save}</button></div>
+    <div className="annotation-save-bar"><span>{saved ? annotationText.saved : "修改后请点击保存，保存报告会使用已保存内容。"}</span><button onClick={save}><FloppyDisk size={15}/>{annotationText.save}</button></div>
     {grouped.map((group) => <section className="annotation-module-group" key={group.module}>
       <h4>{group.module}</h4>
       {group.rows.map((row) => <div className="annotation-report-row" key={row.id}>
@@ -677,6 +681,8 @@ function ExecutiveSidebar({ active, setActive, uiTheme, onThemeChange, collapsed
   const nav = [
     ["总览", House], ["IQC", Cube], ["IPQC", Pulse],
     ["OQC", ShieldCheck], ["DQA", ClipboardText], ["QMS", ListChecks],
+    ...(canUseFeature(auth, permissions, "aiAnalysis") ? [["AI分析", Brain]] : []),
+    ...(canUseFeature(auth, permissions, "aiInterface") ? [["AI接口", GearSix]] : []),
     ...(canUseFeature(auth, permissions, "dataImport") ? [["数据导入", UploadSimple]] : []),
     ...(auth?.isAdmin ? [["权限设置", GearSix]] : []),
   ];
@@ -802,6 +808,788 @@ function IpqcMappingSettings({ files, onImportModule, onSourcesChanged }) {
       </aside>
     </div>}
   </section>;
+}
+
+const aiBaseModules = ["IQC", "IPQC", "OQC", "DQA", "QMS"];
+const aiCrossModule = "跨模块分析";
+const aiModuleOptions = [...aiBaseModules, aiCrossModule];
+const aiSkillOptions = [{ value: "generate-quality-review-report", label: "generate-quality-review-report（质量复盘）" }];
+const aiRiskMeta = {
+  red: { label: "红色", text: "客户/现场或系统性风险" },
+  orange: { label: "橙色", text: "高暴露或可能向后端逃逸" },
+  yellow: { label: "黄色", text: "内部重复性过程弱点" },
+  blue: { label: "蓝色", text: "局部受控或标杆" },
+};
+const aiTop = (rows = [], score = (row) => row.count || 0) => [...rows].sort((a, b) => score(b) - score(a))[0] || {};
+const aiSum = (rows = [], field) => rows.reduce((total, row) => total + (Number(row?.[field]) || 0), 0);
+const aiPercent = (part, total) => total > 0 ? Number((part / total * 100).toFixed(1)) : 0;
+const aiRows = (value) => Array.isArray(value) ? value : value && typeof value === "object" ? Object.values(value).flatMap((item) => Array.isArray(item) ? item : []) : [];
+
+// Keep the AI overview cards on the exact same definitions as the executive overview.
+const buildAiOverviewMetricCards = (data) => {
+  const sites = ["深圳", "杭州"];
+  const iqcRows = sites.flatMap((site) => data.iqc?.siteMonthly?.[site] || []);
+  const ipqcRows = sites.flatMap((site) => data.ipqc?.siteMonthly?.[site] || []);
+  const iqc25 = yearTotalsFromMonthly(iqcRows, 2025);
+  const iqc26 = yearTotalsFromMonthly(iqcRows, 2026);
+  const ipqc25 = yearTotalsFromMonthly(ipqcRows, 2025);
+  const ipqc26 = yearTotalsFromMonthly(ipqcRows, 2026);
+  const oqcDetail = data.oqc?.shipmentDetail?.overall;
+  const oqc = oqcDetail?.y2026?.count ? {
+    five: oqcDetail.y2026.fiveRate, five25: oqcDetail.y2025.fiveRate,
+    low: oqcDetail.y2026.lowRate, count: oqcDetail.y2026.count,
+  } : { five: 0, five25: 0, low: 0, count: 0 };
+  const dqaRows = data.dqa?.divisions || [];
+  const dqaReview = sumRows(dqaRows, (row) => row.review);
+  const dqaBack = sumRows(dqaRows, (row) => (row.production || 0) + (row.onsite || 0));
+  const dqaStage25 = data.dqa?.yearCompare?.byDivision?.stages || [];
+  const dqaBack25FromStages = dqaStage25.reduce((total, row) => {
+    const year = row.years?.find((item) => item.year === 2025) || { counts: {} };
+    return total + (year.counts?.生产 || 0) + (year.counts?.现场 || 0);
+  }, 0);
+  const dqaDelta = Number(data.kpis?.[3]?.delta || 0);
+  const dqaBack25 = dqaStage25.length
+    ? dqaBack25FromStages
+    : Math.round((dqaBack || data.kpis?.[3]?.value || 0) / Math.max(1 + dqaDelta / 100, 0.01));
+  return {
+    IQC: { value: `${rateFromTotals(iqc26, false)}%`, previous: `${rateFromTotals(iqc25, false)}%`, label: "IQC 批次良率", note: `${iqc26.qty.toLocaleString()} 批次/件检验` },
+    IPQC: { value: `${rateFromTotals(ipqc26, true)}%`, previous: `${rateFromTotals(ipqc25, true)}%`, label: "IPQC 异常密度", note: `${ipqc26.bad.toLocaleString()} 条问题 / ${ipqc26.qty.toLocaleString()} 件送检` },
+    OQC: { value: `${oqc.five}%`, previous: `${oqc.five25}%`, label: "OQC 5分率", note: `低分率 ${oqc.low}% · ${oqc.count.toLocaleString()} 份评分` },
+    DQA: { value: `${dqaBack.toLocaleString()}项`, previous: `${dqaBack25.toLocaleString()}项`, label: "DQA 后端问题", note: `生产+现场；评审拦截 ${dqaReview.toLocaleString()} 项` },
+  };
+};
+
+function buildAiQualityReview(data, module, dateRange) {
+  const companyMonthly = (value) => Object.values(value || {}).filter(Array.isArray).sort((a, b) => aiSum(b, "y2026Qty") - aiSum(a, "y2026Qty"))[0] || [];
+  const iqcSites = data.iqc?.siteMonthly?.["全公司"] || companyMonthly(data.iqc?.siteMonthly);
+  const iqcQty = aiSum(iqcSites, "y2026Qty");
+  const iqcBad = aiSum(iqcSites, "y2026Bad");
+  const ipqcSites = data.ipqc?.siteMonthly?.["全公司"] || companyMonthly(data.ipqc?.siteMonthly);
+  const ipqcQty = aiSum(ipqcSites, "y2026Qty");
+  const ipqcIssues = aiSum(ipqcSites, "y2026Bad");
+  const oqc = data.oqc?.shipmentDetail?.overall?.y2026 || {};
+  const qms = data.qms?.current?.samples ? data.qms.current : [...(data.qms?.periods || [])].filter((item) => item.year === 2026).sort((a, b) => (b.half || 0) - (a.half || 0))[0] || {};
+  const dqaDivision = aiTop(data.dqa?.divisions || [], (row) => (row.production || 0) + (row.onsite || 0));
+  const dqaTpm = aiTop(data.dqa?.tpmStages || [], (row) => (row.production || 0) + (row.onsite || 0));
+  const dqaTheme = aiTop(data.dqa?.categories || [], (row) => (row.production || 0) + (row.onsite || 0) + (row.review || 0));
+  const iqcSupplier = aiRows(data.iqc?.mainSuppliers || data.iqc?.suppliers).sort((a, b) => (a.y2026Rate ?? a.y2026 ?? 100) - (b.y2026Rate ?? b.y2026 ?? 100))[0] || {};
+  const iqcTheme = aiTop(data.iqc?.categories || [], (row) => (row.shenzhen || 0) + (row.hangzhou || 0) + (row.count || 0));
+  const ipqcWorkshop = aiTop(data.ipqc?.workshopsBySite?.["全公司"] || data.ipqc?.workshops || [], (row) => row.y2026Rate || row.issues || 0);
+  const ipqcTheme = aiTop(data.ipqc?.rawTypesBySite?.["全公司"] || data.ipqc?.categories || [], (row) => row.y2026Count || row.count || row.shenzhen || 0);
+  const oqcTpm = [...(data.oqc?.shipmentDetail?.tpmRows || data.oqc?.tpm || [])].sort((a, b) => (b.y2026LowRate || b.lowRate || 0) - (a.y2026LowRate || a.lowRate || 0))[0] || {};
+  const oqcTheme = aiTop(data.oqc?.onsite || [], (row) => row.count || 0);
+  const qmsDivision = [...(data.qms?.divisionCompare || [])].sort((a, b) => (b.periods?.p2026h1?.lowRate || 0) - (a.periods?.p2026h1?.lowRate || 0))[0] || {};
+  const qmsTpmRows = aiRows(data.qms?.tpmByDivision?.["全公司"] || Object.values(data.qms?.tpmByDivision || {})[0]);
+  const qmsTpm = qmsTpmRows.sort((a, b) => (b.periods?.p2026h1?.lowRate || 0) - (a.periods?.p2026h1?.lowRate || 0))[0] || {};
+  const qmsSuggestions = (data.qms?.suggestions || []).filter((row) => row.period === "2026年上半年");
+
+  const metricCards = { ...buildAiOverviewMetricCards(data), QMS: { value: `${qms.avg ?? 0}分`, label: "客户满意度", note: `${qms.samples || 0}份有效调查` } };
+  const allMetrics = Object.entries(metricCards).map(([key, item]) => ({ key, ...item }));
+  const visibleMetrics = module === "公司综合" ? allMetrics : allMetrics.filter((item) => item.key === module);
+
+  const moduleFindings = {
+    DQA: { risk: "red", org: dqaDivision.name || "产品部待识别", owner: dqaTpm.name || "TPM待识别", mechanism: dqaTheme.name || "设计/发布问题", conclusion: `生产与现场后端问题集中在${dqaDivision.name || "重点产品部"}，${dqaTpm.name || "重点TPM"}项目组合需要优先前移门禁。`, action: "把高频问题写入TR3/TR5证据门，重复问题必须完成跨项目横展和三批/三项目验证。" },
+    IQC: { risk: "red", org: iqcSupplier.site || "深圳/杭州基地", owner: iqcSupplier.supplier || "重点供应商", mechanism: iqcTheme.name || "尺寸/公差", conclusion: `${iqcTheme.name || "尺寸/公差"}是主要来料机制，低表现供应商/物料组合需要按数量口径而非问题条数评价。`, action: "建立关键尺寸清单、首件全尺寸、量具一致性与Cpk门禁；SCAR以连续三批验证解除。" },
+    IPQC: { risk: "orange", org: ipqcWorkshop.site || "重点基地", owner: ipqcWorkshop.name || "重点工坊/交付经理", mechanism: ipqcTheme.name || "装配/接线", conclusion: `${ipqcWorkshop.name || "高风险工坊"}的过程暴露较高，问题记录条数与不良件数必须分开管理。`, action: "按工坊与交付经理建立首件、标准作业、外包同责和重复问题日清机制。" },
+    OQC: { risk: "red", org: oqcTpm.division || "重点产品部/事业部", owner: oqcTpm.name || "重点TPM", mechanism: oqcTheme.name || "功能/测试/稳定性", conclusion: `现场问题以${oqcTheme.name || "功能/测试/稳定性"}为首要流出风险，评分改善不能替代客户现场可靠性。`, action: "建立功能边界工况、老化/连续运行和测试证据门；低分设备逐台联合评审。" },
+    QMS: { risk: "orange", org: qmsDivision.name || "重点事业部", owner: qmsTpm.name || "重点TPM", mechanism: "客户意见闭环/设计软件/交付响应", conclusion: `${qmsSuggestions.length || "现有"}项客户意见需独立于平均分管理，重点识别重复意见、关系风险和客户确认关闭。`, action: "建立VOC台账，关联产品部和TPM，记录严重度、承诺日期、关闭证据及客户确认。" },
+  };
+  const visibleFindings = module === "公司综合" ? Object.entries(moduleFindings) : [[module, moduleFindings[module]]];
+  const commonThemes = [
+    { name: "设计与接口完整性", stages: ["DQA", "IPQC", "OQC", "QMS"], evidence: "共同主题假设", text: "设计/3D/软件/接口问题在研发、装配、出货及客户意见中重复出现，需要用项目或SN进一步验证同源关系。" },
+    { name: "装配与连接可靠性", stages: ["IQC", "IPQC", "OQC"], evidence: "机制集中", text: "尺寸、装配、螺丝、接线及结构干涉构成连续质量链，应建立统一关键特性和放行证据。" },
+    { name: "问题闭环与反馈", stages: ["DQA", "OQC", "QMS"], evidence: "客户声音", text: "重复问题、FACA/8D质量和改善状态反馈决定客户对闭环有效性的信任。" },
+  ];
+  const actions = visibleFindings.map(([key, item], index) => ({
+    id: `AI-${String(index + 1).padStart(2, "0")}`,
+    module: key,
+    risk: item.risk,
+    owner: item.owner,
+    due: "30/60/90天",
+    deliverable: item.action,
+    leading: "门禁证据完整率≥98%",
+    lagging: item.risk === "red" ? "核心问题月均下降30%" : "重复问题下降30%",
+    release: "连续三批/三项目达标并完成有效性复核",
+  }));
+  const confidence = (!iqcQty || !ipqcQty || !oqc.count || !qms.samples) ? "B" : "A";
+  return {
+    generatedAt: new Date().toISOString(), module, confidence,
+    period: `${dateRange.start2025}—${dateRange.end2025} / ${dateRange.start2026}—${dateRange.end2026}`,
+    metrics: visibleMetrics, findings: visibleFindings, commonThemes, actions,
+    audit: [
+      { label: "指标口径", pass: true, detail: "结果指标与问题暴露量分开呈现" },
+      { label: "三级责任", pass: visibleFindings.every(([, item]) => item.org && item.owner), detail: "结果责任—过程责任—执行责任" },
+      { label: "根因证据", pass: true, detail: "跨模块关联标记为假设，需标识符验证" },
+      { label: "客户意见", pass: true, detail: "独立于满意度分数分析" },
+      { label: "发布门禁", pass: confidence === "A", detail: confidence === "A" ? "关键模块数据完整" : "部分指标缺少有效分母或字段" },
+    ],
+  };
+}
+
+const approvedAiReports = {
+  DQA: {
+    confidence: "B", source: "2026年上半年DQA质量复盘报告-三级改善行动版.docx",
+    metric: { value: "5,129条", label: "有效研发问题", note: "同比增加64.7%；生产+现场占75.0%" },
+    findings: [
+      { risk: "red", mechanism: "产品五部现场逃逸压降", org: "产品五部", owner: "产品五部负责人/郑昊翔、谢作林、周超", conclusion: "产品五部问题由374增至1,424，现场由136增至657；贡献公司问题增量52.1%。ECN率下降但ECN绝对量反增7.4%，不能只看比例改善。", action: "建立红色战情室，回溯设计、程序、BOM/资料和首台验证门禁；8月底形成项目级关闭证据，Q4现场月均下降40%。" },
+      { risk: "red", mechanism: "机械设计与设计输出一次正确率", org: "研发体系", owner: "研发体系负责人/机械技术委员会", conclusion: "设计、结构干涉、尺寸、3D、孔位、选型、BOM和资料构成主要问题群；ME与测试ME约占69.7%。", action: "发布机械设计Top 30规则，强制3D干涉、公差孔位、维修空间、选型及BOM/图纸/3D一致性证据；Q4相关问题月均下降30%。" },
+      { risk: "red", mechanism: "程序与控制逻辑验证门禁", org: "软件/控制体系", owner: "软件/控制负责人", conclusion: "程序问题749条，为第二大类别；高风险项目组合集中，需求—用例—版本—回归证据不足会使问题在联调和现场暴露。", action: "建立软件/PLC最小验证包和ECN跨专业影响清单；9月作为放行必备证据，Q4程序类现场问题下降30%。" },
+    ],
+  },
+  IQC: {
+    confidence: "B", source: "2026年上半年IQC质量复盘报告-三级改善行动版.docx",
+    metric: { value: "95.42%", label: "数量合格率", note: "检验78,762件，不良3,611件" },
+    findings: [
+      { risk: "red", mechanism: "尺寸/公差过程能力提升", org: "公司/SQE", owner: "SQE及重点供应商", conclusion: "2026年尺寸/公差问题1,932条，占两基地问题约54.8%，是绝对第一大问题。", action: "对贡献80%的供应商/物料实施关键尺寸清单、首件全尺寸、量具一致性和Cpk验证；Q4尺寸问题月均较Q2下降30%。" },
+      { risk: "red", mechanism: "深圳回落与高风险物料", org: "深圳基地", owner: "深圳IQC/SQE", conclusion: "深圳H1合格率95.70%，但6月降至93.9%；铜件85.3%、载板89.6%、底板90.0%、PAI针模92.1%。", action: "铜件、非金属/针模和底板实施专项检验与供应商过程审核；9月铜件合格率≥92%，深圳连续三个月≥95%。" },
+      { risk: "red", mechanism: "专项项目供应链质量门禁", org: "重点项目组合", owner: "项目负责人+SQE", conclusion: "Handler 76.2%、新加坡52.9%、折弯18.2%、IMU 60.9%，显著低于常规来料。", action: "建立供应商准入、首件认可、关键特性和加严检验；折弯/新加坡立即红色管控，Q4各项目合格率提升至少15个百分点。" },
+    ],
+  },
+  IPQC: {
+    confidence: "A", source: "2026年上半年IPQC质量复盘报告-三级改善行动版.docx",
+    metric: { value: "3.15%", label: "不良件率", note: "送检60,336件，不良1,901件；软件问题记录2,852条" },
+    findings: [
+      { risk: "red", mechanism: "装配纪律与首件门禁", org: "公司/制造质量", owner: "制造质量负责人", conclusion: "装配问题649件、螺丝问题207件，合计856件，占公司不良件45.0%。", action: "统一装配关键点、扭矩/防错记录和首件签核；9月底装配+螺丝不良月均较Q2下降30%，证据完整率≥98%。" },
+      { risk: "orange", mechanism: "连接可靠性与设计接口", org: "产品部+制造", owner: "产品部及制造负责人", conclusion: "接线327件、3D问题179件、设计问题174件，合计680件，占35.8%。", action: "建立接线红线检查和DQA—IPQC联合评审；Q4连接/设计类不良月均下降30%，重复问题为0。" },
+      { risk: "red", mechanism: "外包过程同责管理", org: "深圳/杭州基地", owner: "对应交付经理", conclusion: "深圳二外包14.29%、杭州一外包9.39%、深圳五外包7.83%，均显著高于公司3.15%。", action: "外包工坊并入交付经理KPI，执行首件、巡检和连续三批解除加严；9月底各外包工坊≤5%。" },
+    ],
+  },
+  OQC: {
+    confidence: "B", source: "2026年上半年OQC质量复盘报告-三级改善行动版.docx",
+    metric: { value: "4.59分", label: "出货平均评分", note: "评价1,011台；5分率67.2%，低分率7.1%" },
+    findings: [
+      { risk: "red", mechanism: "功能与稳定性放行门禁", org: "公司/OQC", owner: "OQC负责人", conclusion: "客户现场功能/测试/稳定性问题154条，占现场问题28.3%，是绝对第一类。", action: "建立产品族功能清单、边界工况、连续运行/老化和测试数据证据；9月底现场功能类问题月均较Q2下降30%。" },
+      { risk: "orange", mechanism: "结构、电气、装配综合门禁", org: "制造+OQC", owner: "制造与OQC负责人", conclusion: "针模/探针/排线47条、机械结构/干涉45条、电气接线36条、装配紧固36条，合计164条，占30.1%。", action: "合并为结构与连接可靠性清单，关键点照片/数据留证；Q4四类现场问题合计下降30%，重复问题为0。" },
+      { risk: "orange", mechanism: "低分设备升级评审", org: "产品部/事业部", owner: "质量总监办公室+TPM", conclusion: "2026仍有72台低分设备，占7.1%；FPC低分率9.1%、产品五部6.7%。", action: "≤3分设备由TPM、制造、OQC联合评审；低分100%闭环，Q4公司低分率≤5%。" },
+    ],
+  },
+  QMS: {
+    confidence: "C", source: "2026年上半年QMS客户满意度与客户意见复盘报告-三级改善行动版.docx",
+    metric: { value: "4.5分", label: "客户满意度", note: "37份调查；高分率59.5%，低分率2.7%，有效意见25项" },
+    findings: [
+      { risk: "red", mechanism: "客户意见闭环机制", org: "公司/QMS", owner: "QMS负责人", conclusion: "闭环/变更沟通主题11次，涉及FACA、变更提前同步、改善状态反馈、重大异常台账和重复问题复盘。", action: "7月底完成25项VOC建账；9月底有效意见闭环率100%、逾期<10%、重复意见为0。" },
+      { risk: "red", mechanism: "设计/软件/DFx与可靠性", org: "产品部", owner: "产品部负责人", conclusion: "设计/软件/DFx主题13次、质量/可靠性8次，涉及通讯/探针DFx、软件漏洞、治具卡滞、尺寸偏移和机械寿命。", action: "DQA—OQC—售后联合分类；Q4重复设计/软件/可靠性意见下降50%，重大问题横展率100%。" },
+      { risk: "orange", mechanism: "交付与售后能力保障", org: "交付+售后", owner: "交付与售后负责人", conclusion: "交付/计划7次、售后/响应7次，客户要求交付基准、专家支援、熟手配置、快速响应和培训。", action: "建立资源模型、Buyoff基准和专家升级通道；Q4计划节点达成率≥95%、重大异常2小时响应。" },
+    ],
+  },
+};
+
+function buildApprovedAiReview(module, data) {
+  const modules = module === "公司综合" ? Object.keys(approvedAiReports) : [module];
+  const selected = modules.map((key) => [key, approvedAiReports[key]]).filter(([, report]) => report);
+  const findings = selected.flatMap(([key, report]) => report.findings.map((item) => [key, item]));
+  const confidenceOrder = { A: 1, B: 2, C: 3, D: 4 };
+  const confidence = selected.reduce((grade, [, report]) => confidenceOrder[report.confidence] > confidenceOrder[grade] ? report.confidence : grade, "A");
+  const liveMetrics = data ? { ...buildAiOverviewMetricCards(data), QMS: (() => {
+    const current = data.qms?.current?.samples ? data.qms.current : [...(data.qms?.periods || [])].filter((item) => item.year === 2026).sort((a, b) => (b.half || 0) - (a.half || 0))[0] || {};
+    return { value: `${current.avg ?? 0}分`, label: "客户满意度", note: `${current.samples || 0}份有效调查` };
+  })() } : null;
+  return {
+    module, confidence, approved: true, period: "2025-01-01—2025-06-30 / 2026-01-01—2026-06-30",
+    metrics: selected.map(([key, report]) => ({ key, ...(liveMetrics?.[key] || report.metric) })), findings,
+    commonThemes: [
+      { name: "设计与接口完整性", stages: ["DQA", "IPQC", "OQC", "QMS"], evidence: "跨报告共同主题假设", text: "正式报告共同指向设计/3D/软件/接口问题；需用项目、批次或SN验证同源关系后才能认定跨阶段逃逸。" },
+      { name: "装配与连接可靠性", stages: ["IQC", "IPQC", "OQC"], evidence: "跨报告机制集中", text: "尺寸、公差、装配、螺丝、接线和结构干涉构成连续质量链，应建立统一关键特性和放行证据。" },
+      { name: "问题闭环与客户反馈", stages: ["DQA", "OQC", "QMS"], evidence: "客户声音", text: "重复问题、FACA/8D质量和改善状态反馈决定客户对闭环有效性的信任。" },
+    ],
+    actions: findings.map(([key, item], index) => ({ id: `AR-${String(index + 1).padStart(2, "0")}`, module: key, risk: item.risk, owner: item.owner, deliverable: item.action, leading: "责任/期限/证据完整率100%", lagging: item.risk === "red" ? "核心风险按报告目标压降" : "重复问题持续下降", release: "达到报告量化目标并完成有效性复核" })),
+    audit: [
+      { label: "报告来源", pass: true, detail: selected.map(([, report]) => report.source).join("；") },
+      { label: "指标口径", pass: true, detail: "沿用正式报告审计后的分子、分母和限制" },
+      { label: "责任与行动", pass: true, detail: "沿用正式报告三级责任和量化待办" },
+      { label: "数据更新", pass: false, detail: "当前展示为审核版；源数据更新后必须重新生成正式分析" },
+    ],
+  };
+}
+
+const aiGeneratedStorageKey = "qms-ai-generated-module-reviews-v1";
+const compactAiValue = (value, depth = 0, limits = { arrayLimit: 40, keyLimit: 45 }) => {
+  if (depth > 5 || value == null || typeof value !== "object") return value;
+  if (Array.isArray(value)) return value.slice(0, limits.arrayLimit).map((item) => compactAiValue(item, depth + 1, limits));
+  return Object.fromEntries(Object.entries(value).filter(([key]) => !["rawRows", "rows", "files"].includes(key)).slice(0, limits.keyLimit).map(([key, item]) => [key, compactAiValue(item, depth + 1, limits)]));
+};
+const boundedAiJson = (value, maxChars = 70000) => {
+  const raw = JSON.stringify(value);
+  if (raw.length <= maxChars) return raw;
+  const compact = JSON.stringify(compactAiValue(value, 0, { arrayLimit: 16, keyLimit: 24 }));
+  if (compact.length <= maxChars) return `${compact}\n[数据已按字段和行数压缩，未改变统计口径]`;
+  return `${compact.slice(0, Math.max(1000, maxChars - 80))}\n[数据已截断，禁止据此推断未提供的数字]`;
+};
+const readAiReportFile = async (file) => {
+  if (!/\.docx$/i.test(file.name)) return await file.text();
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  const view = new DataView(bytes.buffer);
+  let eocd = -1;
+  for (let index = bytes.length - 22; index >= Math.max(0, bytes.length - 65557); index -= 1) {
+    if (view.getUint32(index, true) === 0x06054b50) { eocd = index; break; }
+  }
+  if (eocd < 0) throw new Error("无法读取DOCX压缩包");
+  const entries = view.getUint16(eocd + 10, true);
+  const centralOffset = view.getUint32(eocd + 16, true);
+  let cursor = centralOffset;
+  let documentEntry = null;
+  for (let index = 0; index < entries; index += 1) {
+    if (view.getUint32(cursor, true) !== 0x02014b50) break;
+    const method = view.getUint16(cursor + 10, true);
+    const compressedSize = view.getUint32(cursor + 20, true);
+    const fileNameLength = view.getUint16(cursor + 28, true);
+    const extraLength = view.getUint16(cursor + 30, true);
+    const commentLength = view.getUint16(cursor + 32, true);
+    const localHeaderOffset = view.getUint32(cursor + 42, true);
+    const name = new TextDecoder().decode(bytes.slice(cursor + 46, cursor + 46 + fileNameLength));
+    if (name === "word/document.xml") documentEntry = { method, compressedSize, localHeaderOffset };
+    cursor += 46 + fileNameLength + extraLength + commentLength;
+  }
+  if (!documentEntry) throw new Error("DOCX中未找到正文内容");
+  const local = documentEntry.localHeaderOffset;
+  const localNameLength = view.getUint16(local + 26, true);
+  const localExtraLength = view.getUint16(local + 28, true);
+  const compressed = bytes.slice(local + 30 + localNameLength + localExtraLength, local + 30 + localNameLength + localExtraLength + documentEntry.compressedSize);
+  const xmlBytes = documentEntry.method === 0
+    ? compressed
+    : new Uint8Array(await new Response(new Blob([compressed]).stream().pipeThrough(new DecompressionStream("deflate-raw"))).arrayBuffer());
+  const xml = new DOMParser().parseFromString(new TextDecoder().decode(xmlBytes), "application/xml");
+  const namespace = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
+  const body = xml.getElementsByTagNameNS(namespace, "body")[0];
+  const blocks = [...(body?.children || [])].flatMap((block) => {
+    if (block.localName === "p") {
+      const text = [...block.getElementsByTagNameNS(namespace, "t")].map((item) => item.textContent || "").join("").trim();
+      if (!text) return [];
+      const style = block.getElementsByTagNameNS(namespace, "pStyle")[0]?.getAttributeNS(namespace, "val") || "";
+      const heading = style.match(/Heading([1-6])/i);
+      return [heading ? `${"#".repeat(Number(heading[1]))} ${text}` : text];
+    }
+    if (block.localName === "tbl") {
+      return [...block.getElementsByTagNameNS(namespace, "tr")].map((row) => {
+        const cells = [...row.getElementsByTagNameNS(namespace, "tc")].map((cell) => [...cell.getElementsByTagNameNS(namespace, "t")].map((item) => item.textContent || "").join(" ").trim());
+        return cells.length ? `| ${cells.join(" | ")} |` : "";
+      }).filter(Boolean);
+    }
+    return [];
+  });
+  return blocks.join("\n").trim() || xml.documentElement?.textContent?.trim() || "";
+};
+const splitImportedReportSections = (content = "") => {
+  const sections = [];
+  let current = { title: "报告内容", lines: [] };
+  String(content).replace(/\r/g, "").split("\n").forEach((line) => {
+    const heading = line.match(/^\s*(#{1,6})\s+(.+?)\s*$/);
+    if (heading) {
+      if (current.lines.some((item) => item.trim())) sections.push(current);
+      current = { title: heading[2], level: heading[1].length, lines: [] };
+    } else current.lines.push(line);
+  });
+  if (current.lines.some((item) => item.trim()) || !sections.length) sections.push(current);
+  return sections;
+};
+const sanitizeAiReportContent = (content = "") => String(content || "")
+  .replace(/质量总监(?:综合)?判断/g, "质量复盘摘要")
+  .replace(/^\s*#{1,6}\s*质量复盘摘要\s*$/gmi, "# 质量复盘摘要");
+const renderReportInline = (value = "") => {
+  const parts = String(value).split(/(\*\*[^*]+\*\*)/g).filter(Boolean);
+  return parts.map((part, index) => part.startsWith("**") && part.endsWith("**")
+    ? <strong key={index}>{part.slice(2, -2)}</strong>
+    : <Fragment key={index}>{part}</Fragment>);
+};
+const reportRiskClass = (value = "") => /红色|高风险|严重/.test(String(value)) ? "risk-red" : /橙色|中高风险|系统性/.test(String(value)) ? "risk-orange" : /黄色|中风险|重复/.test(String(value)) ? "risk-yellow" : /蓝色|低风险|已受控|局部/.test(String(value)) ? "risk-blue" : "";
+const reportPointClass = (value = "") => {
+  const text = String(value).replace(/\*/g, "");
+  if (/^分析结论\s*[:：]?/.test(text)) return "point-conclusion";
+  if (/^风险判断\s*[:：]?/.test(text)) return "point-risk";
+  if (/^改善措施\s*[:：]?/.test(text)) return "point-improvement";
+  if (/^待办事项\s*[:：]?/.test(text)) return "point-action";
+  if (/^(待验证假设|已验证根因)\s*[:：]?/.test(text)) return "point-root-cause";
+  return "";
+};
+function ImportedReportViewer({ content }) {
+  const sections = useMemo(() => splitImportedReportSections(sanitizeAiReportContent(content)), [content]);
+  return <div className="ai-imported-report-viewer">{sections.map((section, sectionIndex) => {
+    const lines = section.lines;
+    const rows = lines.filter((line) => /^\s*\|/.test(line) && !/^\s*\|(?:\s*:?-+:?\s*\|)+\s*$/.test(line));
+    const nonTableLines = lines.filter((line) => !/^\s*\|/.test(line));
+    const sectionTitle = String(section.title || "").trim();
+    const riskClass = reportRiskClass(sectionTitle) || (/客户|逃逸/.test(sectionTitle) ? "risk-red" : /行动|待办|措施/.test(sectionTitle) ? "action" : "");
+    return <section className={`ai-imported-section level-${section.level || 1} ${riskClass}`} key={`${section.title}-${sectionIndex}`}><h4>{renderReportInline(sectionTitle)}</h4>{rows.length > 0 && <div className="ai-imported-table">{rows.map((line, index) => { const cells = line.trim().replace(/^\|/, "").replace(/\|$/, "").split("|").map((cell) => cell.trim()); const rowText = cells.join(" "); const rowRisk = reportRiskClass(rowText); const pointClass = reportPointClass(cells[0]); const titleRow = cells.length === 1 || (!pointClass && /红色|橙色|黄色|蓝色|高风险|中高风险|中风险/.test(rowText) && rowText.length < 120); const rowClass = `${titleRow ? "title-row" : index === 0 ? "head" : ""} ${rowRisk} ${pointClass}`; return <div className={`ai-imported-table-row ${rowClass}`} style={{ gridTemplateColumns: `repeat(${Math.max(cells.length, 1)}, minmax(0, 1fr))` }} key={index}>{titleRow ? <span className="report-title-cell" style={{ gridColumn: "1 / -1" }}>{renderReportInline(cells.join(" | "))}</span> : cells.map((cell, cellIndex) => <span className={pointClass ? cellIndex === 0 ? "point-label" : "point-value" : ""} key={cellIndex}>{renderReportInline(cell)}</span>)}</div>; })}</div>}{nonTableLines.map((line, index) => { const trimmed = line.trim(); if (!trimmed) return <div className="ai-imported-spacer" key={index}/>; if (/^(?:[-*]|\d+[.)])\s+/.test(trimmed)) return <p className="ai-imported-bullet" key={index}>{renderReportInline(trimmed.replace(/^(?:[-*]|\d+[.)])\s+/, ""))}</p>; const pointText = trimmed.replace(/\*\*/g, ""); const pointClass = reportPointClass(pointText); const paragraphClass = pointClass ? `key-point ${pointClass} ${reportRiskClass(pointText)}` : reportRiskClass(pointText) ? `key-point ${reportRiskClass(pointText)}` : /^(战役|重点|问题|主题|行动|风险)/.test(pointText) ? `report-inline-title ${reportRiskClass(pointText)}` : ""; return <p className={paragraphClass} key={index}>{renderReportInline(trimmed)}</p>; })}</section>;
+  })}</div>;
+}
+const buildAiModuleData = (data, module, dateRange) => {
+  const source = data?.[module.toLowerCase()] || {};
+  const selected = module === "IQC" ? {
+    siteMonthly: source.siteMonthly, mainSuppliers: source.mainSuppliers, categories: source.categories,
+    projects: source.projects, workshops: source.workshops, supplierTypes: source.supplierTypes,
+  } : module === "IPQC" ? {
+    siteMonthly: source.siteMonthly, workshopsBySite: source.workshopsBySite, rawTypesBySite: source.rawTypesBySite,
+    contentTypesBySite: source.contentTypesBySite, outsourcingBySite: source.outsourcingBySite,
+    leaderAnalysis: source.leaderAnalysis?.bySite,
+  } : module === "OQC" ? {
+    monthlySummary: source.monthlySummary, tpm: source.tpm, onsite: source.onsite,
+    shipmentOverall: source.shipmentDetail?.overall, divisionRows: source.shipmentDetail?.divisionRows,
+    tpmRows: source.shipmentDetail?.tpmRows, scoreStructureRows: source.shipmentDetail?.scoreStructureRows,
+  } : module === "DQA" ? {
+    divisions: source.divisions, tpmStages: source.tpmStages, categories: source.categories,
+    disciplines: source.disciplines, yearCompare: source.yearCompare, ecn: source.ecn, machinedParts: source.machinedParts,
+  } : {
+    periods: source.periods, current: source.current, base: source.base, divisionCompare: source.divisionCompare,
+    tpmByDivision: source.tpmByDivision, completeDimensions: source.completeDimensions,
+    risks: source.risks, customerOpinions: source.suggestions,
+  };
+  const prepared = compactAiValue(selected, 0, { arrayLimit: 10, keyLimit: 24 });
+  return {
+    module,
+    period: dateRange,
+    source: "QMS analytics cache",
+    sourceDescription: "仅使用项目已完成的统计、趋势、Pareto、责任层级和客户意见摘要；不包含原始明细行、上传文件或 rawRows。",
+    dataScope: {
+      includes: ["result metrics", "process/exposure metrics", "organizational Pareto", "mechanism/category Pareto", "responsibility dimensions", "customer voice summary when available"],
+      excludes: ["rawRows", "rows", "files", "original upload records"],
+    },
+    data: prepared,
+  };
+};
+const buildLocalAiAudit = (data, module, dateRange, payload) => {
+  const overview = buildAiOverviewMetricCards(data);
+  const currentQms = data.qms?.current?.samples ? data.qms.current : [...(data.qms?.periods || [])].filter((item) => item.year === 2026).sort((a, b) => (b.half || 0) - (a.half || 0))[0] || {};
+  const metrics = { ...overview, QMS: { value: `${currentQms.avg ?? 0}分`, previous: "-", label: "QMS客户满意度", note: `${currentQms.samples || 0}份有效调查` } };
+  const selectedMetrics = module === "公司综合" ? metrics : { [module]: metrics[module] };
+  const metricLines = Object.entries(selectedMetrics).map(([key, item]) => `- ${key}｜结果指标：${item?.label || "待识别"}｜本期：${item?.value || "-"}｜对比期：${item?.previous || "-"}｜说明：${item?.note || "-"}`).join("\n");
+  const dimensions = Object.keys(payload?.data || {}).filter((key) => payload.data[key] != null).join("、") || "无可用分析维度";
+  const denominatorNotes = module === "IQC" ? "批次/件检验量作为分母，问题数量作为暴露量。" : module === "IPQC" ? "送检件数作为分母，不良件数与问题记录分开。" : module === "OQC" ? "出货评分数量作为分母，5分率与平均分分开。" : module === "DQA" ? "生产+现场问题为后端暴露量，评审拦截单独统计。" : "有效问卷作为满意度分母，客户意见条数不替代满意度。";
+  const confidence = Object.values(selectedMetrics).every((item) => item?.value && item.value !== "0%") ? "A" : "B";
+  return `# 数据审计与口径（本地QMS统计引擎）
+## 审计范围
+- 模块：${module}
+- 统计周期：2025同期 ${dateRange.start2025}—${dateRange.end2025}；2026本期 ${dateRange.start2026}—${dateRange.end2026}
+- 输入来源：QMS analytics cache；未读取原始上传明细、rawRows或文件对象
+- 已整理维度：${dimensions}
+
+## 指标字典与结果
+${metricLines}
+- 口径纪律：${denominatorNotes}
+
+## 数据质量与可信度
+- 数据可信度：${confidence}（本地缓存已完成字段整理；跨文件指纹、重复行和原始缓存差异需以导入审计记录补充）
+- 排除项：原始明细行、上传文件内容、无法从缓存复算的字段不参与结论。
+- 解释限制：问题记录/意见条数是暴露量，不自动等同于不良件数；缺少有效分母时只做风险信号。
+
+## 责任链
+- 结果责任：公司/模块总体负责人
+- 过程责任：${module === "IQC" ? "基地与供应商/物料族" : module === "IPQC" ? "基地与工坊/交付经理" : module === "OQC" ? "产品部/事业部与OQC" : module === "DQA" ? "产品部与研发流程" : "产品部/QMS客户意见闭环"}
+- 执行责任：${module === "IQC" ? "SQE、供应商质量角色" : module === "IPQC" ? "工坊、交付经理、站点责任角色" : module === "OQC" ? "TPM、OQC与制造责任角色" : module === "DQA" ? "TPM/项目组合负责人" : "QMS、TPM与客户接口角色"}
+
+## 审计结论
+本阶段已由本地统计引擎完成，后续AI只需基于以上整理后的指标、趋势、Pareto和责任维度开展双重二八、根因假设、改善措施和行动台账分析。`;
+};
+const localParetoScore = (row = {}) => {
+  const preferred = ["count", "issues", "production", "onsite", "y2026Bad", "y2026Count", "total", "samples"];
+  const direct = preferred.reduce((sum, key) => sum + (Number(row[key]) || 0), 0);
+  if (direct) return direct;
+  return Object.entries(row).reduce((sum, [key, value]) => sum + (/count|qty|bad|issue|total|number/i.test(key) && Number.isFinite(Number(value)) ? Number(value) : 0), 0);
+};
+const localParetoLabel = (row = {}) => String(row.name || row.supplier || row.workshop || row.division || row.category || row.project || row.site || row.type || "未分类");
+const localParetoRows = (value) => aiRows(value).filter((row) => row && typeof row === "object");
+const normalizeLocalMechanism = (label) => {
+  const text = String(label || "");
+  if (/尺寸|公差|孔位|干涉/.test(text)) return "尺寸/公差/结构接口";
+  if (/装配|螺丝|接线|连接|线束/.test(text)) return "装配与连接可靠性";
+  if (/软件|程序|控制|逻辑|通讯/.test(text)) return "软件/控制验证";
+  if (/功能|测试|稳定|老化/.test(text)) return "功能与稳定性放行";
+  if (/资料|图纸|BOM|版本|设计/.test(text)) return "设计资料与发布";
+  return text || "其他机制";
+};
+const buildLocalAiPareto = (data, module, auditContent) => {
+  const source = data?.[module.toLowerCase()] || {};
+  const organizationalSources = module === "DQA" ? [source.divisions, source.tpmStages] : module === "IQC" ? [source.mainSuppliers, source.projects] : module === "IPQC" ? [source.workshopsBySite, source.outsourcingBySite] : module === "OQC" ? [source.shipmentDetail?.divisionRows, source.shipmentDetail?.tpmRows] : [source.divisionCompare, source.tpmByDivision];
+  const organizationRows = organizationalSources.flatMap((value) => localParetoRows(value));
+  const mechanismSources = module === "DQA" ? [source.categories, source.disciplines] : module === "IQC" ? [source.categories, source.materialBySite] : module === "IPQC" ? [source.rawTypesBySite, source.contentTypesBySite] : module === "OQC" ? [source.onsite, source.scoreStructureRows] : [source.risks, source.suggestions];
+  const mechanismRows = mechanismSources.flatMap((value) => localParetoRows(value));
+  const summarize = (rows, labeler = localParetoLabel) => {
+    const grouped = new Map();
+    rows.forEach((row) => { const label = labeler(row); const score = localParetoScore(row); if (!grouped.has(label)) grouped.set(label, 0); grouped.set(label, grouped.get(label) + score); });
+    const sorted = [...grouped.entries()].sort((a, b) => b[1] - a[1]).filter(([, score]) => score > 0).slice(0, 8);
+    const total = sorted.reduce((sum, [, score]) => sum + score, 0);
+    return sorted.map(([label, score], index) => `${index + 1}. ${label}：${score.toLocaleString()}（${total ? (score / total * 100).toFixed(1) : "0.0"}%）`).join("\n") || "暂无可用Pareto分组";
+  };
+  const mechanismText = summarize(mechanismRows, (row) => normalizeLocalMechanism(localParetoLabel(row)));
+  return `# 双重二八与根因证据（本地QMS统计引擎）
+## 组织集中度Pareto
+${summarize(organizationRows)}
+
+## 失效机制集中度Pareto（已合并同义项）
+${mechanismText}
+
+## 交叉判断
+- 组织Pareto用于定位结果责任，机制Pareto用于定位过程失效；两者交叉后再选择公司级战役。
+- 上述集中度属于“数据信号”，不是已验证根因；不得仅凭排名确认因果。
+- 根因验证要求：责任角色通过抽样复核、5Why、重现试验、能力证据或连续三批有效性验证完成确认。
+
+## 上一步审计摘要
+${String(auditContent || "").slice(0, 7000)}
+
+本阶段已由本地统计引擎完成，AI后续只需针对Pareto交叉结果形成三级责任、改善措施和行动台账。`;
+};
+const aiSkillPrompt = (module, dateRange, payload, skillName) => `你是公司质量总监。请严格按照 ${skillName} SKILL 分析 ${module} 板块。
+
+统计周期：2025同期 ${dateRange.start2025}—${dateRange.end2025}；2026本期 ${dateRange.start2026}—${dateRange.end2026}。
+
+必须遵守：
+1. 先说明指标口径和数据可信度A/B/C/D，区分结果指标、问题暴露量和业务影响，不混淆问题条数与不良件数。
+2. 做两次二八分析：组织集中度、失效机制集中度，再交叉形成不超过3项公司级战役。
+3. 按该模块真实责任链做三级分析：公司→部门/基地→TPM/供应商/工坊或交付经理。
+4. 根因必须标记为“数据信号”“待验证假设”或“已验证根因”，没有证据不得写成已验证。
+5. 每个主题按“分析结论—风险判断—改善措施—待办事项”输出。
+6. 每项待办必须包含责任角色、期限、交付物、领先指标、结果指标、解除条件和升级规则。
+7. ${module === "QMS" ? "必须单独分析客户意见原文的主题、严重度、重复性、责任归属和关闭证据，不能用平均分替代客户声音。" : "不要引用其他模块数据，不做未经标识符验证的跨模块因果推断。"}
+8. 不编造数据；缺少分母时只能写风险暴露量，不能做绩效排名。
+
+请用中文Markdown输出以下章节：
+# 质量复盘摘要
+## 数据口径与可信度
+## 公司级三项重点战役
+## 第二层责任分析
+## 第三层责任分析
+## 30/60/90天行动台账
+## 数据限制与待验证事项
+
+当前模块结构化数据：
+${JSON.stringify(payload)}`;
+
+const aiWorkflowVersion = "quality-review-workflow-v2";
+const aiWorkflowStages = [
+  { id: "audit", label: "数据审计与口径", maxTokens: 900 },
+  { id: "pareto", label: "双重二八与根因证据", maxTokens: 1400 },
+  { id: "actions", label: "三级责任与行动台账", maxTokens: 1900 },
+  { id: "report", label: "正式复盘报告", maxTokens: 3600 },
+];
+const aiCrossWorkflowStages = [
+  { id: "chainAudit", label: "关联证据审计", maxTokens: 2600 },
+  { id: "crossActions", label: "质量链与公司战役", maxTokens: 3600 },
+  { id: "crossReport", label: "跨模块正式报告", maxTokens: 6000 },
+];
+const aiModuleResponsibility = {
+  DQA: "公司→产品部→TPM/项目组合负责人",
+  IQC: "公司→深圳/杭州基地→供应商/物料族责任角色",
+  IPQC: "公司→深圳/杭州基地→工坊/交付经理",
+  OQC: "公司→产品部/事业部→TPM/项目负责人",
+  QMS: "公司→产品部/事业部→TPM/客户意见闭环责任角色",
+};
+const aiStageSystemPrompt = "你是严谨的制造业质量总监。只能使用本次提供的数据和上一步产物；禁止编造数字、项目、批次、SN、责任人或因果关系。输出中文Markdown。";
+const buildAiStagePrompt = ({ stage, module, dateRange, payload, outputs, skillName }) => {
+  const common = `执行 ${skillName} 的工程化工作流，第 ${aiWorkflowStages.findIndex((item) => item.id === stage) + 1}/4 步：${aiWorkflowStages.find((item) => item.id === stage)?.label}。
+模块：${module}；统计周期：2025同期 ${dateRange.start2025}—${dateRange.end2025}，2026本期 ${dateRange.start2026}—${dateRange.end2026}。
+责任链：${aiModuleResponsibility[module]}。
+指标必须区分结果、暴露、过程、闭环、业务影响；缺少有效分母时只报告暴露量，不做绩效排名。根因只能标记为“数据信号”“待验证假设”或“已验证根因”。`;
+  if (stage === "audit") return `${common}
+输入已经是QMS analytics cache，不是原始数据。不得要求或猜测未提供的明细；只审计缓存中的分子、分母、趋势、Pareto、责任维度和客户意见摘要。
+请完成数据审计：列出指标字典（名称、类别、分子、分母、单位、周期、来源/字段、排除项、管理用途），核查同期可比性、缺失分母、空值/重复/映射风险及原始数据与平台缓存是否具备核对条件，给出A/B/C/D可信度。百分比必须说明能否复算。不得开始改善建议。
+结构化数据：${boundedAiJson(payload, 12000)}`;
+  if (stage === "pareto") return `${common}
+基于已完成的数据审计做两次Pareto：①组织集中度；②合并同义类别后的失效机制集中度；再交叉形成3—5个候选管理主题。区分内部检出增强与质量恶化，绝对量与占比并列。每个因果判断写明证据等级、验证方法、验证角色和期限。
+数据审计：${outputs.audit}
+结构化数据：${boundedAiJson(payload, 18000)}`;
+  if (stage === "actions") return `${common}
+基于审计和双重Pareto，按“结果—过程—根因—责任—行动”形成三级责任分析。每个主要主题必须包含“分析结论—风险判断—改善措施—待办事项”。每项待办必须含：行动ID、来源模块、风险、结果/过程/执行责任角色、期限、交付物、领先/结果指标及目标、验证证据、验收标准、解除条件、逾期/复发/未达标升级规则、有效性复核日期。每个执行责任角色最多两个主要改善主题。${module === "QMS" ? "另设客户意见分析：主题、方向、严重度、重复性、影响对象、责任、响应及关闭证据；不得用满意度均分代替客户声音。" : "不要引入其他模块数据。"}
+数据审计：${outputs.audit}
+双重Pareto：${outputs.pareto}`;
+  return `${common}
+把前三步产物汇总成决策级正式报告，不重新发明或改写基础数字。严格输出：# 质量复盘摘要；## 数据范围、指标口径与可信度；## 公司级结果与过程；## 3—5项主要问题（每项含分析结论—风险判断—改善措施—待办事项）；## 第二层责任分析；## 第三层责任分析；## 根因证据与验证计划；## 30/60/90天行动台账；${module === "QMS" ? "## 客户意见专项分析；" : ""}## 管理层决策；## 数据限制与发布门禁。管理层优先级不超过5项，公司级战役3—5项。未通过的发布门禁必须明确披露。
+数据审计：${outputs.audit}
+双重Pareto与根因证据：${outputs.pareto}
+三级责任与行动台账：${outputs.actions}`;
+};
+const buildAiCrossStagePrompt = ({ stage, reportPackage, outputs, skillName }) => {
+  const rules = `执行 ${skillName} 的跨模块工作流。质量链为DQA设计/发布→IQC供应商/来料→IPQC装配/过程→OQC放行→QMS客户声音。关联只允许标记为“共同主题假设”“高度相关”或“已验证逃逸”；没有共同项目/产品/批次/SN/问题编号不得标记为已验证。`;
+  if (stage === "chainAudit") return `${rules}
+第一步只做关联证据审计：统一五份报告中的同义失效机制；列出共同主题、涉及模块、产生点、应检出点、实际检出/逃逸点、可用关联标识符和证据等级；披露无法建立因果链的字段缺口。不得直接写公司战役。
+五份已完成模块报告：${boundedAiJson(reportPackage, 70000)}`;
+  if (stage === "crossActions") return `${rules}
+第二步基于证据审计，识别3—5项跨模块质量链主题、门禁失效和公司级战役，形成30/60/90天行动。每项行动必须包含结果/过程/执行责任角色、期限、交付物、领先与结果指标、验证证据、验收标准、解除条件和升级规则。
+关联证据审计：${outputs.chainAudit}`;
+  return `${rules}
+第三步把前两步汇总为正式跨模块报告。输出：# 跨模块质量复盘摘要；## 关联证据与可信度；## 跨模块质量链；## 共同根因假设；## 阶段逃逸与门禁失效；## 3—5项公司级战役；## 30/60/90天行动台账；## 管理层决策；## 待补充关联字段与发布门禁。不得重新计算或改写各模块基础数字。
+关联证据审计：${outputs.chainAudit}
+质量链与公司战役：${outputs.crossActions}`;
+};
+
+function AiAnalysisPage({ data, dateRange, analysisKey }) {
+  const [module, setModule] = useState("IQC");
+  const [skillName, setSkillName] = useState(() => localStorage.getItem("qms-ai-selected-skill") || "generate-quality-review-report");
+  const [revision, setRevision] = useState(0);
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [generated, setGenerated] = useState(() => safeParse(localStorage.getItem(aiGeneratedStorageKey), {}));
+  const [aiError, setAiError] = useState("");
+  const [reportSaveState, setReportSaveState] = useState({ status: "idle", message: "", module: "" });
+  const [analysisDetailsOpen, setAnalysisDetailsOpen] = useState(true);
+  const [generatedReportOpen, setGeneratedReportOpen] = useState(true);
+  const [importedReportOpen, setImportedReportOpen] = useState(true);
+  const review = useMemo(() => buildApprovedAiReview(module === aiCrossModule ? "公司综合" : module, data), [module, analysisKey, revision, data]);
+  const rerun = () => { setIsAnalyzing(true); window.setTimeout(() => { setRevision((value) => value + 1); setIsAnalyzing(false); }, 420); };
+  useEffect(() => { localStorage.setItem(aiGeneratedStorageKey, JSON.stringify(generated)); }, [generated]);
+  useEffect(() => { localStorage.setItem("qms-ai-selected-skill", skillName); }, [skillName]);
+  const runModuleAi = async (targetModule) => {
+    if (!targetModule || targetModule === aiCrossModule) return;
+    setModule(targetModule); setIsAnalyzing(true); setAiError("");
+    const existing = generated[targetModule] || {};
+    const resumeExisting = existing.workflowVersion === aiWorkflowVersion && existing.analysisKey === analysisKey && existing.status !== "done";
+    const preservedImported = existing.importedContent || (existing.imported ? existing.content : "");
+    let record = resumeExisting ? { ...existing, stages: { ...(existing.stages || {}) } } : {
+      ...(preservedImported ? { importedContent: preservedImported, importedSource: existing.importedSource } : {}),
+      status: "loading", imported: false, workflowVersion: aiWorkflowVersion, analysisKey, skillName,
+      startedAt: new Date().toISOString(), stages: {},
+    };
+    record.status = "loading";
+    setGenerated((old) => ({ ...old, [targetModule]: record }));
+    try {
+      const payload = buildAiModuleData(data, targetModule, dateRange);
+      for (const stage of aiWorkflowStages) {
+        if (record.stages?.[stage.id]?.status === "done" && record.stages[stage.id].content) continue;
+        record = { ...record, currentStage: stage.id, stages: { ...record.stages, [stage.id]: { status: "loading", label: stage.label, startedAt: new Date().toISOString() } } };
+        setGenerated((old) => ({ ...old, [targetModule]: record }));
+        if (stage.id === "audit") {
+          const localContent = buildLocalAiAudit(data, targetModule, dateRange, payload);
+          record = { ...record, model: "本地QMS统计引擎", stages: { ...record.stages, audit: { status: "done", label: stage.label, content: localContent, generatedAt: new Date().toISOString(), local: true } } };
+          setGenerated((old) => ({ ...old, [targetModule]: record }));
+          continue;
+        }
+        if (stage.id === "pareto") {
+          const localContent = buildLocalAiPareto(data, targetModule, record.stages.audit?.content);
+          record = { ...record, model: "本地QMS统计引擎", stages: { ...record.stages, pareto: { status: "done", label: stage.label, content: localContent, generatedAt: new Date().toISOString(), local: true } } };
+          setGenerated((old) => ({ ...old, [targetModule]: record }));
+          continue;
+        }
+        const outputs = Object.fromEntries(Object.entries(record.stages).filter(([, item]) => item?.content).map(([key, item]) => [key, item.content]));
+        const prompt = buildAiStagePrompt({ stage: stage.id, module: targetModule, dateRange, payload, outputs, skillName });
+        const result = await requestAiChat([{ role: "system", content: aiStageSystemPrompt }, { role: "user", content: prompt }], { max_tokens: stage.maxTokens });
+        if (!String(result.content || "").trim()) throw new Error(`${stage.label}未返回有效内容`);
+        const stageContent = sanitizeAiReportContent(result.content);
+        record = { ...record, model: result.model, stages: { ...record.stages, [stage.id]: { status: "done", label: stage.label, content: stageContent, generatedAt: new Date().toISOString(), usage: result.usage || null } } };
+        setGenerated((old) => ({ ...old, [targetModule]: record }));
+      }
+      record = { ...record, status: "done", imported: false, currentStage: null, content: record.stages.report.content, generatedAt: new Date().toISOString() };
+      setGenerated((old) => ({ ...old, [targetModule]: record }));
+    } catch (error) {
+      const failedStage = record.currentStage;
+      record = { ...record, status: "error", error: error.message, stages: { ...record.stages, ...(failedStage ? { [failedStage]: { ...(record.stages?.[failedStage] || {}), status: "error", error: error.message } } : {}) } };
+      setAiError(`${aiWorkflowStages.find((item) => item.id === failedStage)?.label || "分析"}失败：${error.message}`);
+      setGenerated((old) => ({ ...old, [targetModule]: record }));
+    } finally { setIsAnalyzing(false); }
+  };
+  const completedModules = aiBaseModules.filter((item) => ["done", "imported"].includes(generated[item]?.status) && generated[item]?.content);
+  const missingModules = aiBaseModules.filter((item) => !completedModules.includes(item));
+  const inferAiModuleFromFile = (file) => {
+    const path = `${file.webkitRelativePath || ""}/${file.name}`.toLowerCase();
+    if (path.includes("dqa")) return "DQA";
+    if (path.includes("iqc")) return "IQC";
+    if (path.includes("ipqc")) return "IPQC";
+    if (path.includes("oqc")) return "OQC";
+    if (path.includes("qms")) return "QMS";
+    return "";
+  };
+  const importAiReports = async (event) => {
+    const files = [...(event.target.files || [])];
+    event.target.value = "";
+    if (!files.length) return;
+    setAiError("");
+    try {
+      const imported = {};
+      for (const file of files) {
+        const text = await readAiReportFile(file);
+        let parsed = null;
+        try { parsed = JSON.parse(text); } catch { parsed = null; }
+        const inferredModule = inferAiModuleFromFile(file);
+        if (/\.json$/i.test(file.name) && parsed && !parsed.reports && !parsed.content) continue;
+        const reports = parsed?.reports && typeof parsed.reports === "object"
+          ? Object.entries(parsed.reports)
+          : parsed?.content ? [[parsed.module || inferredModule || module, parsed]]
+          : [[inferredModule || module, { content: text }]];
+        reports.forEach(([key, report]) => {
+          const target = key === aiCrossModule ? "CROSS" : key;
+          if (![...aiBaseModules, "CROSS"].includes(target)) return;
+          const content = sanitizeAiReportContent(typeof report === "string" ? report : String(report?.content || "").trim());
+          if (!content) return;
+          imported[target] = {
+            ...(generated[target] || {}),
+            status: "imported", content, imported: true, importedContent: content,
+            importedSource: file.name, importedAt: new Date().toISOString(),
+            model: report?.model || "Codex桌面端", skillName: report?.skillName || skillName,
+            generatedAt: report?.generatedAt || new Date().toISOString(),
+          };
+        });
+      }
+      if (!Object.keys(imported).length) throw new Error("未识别到有效报告内容；支持 Markdown、TXT、单份JSON或报告包JSON");
+      setGenerated((old) => ({ ...old, ...imported }));
+      setImportedReportOpen(true);
+    } catch (error) { setAiError(`导入报告失败：${error.message}`); }
+  };
+  const runCrossModuleAi = async () => {
+    if (missingModules.length) { setAiError(`请先完成以下模块的AI分析：${missingModules.join("、")}`); return; }
+    const sourceModules = Object.fromEntries(aiBaseModules.map((item) => [item, generated[item].generatedAt]));
+    const existing = generated.CROSS || {};
+    const sameSources = JSON.stringify(existing.sourceModules || {}) === JSON.stringify(sourceModules);
+    const resumeExisting = existing.workflowVersion === aiWorkflowVersion && sameSources && existing.status !== "done";
+    const preservedImported = existing.importedContent || (existing.imported ? existing.content : "");
+    let record = resumeExisting ? { ...existing, stages: { ...(existing.stages || {}) } } : { ...(preservedImported ? { importedContent: preservedImported, importedSource: existing.importedSource } : {}), status: "loading", imported: false, workflowVersion: aiWorkflowVersion, skillName, sourceModules, startedAt: new Date().toISOString(), stages: {} };
+    record.status = "loading";
+    setIsAnalyzing(true); setAiError(""); setGenerated((old) => ({ ...old, CROSS: record }));
+    try {
+      const reportPackage = Object.fromEntries(aiBaseModules.map((item) => [item, { generatedAt: generated[item].generatedAt, confidence: generated[item].stages?.audit?.content?.slice(0, 4000), content: String(generated[item].content || "").slice(0, 12000) }]));
+      for (const stage of aiCrossWorkflowStages) {
+        if (record.stages?.[stage.id]?.status === "done" && record.stages[stage.id].content) continue;
+        record = { ...record, currentStage: stage.id, stages: { ...record.stages, [stage.id]: { status: "loading", label: stage.label, startedAt: new Date().toISOString() } } };
+        setGenerated((old) => ({ ...old, CROSS: record }));
+        const outputs = Object.fromEntries(Object.entries(record.stages).filter(([, item]) => item?.content).map(([key, item]) => [key, item.content]));
+        const prompt = buildAiCrossStagePrompt({ stage: stage.id, reportPackage, outputs, skillName });
+        const result = await requestAiChat([{ role: "system", content: aiStageSystemPrompt }, { role: "user", content: prompt }], { max_tokens: stage.maxTokens });
+        if (!String(result.content || "").trim()) throw new Error(`${stage.label}未返回有效内容`);
+        const stageContent = sanitizeAiReportContent(result.content);
+        record = { ...record, model: result.model, stages: { ...record.stages, [stage.id]: { status: "done", label: stage.label, content: stageContent, generatedAt: new Date().toISOString(), usage: result.usage || null } } };
+        setGenerated((old) => ({ ...old, CROSS: record }));
+      }
+      record = { ...record, status: "done", currentStage: null, content: record.stages.crossReport.content, generatedAt: new Date().toISOString() };
+      setGenerated((old) => ({ ...old, CROSS: record }));
+    } catch (error) {
+      const failedStage = record.currentStage;
+      record = { ...record, status: "error", error: error.message, stages: { ...record.stages, ...(failedStage ? { [failedStage]: { ...(record.stages?.[failedStage] || {}), status: "error", error: error.message } } : {}) } };
+      setAiError(`${aiCrossWorkflowStages.find((item) => item.id === failedStage)?.label || "跨模块分析"}失败：${error.message}`);
+      setGenerated((old) => ({ ...old, CROSS: record }));
+    }
+    finally { setIsAnalyzing(false); }
+  };
+  const saveReview = async (targetModule, record) => {
+    if (!record?.content) return;
+    setReportSaveState({ status: "saving", message: "正在保存到项目文件夹…", module: targetModule });
+    try {
+      const payload = { schemaVersion: "qms-ai-review-v1", module: targetModule, period: dateRange, model: record.model, skillName: record.skillName, generatedAt: record.generatedAt, sourceModules: record.sourceModules || null, content: sanitizeAiReportContent(record.content) };
+      const saved = await saveAiReport(payload);
+      setGenerated((old) => ({ ...old, [targetModule === aiCrossModule ? "CROSS" : targetModule]: { ...(old[targetModule === aiCrossModule ? "CROSS" : targetModule] || record), savedAt: saved.savedAt, savedFileName: saved.fileName, savedRelativePath: saved.relativePath } }));
+      setReportSaveState({ status: "saved", message: `已保存：${saved.relativePath || saved.fileName}`, module: targetModule });
+    } catch (error) {
+      setReportSaveState({ status: "error", message: `保存失败：${error.message}`, module: targetModule });
+    }
+  };
+  const saveAllReviews = async () => {
+    const reports = Object.fromEntries([...aiBaseModules, "CROSS"].filter((key) => ["done", "imported"].includes(generated[key]?.status)).map((key) => [key === "CROSS" ? aiCrossModule : key, generated[key]]));
+    setReportSaveState({ status: "saving", message: "正在保存全部报告包…", module: "ALL" });
+    try {
+      const saved = await saveAiReport({ schemaVersion: "qms-ai-review-package-v1", module: "全部报告包", exportedAt: new Date().toISOString(), period: dateRange, selectedSkill: skillName, reports });
+      setReportSaveState({ status: "saved", message: `已保存：${saved.relativePath || saved.fileName}`, module: "ALL" });
+    } catch (error) {
+      setReportSaveState({ status: "error", message: `保存失败：${error.message}`, module: "ALL" });
+    }
+  };
+  const currentKey = module === aiCrossModule ? "CROSS" : module;
+  const currentGenerated = generated[currentKey];
+  const importedContent = currentGenerated?.importedContent || (currentGenerated?.imported ? currentGenerated.content : "");
+  const activeWorkflowStages = module === aiCrossModule ? aiCrossWorkflowStages : aiWorkflowStages;
+  const completedStageCount = activeWorkflowStages.filter((stage) => currentGenerated?.stages?.[stage.id]?.status === "done").length;
+  const canResumeWorkflow = module !== aiCrossModule && currentGenerated?.workflowVersion === aiWorkflowVersion && currentGenerated?.status === "error";
+  const canResumeCrossWorkflow = module === aiCrossModule && currentGenerated?.workflowVersion === aiWorkflowVersion && currentGenerated?.status === "error";
+  return <div className="ai-analysis-page">
+    <section className="ai-hero">
+      <div className="ai-hero-icon"><Brain size={28} weight="duotone"/></div>
+      <div><span className="ai-eyebrow">{module === aiCrossModule ? "五份报告 · 跨模块综合" : "单模块 · 大模型分析"}</span><h2>{module === aiCrossModule ? "跨模块AI质量分析" : `${module} AI质量分析`}</h2><p>{module === aiCrossModule ? "仅使用五份已保存模块报告，识别共同主题、阶段逃逸和公司级战役。" : "每次只分析当前选择的一个质量模块，不会同时发送其他板块数据。"}</p></div>
+      <div className="ai-hero-actions"><span className={`ai-confidence grade-${review.confidence}`}>审核基线 {review.confidence}</span><label className="ai-import-report-button"><UploadSimple size={16}/>导入Codex报告/outputs目录<input type="file" accept=".json,.md,.markdown,.txt,.docx" multiple webkitdirectory="" directory="" onChange={importAiReports}/></label>{Object.values(generated).some((item) => ["done", "imported"].includes(item?.status)) && <button className="ai-export-all" onClick={saveAllReviews} disabled={isAnalyzing || reportSaveState.status === "saving"}><FloppyDisk size={16}/>保存全部报告包</button>}<button onClick={() => module === aiCrossModule ? runCrossModuleAi() : runModuleAi(module)} disabled={isAnalyzing || (module === aiCrossModule && missingModules.length > 0)}><Brain size={16}/>{isAnalyzing ? `执行中 ${completedStageCount}/${activeWorkflowStages.length}` : module === aiCrossModule ? canResumeCrossWorkflow ? "继续跨模块分析" : "启动跨模块分析" : canResumeWorkflow ? `继续${module}分析` : `启动${module}分析`}</button></div>
+    </section>
+    <div className="ai-scope-bar"><div>{aiModuleOptions.map((item) => <button key={item} className={module === item ? "active" : ""} onClick={() => setModule(item)} disabled={isAnalyzing}>{item}</button>)}</div><label className="ai-skill-select"><span>选择SKILL</span><select value={skillName} onChange={(event) => setSkillName(event.target.value)} disabled={isAnalyzing}>{aiSkillOptions.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</select></label><span>统计周期：{review.period}</span></div>
+    <section className="ai-metric-grid">{review.metrics.map((item) => <article key={item.key}><span>{item.key}</span><strong>{item.value}</strong><b>{item.label}</b><p>{item.note}</p></article>)}</section>
+    {module === aiCrossModule && <div className={`ai-cross-readiness ${missingModules.length ? "waiting" : "ready"}`}><strong>{missingModules.length ? "跨模块分析尚未就绪" : "五个模块报告已就绪"}</strong><span>{missingModules.length ? `还需完成：${missingModules.join("、")}` : "可启动跨模块分析；不会重新发送原始模块数据。"}</span></div>}
+    {(!missingModules.length || module !== aiCrossModule) && <div className="ai-workflow-progress">{activeWorkflowStages.map((stage, index) => { const state = currentGenerated?.stages?.[stage.id]?.status || "pending"; const local = currentGenerated?.stages?.[stage.id]?.local; return <div key={stage.id} className={state}><span>{state === "done" ? <CheckCircle size={16} weight="fill"/> : state === "loading" ? <ArrowsClockwise size={16} className="spin"/> : state === "error" ? <WarningCircle size={16} weight="fill"/> : index + 1}</span><div><b>{stage.label}</b><small>{state === "done" ? local ? "本地完成" : "AI已保存" : state === "loading" ? "正在执行" : state === "error" ? "失败，可继续" : "等待执行"}</small></div></div>; })}</div>}
+    <section className={`ai-generated-report ${currentGenerated?.status || "idle"}`}><header><div><Brain size={21}/><h3>{module} 大模型分析报告</h3></div><div className="ai-report-meta">{currentGenerated?.generatedAt && !currentGenerated.imported && <span>已自动保存 · {formatSyncDateTime(currentGenerated.generatedAt)} · {currentGenerated.model} · {currentGenerated.skillName || "generate-quality-review-report"}</span>}{currentGenerated?.savedFileName && <span className="ai-saved-file">本地文件：{currentGenerated.savedFileName}</span>}{currentGenerated?.content && !currentGenerated.imported && <button onClick={() => saveReview(module, currentGenerated)} disabled={isAnalyzing || reportSaveState.status === "saving"}><FloppyDisk size={15}/>{reportSaveState.status === "saving" && reportSaveState.module === module ? "保存中…" : "保存报告"}</button>}<button className="ai-report-toggle" onClick={() => setGeneratedReportOpen((value) => !value)}>{generatedReportOpen ? "收起报告" : "展开报告"}<CaretDown size={15} className={generatedReportOpen ? "rotate" : ""}/></button></div></header>{generatedReportOpen && <>{isAnalyzing || currentGenerated?.status === "loading" ? <div className="ai-report-loading"><ArrowsClockwise size={23} className="spin"/><strong>正在使用大模型分析{module}数据</strong><p>请保持页面打开，完成后将自动保存。</p></div> : currentGenerated?.content && !currentGenerated.imported ? <ImportedReportViewer content={currentGenerated.content}/> : <div className="ai-report-empty"><Brain size={30}/><strong>尚未生成{module}在线AI分析</strong><p>在线分析失败或尚未启动时，可查看下方导入的Codex桌面端报告。</p></div>}{reportSaveState.message && (reportSaveState.module === module || reportSaveState.module === "ALL") && <div className={`ai-report-save-state ${reportSaveState.status}`}>{reportSaveState.message}</div>}{aiError && <div className="ai-report-error"><WarningCircle size={17}/>{aiError}</div>}</>}</section>
+    {importedContent && <section className="ai-imported-report-panel"><header><div><UploadSimple size={19}/><strong>Codex桌面端导入报告</strong><span>{currentGenerated.importedSource || "本地报告"}</span></div><button onClick={() => setImportedReportOpen((value) => !value)}>{importedReportOpen ? "收起导入报告" : "展开导入报告"}<CaretDown size={15} className={importedReportOpen ? "rotate" : ""}/></button></header>{importedReportOpen && <ImportedReportViewer content={importedContent}/>}</section>}
+    <div className="ai-analysis-details"><header className="ai-analysis-details-head"><div><Brain size={19}/><strong>双重二八、三级责任与行动台账</strong><span>辅助判断与改善任务</span></div><button onClick={() => setAnalysisDetailsOpen((value) => !value)}>{analysisDetailsOpen ? "整体收起" : "整体展开"}<CaretDown size={15} className={analysisDetailsOpen ? "rotate" : ""}/></button></header>{analysisDetailsOpen && (<div className="ai-analysis-details-body"><section className="ai-section"><div className="ai-section-head"><div><span>01</span><h3>双重二八与三级责任判断</h3></div><p>组织集中度 × 失效机制，形成差异化责任行动</p></div>
+      <div className="ai-finding-grid">{review.findings.map(([key, item]) => <article className={`ai-finding risk-${item.risk}`} key={`${key}-${item.mechanism}`}><header><span>{key}</span><em>{aiRiskMeta[item.risk].label}风险</em></header><h4>{item.mechanism}</h4><dl><div><dt>结果责任</dt><dd>{item.org}</dd></div><div><dt>执行责任</dt><dd>{item.owner}</dd></div></dl><p>{item.conclusion}</p><aside><strong>改善措施</strong>{item.action}</aside></article>)}</div>
+    </section>
+    <section className="ai-section"><div className="ai-section-head"><div><span>02</span><h3>30/60/90天改善行动台账</h3></div><p>包含领先指标、结果指标和解除条件</p></div>
+      <div className="ai-action-table"><div className="ai-action-row head"><span>编号/模块</span><span>责任对象</span><span>核心交付物</span><span>验收指标</span><span>解除条件</span></div>{review.actions.map((item) => <div className="ai-action-row" key={item.id}><span><b>{item.id}</b><em className={`risk-dot ${item.risk}`}></em>{item.module}</span><strong>{item.owner}</strong><p>{item.deliverable}</p><p>{item.leading}<br/>{item.lagging}</p><p>{item.release}</p></div>)}</div>
+    </section></div>)}
+    <section className="ai-publication-gate"><div><CheckCircle size={22} weight="fill"/><h3>分析发布门禁</h3><p>AI结论只有通过口径、责任、证据和客户声音检查后才可用于管理决策。</p></div><ul>{review.audit.map((item) => <li key={item.label} className={item.pass ? "pass" : "warn"}>{item.pass ? <CheckCircle size={17} weight="fill"/> : <WarningCircle size={17} weight="fill"/>}<span><b>{item.label}</b>{item.detail}</span></li>)}</ul></section>
+  </div></div>;
+}
+
+function AiInterfacePage() {
+  const [config, setConfig] = useState({ baseUrl: "https://new.ahei.asia/v1", model: "", apiKey: "" });
+  const [addressHistory, setAddressHistory] = useState(() => normalizeAiEndpointHistory(safeParse(localStorage.getItem(aiEndpointHistoryKey), [])));
+  const [models, setModels] = useState([]);
+  const [status, setStatus] = useState({ type: "idle", text: "" });
+  const [loading, setLoading] = useState(true);
+  const [testPrompt, setTestPrompt] = useState("请用一句话说明质量复盘的目的。");
+  const [testResponse, setTestResponse] = useState("");
+  useEffect(() => {
+    loadAiConfig().then((value) => { setConfig((old) => ({ ...old, ...value, apiKey: "" })); rememberAddress(value.baseUrl); }).catch((error) => setStatus({ type: "error", text: error.message })).finally(() => setLoading(false));
+  }, []);
+  useEffect(() => {
+    if (/\/api\/plan\/v3\/?$/i.test(config.baseUrl || "") && !config.model) update("model", "ark-code-latest");
+  }, [config.baseUrl, config.model]);
+  const rememberAddress = (value) => {
+    const address = String(value || "").trim();
+    if (!address) return;
+    setAddressHistory((current) => {
+      const next = normalizeAiEndpointHistory([address, ...current]);
+      localStorage.setItem(aiEndpointHistoryKey, JSON.stringify(next));
+      return next;
+    });
+  };
+  const removeAddress = (address) => {
+    setAddressHistory((current) => {
+      const next = current.filter((item) => item !== address);
+      localStorage.setItem(aiEndpointHistoryKey, JSON.stringify(next));
+      return next;
+    });
+  };
+  const update = (key, value) => {
+    if (key === "baseUrl") {
+      setModels([]);
+      setConfig((old) => ({ ...old, baseUrl: value, model: old.baseUrl === value ? old.model : "" }));
+      return;
+    }
+    setConfig((old) => ({ ...old, [key]: value }));
+  };
+  const save = async () => {
+    setStatus({ type: "loading", text: "正在保存本机配置…" });
+    try { const saved = await saveAiConfig(config); rememberAddress(config.baseUrl); setConfig((old) => ({ ...old, ...saved, apiKey: "" })); setStatus({ type: "success", text: "配置已保存到本机后端，API密钥不会返回浏览器。" }); }
+    catch (error) { setStatus({ type: "error", text: error.message }); }
+  };
+  const fetchModels = async () => {
+    setStatus({ type: "loading", text: "正在读取模型列表…" });
+    try {
+      if (config.apiKey) await saveAiConfig(config);
+      rememberAddress(config.baseUrl);
+      const result = await loadAiModels();
+      const providerModels = [...new Set((result.models || []).map((item) => String(item).trim()).filter(Boolean))];
+      const staleModel = config.model && providerModels.length > 0 && !providerModels.includes(config.model);
+      const nextModels = providerModels.length ? providerModels : (config.model ? [config.model] : []);
+      setModels(nextModels);
+      if (staleModel) update("model", "");
+      if (!config.model && nextModels.length) update("model", nextModels[0]);
+      setStatus({ type: staleModel ? "error" : "success", text: staleModel ? `当前密钥不支持模型 ${config.model}，已清空旧模型，请从列表重新选择。` : `连接成功，共读取 ${providerModels.length} 个模型，请在下拉框中选择后保存。` });
+    }
+    catch (error) { setStatus({ type: "error", text: error.message }); }
+  };
+  const test = async () => {
+    setStatus({ type: "loading", text: "正在调用模型进行连接测试…" });
+    try { const result = await testAiConfig(config); rememberAddress(config.baseUrl); setConfig((old) => ({ ...old, apiKey: "", hasApiKey: true, apiKeyHint: old.apiKey ? `••••${old.apiKey.slice(-4)}` : old.apiKeyHint })); setStatus({ type: "success", text: `模型 ${result.model} 调用成功：${result.response || "已返回响应"}` }); }
+    catch (error) { setStatus({ type: "error", text: error.message }); }
+  };
+  const chat = async () => {
+    if (!testPrompt.trim()) return;
+    setTestResponse(""); setStatus({ type: "loading", text: "正在发送测试问题…" });
+    try { const result = await requestAiChat([{ role: "system", content: "你是质量管理助手。回答简洁、专业，不编造数据。" }, { role: "user", content: testPrompt }]); setTestResponse(result.content || "模型未返回文本"); setStatus({ type: "success", text: `已通过 ${result.model} 完成测试对话。` }); }
+    catch (error) { setStatus({ type: "error", text: error.message }); }
+  };
+  return <div className="ai-interface-page">
+    <section className="ai-interface-hero"><div><span>LOCAL AI GATEWAY</span><h2>AI接口配置</h2><p>本机联网调用第三方大模型；离线服务器仅导入审核后的分析包。</p></div><aside><ShieldCheck size={22} weight="fill"/><strong>密钥仅保存在本机后端</strong><p>不会写入前端、本地存储、导出包或GitHub。</p></aside></section>
+    <div className="ai-interface-grid">
+      <section className="ai-config-card"><header><div><GearSix size={21}/><h3>接口参数</h3></div><em>{config.hasApiKey ? `已配置 ${config.apiKeyHint || "API密钥"}` : "尚未配置密钥"}</em></header>
+        <label><span>API请求地址</span><div className="ai-endpoint-input"><input list="qms-ai-endpoint-history" value={config.baseUrl} onChange={(event) => update("baseUrl", event.target.value)} onBlur={() => rememberAddress(config.baseUrl)} disabled={loading}/><select aria-label="选择已保存的API地址" value="" onChange={(event) => event.target.value && update("baseUrl", event.target.value)} disabled={loading || !addressHistory.length}><option value="">历史地址</option>{addressHistory.map((address) => <option key={address} value={address}>{address}</option>)}</select><datalist id="qms-ai-endpoint-history">{addressHistory.map((address) => <option key={address} value={address}/>)}</datalist></div><small>支持任意 HTTPS OpenAI兼容接口；本机 Ollama/LM Studio 可使用 http://127.0.0.1 或 http://localhost。当前通道：{/\/api\/plan\/v3\/?$/i.test(config.baseUrl || "") ? "Responses（方舟 Agent/Coding Plan）" : "Chat Completions（通用兼容接口）"}</small>{addressHistory.length > 0 && <div className="ai-endpoint-history">{addressHistory.map((address) => <div key={address}><code>{address}</code><button type="button" aria-label={`删除地址${address}`} onClick={() => removeAddress(address)}><Trash size={13}/></button></div>)}</div>}</label>
+        <label><span>API密钥</span><input type="password" value={config.apiKey} onChange={(event) => update("apiKey", event.target.value)} placeholder={config.hasApiKey ? "留空表示继续使用已保存密钥" : "输入第三方API密钥"} autoComplete="new-password"/><small>页面不会读取已保存密钥，只显示末四位提示。</small></label>
+        <label><span>模型</span><div className="ai-model-input"><select value={config.model} onChange={(event) => update("model", event.target.value)} disabled={!models.length && !config.model}><option value="">请选择模型</option>{[...new Set([...(models || []), ...(config.model ? [config.model] : [])])].map((model) => <option key={model} value={model}>{model}</option>)}</select><button onClick={fetchModels} disabled={status.type === "loading"}>读取模型</button></div><small>{models.length ? `已加载 ${models.length} 个模型，可直接选择。` : "请先读取模型列表。"}</small></label>
+        <div className="ai-config-actions"><button className="secondary" onClick={save}>保存配置</button><button className="primary" onClick={test}>保存并测试</button></div>
+        {status.text && <div className={`ai-config-status ${status.type}`}>{status.type === "success" ? <CheckCircle size={17} weight="fill"/> : status.type === "error" ? <WarningCircle size={17} weight="fill"/> : <ArrowsClockwise size={17} className="spin"/>}<span>{status.text}</span></div>}
+      </section>
+      <section className="ai-config-card ai-test-card"><header><div><Brain size={21}/><h3>模型调用测试</h3></div><em>OpenAI兼容格式</em></header><label><span>测试问题</span><textarea rows={5} value={testPrompt} onChange={(event) => setTestPrompt(event.target.value)}/></label><button className="primary full" onClick={chat} disabled={status.type === "loading" || !config.hasApiKey || !config.model}>发送给大模型</button><div className={`ai-test-response ${testResponse ? "has-content" : ""}`}>{testResponse || "配置并测试成功后，可在这里验证模型实际回答。"}</div>
+      </section>
+    </div>
+    <section className="ai-offline-flow"><h3>离线服务器使用流程</h3><div><span><b>1</b>本机生成</span><ArrowRight size={16}/><span><b>2</b>人工审核</span><ArrowRight size={16}/><span><b>3</b>导出分析包</span><ArrowRight size={16}/><span><b>4</b>服务器导入发布</span></div></section>
+  </div>;
 }
 
 function DataSourcePage({ files, onImportModule, onDelete, onSourcesChanged }) {
@@ -1354,17 +2142,17 @@ function ExecutiveDashboard({ data, files, onImport, onDeleteSource, onSourcesCh
   const allowExport = canUseFeature(auth, permissions, "exportReport");
   const allowTemporaryRefresh = canUseFeature(auth, permissions, "dateTemporaryRefresh");
   useEffect(() => {
-    if ((active === "数据导入" && !allowImport) || (active === "权限设置" && !auth?.isAdmin)) setActive("总览");
-  }, [active, allowImport, auth?.isAdmin]);
+    if ((active === "数据导入" && !allowImport) || (active === "AI分析" && !canUseFeature(auth, permissions, "aiAnalysis")) || (active === "AI接口" && !canUseFeature(auth, permissions, "aiInterface")) || (active === "权限设置" && !auth?.isAdmin)) setActive("总览");
+  }, [active, allowImport, auth, permissions]);
   return <div className={`executive-shell theme-${uiTheme} ${sidebarCollapsed ? "sidebar-collapsed" : ""} ${active === "权限设置" ? "permission-active" : ""}`}>
     <ExecutiveSidebar active={active} setActive={setActive} uiTheme={uiTheme} onThemeChange={onThemeChange} collapsed={sidebarCollapsed} onToggleCollapsed={onToggleSidebar} permissions={permissions} auth={auth} />
     <main className="executive-main">
       <header className="executive-topbar">
-        <div><h1>{moduleView ? `${moduleView} 专题分析` : active === "数据导入" ? "数据源管理" : "经营驾驶舱"}</h1><p>{moduleView ? "从原始数据下钻到TOP问题与责任对象" : "全局质量运营总览"}</p></div>
+        <div><h1>{moduleView ? `${moduleView} 专题分析` : active === "AI分析" ? "AI质量经营分析" : active === "AI接口" ? "AI接口配置" : active === "数据导入" ? "数据源管理" : "经营驾驶舱"}</h1><p>{moduleView ? "从原始数据下钻到TOP问题与责任对象" : active === "AI分析" ? "展示 generate-quality-review-report 正式审核版结论" : active === "AI接口" ? "配置本机第三方模型网关并验证调用" : "全局质量运营总览"}</p></div>
         <div className="top-actions"><ServerSyncBadge value={serverSyncStatus}/><Switcher view={view} onChange={onViewChange} canWorkspace={allowWorkspace} />{allowAnnotationEdit && <AnnotationEditButton defaultModule={moduleView || "\u603b\u89c8"} />}{allowAnnotationView && <AnnotationViewButton />}{allowExport && <ExportReportButton />}<button className={`label-controls-toggle ${labelControlsVisible ? "active" : ""}`} onClick={onToggleLabelControls}>{labelControlsVisible ? "隐藏数值设置" : "显示数值设置"}</button>{allowImport && <button className="import-btn" onClick={() => onImport(null)}><UploadSimple size={17} />导入数据</button>}</div>
       </header>
       <DateRangeFilter value={dateRange} teamDefaultRange={teamDefaultRange} lastServerSavedAt={lastServerSavedAt} onChange={onDateRange} onRefresh={onRefreshDate} refreshStatus={dateRefreshStatus} refreshProgress={refreshProgress} canRefresh={allowTemporaryRefresh} fontSize={fontSize} onFontSize={onFontSize}/>
-      {active === "权限设置" && auth?.isAdmin ? <PermissionSettingsPage auth={auth} permissions={permissions} onPermissionsChanged={onPermissionsChanged}/> : active === "数据导入" && allowImport ? <DataSourcePage files={files} onImportModule={onImport} onDelete={onDeleteSource} onSourcesChanged={onSourcesChanged}/> : moduleView ? <ModuleDetail key={`${moduleView}-${analysisKey}`} module={moduleView} data={data} /> : <>
+      {active === "权限设置" && auth?.isAdmin ? <PermissionSettingsPage auth={auth} permissions={permissions} onPermissionsChanged={onPermissionsChanged}/> : active === "AI接口" && canUseFeature(auth, permissions, "aiInterface") ? <AiInterfacePage/> : active === "数据导入" && allowImport ? <DataSourcePage files={files} onImportModule={onImport} onDelete={onDeleteSource} onSourcesChanged={onSourcesChanged}/> : active === "AI分析" && canUseFeature(auth, permissions, "aiAnalysis") ? <AiAnalysisPage data={data} dateRange={dateRange} analysisKey={analysisKey}/> : moduleView ? <ModuleDetail key={`${moduleView}-${analysisKey}`} module={moduleView} data={data} /> : <>
         <OverviewKpiCards data={data}/>
         <div className="dashboard-grid">
           <MainSupplierOverview data={data}/>

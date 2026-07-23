@@ -10,8 +10,10 @@ const dataDir = process.env.QMS_DATA_DIR || path.join(rootDir, "data");
 const dataFile = path.join(dataDir, "shared-state.json");
 const stateDir = path.join(dataDir, "state");
 const uploadDir = path.join(dataDir, "uploads");
+const aiReportDir = path.resolve(rootDir, "..", "outputs", "ai_saved_reports");
 const adminIpsFile = path.join(dataDir, "admin-ips.json");
 const permissionFile = path.join(dataDir, "permission-config.json");
+const aiConfigFile = path.join(dataDir, "ai-config.json");
 const port = Number(process.env.PORT || 4173);
 const host = process.env.HOST || "0.0.0.0";
 const trustProxy = process.env.TRUST_PROXY === "true";
@@ -27,8 +29,10 @@ const defaultPermissionConfig = {
     workspace: { public: false, deputy: true, label: "质量工作台" },
     annotationEdit: { public: false, deputy: true, label: "分析改善措施" },
     annotationView: { public: false, deputy: true, label: "分析显示" },
-    exportReport: { public: true, deputy: true, label: "导出报告" },
+    exportReport: { public: true, deputy: true, label: "保存报告" },
     dateTemporaryRefresh: { public: true, deputy: true, label: "临时刷新日期" },
+    aiAnalysis: { public: false, deputy: true, label: "AI分析" },
+    aiInterface: { public: false, deputy: true, label: "AI接口" },
   },
   apis: {
     "POST /api/uploads": { public: false, deputy: true, label: "上传原始Excel" },
@@ -61,6 +65,86 @@ const mimeTypes = {
 const sendJson = (res, status, body) => {
   res.writeHead(status, { "Content-Type": "application/json; charset=utf-8" });
   res.end(JSON.stringify(body));
+};
+
+const defaultAiConfig = { baseUrl: "https://new.ahei.asia/v1", model: "", apiKey: "" };
+const aiModelCatalog = new Map();
+const normalizeAiBaseUrl = (value = defaultAiConfig.baseUrl) => {
+  const url = new URL(String(value || defaultAiConfig.baseUrl).trim());
+  const localHost = ["127.0.0.1", "localhost", "::1"].includes(url.hostname.toLowerCase());
+  if (url.username || url.password || url.search || url.hash) throw new Error("AI request address cannot contain credentials, query parameters, or fragments");
+  if (url.protocol !== "https:" && !(localHost && url.protocol === "http:")) throw new Error("AI request address must use HTTPS; HTTP is only allowed for localhost/127.0.0.1");
+  const pathname = url.pathname.replace(/\/+$/, "") || "/v1";
+  url.pathname = pathname;
+  return url.toString().replace(/\/$/, "");
+};
+const loadAiConfig = async () => {
+  try {
+    const saved = JSON.parse(await fs.readFile(aiConfigFile, "utf8"));
+    return { baseUrl: normalizeAiBaseUrl(saved.baseUrl), model: String(saved.model || "").trim(), apiKey: String(saved.apiKey || "").trim() };
+  } catch (error) {
+    if (error.code !== "ENOENT") console.error("Failed to load AI config", error);
+    return { ...defaultAiConfig };
+  }
+};
+const saveAiConfig = async (config) => {
+  const current = await loadAiConfig();
+  const next = {
+    baseUrl: normalizeAiBaseUrl(config.baseUrl || current.baseUrl),
+    model: String(config.model ?? current.model ?? "").trim(),
+    apiKey: String(config.apiKey || "").trim() || current.apiKey,
+  };
+  await fs.mkdir(dataDir, { recursive: true });
+  const temporary = `${aiConfigFile}.${process.pid}.${Date.now()}.tmp`;
+  await fs.writeFile(temporary, JSON.stringify(next, null, 2), { encoding: "utf8", mode: 0o600 });
+  await fs.rename(temporary, aiConfigFile);
+  return next;
+};
+const publicAiConfig = (config) => ({ baseUrl: config.baseUrl, model: config.model, hasApiKey: !!config.apiKey, apiKeyHint: config.apiKey ? `••••${config.apiKey.slice(-4)}` : "" });
+const usesArkPlanResponses = (config) => /\/api\/plan\/v3\/?$/i.test(config.baseUrl || "");
+const aiCatalogKey = (config) => `${config.baseUrl}|${config.apiKey.slice(-8)}`;
+const assertKnownAiModel = (config) => {
+  const catalog = aiModelCatalog.get(aiCatalogKey(config));
+  if (catalog?.models?.length && !catalog.models.includes(config.model)) {
+    throw new Error(`模型 ${config.model} 不在当前 API 密钥可用模型列表中，请重新读取模型并选择可用模型`);
+  }
+};
+const extractAiContent = (result = {}) => {
+  if (result?.choices?.[0]?.message?.content) return String(result.choices[0].message.content);
+  if (result?.output_text) return String(result.output_text);
+  return (Array.isArray(result?.output) ? result.output : []).flatMap((item) => Array.isArray(item?.content) ? item.content : []).map((item) => item?.text || item?.content || "").filter(Boolean).join("\n");
+};
+const requestAi = async (config, pathname, options = {}) => {
+  if (!config.apiKey) throw new Error("Please configure the API key first");
+  const controller = new AbortController();
+  const timeoutMs = Number(process.env.AI_TIMEOUT_MS || 300000);
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const requestHeaders = { Authorization: `Bearer ${config.apiKey}`, ...(options.body ? { "Content-Type": "application/json" } : {}), ...(options.headers || {}) };
+    Object.keys(requestHeaders).forEach((key) => requestHeaders[key] == null && delete requestHeaders[key]);
+    const response = await fetch(`${config.baseUrl}${pathname}`, {
+      ...options,
+      signal: controller.signal,
+      headers: requestHeaders,
+    });
+    const text = await response.text();
+    let body;
+    try { body = text ? JSON.parse(text) : {}; } catch { body = { error: { message: text.slice(0, 500) || "Invalid AI response" } }; }
+    if (!response.ok) {
+      if (response.status === 504) throw new Error("AI上游网关超时（504）：请使用更快的模型或缩短当前阶段请求；已完成阶段不会丢失");
+      const upstreamMessage = body?.error?.message || body?.message || text.slice(0, 500) || "No error detail returned";
+      if (response.status === 404 && /model.+not supported|no available channel/i.test(upstreamMessage)) {
+        throw new Error(`当前 API 密钥/分组不支持模型 ${config.model}，请在“AI接口”重新读取模型并选择可用模型；当前请求通道：${pathname}`);
+      }
+      throw new Error(`AI上游返回 ${response.status}：${upstreamMessage}`);
+    }
+    return body;
+  } catch (error) {
+    if (error?.name === "AbortError") throw new Error(`AI分析超过${Math.round(timeoutMs / 1000)}秒，已停止本次请求；已完成阶段不会丢失`);
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
 };
 
 const normalizeIp = (value = "") => String(value)
@@ -463,6 +547,76 @@ const handlePermissions = async (req, res) => {
   return sendJson(res, 405, { error: "Method not allowed" });
 };
 
+const handleAi = async (req, res) => {
+  const user = await currentUser(req);
+  const pathname = new URL(req.url, "http://local").pathname;
+  const featureKey = ["/api/ai/config", "/api/ai/models", "/api/ai/test"].includes(pathname) ? "aiInterface" : "aiAnalysis";
+  const featureRule = user.permissions?.features?.[featureKey] || {};
+  const featureAllowed = user.isAdmin || (user.isDeputy ? featureRule.deputy !== false : featureRule.public === true);
+  if (!featureAllowed) return sendJson(res, 403, { error: `${featureKey === "aiInterface" ? "AI接口" : "AI分析"}权限未开启` });
+  if (pathname === "/api/ai/config" && req.method === "GET") return sendJson(res, 200, publicAiConfig(await loadAiConfig()));
+  if (pathname === "/api/ai/config" && req.method === "PUT") {
+    const payload = JSON.parse(await readBody(req) || "{}");
+    return sendJson(res, 200, publicAiConfig(await saveAiConfig(payload)));
+  }
+  if (pathname === "/api/ai/reports" && req.method === "POST") {
+    const payload = JSON.parse(await readBody(req) || "{}");
+    const hasSingleReport = typeof payload.content === "string" && payload.content.trim();
+    const hasReportPackage = payload.reports && typeof payload.reports === "object" && !Array.isArray(payload.reports);
+    if (!hasSingleReport && !hasReportPackage) return sendJson(res, 400, { error: "报告内容为空，无法保存" });
+    const now = new Date();
+    const local = new Date(now.getTime() - now.getTimezoneOffset() * 60000);
+    const stamp = local.toISOString().replace(/[-:]/g, "").replace("T", "-").replace(/\.(\d{3})Z$/, "-$1");
+    const moduleName = sanitizeSegment(payload.module || (hasReportPackage ? "全部报告包" : "AI分析"));
+    const fileName = `QMS-AI分析-${moduleName}-${stamp}.json`;
+    const savedPayload = { ...payload, content: hasSingleReport ? payload.content.trim() : payload.content, savedAt: now.toISOString() };
+    await fs.mkdir(aiReportDir, { recursive: true });
+    await fs.writeFile(path.join(aiReportDir, fileName), JSON.stringify(savedPayload, null, 2), "utf8");
+    return sendJson(res, 200, { ok: true, fileName, savedAt: savedPayload.savedAt, relativePath: `outputs/ai_saved_reports/${fileName}` });
+  }
+  if (pathname === "/api/ai/models" && req.method === "GET") {
+    const config = await loadAiConfig();
+    if (usesArkPlanResponses(config)) return sendJson(res, 200, { models: ["ark-code-latest"], configuredModel: config.model, manualOnly: true });
+    const result = await requestAi(config, "/models", { method: "GET", headers: { "Content-Type": undefined } });
+    const models = (Array.isArray(result?.data) ? result.data : []).map((item) => String(item?.id || "").trim()).filter(Boolean).sort();
+    aiModelCatalog.set(aiCatalogKey(config), { models, updatedAt: Date.now() });
+    return sendJson(res, 200, { models, configuredModel: config.model });
+  }
+  if (pathname === "/api/ai/test" && req.method === "POST") {
+    const payload = JSON.parse(await readBody(req) || "{}");
+    const config = await saveAiConfig(payload);
+    if (!config.model) return sendJson(res, 400, { error: "Please select or enter a model" });
+    assertKnownAiModel(config);
+    // Keep the connectivity probe minimal: some compatible gateways reject optional sampling fields.
+    const arkPlan = usesArkPlanResponses(config);
+    const result = await requestAi(config, arkPlan ? "/responses" : "/chat/completions", { method: "POST", body: JSON.stringify(arkPlan ? { model: config.model, input: [{ role: "user", content: "Reply with exactly: QMS AI OK" }], max_output_tokens: 20 } : { model: config.model, messages: [{ role: "user", content: "Reply with exactly: QMS AI OK" }] }) });
+    const content = extractAiContent(result);
+    return sendJson(res, 200, { ok: true, model: config.model, response: String(content).slice(0, 200) });
+  }
+  if (pathname === "/api/ai/chat" && req.method === "POST") {
+    const payload = JSON.parse(await readBody(req) || "{}");
+    const config = await loadAiConfig();
+    if (!config.model) return sendJson(res, 400, { error: "AI model is not configured" });
+    assertKnownAiModel(config);
+    const messages = Array.isArray(payload.messages) ? payload.messages.slice(-20).map((item) => ({ role: ["system", "assistant", "user"].includes(item?.role) ? item.role : "user", content: String(item?.content || "").slice(0, 120000) })) : [];
+    if (!messages.length) return sendJson(res, 400, { error: "messages is required" });
+    const requestedMaxTokens = Number(payload.max_tokens);
+    const maxTokens = Number.isFinite(requestedMaxTokens) ? Math.min(12000, Math.max(256, Math.round(requestedMaxTokens))) : null;
+    const arkPlan = usesArkPlanResponses(config);
+    const requestBody = arkPlan ? { model: config.model, input: messages } : { model: config.model, messages, response_format: payload.response_format };
+    if (maxTokens) {
+      if (arkPlan) requestBody.max_output_tokens = maxTokens;
+      // GPT-5/o-series compatible gateways use max_completion_tokens; legacy models use max_tokens.
+      else if (/^(gpt-5|o[1-9]|codex)/i.test(config.model)) requestBody.max_completion_tokens = maxTokens;
+      else requestBody.max_tokens = maxTokens;
+    }
+    if (!arkPlan && Number.isFinite(Number(payload.temperature))) requestBody.temperature = Number(payload.temperature);
+    const result = await requestAi(config, arkPlan ? "/responses" : "/chat/completions", { method: "POST", body: JSON.stringify(requestBody) });
+    return sendJson(res, 200, { model: config.model, content: extractAiContent(result), usage: result?.usage || null });
+  }
+  return sendJson(res, 404, { error: "Unknown AI endpoint" });
+};
+
 const staticPathFor = (url) => {
   const pathname = decodeURIComponent(new URL(url, "http://local").pathname);
   const requested = pathname === "/" ? "/index.html" : pathname;
@@ -502,12 +656,16 @@ const server = createServer(async (req, res) => {
   try {
     if (req.url === "/api/me") return await handleMe(req, res);
     if (req.url === "/api/permissions") return await handlePermissions(req, res);
+    if (req.url.startsWith("/api/ai/")) return await handleAi(req, res);
     if (req.url.startsWith("/api/uploads/")) return await handleUploadedFile(req, res);
     if (req.url === "/api/uploads") return await handleUpload(req, res);
     if (req.url.startsWith("/api/")) return await handleApi(req, res);
     return await serveStatic(req, res);
   } catch (error) {
     console.error(error);
+    if (req.url.startsWith("/api/ai/")) {
+      return sendJson(res, 502, { error: String(error?.message || "AI接口调用失败").slice(0, 1000) });
+    }
     return sendJson(res, 500, { error: "Internal server error" });
   }
 });

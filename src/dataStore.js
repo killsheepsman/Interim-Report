@@ -313,6 +313,25 @@ export const savePermissionConfig = async (permissions) => {
   return await response.json();
 };
 
+const aiApiJson = async (path, options = {}) => {
+  const base = sharedApiBase();
+  if (!base) throw new Error("当前页面未连接QMS后端，请通过项目服务地址打开");
+  let response;
+  try { response = await fetch(`${base}${path}`, { headers: { "Content-Type": "application/json", ...(options.headers || {}) }, ...options }); }
+  catch { throw new Error("无法连接本机QMS后端，请先启动或重启项目服务"); }
+  const payload = await response.json().catch(() => ({}));
+  if (response.status === 404) throw new Error("当前QMS后端版本过旧，请重启项目服务后再试");
+  if (!response.ok) throw new Error(payload?.error || `AI接口请求失败（${response.status}）`);
+  return payload;
+};
+
+export const loadAiConfig = async () => await aiApiJson("/ai/config", { method: "GET", cache: "no-store" });
+export const saveAiConfig = async (config) => await aiApiJson("/ai/config", { method: "PUT", body: JSON.stringify(config) });
+export const loadAiModels = async () => await aiApiJson("/ai/models", { method: "GET", cache: "no-store" });
+export const testAiConfig = async (config) => await aiApiJson("/ai/test", { method: "POST", body: JSON.stringify(config) });
+export const requestAiChat = async (messages, options = {}) => await aiApiJson("/ai/chat", { method: "POST", body: JSON.stringify({ messages, ...options }) });
+export const saveAiReport = async (report) => await aiApiJson("/ai/reports", { method: "POST", body: JSON.stringify(report) });
+
 export const clearImportedSources = async () => {
   await transaction("readwrite", (store) => store.delete(SOURCES_KEY));
 };
