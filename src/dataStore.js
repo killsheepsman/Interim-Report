@@ -332,6 +332,21 @@ export const testAiConfig = async (config) => await aiApiJson("/ai/test", { meth
 export const requestAiChat = async (messages, options = {}) => await aiApiJson("/ai/chat", { method: "POST", body: JSON.stringify({ messages, ...options }) });
 export const saveAiReport = async (report) => await aiApiJson("/ai/reports", { method: "POST", body: JSON.stringify(report) });
 
+const examApiJson = async (path, options = {}) => {
+  const base = sharedApiBase();
+  if (!base) throw new Error("当前页面未连接QMS后端，请通过项目服务地址打开");
+  let response;
+  try { response = await fetch(`${base}${path}`, { headers: { "Content-Type": "application/json", ...(options.headers || {}) }, ...options }); }
+  catch { throw new Error("无法连接QMS后端，考试链接暂不可用"); }
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(payload?.error || `考试服务请求失败（${response.status}）`);
+  return payload;
+};
+
+export const createExamSession = async (payload) => examApiJson("/exam-sessions", { method: "POST", body: JSON.stringify(payload) });
+export const loadExamSession = async (token) => examApiJson(`/exam-sessions/${encodeURIComponent(token)}`, { method: "GET", cache: "no-store" });
+export const submitExamSession = async (token, answers) => examApiJson(`/exam-sessions/${encodeURIComponent(token)}/submit`, { method: "POST", body: JSON.stringify({ answers }) });
+
 export const clearImportedSources = async () => {
   await transaction("readwrite", (store) => store.delete(SOURCES_KEY));
 };

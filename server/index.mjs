@@ -2,6 +2,7 @@ import { createServer } from "node:http";
 import { createReadStream, promises as fs } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { randomUUID } from "node:crypto";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.resolve(__dirname, "..");
@@ -14,6 +15,7 @@ const aiReportDir = path.resolve(rootDir, "..", "outputs", "ai_saved_reports");
 const adminIpsFile = path.join(dataDir, "admin-ips.json");
 const permissionFile = path.join(dataDir, "permission-config.json");
 const aiConfigFile = path.join(dataDir, "ai-config.json");
+const examSessionsFile = path.join(dataDir, "exam-sessions.json");
 const port = Number(process.env.PORT || 4173);
 const host = process.env.HOST || "0.0.0.0";
 const trustProxy = process.env.TRUST_PROXY === "true";
@@ -44,6 +46,9 @@ const defaultPermissionConfig = {
     "GET /api/state/imported-sources": { public: true, deputy: true, label: "读取数据源清单" },
     "GET /api/state/applied-date-range": { public: true, deputy: true, label: "读取默认日期" },
     "GET /api/uploads/*": { public: true, deputy: true, label: "读取原始Excel" },
+    "POST /api/exam-sessions": { public: false, deputy: true, label: "生成知识考试链接" },
+    "GET /api/exam-sessions/*": { public: true, deputy: true, label: "读取知识考试" },
+    "POST /api/exam-sessions/*/submit": { public: true, deputy: true, label: "提交知识考试" },
     "GET /api/me": { public: true, deputy: true, label: "读取当前权限" },
     "GET /api/permissions": { public: true, deputy: true, label: "读取权限配置" },
   },
@@ -263,6 +268,8 @@ const currentUser = async (req) => {
 const routeKey = (req) => {
   const pathname = new URL(req.url, "http://local").pathname;
   if (req.method === "GET" && pathname.startsWith("/api/uploads/")) return "GET /api/uploads/*";
+  if (req.method === "GET" && /^\/api\/exam-sessions\/[^/]+$/.test(pathname)) return "GET /api/exam-sessions/*";
+  if (req.method === "POST" && /^\/api\/exam-sessions\/[^/]+\/submit$/.test(pathname)) return "POST /api/exam-sessions/*/submit";
   if (pathname.startsWith("/api/state/")) return `${req.method} ${pathname}`;
   return `${req.method} ${pathname}`;
 };
@@ -484,6 +491,93 @@ const saveStateValue = async (key, value) => {
   return await next;
 };
 
+const loadExamSessions = async () => {
+  const value = await readJsonFile(examSessionsFile);
+  return Array.isArray(value) ? value : [];
+};
+
+const saveExamSessions = async (sessions) => {
+  await fs.mkdir(dataDir, { recursive: true });
+  const tempFile = `${examSessionsFile}.${process.pid}.${Date.now()}.tmp`;
+  await fs.writeFile(tempFile, JSON.stringify(sessions.slice(-500), null, 2), "utf8");
+  await fs.rename(tempFile, examSessionsFile);
+};
+
+const examQuestionForClient = (question) => ({
+  questionId: String(question.questionId || question.id || ""),
+  questionText: String(question.questionText || question.stem || ""),
+  type: String(question.type || "SingleChoice"),
+  options: Array.isArray(question.options) ? question.options.map((item) => String(item || "")) : [],
+  category: String(question.category || question.categories || ""),
+});
+
+const examQuestionMatches = (question, answer) => {
+  const type = String(question.type || "").toLowerCase();
+  if (type.includes("short")) {
+    const expected = String(question.answerText || question.correctAnswer || "").trim().replace(/\s+/g, "").toLowerCase();
+    return !!expected && expected === String(answer?.textAnswer || "").trim().replace(/\s+/g, "").toLowerCase();
+  }
+  const expected = (Array.isArray(question.correctAnswers) && question.correctAnswers.length ? question.correctAnswers : [question.answer]).map(Number).filter(Number.isFinite).sort((a, b) => a - b);
+  const actual = Array.isArray(answer?.selectedOptionIndexes) ? answer.selectedOptionIndexes : [answer?.selectedOptionIndex];
+  const selected = actual.map(Number).filter(Number.isFinite).sort((a, b) => a - b);
+  return expected.length > 0 && expected.length === selected.length && expected.every((item, index) => item === selected[index]);
+};
+
+const handleExamSessions = async (req, res) => {
+  const pathname = new URL(req.url, "http://local").pathname;
+  if (pathname === "/api/exam-sessions" && req.method === "POST") {
+    const user = await ensureApiAllowed(req, res);
+    if (!user) return;
+    const payload = JSON.parse(await readBody(req) || "{}");
+    const questions = (Array.isArray(payload.questions) ? payload.questions : []).map((question) => ({
+      questionId: String(question.questionId || question.id || randomUUID()),
+      questionText: String(question.questionText || question.stem || "").trim(),
+      type: String(question.type || "SingleChoice"),
+      options: Array.isArray(question.options) ? question.options.slice(0, 8).map((item) => String(item || "")) : [],
+      category: String(question.category || question.categories || ""),
+      correctAnswers: Array.isArray(question.correctAnswers) ? question.correctAnswers.map(Number).filter(Number.isFinite) : (Number.isFinite(Number(question.answer)) ? [Number(question.answer)] : []),
+      answerText: String(question.answerText || question.correctAnswer || ""),
+    })).filter((question) => question.questionText);
+    if (!questions.length) return sendJson(res, 400, { error: "没有可关联的考试题目" });
+    const now = new Date();
+    const expiresAt = new Date(now.getTime() + Math.max(1, Number(payload.validDays) || 14) * 86400000);
+    const session = { id: randomUUID(), token: randomUUID().replaceAll("-", ""), roleName: String(payload.roleName || ""), recipientName: String(payload.recipientName || ""), issueCategories: Array.isArray(payload.issueCategories) ? payload.issueCategories.map(String).slice(0, 20) : [], reportId: String(payload.reportId || ""), createdAt: now.toISOString(), expiresAt: expiresAt.toISOString(), questions, submittedAt: null, result: null };
+    const sessions = await loadExamSessions();
+    sessions.push(session);
+    await saveExamSessions(sessions);
+    return sendJson(res, 200, { token: session.token, expiresAt: session.expiresAt, questionCount: questions.length });
+  }
+  const match = pathname.match(/^\/api\/exam-sessions\/([^/]+)$/);
+  if (match && req.method === "GET") {
+    const user = await ensureApiAllowed(req, res);
+    if (!user) return;
+    const session = (await loadExamSessions()).find((item) => item.token === decodeURIComponent(match[1]));
+    if (!session || new Date(session.expiresAt).getTime() < Date.now() && !session.submittedAt) return sendJson(res, 404, { error: "答题链接不存在或已失效" });
+    return sendJson(res, 200, { id: session.id, token: session.token, roleName: session.roleName, recipientName: session.recipientName, issueCategories: session.issueCategories, expiresAt: session.expiresAt, isSubmitted: !!session.submittedAt, result: session.result, questions: session.submittedAt ? [] : session.questions.map(examQuestionForClient) });
+  }
+  const submitMatch = pathname.match(/^\/api\/exam-sessions\/([^/]+)\/submit$/);
+  if (submitMatch && req.method === "POST") {
+    const user = await ensureApiAllowed(req, res);
+    if (!user) return;
+    const token = decodeURIComponent(submitMatch[1]);
+    const sessions = await loadExamSessions();
+    const session = sessions.find((item) => item.token === token);
+    if (!session) return sendJson(res, 404, { error: "答题链接不存在或已失效" });
+    if (session.submittedAt) return sendJson(res, 200, { ...session.result, alreadySubmitted: true });
+    if (new Date(session.expiresAt).getTime() < Date.now()) return sendJson(res, 200, { isExpired: true });
+    const payload = JSON.parse(await readBody(req) || "{}");
+    const answers = Array.isArray(payload.answers) ? payload.answers : [];
+    const correct = session.questions.filter((question) => examQuestionMatches(question, answers.find((answer) => String(answer?.questionId) === question.questionId))).length;
+    const result = { totalQuestions: session.questions.length, correctAnswers: correct, score: Number((correct / Math.max(session.questions.length, 1) * 100).toFixed(1)), isPassed: correct / Math.max(session.questions.length, 1) >= 0.8, isExpired: false, alreadySubmitted: false, submittedAt: new Date().toISOString() };
+    session.submittedAt = result.submittedAt;
+    session.result = result;
+    session.answers = answers;
+    await saveExamSessions(sessions);
+    return sendJson(res, 200, result);
+  }
+  return sendJson(res, 405, { error: "Method not allowed" });
+};
+
 const handleApi = async (req, res) => {
   const match = req.url.match(/^\/api\/state\/([^/?#]+)/);
   const key = match?.[1];
@@ -657,6 +751,7 @@ const server = createServer(async (req, res) => {
     if (req.url === "/api/me") return await handleMe(req, res);
     if (req.url === "/api/permissions") return await handlePermissions(req, res);
     if (req.url.startsWith("/api/ai/")) return await handleAi(req, res);
+    if (req.url.startsWith("/api/exam-sessions")) return await handleExamSessions(req, res);
     if (req.url.startsWith("/api/uploads/")) return await handleUploadedFile(req, res);
     if (req.url === "/api/uploads") return await handleUpload(req, res);
     if (req.url.startsWith("/api/")) return await handleApi(req, res);

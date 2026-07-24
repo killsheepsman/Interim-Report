@@ -8,7 +8,7 @@ import {
   UploadSimple, User, Warning, WarningCircle, X,
 } from "@phosphor-icons/react";
 import { analyzeImported, downloadJson, normalizeIpqcLeaderMapRows, normalizeIpqcWorkshop, parseFiles } from "./dataEngine.js";
-import { createSourcesSignature, downloadSourceFiles, loadAiConfig, loadAiModels, loadAppliedDateRange, loadCachedAnalysis, loadCurrentUser, loadDefaultAnalysis, loadDefaultAnnotations, loadDefaultQmsSources, loadDefaultSources, loadImportedSources, loadPermissionConfig, mergeImportedSources, requestAiChat, saveAiConfig, saveAiReport, saveAppliedDateRange, saveCachedAnalysis, saveImportedSources, savePermissionConfig, sourceRowCount, summarizeSources, testAiConfig, uploadSourceFiles } from "./dataStore.js";
+import { createExamSession, createSourcesSignature, downloadSourceFiles, loadAiConfig, loadAiModels, loadAppliedDateRange, loadCachedAnalysis, loadCurrentUser, loadDefaultAnalysis, loadDefaultAnnotations, loadDefaultQmsSources, loadDefaultSources, loadExamSession, loadImportedSources, loadPermissionConfig, mergeImportedSources, requestAiChat, saveAiConfig, saveAiReport, saveAppliedDateRange, saveCachedAnalysis, saveImportedSources, savePermissionConfig, sourceRowCount, submitExamSession, summarizeSources, testAiConfig, uploadSourceFiles } from "./dataStore.js";
 import { sampleData } from "./sampleData.js";
 import { BarCompare, Donut, HorizontalRank, MachinedTpmCompareChart, Pareto, QmsDivisionCombo, QmsScoreCompare, QmsTpmRank, QmsTrendCombo, QuantityRateCombo, ScoreMonthlyCombo, ScoreYearCompare, StackedStage, WorkshopCategoryHeatmap, YearStackedCompare } from "./charts.jsx";
 import * as XLSX from "xlsx";
@@ -2163,6 +2163,7 @@ function ManagementReportPage({ data }) {
 const qmdpKnowledgeKey = "qms-qmdp-knowledge-files-v1";
 const qmdpQuestionsKey = "qms-qmdp-question-bank-v1";
 const qmdpExamRecordsKey = "qms-qmdp-exam-records-v1";
+const qmdpExamSessionsKey = "qms-qmdp-exam-sessions-v1";
 const qmdpSystemKey = "qms-qmdp-system-config-v1";
 const qmdpReportTasksKey = "qms-qmdp-report-tasks-v1";
 
@@ -2366,41 +2367,88 @@ const examAnswerCorrect = (question, answer) => {
   return expected.length > 0 && expected.length === actual.length && expected.every((value, index) => value === actual[index]);
 };
 
+const examTokenFromUrl = () => typeof window === "undefined" ? "" : new URLSearchParams(window.location.search).get("examToken") || "";
+
 function KnowledgeExamPage() {
   const questions = safeParse(localStorage.getItem(qmdpQuestionsKey), []);
+  const examToken = examTokenFromUrl();
+  const [remoteSession, setRemoteSession] = useState(null);
+  const [remoteError, setRemoteError] = useState("");
   const [examQuestions, setExamQuestions] = useState([]);
-  const [active, setActive] = useState(false);
+  const [active, setActive] = useState(Boolean(examToken));
   const [index, setIndex] = useState(0);
   const [answers, setAnswers] = useState([]);
   const [finished, setFinished] = useState(false);
   const [result, setResult] = useState(null);
   const [records, setRecords] = useState(() => safeParse(localStorage.getItem(qmdpExamRecordsKey), []));
-  const current = examQuestions[index];
+  const currentQuestions = remoteSession?.questions?.length ? remoteSession.questions : examQuestions;
+  const current = currentQuestions[index];
+  useEffect(() => {
+    if (!examToken) return undefined;
+    let cancelled = false;
+    const load = async () => {
+      try {
+        const local = safeParse(localStorage.getItem(qmdpExamSessionsKey), []).find((item) => item.token === examToken);
+        const session = local || await loadExamSession(examToken);
+        if (cancelled) return;
+        if (session.submittedAt || session.isSubmitted) {
+          setRemoteSession(session); setResult(session.result || null); setFinished(true); setActive(false); return;
+        }
+        setRemoteSession(session);
+        setExamQuestions(session.questions || []);
+        setAnswers((session.questions || []).map((question) => question.type === "MultiChoice" ? [] : question.type === "ShortAnswer" ? "" : -1));
+        setActive(Boolean(session.questions?.length));
+      } catch (error) {
+        if (!cancelled) { setRemoteError(error?.message || "答题链接不存在或已失效"); setActive(false); }
+      }
+    };
+    load();
+    return () => { cancelled = true; };
+  }, [examToken]);
   const start = () => {
     const pool = [...questions].sort(() => Math.random() - 0.5).slice(0, Math.min(10, questions.length));
-    setExamQuestions(pool);
-    setAnswers(pool.map((question) => question.type === "MultiChoice" ? [] : question.type === "ShortAnswer" ? "" : -1));
-    setIndex(0); setFinished(false); setResult(null); setActive(pool.length > 0);
+    setRemoteSession(null); setExamQuestions(pool); setAnswers(pool.map((question) => question.type === "MultiChoice" ? [] : question.type === "ShortAnswer" ? "" : -1)); setIndex(0); setFinished(false); setResult(null); setActive(pool.length > 0);
   };
   const choose = (value) => setAnswers((currentAnswers) => currentAnswers.map((item, itemIndex) => {
     if (itemIndex !== index) return item;
     if (current.type === "MultiChoice") return Array.isArray(item) ? (item.includes(value) ? item.filter((option) => option !== value) : [...item, value]) : [value];
     return value;
   }));
-  const finish = () => {
-    const details = examQuestions.map((question, questionIndex) => ({ question: question.stem, selected: answers[questionIndex], correct: examAnswerCorrect(question, answers[questionIndex]), explanation: question.explanation || "" }));
+  const finish = async () => {
+    const details = currentQuestions.map((question, questionIndex) => ({ question: question.questionText || question.stem, selected: answers[questionIndex], correct: examAnswerCorrect(question, answers[questionIndex]), explanation: question.explanation || "" }));
+    if (remoteSession && examToken && !examToken.startsWith("local-")) {
+      try {
+        const response = await submitExamSession(examToken, currentQuestions.map((question, questionIndex) => ({ questionId: question.questionId || question.id, selectedOptionIndex: Array.isArray(answers[questionIndex]) ? (answers[questionIndex][0] ?? -1) : (Number.isFinite(Number(answers[questionIndex])) ? Number(answers[questionIndex]) : -1), selectedOptionIndexes: Array.isArray(answers[questionIndex]) ? answers[questionIndex] : undefined, textAnswer: typeof answers[questionIndex] === "string" ? answers[questionIndex] : undefined })));
+        const record = { id: `EXAM-${Date.now()}`, submittedAt: response.submittedAt || new Date().toISOString(), total: response.totalQuestions, correct: response.correctAnswers, score: response.score, passed: response.isPassed, roleName: remoteSession.roleName, recipientName: remoteSession.recipientName, issueCategories: remoteSession.issueCategories, examToken, details: [] };
+        setRecords((currentRecords) => { const next = [record, ...currentRecords].slice(0, 50); localStorage.setItem(qmdpExamRecordsKey, JSON.stringify(next)); return next; });
+        setResult(record); setFinished(true); setActive(false); setRemoteSession((session) => ({ ...session, isSubmitted: true, submittedAt: record.submittedAt, result: response }));
+        return;
+      } catch (error) {
+        setRemoteError(error?.message || "提交考试失败"); return;
+      }
+    }
     const correct = details.filter((item) => item.correct).length;
-    const score = examQuestions.length ? Math.round(correct / examQuestions.length * 100) : 0;
-    const record = { id: `EXAM-${Date.now()}`, submittedAt: new Date().toISOString(), total: examQuestions.length, correct, score, passed: score >= 80, details };
+    const score = currentQuestions.length ? Math.round(correct / currentQuestions.length * 100) : 0;
+    const record = { id: `EXAM-${Date.now()}`, submittedAt: new Date().toISOString(), total: currentQuestions.length, correct, score, passed: score >= 80, roleName: remoteSession?.roleName || "", recipientName: remoteSession?.recipientName || "", issueCategories: remoteSession?.issueCategories || [], examToken, details };
     setRecords((currentRecords) => { const next = [record, ...currentRecords].slice(0, 50); localStorage.setItem(qmdpExamRecordsKey, JSON.stringify(next)); return next; });
+    if (remoteSession && examToken.startsWith("local-")) {
+      const sessions = safeParse(localStorage.getItem(qmdpExamSessionsKey), []);
+      localStorage.setItem(qmdpExamSessionsKey, JSON.stringify(sessions.map((item) => item.token === examToken ? { ...item, submittedAt: record.submittedAt, result: { totalQuestions: record.total, correctAnswers: record.correct, score: record.score, isPassed: record.passed } } : item)));
+      setRemoteSession((session) => ({ ...session, submittedAt: record.submittedAt, isSubmitted: true, result: record }));
+    }
     setResult(record); setFinished(true); setActive(false);
   };
   const selected = (optionIndex) => Array.isArray(answers[index]) ? answers[index].includes(optionIndex) : answers[index] === optionIndex;
-  return <div className="qmdp-page"><QmdpPageHeader icon={Target} eyebrow="知识管理 / Knowledge Exam" title="知识考试" description="按 QMDP 题库随机抽取题目，支持单选、判断、多选和简答，提交后记录考试结果。" action={!active && <button className="qmdp-primary-btn" onClick={start} disabled={!questions.length}><Target size={16}/>开始考试</button>}/><QmdpStatStrip items={[{ label: "题目数", value: questions.length, note: "来自题库" }, { label: "考试状态", value: finished ? "已完成" : active ? `${index + 1}/${examQuestions.length}` : "未开始", note: result ? `得分 ${result.score}` : "" }, { label: "合格线", value: "80", note: "百分制" }]} />
-    {!questions.length ? <div className="qmdp-empty"><Question size={32}/><strong>题库为空</strong><span>请先在“题库管理”导入 QMDP Excel 题库。</span></div> : active && current ? <section className="exam-card"><div className="exam-progress"><span>第 {index + 1} 题 / 共 {examQuestions.length} 题</span><i><b style={{ width: `${((index + 1) / examQuestions.length) * 100}%` }}/></i></div><span className="exam-category">{current.categories || current.category} · {current.type}</span><h3>{current.stem}</h3>{current.type === "ShortAnswer" ? <textarea className="exam-short-answer" value={answers[index] || ""} onChange={(event) => setAnswers((currentAnswers) => currentAnswers.map((item, itemIndex) => itemIndex === index ? event.target.value : item))} placeholder="请输入答案"/> : <div className="exam-options">{current.options.map((option, optionIndex) => <button className={selected(optionIndex) ? "selected" : ""} key={option} onClick={() => choose(optionIndex)}><b>{String.fromCharCode(65 + optionIndex)}</b>{option}</button>)}</div>}<footer><button onClick={() => setIndex((value) => Math.max(0, value - 1))} disabled={index === 0}>上一题</button>{index < examQuestions.length - 1 ? <button className="qmdp-primary-btn" onClick={() => setIndex((value) => value + 1)}>下一题</button> : <button className="qmdp-primary-btn" onClick={finish}>提交考试</button>}</footer></section> : finished && result ? <><section className={`exam-result ${result.passed ? "pass" : "fail"}`}><CheckCircle size={40} weight="fill"/><strong>{result.score} 分</strong><span>{result.passed ? "考试合格" : "未达到合格线，请复习错题后重试"} · {result.correct}/{result.total} 题正确</span><button className="qmdp-primary-btn" onClick={start}>重新考试</button></section><section className="exam-history"><header><strong>最近考试记录</strong><span>{records.length} 条</span></header>{result.details.map((item, itemIndex) => <div key={`${result.id}-${itemIndex}`} className={item.correct ? "correct" : "wrong"}><b>{item.correct ? "正确" : "错误"}</b><span>{item.question}</span>{!item.correct && item.explanation && <small>{item.explanation}</small>}</div>)}</section></> : <section className="exam-history"><header><strong>最近考试记录</strong><span>{records.length} 条</span></header>{records.slice(0, 5).map((record) => <div key={record.id} className={record.passed ? "correct" : "wrong"}><b>{record.passed ? "合格" : "未合格"}</b><span>{formatSyncDateTime(record.submittedAt)} · {record.correct}/{record.total} 题 · {record.score} 分</span></div>)}{!records.length && <div className="qmdp-empty compact">还没有考试记录。</div>}</section>}
-  </div>;
+  const isLinked = Boolean(examToken);
+  const displayQuestions = isLinked ? currentQuestions.length : questions.length;
+  let examContent;
+  if (remoteError) examContent = <div className="qmdp-empty"><WarningCircle size={32}/><strong>{remoteError}</strong><span>请从质量报告重新打开考试链接，或联系管理员检查考试服务。</span></div>;
+  else if (!displayQuestions) examContent = <div className="qmdp-empty"><Question size={32}/><strong>{isLinked ? "暂无可用题目" : "题库为空"}</strong><span>{isLinked ? "该链接没有关联到有效题目。" : "请先在“题库管理”导入 QMDP Excel 题库。"}</span></div>;
+  else if (active && current) examContent = <section className="exam-card"><div className="exam-progress"><span>第 {index + 1} 题 / 共 {currentQuestions.length} 题</span><i><b style={{ width: `${((index + 1) / currentQuestions.length) * 100}%` }}/></i></div><span className="exam-category">{current.categories || current.category} · {current.type}</span><h3>{current.questionText || current.stem}</h3>{current.type === "ShortAnswer" ? <textarea className="exam-short-answer" value={answers[index] || ""} onChange={(event) => setAnswers((currentAnswers) => currentAnswers.map((item, itemIndex) => itemIndex === index ? event.target.value : item))} placeholder="请输入答案"/> : <div className="exam-options">{(current.options || []).map((option, optionIndex) => <button className={selected(optionIndex) ? "selected" : ""} key={option} onClick={() => choose(optionIndex)}><b>{String.fromCharCode(65 + optionIndex)}</b>{option}</button>)}</div>}<footer><button onClick={() => setIndex((value) => Math.max(0, value - 1))} disabled={index === 0}>上一题</button>{index < currentQuestions.length - 1 ? <button className="qmdp-primary-btn" onClick={() => setIndex((value) => value + 1)}>下一题</button> : <button className="qmdp-primary-btn" onClick={finish}>提交考试</button>}</footer></section>;
+  else if (finished && result) examContent = <><section className={`exam-result ${result.passed ? "pass" : "fail"}`}><CheckCircle size={40} weight="fill"/><strong>{result.score} 分</strong><span>{result.passed ? "考试合格" : "未达到合格线，请复习错题后重试"} · {result.correct}/{result.total} 题正确</span>{isLinked && <small>{remoteSession?.roleName} · {remoteSession?.recipientName}</small>}{!isLinked && <button className="qmdp-primary-btn" onClick={start}>重新考试</button>}</section>{!isLinked && <section className="exam-history"><header><strong>最近考试记录</strong><span>{records.length} 条</span></header>{result.details.map((item, itemIndex) => <div key={`${result.id}-${itemIndex}`} className={item.correct ? "correct" : "wrong"}><b>{item.correct ? "正确" : "错误"}</b><span>{item.question}</span>{!item.correct && item.explanation && <small>{item.explanation}</small>}</div>)}</section>}</>;
+  else examContent = <section className="exam-history"><header><strong>最近考试记录</strong><span>{records.length} 条</span></header>{records.slice(0, 5).map((record) => <div key={record.id} className={record.passed ? "correct" : "wrong"}><b>{record.passed ? "合格" : "未合格"}</b><span>{formatSyncDateTime(record.submittedAt)} · {record.roleName ? `${record.roleName} / ${record.recipientName}` : "本地练习"} · {record.correct}/{record.total} 题 · {record.score} 分</span></div>)}{!records.length && <div className="qmdp-empty compact">还没有考试记录。</div>}</section>;
+  return <div className="qmdp-page"><QmdpPageHeader icon={Target} eyebrow="知识管理 / Knowledge Exam" title={isLinked ? "关联知识考试" : "知识考试"} description={isLinked ? "根据质量报告中本人问题匹配题库，完成后结果会回写到考试记录。" : "按 QMDP 题库随机抽取题目，支持单选、判断、多选和简答，提交后记录考试结果。"} action={!active && !isLinked && <button className="qmdp-primary-btn" onClick={start} disabled={!questions.length}><Target size={16}/>开始考试</button>}/><QmdpStatStrip items={[{ label: "题目数", value: displayQuestions, note: isLinked ? remoteSession?.recipientName || "报告关联" : "来自题库" }, { label: "考试状态", value: finished ? "已完成" : active ? `${index + 1}/${currentQuestions.length}` : "未开始", note: result ? `得分 ${result.score}` : "" }, { label: "合格线", value: "80", note: "百分制" }]} />{examContent}</div>;
 }
-
 function KnowledgeManagementPage({ active }) {
   if (active === "题库管理") return <QuestionBankPage/>;
   if (active === "知识考试") return <KnowledgeExamPage/>;
@@ -2418,6 +2466,35 @@ const reportActions = (data, role) => {
   return (data?.actions || []).filter((item) => !module || item.module === module).slice(0, 8).map((item) => ({ name: item.title, value: `${item.priority} · ${item.progress ?? 0}%`, detail: `${item.owner || "待指定"}；截止 ${item.due || "待定"}；状态：${item.status || "未开始"}`, priority: item.priority }));
 };
 const reportScope = (role, recipient, detail) => `收件人：${recipient || "全局"}；数据范围：${detail}；统计周期按当前页面日期范围计算。`;
+const examReportRole = (role) => role === "IPQC操作报告" ? "操作员" : role === "研发工程师报告" ? "工程师" : "";
+const examQuestionSetForReport = (role, categories) => {
+  if (!examReportRole(role)) return [];
+  const questions = safeParse(localStorage.getItem(qmdpQuestionsKey), []);
+  const needles = [...new Set((categories || []).map((item) => String(item || "").trim()).filter(Boolean))];
+  const roleNeedle = examReportRole(role);
+  const roleAliases = role === "IPQC操作报告" ? ["操作员", "ipqc", "过程检验"] : ["工程师", "研发", "r&d"];
+  const scored = questions.map((question) => {
+    const roles = `${question.roles || ""} ${question.applicableRoles || ""} ${question.categories || question.category || ""}`.toLowerCase();
+    const text = `${question.stem || ""} ${question.categories || question.category || ""} ${question.knowledge || ""}`.toLowerCase();
+    const roleMatch = !roles.trim() || roleAliases.some((alias) => roles.includes(alias.toLowerCase())) || roles.includes(roleNeedle.toLowerCase()) || roles.includes(role.replace("报告", "").toLowerCase());
+    const categoryScore = needles.reduce((score, item) => score + (text.includes(item.toLowerCase()) ? 3 : 0), 0);
+    return { question, score: categoryScore + (roleMatch ? 1 : 0), roleMatch };
+  }).filter((item) => item.roleMatch).sort((a, b) => b.score - a.score);
+  const selected = scored.filter((item) => item.score > 1).slice(0, 3);
+  return (selected.length ? selected : scored.slice(0, 3)).map(({ question }) => ({
+    questionId: question.id,
+    questionText: question.stem,
+    stem: question.stem,
+    type: question.type || "SingleChoice",
+    options: question.options || [],
+    answer: question.answer,
+    correctAnswers: question.correctAnswers || [question.answer],
+    answerText: question.answerText || "",
+    correctAnswer: question.correctAnswer || "",
+    explanation: question.explanation || "",
+    category: question.categories || question.category || "",
+  }));
+};
 function buildWebRoleReport(data, role, recipient, dateRange) {
   const ipqc = data?.ipqc || {};
   const dqa = data?.dqa || {};
@@ -2436,10 +2513,13 @@ function buildWebRoleReport(data, role, recipient, dateRange) {
   let summary = "";
   let risk = "";
   let decision = "";
+  let examIssueCategories = [];
   if (role === "IPQC操作报告") {
     const rows = leaders.length ? leaders : workshops.map((row) => ({ name: row.name, issues: row.y2026Bad, qty: row.y2026Qty, density: row.y2026Rate, site: row.site }));
     recipients = rows.map((row) => row.name).filter(Boolean);
     const selected = rows.find((row) => row.name === recipient) || rows[0];
+    const selectedHeatmap = ipqc.leaderAnalysis?.bySite?.全公司?.heatmap?.rows?.find((row) => row.name === selected?.name);
+    examIssueCategories = selectedHeatmap?.values?.map((value, index) => value > 0 ? ipqc.leaderAnalysis?.bySite?.全公司?.heatmap?.categories?.[index] : "").filter(Boolean) || defectRows.slice(0, 5).map((row) => row.name);
     metrics = [{ name: "检验数量", value: selected?.qty || reportSum(workshops, "y2026Qty"), note: "本人/当前范围" }, { name: "异常数量", value: selected?.issues || reportSum(workshops, "y2026Bad"), note: "需复盘异常" }, { name: "异常率", value: `${reportNumber(selected?.density || 0).toFixed(2)}%`, note: "过程质量表现" }];
     focusItems = defectRows.slice(0, 8); rankingItems = rows.slice().sort((a, b) => reportNumber(b.issues) - reportNumber(a.issues)).slice(0, 10).map((row) => ({ name: `${row.site ? `${row.site} · ` : ""}${row.name}`, value: reportNumber(row.issues).toLocaleString(), detail: `检验 ${reportNumber(row.qty).toLocaleString()}；异常率 ${reportNumber(row.density).toFixed(2)}%` }));
     comparisonItems = rows.slice(0, 12).map((row) => ({ name: row.name, value: reportNumber(row.issues), valueText: reportNumber(row.issues).toLocaleString(), selected: row.name === recipient }));
@@ -2461,6 +2541,7 @@ function buildWebRoleReport(data, role, recipient, dateRange) {
     const rows = dqa.tpmStages || [];
     recipients = rows.map((row) => row.name).filter(Boolean);
     const selected = rows.find((row) => row.name === recipient) || rows[0];
+    examIssueCategories = [selected?.division, "评审问题", "生产问题", "现场问题"].filter(Boolean);
     const total = (row) => reportNumber(row?.review) + reportNumber(row?.production) + reportNumber(row?.onsite);
     metrics = [{ name: "综合记录", value: total(selected), note: "个人质量范围" }, { name: "评审问题", value: selected?.review || 0, note: "设计前端" }, { name: "生产问题", value: selected?.production || 0, note: "后端制造" }, { name: "现场问题", value: selected?.onsite || 0, note: "交付现场" }];
     focusItems = rows.slice().sort((a, b) => total(b) - total(a)).slice(0, 8).map((row) => ({ name: row.name, value: total(row).toLocaleString(), detail: `${row.division || "未分配"}；评审 ${row.review || 0} / 生产 ${row.production || 0} / 现场 ${row.onsite || 0}` }));
@@ -2487,21 +2568,50 @@ function buildWebRoleReport(data, role, recipient, dateRange) {
   const questions = safeParse(localStorage.getItem(qmdpQuestionsKey), []);
   const knowledgeRuleItems = questions.filter((question) => `${question.stem || ""} ${question.categories || question.category || ""}`.includes(role.replace("报告", ""))).slice(0, 5).map((question) => ({ name: question.stem, value: question.type || "题目", detail: question.explanation || "已关联知识规则" }));
   const qualityClosureItems = (data?.actions || []).filter((item) => item.status === "进行中" || item.status === "未开始").slice(0, 6).map((item) => ({ name: item.title, value: `${item.progress ?? 0}%`, detail: `${item.owner || "待指定"} · ${item.due || "待定"}` }));
-  return { id: `RPT-${Date.now()}`, role, recipient: recipient || "全局", recipients, generatedAt: new Date().toISOString(), period: `${dateRange?.start2026 || ""}—${dateRange?.end2026 || ""}`, recipientScope: reportScope(role, recipient, scopeText), personalIssueSummary: summary, metrics, focusItems, rankingItems, comparisonItems, actions, qualityClosureItems, knowledgeRuleItems, examSummary: knowledgeRuleItems.length ? `已匹配 ${knowledgeRuleItems.length} 条知识/考试规则。` : "暂无直接匹配的知识考试规则。", executiveSummary: summary, riskFocus: risk, decisionSuggestion: decision };
+  return { id: `RPT-${Date.now()}`, role, recipient: recipient || "全局", recipients, generatedAt: new Date().toISOString(), period: `${dateRange?.start2026 || ""}—${dateRange?.end2026 || ""}`, recipientScope: reportScope(role, recipient, scopeText), personalIssueSummary: summary, metrics, focusItems, rankingItems, comparisonItems, actions, qualityClosureItems, knowledgeRuleItems, examSummary: knowledgeRuleItems.length ? `已匹配 ${knowledgeRuleItems.length} 条知识/考试规则。` : "暂无直接匹配的知识考试规则。", examIssueCategories, executiveSummary: summary, riskFocus: risk, decisionSuggestion: decision };
 }
 const downloadReportSnapshot = (snapshot, type = "json") => {
   const safe = `${snapshot.role}-${snapshot.recipient}-${snapshot.generatedAt.replace(/[:.]/g, "-")}`;
-  const content = type === "html" ? `<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>${snapshot.role}</title><style>body{font-family:Microsoft YaHei,Arial;color:#172033;max-width:1080px;margin:30px auto;padding:0 20px}section{border:1px solid #dfe7f0;border-radius:10px;padding:16px;margin:14px 0}h1{margin:0 0 8px}h2{font-size:16px;border-bottom:1px solid #edf2f7;padding-bottom:8px}li{margin:7px 0;line-height:1.5}.metric{display:inline-block;min-width:150px;margin:8px;padding:12px;background:#f4f8ff;border-radius:8px}.metric b{display:block;font-size:22px;color:#176ecf}</style><h1>${snapshot.role}</h1><p>${snapshot.recipientScope}<br/>周期：${snapshot.period}</p><section><h2>指标</h2>${snapshot.metrics.map((item) => `<span class="metric"><small>${item.name}</small><b>${item.value}</b><small>${item.note}</small></span>`).join("")}</section>${[["风险焦点", snapshot.focusItems], ["同级排名", snapshot.rankingItems], ["改善行动", snapshot.actions], ["质量闭环", snapshot.qualityClosureItems], ["知识规则", snapshot.knowledgeRuleItems]].map(([title, items]) => `<section><h2>${title}</h2><ul>${(items || []).map((item) => `<li><strong>${item.name}</strong> · ${item.value}：${item.detail}</li>`).join("") || "<li>暂无</li>"}</ul></section>`).join("")}<section><h2>管理判断</h2><p>${snapshot.riskFocus}</p><p>${snapshot.decisionSuggestion}</p></section></html>` : JSON.stringify(snapshot, null, 2);
+  const examHtml = snapshot.examLinks?.length ? `<section><h2>关联知识考核</h2><p>${snapshot.examSummary || "请完成以下与本人问题匹配的知识考试。"}</p><ul>${snapshot.examLinks.map((item) => `<li><strong>${item.title}</strong>：${item.summary}<br/><a href="${item.url}">${item.url}</a></li>`).join("")}</ul></section>` : "";
+  const content = type === "html" ? `<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>${snapshot.role}</title><style>body{font-family:Microsoft YaHei,Arial;color:#172033;max-width:1080px;margin:30px auto;padding:0 20px}section{border:1px solid #dfe7f0;border-radius:10px;padding:16px;margin:14px 0}h1{margin:0 0 8px}h2{font-size:16px;border-bottom:1px solid #edf2f7;padding-bottom:8px}li{margin:7px 0;line-height:1.5}.metric{display:inline-block;min-width:150px;margin:8px;padding:12px;background:#f4f8ff;border-radius:8px}.metric b{display:block;font-size:22px;color:#176ecf}a{color:#176ecf;word-break:break-all}</style><h1>${snapshot.role}</h1><p>${snapshot.recipientScope}<br/>周期：${snapshot.period}</p>${examHtml}<section><h2>指标</h2>${snapshot.metrics.map((item) => `<span class="metric"><small>${item.name}</small><b>${item.value}</b><small>${item.note}</small></span>`).join("")}</section>${[["风险焦点", snapshot.focusItems], ["同级排名", snapshot.rankingItems], ["改善行动", snapshot.actions], ["质量闭环", snapshot.qualityClosureItems], ["知识规则", snapshot.knowledgeRuleItems]].map(([title, items]) => `<section><h2>${title}</h2><ul>${(items || []).map((item) => `<li><strong>${item.name}</strong> · ${item.value}：${item.detail}</li>`).join("") || "<li>暂无</li>"}</ul></section>`).join("")}<section><h2>管理判断</h2><p>${snapshot.riskFocus}</p><p>${snapshot.decisionSuggestion}</p></section></html>` : JSON.stringify(snapshot, null, 2);
   const blob = new Blob([content], { type: type === "html" ? "text/html;charset=utf-8" : "application/json;charset=utf-8" }); const url = URL.createObjectURL(blob); const link = document.createElement("a"); link.href = url; link.download = `${safe}.${type}`; link.click(); URL.revokeObjectURL(url);
 };
 function RoleQualityReportPage({ data, dateRange, role, onRoleChange }) {
   const [recipient, setRecipient] = useState("");
   const [savedAt, setSavedAt] = useState("");
+  const [examState, setExamState] = useState({ status: "idle", links: [], message: "" });
   const report = useMemo(() => buildWebRoleReport(data, role, recipient, dateRange), [data, role, recipient, dateRange]);
   useEffect(() => { if (report.recipient !== recipient) setRecipient(report.recipient === "全局" ? "" : report.recipient); }, [report.recipient, recipient]);
-  const save = () => { const snapshots = safeParse(localStorage.getItem(qmdpReportSnapshotsKey), []); const next = [report, ...snapshots.filter((item) => !(item.role === report.role && item.recipient === report.recipient))].slice(0, 100); localStorage.setItem(qmdpReportSnapshotsKey, JSON.stringify(next)); const tasks = safeParse(localStorage.getItem(qmdpReportTasksKey), []); localStorage.setItem(qmdpReportTasksKey, JSON.stringify([{ id: report.id, role: report.role, recipient: report.recipient, module: "质量报告", date: report.generatedAt, status: "已生成", reportId: report.id }, ...tasks.filter((item) => item.reportId !== report.id)].slice(0, 200))); setSavedAt(report.generatedAt); };
-  const addSendTask = () => { const tasks = safeParse(localStorage.getItem(qmdpReportTasksKey), []); localStorage.setItem(qmdpReportTasksKey, JSON.stringify([{ id: `SEND-${Date.now()}`, role: report.role, recipient: report.recipient, module: "质量报告", date: new Date().toISOString(), status: "待发送", reportId: report.id }, ...tasks].slice(0, 200))); setSavedAt(new Date().toISOString()); };
-  return <div className="qmdp-page"><QmdpPageHeader icon={ChartBar} eyebrow="质量报告 / Role Report" title={role} description="按原 QMDP 角色报告口径输出收件人范围、指标、风险焦点、同级对比、改善行动与闭环。" action={<div className="qmdp-report-actions"><button className="qmdp-secondary-btn" onClick={() => downloadReportSnapshot(report, "html")}><DownloadSimple size={16}/>HTML</button><button className="qmdp-secondary-btn" onClick={() => downloadReportSnapshot(report, "json")}><DownloadSimple size={16}/>JSON</button><button className="qmdp-primary-btn" onClick={save}><FloppyDisk size={16}/>保存报告</button></div>}/><div className="qmdp-report-controls"><label>报告角色<select value={role} onChange={(event) => onRoleChange(event.target.value)}>{roleReportNames.map((item) => <option key={item}>{item}</option>)}</select></label>{report.recipients?.length > 0 && <label>收件人<select value={recipient} onChange={(event) => setRecipient(event.target.value)}><option value="">自动选择最高风险</option>{report.recipients.map((item) => <option key={item}>{item}</option>)}</select></label>}<span>统计周期：{dateRange.start2026}—{dateRange.end2026}</span>{savedAt && <small>已保存 · {formatSyncDateTime(savedAt)}</small>}<button className="qmdp-secondary-btn" onClick={addSendTask}><Bell size={15}/>创建发送任务</button></div><QmdpStatStrip items={[...report.metrics.slice(0, 4).map((item) => ({ label: item.name, value: item.value, note: item.note })), { label: "报告状态", value: savedAt ? "已保存" : "未保存", note: "可在任务中心追踪" }]} /><section className="qmdp-report-sheet"><header><div><span>2026 半年度质量报告 · {report.recipient}</span><h3>{role}</h3><p>{report.recipientScope}</p></div><span className="qmdp-report-badge">数据范围已重算</span></header><div className="qmdp-report-summary"><div><b>报告摘要</b><p>{report.executiveSummary}</p></div><div><b>风险焦点</b><p>{report.riskFocus}</p></div><div><b>管理建议</b><p>{report.decisionSuggestion}</p></div></div><div className="qmdp-report-grid">{[["风险焦点", report.focusItems], ["同级排名", report.rankingItems], ["改善行动", report.actions], ["质量闭环 / CAPA", report.qualityClosureItems], ["知识规则 / 考试关联", report.knowledgeRuleItems]].map(([title, items]) => <section className="qmdp-report-card" key={title}><header><strong>{title}</strong><span>{items?.length || 0} 项</span></header>{(items || []).map((item, index) => <div className="qmdp-report-item" key={`${title}-${item.name}-${index}`}><div><b>{item.name}</b><span>{item.detail}</span></div><strong>{item.value}</strong></div>)}{!items?.length && <div className="qmdp-empty compact">暂无记录</div>}</section>)}</div><section className="qmdp-report-card qmdp-comparison-card"><header><strong>同级对比</strong><span>{report.comparisonItems.length} 个对象</span></header>{report.comparisonItems.map((item) => <div className="qmdp-rank-bar" key={item.name}><span>{item.name}</span><i><b className={item.selected ? "selected" : ""} style={{ width: `${Math.min(100, Math.max(3, item.value / Math.max(...report.comparisonItems.map((row) => row.value), 1) * 100))}%` }}/></i><strong>{item.valueText}</strong></div>)}</section></section></div>;
+  useEffect(() => {
+    let cancelled = false;
+    const enabled = Boolean(examReportRole(role) && report.recipient && report.recipient !== "全局");
+    if (!enabled) { setExamState({ status: "idle", links: [], message: "" }); return () => { cancelled = true; }; }
+    const questions = examQuestionSetForReport(role, report.examIssueCategories);
+    if (!questions.length) { setExamState({ status: "empty", links: [], message: "题库中暂无与本人问题匹配的考试题目。" }); return () => { cancelled = true; }; }
+    setExamState({ status: "loading", links: [], message: "正在根据本人问题匹配考试题目…" });
+    const create = async () => {
+      try {
+        const result = await createExamSession({ roleName: examReportRole(role), recipientName: report.recipient, issueCategories: report.examIssueCategories, reportId: report.id, questions, questionCount: questions.length, validDays: 14 });
+        if (cancelled) return;
+        const url = new URL("/", window.location.origin); url.searchParams.set("examToken", result.token);
+        setExamState({ status: "ready", links: [{ title: "待完成考试", summary: `题目数 ${result.questionCount}，有效期至 ${formatSyncDateTime(result.expiresAt)}`, url: url.toString(), token: result.token }], message: `已为 ${report.recipient} 生成 ${result.questionCount} 道本人问题关联题目。` });
+      } catch (error) {
+        const token = `local-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+        const sessions = safeParse(localStorage.getItem(qmdpExamSessionsKey), []);
+        const expiresAt = new Date(Date.now() + 14 * 86400000).toISOString();
+        localStorage.setItem(qmdpExamSessionsKey, JSON.stringify([{ token, roleName: examReportRole(role), recipientName: report.recipient, issueCategories: report.examIssueCategories, questions, expiresAt, submittedAt: "", result: null }, ...sessions].slice(0, 100)));
+        if (cancelled) return;
+        const url = new URL("/", window.location.origin); url.searchParams.set("examToken", token);
+        setExamState({ status: "ready", links: [{ title: "待完成考试（本机）", summary: `题目数 ${questions.length}，有效期至 ${formatSyncDateTime(expiresAt)}`, url: url.toString(), token }], message: `考试服务暂不可用，已创建本机考试链接：${error?.message || "本地模式"}` });
+      }
+    };
+    create();
+    return () => { cancelled = true; };
+  }, [role, report.recipient, report.id, report.examIssueCategories.join("|")]);
+  const reportWithExam = useMemo(() => ({ ...report, examLinks: examState.links, examSummary: examState.message || report.examSummary }), [report, examState]);
+  const save = () => { const snapshots = safeParse(localStorage.getItem(qmdpReportSnapshotsKey), []); const next = [reportWithExam, ...snapshots.filter((item) => !(item.role === reportWithExam.role && item.recipient === reportWithExam.recipient))].slice(0, 100); localStorage.setItem(qmdpReportSnapshotsKey, JSON.stringify(next)); const tasks = safeParse(localStorage.getItem(qmdpReportTasksKey), []); localStorage.setItem(qmdpReportTasksKey, JSON.stringify([{ id: reportWithExam.id, role: reportWithExam.role, recipient: reportWithExam.recipient, module: "质量报告", date: reportWithExam.generatedAt, status: "已生成", reportId: reportWithExam.id, examLinks: reportWithExam.examLinks }, ...tasks.filter((item) => item.reportId !== reportWithExam.id)].slice(0, 200))); setSavedAt(reportWithExam.generatedAt); };
+  const addSendTask = () => { const tasks = safeParse(localStorage.getItem(qmdpReportTasksKey), []); localStorage.setItem(qmdpReportTasksKey, JSON.stringify([{ id: `SEND-${Date.now()}`, role: reportWithExam.role, recipient: reportWithExam.recipient, module: "质量报告", date: new Date().toISOString(), status: "待发送", reportId: reportWithExam.id, examLinks: reportWithExam.examLinks }, ...tasks].slice(0, 200))); setSavedAt(new Date().toISOString()); };
+  return <div className="qmdp-page"><QmdpPageHeader icon={ChartBar} eyebrow="质量报告 / Role Report" title={role} description="按原 QMDP 角色报告口径输出收件人范围、指标、风险焦点、同级对比、改善行动与闭环。" action={<div className="qmdp-report-actions"><button className="qmdp-secondary-btn" onClick={() => downloadReportSnapshot(reportWithExam, "html")}><DownloadSimple size={16}/>HTML</button><button className="qmdp-secondary-btn" onClick={() => downloadReportSnapshot(reportWithExam, "json")}><DownloadSimple size={16}/>JSON</button><button className="qmdp-primary-btn" onClick={save} disabled={examState.status === "loading" && Boolean(examReportRole(role))}><FloppyDisk size={16}/>保存报告</button></div>}/><div className="qmdp-report-controls"><label>报告角色<select value={role} onChange={(event) => onRoleChange(event.target.value)}>{roleReportNames.map((item) => <option key={item}>{item}</option>)}</select></label>{report.recipients?.length > 0 && <label>收件人<select value={recipient} onChange={(event) => setRecipient(event.target.value)}><option value="">自动选择最高风险</option>{report.recipients.map((item) => <option key={item}>{item}</option>)}</select></label>}<span>统计周期：{dateRange.start2026}—{dateRange.end2026}</span>{savedAt && <small>已保存 · {formatSyncDateTime(savedAt)}</small>}<button className="qmdp-secondary-btn" onClick={addSendTask} disabled={examState.status === "loading" && Boolean(examReportRole(role))}><Bell size={15}/>创建发送任务</button></div><QmdpStatStrip items={[...reportWithExam.metrics.slice(0, 4).map((item) => ({ label: item.name, value: item.value, note: item.note })), { label: "报告状态", value: savedAt ? "已保存" : "未保存", note: "可在任务中心追踪" }]} /><section className="qmdp-report-sheet"><header><div><span>2026 半年度质量报告 · {reportWithExam.recipient}</span><h3>{role}</h3><p>{reportWithExam.recipientScope}</p></div><span className="qmdp-report-badge">数据范围已重算</span></header><section className="qmdp-exam-card"><header><strong>关联知识考核</strong><span>{examState.status === "loading" ? "匹配中" : `${reportWithExam.examLinks?.length || 0} 个入口`}</span></header><p>{reportWithExam.examSummary}</p>{reportWithExam.examLinks?.map((item) => <div className="qmdp-exam-link" key={item.url}><div><b>{item.title}</b><span>{item.summary}</span></div><a href={item.url} target="_blank" rel="noreferrer">打开答题链接</a><button className="qmdp-secondary-btn" onClick={() => navigator.clipboard?.writeText(item.url)}>复制链接</button></div>)}{examState.status === "empty" && <div className="qmdp-empty compact">暂无匹配题目，请先在题库管理导入相关题库。</div>}</section><div className="qmdp-report-summary"><div><b>报告摘要</b><p>{reportWithExam.executiveSummary}</p></div><div><b>风险焦点</b><p>{reportWithExam.riskFocus}</p></div><div><b>管理建议</b><p>{reportWithExam.decisionSuggestion}</p></div></div><div className="qmdp-report-grid">{[["风险焦点", reportWithExam.focusItems], ["同级排名", reportWithExam.rankingItems], ["改善行动", reportWithExam.actions], ["质量闭环 / CAPA", reportWithExam.qualityClosureItems], ["知识规则 / 考试关联", reportWithExam.knowledgeRuleItems]].map(([title, items]) => <section className="qmdp-report-card" key={title}><header><strong>{title}</strong><span>{items?.length || 0} 项</span></header>{(items || []).map((item, index) => <div className="qmdp-report-item" key={`${title}-${item.name}-${index}`}><div><b>{item.name}</b><span>{item.detail}</span></div><strong>{item.value}</strong></div>)}{!items?.length && <div className="qmdp-empty compact">暂无记录</div>}</section>)}</div><section className="qmdp-report-card qmdp-comparison-card"><header><strong>同级对比</strong><span>{reportWithExam.comparisonItems.length} 个对象</span></header>{reportWithExam.comparisonItems.map((item) => <div className="qmdp-rank-bar" key={item.name}><span>{item.name}</span><i><b className={item.selected ? "selected" : ""} style={{ width: `${Math.min(100, Math.max(3, item.value / Math.max(...reportWithExam.comparisonItems.map((row) => row.value), 1) * 100))}%` }}/></i><strong>{item.valueText}</strong></div>)}</section></section></div>;
 }
 function ReportTaskCenterPage() {
   const [tasks, setTasks] = useState(() => safeParse(localStorage.getItem(qmdpReportTasksKey), []));
@@ -2514,7 +2624,7 @@ function ReportTaskCenterPage() {
   const visibleTasks = tasks.filter((item) => { const day = String(item.date || "").slice(0, 10); return (roleFilter === "全部" || item.role === roleFilter) && (statusFilter === "全部" || item.status === statusFilter) && (!fromDate || day >= fromDate) && (!toDate || day <= toDate) && (!query || `${item.role} ${item.recipient} ${item.module} ${item.status}`.toLowerCase().includes(query.toLowerCase())); });
   const visibleReports = snapshots.filter((item) => !query || `${item.role} ${item.recipient}`.toLowerCase().includes(query.toLowerCase()));
   const batchExport = () => visibleReports.forEach((item) => downloadReportSnapshot(item, "html"));
-  return <div className="qmdp-page"><QmdpPageHeader icon={Rows} eyebrow="质量报告 / Task Center" title="报告任务中心" description="对应原 QMDP 的已生成报告、发送记录、筛选和文件打开能力。" action={<><button className="qmdp-secondary-btn" onClick={refresh}><ArrowsClockwise size={15}/>刷新记录</button><button className="qmdp-secondary-btn" onClick={batchExport} disabled={!visibleReports.length}><DownloadSimple size={15}/>批量导出</button><button className="qmdp-primary-btn" onClick={addTask}><Plus size={16}/>新建发送任务</button></>}/><QmdpStatStrip items={[{ label: "记录总数", value: tasks.length, note: "生成与发送" }, { label: "待发送", value: tasks.filter((item) => item.status === "待发送").length, note: "需要处理" }, { label: "已生成报告", value: snapshots.length, note: "可重新打开" }]} /><div className="qmdp-toolbar"><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="按角色、收件人或状态搜索"/><select value={roleFilter} onChange={(event) => setRoleFilter(event.target.value)}>{roles.map((item) => <option key={item}>{item}</option>)}</select><select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}><option>全部</option><option>已生成</option><option>待发送</option><option>已发送</option><option>已取消</option></select><input type="date" value={fromDate} onChange={(event) => setFromDate(event.target.value)} aria-label="开始日期"/><input type="date" value={toDate} onChange={(event) => setToDate(event.target.value)} aria-label="结束日期"/><span>当前显示 {visibleTasks.length} 条任务 · {visibleReports.length} 份报告</span></div><section className="qmdp-task-table"><div className="qmdp-task-row head"><span>报告模块</span><span>角色</span><span>收件人</span><span>时间</span><span>状态</span><span>操作</span></div>{visibleTasks.map((item) => <div className="qmdp-task-row" key={item.id}><span>{item.module || "质量报告"}</span><strong>{item.role}</strong><span>{item.recipient}</span><span>{formatSyncDateTime(item.date)}</span><select value={item.status} onChange={(event) => setTasks((current) => current.map((row) => row.id === item.id ? { ...row, status: event.target.value } : row))}><option>已生成</option><option>待发送</option><option>已发送</option><option>已取消</option></select><span className="qmdp-task-actions">{item.reportId && <button className="qmdp-secondary-btn" onClick={() => { const report = snapshots.find((row) => row.id === item.reportId); if (report) downloadReportSnapshot(report, "html"); }}>打开</button>}<button className="qmdp-danger-btn" onClick={() => setTasks((current) => current.filter((row) => row.id !== item.id))}><Trash size={14}/>删除</button></span></div>)}{!visibleTasks.length && <div className="qmdp-empty compact">暂无报告任务记录。</div>}</section><section className="qmdp-saved-reports"><header><strong>已保存报告</strong><span>{visibleReports.length} 份</span></header>{visibleReports.map((item) => <div key={item.id}><div><b>{item.role} · {item.recipient}</b><span>{item.period} · {formatSyncDateTime(item.generatedAt)}</span></div><button className="qmdp-secondary-btn" onClick={() => downloadReportSnapshot(item, "html")}><DownloadSimple size={14}/>打开报告</button></div>)}{!visibleReports.length && <div className="qmdp-empty compact">保存报告后会出现在这里。</div>}</section></div>;
+  return <div className="qmdp-page"><QmdpPageHeader icon={Rows} eyebrow="质量报告 / Task Center" title="报告任务中心" description="对应原 QMDP 的已生成报告、发送记录、筛选和文件打开能力。" action={<><button className="qmdp-secondary-btn" onClick={refresh}><ArrowsClockwise size={15}/>刷新记录</button><button className="qmdp-secondary-btn" onClick={batchExport} disabled={!visibleReports.length}><DownloadSimple size={15}/>批量导出</button><button className="qmdp-primary-btn" onClick={addTask}><Plus size={16}/>新建发送任务</button></>}/><QmdpStatStrip items={[{ label: "记录总数", value: tasks.length, note: "生成与发送" }, { label: "待发送", value: tasks.filter((item) => item.status === "待发送").length, note: "需要处理" }, { label: "已生成报告", value: snapshots.length, note: "可重新打开" }]} /><div className="qmdp-toolbar"><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="按角色、收件人或状态搜索"/><select value={roleFilter} onChange={(event) => setRoleFilter(event.target.value)}>{roles.map((item) => <option key={item}>{item}</option>)}</select><select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}><option>全部</option><option>已生成</option><option>待发送</option><option>已发送</option><option>已取消</option></select><input type="date" value={fromDate} onChange={(event) => setFromDate(event.target.value)} aria-label="开始日期"/><input type="date" value={toDate} onChange={(event) => setToDate(event.target.value)} aria-label="结束日期"/><span>当前显示 {visibleTasks.length} 条任务 · {visibleReports.length} 份报告</span></div><section className="qmdp-task-table"><div className="qmdp-task-row head"><span>报告模块</span><span>角色</span><span>收件人</span><span>时间</span><span>状态</span><span>操作</span></div>{visibleTasks.map((item) => <div className="qmdp-task-row" key={item.id}><span>{item.module || "质量报告"}</span><strong>{item.role}</strong><span>{item.recipient}</span><span>{formatSyncDateTime(item.date)}</span><select value={item.status} onChange={(event) => setTasks((current) => current.map((row) => row.id === item.id ? { ...row, status: event.target.value } : row))}><option>已生成</option><option>待发送</option><option>已发送</option><option>已取消</option></select><span className="qmdp-task-actions">{item.examLinks?.[0]?.url && <a className="qmdp-task-link" href={item.examLinks[0].url} target="_blank" rel="noreferrer">考试链接</a>}{item.reportId && <button className="qmdp-secondary-btn" onClick={() => { const report = snapshots.find((row) => row.id === item.reportId); if (report) downloadReportSnapshot(report, "html"); }}>打开</button>}<button className="qmdp-danger-btn" onClick={() => setTasks((current) => current.filter((row) => row.id !== item.id))}><Trash size={14}/>删除</button></span></div>)}{!visibleTasks.length && <div className="qmdp-empty compact">暂无报告任务记录。</div>}</section><section className="qmdp-saved-reports"><header><strong>已保存报告</strong><span>{visibleReports.length} 份</span></header>{visibleReports.map((item) => <div key={item.id}><div><b>{item.role} · {item.recipient}</b><span>{item.period} · {formatSyncDateTime(item.generatedAt)}</span></div><button className="qmdp-secondary-btn" onClick={() => downloadReportSnapshot(item, "html")}><DownloadSimple size={14}/>打开报告</button></div>)}{!visibleReports.length && <div className="qmdp-empty compact">保存报告后会出现在这里。</div>}</section></div>;
 }
 
 function QualityReportsPage({ active, data, dateRange, onRoleChange }) {
