@@ -1,0 +1,4 @@
+interface:
+  display_name: "研发工程师质量闭环角色报告"
+  short_description: "为研发工程师生成基于本人研发问题、ECN、非BOM和设计评审的具体质量报告。"
+  default_prompt: "请按研发工程师角色 Skill 生成本人研发质量、考试和改善闭环报告。"

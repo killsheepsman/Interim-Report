@@ -1,0 +1,4 @@
+interface:
+  display_name: "PM质量闭环角色报告"
+  short_description: "为PM生成基于所辖研发工程师和项目范围的管理质量报告。"
+  default_prompt: "请按PM角色 Skill 生成工程师汇总、项目风险和管理行动报告。"

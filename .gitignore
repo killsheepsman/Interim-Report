@@ -8,6 +8,8 @@ public/defaultAnalysis.json.gz
 public/defaultQmsSources.json.gz
 public/defaultAnnotations.json
 data/ai-config.json
+data/
+screenshots/
 .vite/
 *.log
 npm-debug.log*

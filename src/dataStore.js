@@ -6,6 +6,7 @@ const REMOTE_SOURCES_KEY = "imported-sources";
 const ANALYSIS_CACHE_KEY = "analysis-cache-v1";
 const REMOTE_ANALYSIS_CACHE_KEY = "analysis-cache";
 const REMOTE_APPLIED_DATE_RANGE_KEY = "applied-date-range";
+const DQA_ENGINEER_SUPPLEMENT_KEY = "dqa-engineer-supplement";
 
 const sharedApiBase = () => {
   if (typeof window === "undefined") return "";
@@ -277,6 +278,26 @@ export const saveAppliedDateRange = async (range) => {
   return remoteSaved && typeof remoteSaved === "object" ? remoteSaved : null;
 };
 
+export const loadDqaEngineerSupplement = async () => {
+  const local = await transaction("readonly", (store) => store.get(DQA_ENGINEER_SUPPLEMENT_KEY)).catch(() => null);
+  const remote = await loadRemoteState(DQA_ENGINEER_SUPPLEMENT_KEY);
+  if (remote && typeof remote === "object") {
+    transaction("readwrite", (store) => store.put(remote, DQA_ENGINEER_SUPPLEMENT_KEY)).catch(() => {});
+    return remote;
+  }
+  return local && typeof local === "object" ? local : null;
+};
+
+export const saveDqaEngineerSupplement = async (value) => {
+  await transaction("readwrite", (store) => store.put(value, DQA_ENGINEER_SUPPLEMENT_KEY));
+  return await saveRemoteState(DQA_ENGINEER_SUPPLEMENT_KEY, value);
+};
+
+export const clearDqaEngineerSupplement = async () => {
+  await transaction("readwrite", (store) => store.delete(DQA_ENGINEER_SUPPLEMENT_KEY));
+  return await saveRemoteState(DQA_ENGINEER_SUPPLEMENT_KEY, null);
+};
+
 export const loadCurrentUser = async () => {
   const localAccess = { ip: "local", name: "本机用户", role: "local", isAdmin: false, isDeputy: false, isOrdinary: true, isAuthorized: true, features: {} };
   try {
@@ -329,8 +350,18 @@ export const loadAiConfig = async () => await aiApiJson("/ai/config", { method: 
 export const saveAiConfig = async (config) => await aiApiJson("/ai/config", { method: "PUT", body: JSON.stringify(config) });
 export const loadAiModels = async () => await aiApiJson("/ai/models", { method: "GET", cache: "no-store" });
 export const testAiConfig = async (config) => await aiApiJson("/ai/test", { method: "POST", body: JSON.stringify(config) });
-export const requestAiChat = async (messages, options = {}) => await aiApiJson("/ai/chat", { method: "POST", body: JSON.stringify({ messages, ...options }) });
+export const requestAiChat = async (messages, options = {}) => {
+  const { signal, ...payload } = options || {};
+  return await aiApiJson("/ai/chat", { method: "POST", body: JSON.stringify({ messages, ...payload }), signal });
+};
 export const saveAiReport = async (report) => await aiApiJson("/ai/reports", { method: "POST", body: JSON.stringify(report) });
+export const saveAgentDispatch = async (dispatch) => await aiApiJson("/ai/agent-dispatch", { method: "POST", body: JSON.stringify(dispatch) });
+export const loadAgentDispatches = async () => await aiApiJson("/ai/agent-dispatch", { method: "GET", cache: "no-store" });
+export const loadAgentSkills = async () => await aiApiJson("/ai/skills", { method: "GET", cache: "no-store" });
+export const loadAgentReports = async () => await aiApiJson("/ai/agent-reports", { method: "GET", cache: "no-store" });
+export const loadAgentReport = async (fileName) => await aiApiJson(`/ai/agent-reports/${encodeURIComponent(fileName)}`, { method: "GET", cache: "no-store" });
+export const saveAgentReportFile = async (report) => await aiApiJson("/ai/agent-reports", { method: "POST", body: JSON.stringify({ ...report, feature: "qualityAgent" }) });
+export const deleteAgentReport = async (fileName) => await aiApiJson(`/ai/agent-reports/${encodeURIComponent(fileName)}`, { method: "DELETE" });
 
 const examApiJson = async (path, options = {}) => {
   const base = sharedApiBase();

@@ -3,19 +3,30 @@ import { createPortal } from "react-dom";
 import {
   ArrowRight, ArrowsClockwise, Bell, CaretDown, ChartBar, ChartPieSlice, CheckCircle,
   ClipboardText, ClockCountdown, Cube, Database, DownloadSimple, Eye, FileXls,
-  FloppyDisk, Funnel, GearSix, House, Kanban, ListChecks, Plus, Pulse, Brain,
+  FloppyDisk, Funnel, GearSix, Kanban, ListChecks, Plus, Pulse, Brain,
   Question, Rows, ShieldCheck, SidebarSimple, Sparkle, Table, Target, Trash,
   UploadSimple, User, Warning, WarningCircle, X,
 } from "@phosphor-icons/react";
-import { analyzeImported, downloadJson, normalizeIpqcLeaderMapRows, normalizeIpqcWorkshop, parseFiles } from "./dataEngine.js";
-import { createExamSession, createSourcesSignature, downloadSourceFiles, loadAiConfig, loadAiModels, loadAppliedDateRange, loadCachedAnalysis, loadCurrentUser, loadDefaultAnalysis, loadDefaultAnnotations, loadDefaultQmsSources, loadDefaultSources, loadExamSession, loadImportedSources, loadPermissionConfig, mergeImportedSources, requestAiChat, saveAiConfig, saveAiReport, saveAppliedDateRange, saveCachedAnalysis, saveImportedSources, savePermissionConfig, sourceRowCount, submitExamSession, summarizeSources, testAiConfig, uploadSourceFiles } from "./dataStore.js";
+import { analyzeImported, buildDqaEngineerSupplementSource, downloadJson, normalizeIpqcLeaderMapRows, normalizeIpqcWorkshop, parseDqaEngineerSupplementFiles, parseFiles } from "./dataEngine.js";
+import { clearDqaEngineerSupplement as clearDqaEngineerSupplementState, createExamSession, createSourcesSignature, downloadSourceFiles, loadAiConfig, loadAiModels, loadAppliedDateRange, loadCachedAnalysis, loadCurrentUser, loadDefaultAnalysis, loadDefaultAnnotations, loadDefaultQmsSources, loadDefaultSources, loadDqaEngineerSupplement, loadExamSession, loadImportedSources, loadPermissionConfig, mergeImportedSources, requestAiChat, saveAiConfig, saveAiReport, saveAppliedDateRange, saveCachedAnalysis, saveDqaEngineerSupplement, saveImportedSources, savePermissionConfig, sourceRowCount, submitExamSession, summarizeSources, testAiConfig, uploadSourceFiles } from "./dataStore.js";
 import { sampleData } from "./sampleData.js";
-import { BarCompare, Donut, HorizontalRank, MachinedTpmCompareChart, Pareto, QmsDivisionCombo, QmsScoreCompare, QmsTpmRank, QmsTrendCombo, QuantityRateCombo, ScoreMonthlyCombo, ScoreYearCompare, StackedStage, WorkshopCategoryHeatmap, YearStackedCompare } from "./charts.jsx";
+import { BarCompare, Donut, HorizontalRank, MachinedTpmCompareChart, Pareto, QmsDivisionCombo, QmsScoreCompare, QmsTpmRank, QmsTrendCombo, QuantityRateCombo, ReportBarChart, ReportStatusDonut, ScoreMonthlyCombo, ScoreYearCompare, StackedStage, WorkshopCategoryHeatmap, YearStackedCompare } from "./charts.jsx";
+import { QualityAgentPage } from "./agent/QualityAgentPage.jsx";
+import { AgentRoleReportPage } from "./agent/AgentRoleReportPage.jsx";
+import { AgentExamStatsPage } from "./agent/AgentExamStatsPage.jsx";
 import * as XLSX from "xlsx";
 import "./qmdp.css";
 
 const moduleIcons = { IQC: Cube, IPQC: Pulse, OQC: ShieldCheck, DQA: ClipboardText, QMS: ListChecks };
 const moduleColor = { IQC: "green", IPQC: "blue", OQC: "orange", DQA: "amber", QMS: "purple" };
+const isLegacyDqaEngineerSource = (source = {}) => {
+  const name = String(source.name || "").toLowerCase();
+  return ["dqa_engineer_problems", "dqa_engineer_ecn", "dqa_engineer_non_bom"].includes(source.subKind)
+    || name.includes("fpc事业部-研发问题")
+    || name.includes("ecn查询导出")
+    || name.includes("非bom需求申请表")
+    || name.includes("研发评审mp");
+};
 const UiThemeContext = createContext("classic");
 const useUiTheme = () => useContext(UiThemeContext);
 const ANALYSIS_CACHE_VERSION = "server-analysis-cache-v5";
@@ -39,6 +50,7 @@ const defaultFeaturePermissions = {
   dateTemporaryRefresh: { public: true, deputy: true, label: "临时刷新日期" },
   aiAnalysis: { public: false, deputy: true, label: "AI分析" },
   aiInterface: { public: false, deputy: true, label: "AI接口" },
+  qualityAgent: { public: true, deputy: true, label: "质量分析 Agent" },
 };
 const defaultApiPermissions = {
   "POST /api/uploads": { public: false, deputy: true, label: "上传原始Excel" },
@@ -64,6 +76,7 @@ const normalizePermissions = (value = {}) => ({
   deputyAdmins: normalizePermissionMembers(value.deputyAdmins),
   ordinaryUsers: normalizePermissionMembers(value.ordinaryUsers),
   allowIntranetUsers: value.allowIntranetUsers === true,
+  menus: normalizeMenuPermissions(value.menus),
   features: Object.fromEntries(Object.entries(defaultFeaturePermissions).map(([key, item]) => [key, { ...item, ...(value.features?.[key] || {}) }])),
   apis: Object.fromEntries(Object.entries(defaultApiPermissions).map(([key, item]) => [key, { ...item, ...(value.apis?.[key] || {}) }])),
 });
@@ -680,31 +693,91 @@ function ThemeToggle({ value, onChange }) {
 }
 
 const qmdpMenuGroups = [
+  { label: "质量数据", icon: ChartBar, children: ["总览", "IQC", "IPQC", "OQC", "DQA", "QMS", "数据导入"] },
   { label: "知识管理", icon: Database, children: ["知识库", "题库管理", "知识考试"] },
   { label: "质量报告", icon: ChartBar, children: ["IPQC操作报告", "机长报告", "交付经理报告", "供应链经理报告", "研发工程师报告", "PM报告", "TPM报告", "产总报告", "董事长报告", "报告任务中心"] },
-  { label: "系统管理", icon: GearSix, children: ["组织映射", "供应链映射", "员工信息", "评分权重", "企业微信", "操作日志"] },
+  { label: "质量分析 Agent", icon: Brain, children: ["IQC Agent", "IPQC Agent", "OQC Agent", "DQA Agent", "QMS Agent"] },
+  { label: "Agent角色报告", icon: ChartBar, children: ["组装人员 Agent报告", "机长 Agent报告", "交付经理 Agent报告", "供应链经理 Agent报告", "研发工程师 Agent报告", "PM Agent报告", "TPM Agent报告", "产总 Agent报告"] },
+  { label: "Agent工具", icon: Brain, children: ["Agent考试统计"] },
+  { label: "系统管理", icon: GearSix, children: ["研发组织映射", "供应链映射", "员工信息", "评分权重", "企业微信", "操作日志"] },
 ];
+const menuPermissionDefinitions = [
+  ...qmdpMenuGroups.map((group) => ({ key: group.label, children: group.children })),
+  { key: "AI分析", children: [] },
+  { key: "AI接口", children: [] },
+  { key: "权限设置", children: [] },
+];
+const normalizeMenuPermissions = (value = {}) => Object.fromEntries(menuPermissionDefinitions.map(({ key, children }) => {
+  const source = value?.[key] || {};
+  const childRules = Object.fromEntries(children.map((child) => [child, { public: true, deputy: true, ...(source.children?.[child] || {}) }]));
+  return [key, { public: true, deputy: true, ...source, children: childRules }];
+}));
+const canUseMenu = (auth, permissions, parent, child = "") => {
+  if (auth?.isAdmin) return true;
+  const roleKey = auth?.isDeputy ? "deputy" : "public";
+  const parentRule = permissions?.menus?.[parent];
+  if (parentRule && parentRule[roleKey] === false) return false;
+  if (!child) return true;
+  const childRule = parentRule?.children?.[child];
+  return !childRule || childRule[roleKey] !== false;
+};
 
-function ExecutiveSidebar({ active, setActive, uiTheme, onThemeChange, collapsed, onToggleCollapsed, permissions, auth }) {
+const qualityAgentMenuModules = { "IQC Agent": "IQC", "IPQC Agent": "IPQC", "OQC Agent": "OQC", "DQA Agent": "DQA", "QMS Agent": "QMS" };
+const agentRoleMenuRoles = { "组装人员 Agent报告": "组装人员", "机长 Agent报告": "机长", "交付经理 Agent报告": "交付经理", "供应链经理 Agent报告": "供应链经理", "研发工程师 Agent报告": "研发工程师", "PM Agent报告": "PM", "TPM Agent报告": "TPM", "产总 Agent报告": "产总" };
+const qualityAgentMenuItems = Object.keys(qualityAgentMenuModules);
+const agentRoleMenuItems = Object.keys(agentRoleMenuRoles);
+const agentUtilityMenuItems = ["Agent考试统计"];
+
+const sidebarWidthLimits = { min: 190, max: 360, default: 220 };
+const clampSidebarWidth = (value) => Math.min(sidebarWidthLimits.max, Math.max(sidebarWidthLimits.min, Number(value) || sidebarWidthLimits.default));
+
+function ExecutiveSidebar({ active, setActive, uiTheme, onThemeChange, collapsed, onToggleCollapsed, permissions, auth, width, onWidthChange }) {
   const [openGroups, setOpenGroups] = useState(() => {
     const saved = safeParse(localStorage.getItem("qms-qmdp-menu-open-v1"), null);
-    return saved && typeof saved === "object" ? saved : { 知识管理: true, 质量报告: true, 系统管理: true };
+    return saved && typeof saved === "object" ? saved : { 质量数据: true, 知识管理: true, 质量报告: true, 系统管理: true };
   });
+  const [resizing, setResizing] = useState(false);
   useEffect(() => { localStorage.setItem("qms-qmdp-menu-open-v1", JSON.stringify(openGroups)); }, [openGroups]);
-  const nav = [
-    ["总览", House], ["IQC", Cube], ["IPQC", Pulse],
-    ["OQC", ShieldCheck], ["DQA", ClipboardText], ["QMS", ListChecks],
-    ...(canUseFeature(auth, permissions, "aiAnalysis") ? [["AI分析", Brain]] : []),
-    ...(canUseFeature(auth, permissions, "aiInterface") ? [["AI接口", GearSix]] : []),
-    ...(canUseFeature(auth, permissions, "dataImport") ? [["数据导入", UploadSimple]] : []),
-    ...(auth?.isAdmin ? [["权限设置", GearSix]] : []),
+  useEffect(() => {
+    if (!resizing) return undefined;
+    const move = (event) => onWidthChange(clampSidebarWidth(event.clientX));
+    const stop = () => setResizing(false);
+    document.body.classList.add("sidebar-resizing");
+    document.addEventListener("pointermove", move);
+    document.addEventListener("pointerup", stop, { once: true });
+    return () => {
+      document.body.classList.remove("sidebar-resizing");
+      document.removeEventListener("pointermove", move);
+      document.removeEventListener("pointerup", stop);
+    };
+  }, [onWidthChange, resizing]);
+  const resizeByKeyboard = (event) => {
+    if (collapsed) return;
+    if (event.key === "ArrowLeft") { event.preventDefault(); onWidthChange(clampSidebarWidth(width - 10)); }
+    if (event.key === "ArrowRight") { event.preventDefault(); onWidthChange(clampSidebarWidth(width + 10)); }
+    if (event.key === "Home") { event.preventDefault(); onWidthChange(sidebarWidthLimits.min); }
+    if (event.key === "End") { event.preventDefault(); onWidthChange(sidebarWidthLimits.max); }
+  };
+  const groups = qmdpMenuGroups.map((group) => ({
+    ...group,
+    children: canUseMenu(auth, permissions, group.label) ? group.children.filter((child) => {
+      if (!canUseMenu(auth, permissions, group.label, child)) return false;
+      if (child === "数据导入") return canUseFeature(auth, permissions, "dataImport");
+      if ([...qualityAgentMenuItems, ...agentRoleMenuItems, ...agentUtilityMenuItems].includes(child)) return canUseFeature(auth, permissions, "qualityAgent");
+      return true;
+    }) : [],
+  })).filter((group) => group.children.length);
+  const utilityNav = [
+    ...(canUseMenu(auth, permissions, "AI分析") && canUseFeature(auth, permissions, "aiAnalysis") ? [["AI分析", Brain]] : []),
+    ...(canUseMenu(auth, permissions, "AI接口") && canUseFeature(auth, permissions, "aiInterface") ? [["AI接口", GearSix]] : []),
+    ...(auth?.isAdmin && canUseMenu(auth, permissions, "权限设置") ? [["权限设置", GearSix]] : []),
   ];
-  return <aside className={`executive-sidebar ${collapsed ? "collapsed" : ""}`}>
+  return <aside className={`executive-sidebar ${collapsed ? "collapsed" : ""} ${resizing ? "resizing" : ""}`}>
     <div className="brand"><div className="brand-logo"><ShieldCheck size={26} weight="fill" /></div><div><strong>品质智控</strong><span>质量分析平台</span></div></div>
     <nav>
-      {nav.map(([name, Icon]) => <button key={name} className={active === name ? "active" : ""} onClick={() => setActive(name)}><Icon size={20} /><span>{name}</span></button>)}
+      {utilityNav.map(([name, Icon]) => <button key={name} className={active === name ? "active" : ""} onClick={() => setActive(name)}><Icon size={20} /><span>{name}</span></button>)}
       <div className="qmdp-nav-groups">
-        {qmdpMenuGroups.map((group) => {
+        {groups.map((group) => {
           const GroupIcon = group.icon;
           const expanded = openGroups[group.label] !== false;
           const groupActive = group.children.includes(active);
@@ -718,6 +791,7 @@ function ExecutiveSidebar({ active, setActive, uiTheme, onThemeChange, collapsed
       </div>
     </nav>
     <div className="sidebar-bottom"><ThemeToggle value={uiTheme} onChange={onThemeChange}/></div>
+    {!collapsed && <div className="sidebar-resize-handle" role="separator" aria-orientation="vertical" aria-label="调整侧边栏宽度" aria-valuemin={sidebarWidthLimits.min} aria-valuemax={sidebarWidthLimits.max} aria-valuenow={Math.round(width)} tabIndex={0} onPointerDown={(event) => { event.preventDefault(); setResizing(true); }} onKeyDown={resizeByKeyboard} />}
     <button className="sidebar-drawer-toggle" aria-label={collapsed ? "展开导航" : "收起导航"} onClick={onToggleCollapsed}><SidebarSimple size={18} /></button>
   </aside>;
 }
@@ -1620,7 +1694,42 @@ function AiInterfacePage() {
   </div>;
 }
 
-function DataSourcePage({ files, onImportModule, onDelete, onSourcesChanged }) {
+function DqaEngineerSupplementImport({ supplement, onImport, onClear, onDeleteFile }) {
+  const inputRef = useRef(null);
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState("");
+  const handleChange = async (event) => {
+    const selected = [...(event.target.files || [])];
+    event.target.value = "";
+    if (selected.length === 0) return;
+    setBusy(true);
+    setMessage("\u6b63\u5728\u89e3\u6790\u4e09\u7c7b\u7814\u53d1\u660e\u7ec6\u8868...");
+    try {
+      const result = await onImport(selected);
+      setMessage(`\u5df2\u4fdd\u5b58\uff1aECN ${result.ecnRecords?.length || 0} \u884c\uff0c\u975eBOM ${result.nonBomRecords?.length || 0} \u884c\uff0c\u8bc4\u5ba1 ${result.reviewRecords?.length || 0} \u4e2a\u9879\u76ee`);
+    } catch (error) {
+      setMessage(`\u5bfc\u5165\u5931\u8d25\uff1a${error.message}`);
+    } finally { setBusy(false); }
+  };
+  const files = supplement?.files || [];
+  const decodeDisplayText = (value) => String(value || "").replace(/\\u([0-9a-fA-F]{4})/g, (_, code) => String.fromCharCode(parseInt(code, 16)));
+  const updatedAt = supplement?.updatedAt ? new Date(supplement.updatedAt).toLocaleString("zh-CN", { hour12: false }) : "-";
+  return <section className="data-source-module data-source-engineer-supplement">
+    <header><span className="dataset-icon amber"><ClipboardText size={22}/></span><div><h3>研发· ECN/非BOM/评审</h3><p>{files.length ? `${files.length}个数据源 · 持续追加` : "尚未导入数据"}</p></div><button onClick={() => inputRef.current?.click()} disabled={busy}><UploadSimple size={16}/>{busy ? "解析中..." : "导入数据"}</button><input ref={inputRef} type="file" accept=".xlsx,.xls,.xlsm" multiple hidden onChange={handleChange}/></header>
+    <div className="engineer-supplement-body">
+      <div className="engineer-supplement-rules"><span>统计规则</span><p>数据按导入文件持续追加，不覆盖已有来源；同一文件重复导入不会重复计数。ECN 按创建人、变更原因、物料代码统计；非BOM 按申请人统计 35 开头加工件；评审成员每个项目计 1 次，提出人按人次计数。</p></div>
+      <div className="engineer-supplement-stats"><div><b>{supplement?.ecnRecords?.length || 0}</b><span>ECN 记录</span></div><div><b>{supplement?.ecnRecords?.filter((row) => row.isMachined).length || 0}</b><span>ECN 加工件</span></div><div><b>{supplement?.nonBomRecords?.filter((row) => row.isMachined).length || 0}</b><span>非BOM 加工件</span></div><div><b>{supplement?.reviewRecords?.length || 0}</b><span>评审项目</span></div></div>
+      <div className="source-file-table">
+        <div className="source-file-row source-file-head"><span>文件名</span><span>数据行数</span><span>数据类型</span><span>导入时间</span><span>操作</span></div>
+        {files.map((file) => <div className="source-file-row" key={file.sourceId || `${file.kind}-${file.name}`}><strong><FileXls size={16}/>{file.name}</strong><span>{(file.rowCount || 0).toLocaleString()}</span><span>{decodeDisplayText(file.kind)}</span><span>{new Date(file.importedAt || updatedAt).toLocaleString("zh-CN", { hour12: false })}</span><button className="delete-source" onClick={() => onDeleteFile(file)} disabled={busy}><Trash size={15}/>删除</button></div>)}
+        {!files.length && <div className="source-empty">尚未导入 ECN、非BOM 或研发评审数据</div>}
+      </div>
+      <div className="engineer-supplement-foot">{message && <span className="qmdp-inline-status"><CheckCircle size={15}/>{message}</span>}{supplement && <button className="qmdp-danger-btn" onClick={onClear} disabled={busy}><Trash size={14}/>清除独立明细</button>}</div>
+    </div>
+  </section>;
+}
+
+function DataSourcePage({ files, onImportModule, onDelete, onSourcesChanged, dqaEngineerSupplement, onImportDqaEngineerSupplement, onClearDqaEngineerSupplement, onDeleteDqaEngineerSupplementFile }) {
   const modules = ["IQC", "IPQC", "OQC", "DQA", "QMS"];
   return <div className="data-source-page">
     <div className="data-source-hero">
@@ -1645,6 +1754,12 @@ function DataSourcePage({ files, onImportModule, onDelete, onSourcesChanged }) {
         </section>;
       })}
     </div>
+    <DqaEngineerSupplementImport
+      supplement={dqaEngineerSupplement}
+      onImport={onImportDqaEngineerSupplement}
+      onClear={onClearDqaEngineerSupplement}
+      onDeleteFile={onDeleteDqaEngineerSupplementFile}
+    />
   </div>;
 }
 
@@ -1657,6 +1772,23 @@ function PermissionTable({ rows, onChange, showKey = false }) {
       <label><input type="checkbox" checked={!!row.public} onChange={(event) => onChange(key, "public", event.target.checked)} />允许</label>
       <label><input type="checkbox" checked={row.deputy !== false} onChange={(event) => onChange(key, "deputy", event.target.checked)} />允许</label>
     </div>)}
+  </div>;
+}
+
+function MenuPermissionTable({ menus, onChange }) {
+  const checked = (rule, field) => rule?.[field] !== false;
+  return <div className="permission-menu-table">
+    <div className="permission-menu-head"><span>菜单层级</span><span>普通用户允许</span><span>副管理员允许</span></div>
+    {menuPermissionDefinitions.map(({ key, children }) => {
+      const rule = menus?.[key] || {};
+      return <div className="permission-menu-group" key={key}>
+        <div className="permission-menu-row permission-menu-parent"><strong>{key}</strong>{["public", "deputy"].map((field) => <label key={field}><input type="checkbox" checked={checked(rule, field)} onChange={(event) => onChange(key, "", field, event.target.checked)} />允许</label>)}</div>
+        {children.map((child) => {
+          const childRule = rule.children?.[child] || {};
+          return <div className="permission-menu-row permission-menu-child" key={child}><span>↳ {child}</span>{["public", "deputy"].map((field) => <label key={field}><input type="checkbox" checked={checked(childRule, field)} onChange={(event) => onChange(key, child, field, event.target.checked)} />允许</label>)}</div>;
+        })}
+      </div>;
+    })}
   </div>;
 }
 
@@ -1704,6 +1836,17 @@ function PermissionSettingsPage({ auth, permissions, onPermissionsChanged }) {
     ...current,
     [group]: { ...current[group], [key]: { ...current[group][key], [field]: value } },
   }));
+  const updateMenuRule = (parent, child, field, value) => setDraft((current) => {
+    const currentParent = current.menus?.[parent] || { public: true, deputy: true, children: {} };
+    const children = currentParent.children || {};
+    if (!child) {
+      const nextChildren = Object.fromEntries(Object.entries(children).map(([name, rule]) => [name, { ...rule, [field]: value }]));
+      return { ...current, menus: { ...current.menus, [parent]: { ...currentParent, [field]: value, children: nextChildren } } };
+    }
+    const nextChildren = { ...children, [child]: { ...(children[child] || {}), [field]: value } };
+    const parentValue = Object.values(nextChildren).length > 0 && Object.values(nextChildren).every((rule) => rule?.[field] !== false);
+    return { ...current, menus: { ...current.menus, [parent]: { ...currentParent, [field]: parentValue, children: nextChildren } } };
+  });
   const save = async () => {
     setStatus("保存中...");
     const result = await savePermissionConfig(draft);
@@ -1726,6 +1869,7 @@ function PermissionSettingsPage({ auth, permissions, onPermissionsChanged }) {
       <PermissionMemberList title="副管理员" description="可按下方开关使用管理功能和写入接口。" members={draft.deputyAdmins} blockedMembers={draft.ordinaryUsers} onChange={(members) => setDraft((current) => ({ ...current, deputyAdmins: members }))} />
       <PermissionMemberList title="普通用户" description="仅可查看被允许的功能和数据，不能修改权限。" members={draft.ordinaryUsers} blockedMembers={draft.deputyAdmins} onChange={(members) => setDraft((current) => ({ ...current, ordinaryUsers: members }))} />
     </div>
+    <section className="permission-card"><header><h3>菜单权限</h3><span>控制左侧一级菜单和二级菜单的显示范围；一级菜单可联动全部二级菜单。</span></header><MenuPermissionTable menus={draft.menus} onChange={updateMenuRule} /></section>
     <section className="permission-card"><header><h3>功能权限</h3><span>控制普通用户/副管理员在界面上能看到哪些功能。</span></header><PermissionTable rows={draft.features} onChange={(key, field, value) => updateRule("features", key, field, value)} /></section>
     <section className="permission-card"><header><h3>接口权限</h3><span>控制浏览器控制台直接调用接口时是否允许。</span></header><PermissionTable rows={draft.apis} onChange={(key, field, value) => updateRule("apis", key, field, value)} showKey /></section>
   </div>;
@@ -2495,13 +2639,279 @@ const examQuestionSetForReport = (role, categories) => {
     category: question.categories || question.category || "",
   }));
 };
-function buildWebRoleReport(data, role, recipient, dateRange) {
+
+const parseQmdpMappingWorkbook = async (file, kind) => {
+  const expected = kind === "org" ? ["产品部", "产总", "TPM", "PM"] : ["厂区", "工坊", "交付经理", "机长"];
+  const workbook = XLSX.read(await file.arrayBuffer(), { type: "array", cellDates: false, dense: true });
+  const records = [];
+  workbook.SheetNames.forEach((sheetName) => {
+    const matrix = XLSX.utils.sheet_to_json(workbook.Sheets[sheetName], { header: 1, defval: "", blankrows: false });
+    const headerIndex = matrix.findIndex((line) => expected.every((header) => line.some((value) => String(value ?? "").trim() === header)));
+    if (headerIndex < 0) return;
+    const header = matrix[headerIndex].map((value) => String(value ?? "").trim());
+    let last = {};
+    matrix.slice(headerIndex + 1).forEach((values) => {
+      if (!values.some((value) => String(value ?? "").trim())) return;
+      const row = Object.fromEntries(expected.map((name) => [name, String(values[header.indexOf(name)] ?? "").trim()]));
+      if (kind === "org") {
+        last = { ...last, ...(row["产品部"] ? { productDept: row["产品部"] } : {}), ...(row["产总"] ? { productionDirector: row["产总"] } : {}), ...(row.TPM ? { tpm: row.TPM } : {}) };
+        if (last.productDept && last.productionDirector && last.tpm && row.PM) records.push({ ...last, pm: row.PM, active: true });
+      } else {
+        last = { ...last, ...(row["厂区"] ? { site: row["厂区"] } : {}), ...(row["工坊"] ? { workshop: row["工坊"] } : {}), ...(row["交付经理"] ? { manager: row["交付经理"] } : {}) };
+        if (last.site && last.workshop && last.manager && row["机长"]) records.push({ ...last, leader: row["机长"], active: true });
+      }
+    });
+  });
+  const unique = new Map();
+  records.forEach((row) => {
+    const key = kind === "org" ? [row.productDept, row.productionDirector, row.tpm, row.pm].join("::") : [row.site, row.workshop, row.manager, row.leader].join("::");
+    if (key.replace(/:/g, "")) unique.set(key, row);
+  });
+  if (!unique.size) throw new Error(`未找到有效的${kind === "org" ? "研发组织" : "供应链"}映射表头：${expected.join(" / ")}`);
+  return [...unique.values()];
+};
+
+const reportConfig = () => ({ ...defaultQmdpSystemConfig, ...safeParse(localStorage.getItem(qmdpSystemKey), {}) });
+const reportActiveMappings = (rows = []) => (Array.isArray(rows) ? rows : []).filter((row) => row.active !== false);
+const reportNames = (value) => String(value || "").split(/[、,，/\n]/).map((item) => item.trim()).filter((item) => item && !["待配置", "未配置", "新产品部"].includes(item));
+const reportDqaScope = (role, recipient, dqa) => {
+  const config = reportConfig();
+  const mappings = reportActiveMappings(config.orgMappings);
+  const stageRows = dqa?.tpmStages || [];
+  const selected = String(recipient || "").trim();
+  if (!selected || !["PM报告", "TPM报告", "产总报告"].includes(role)) return { mappings, stageRows, divisions: [] };
+  let scope = mappings;
+  if (role === "PM报告") scope = mappings.filter((row) => reportNames(row.pm).includes(selected));
+  if (role === "TPM报告") scope = mappings.filter((row) => reportNames(row.tpm).includes(selected) || reportNames(row.pm).includes(selected));
+  if (role === "产总报告") scope = mappings.filter((row) => reportNames(row.productionDirector).includes(selected));
+  const divisions = [...new Set(scope.map((row) => row.productDept).filter(Boolean))];
+  const tpms = [...new Set(scope.flatMap((row) => reportNames(row.tpm)).filter(Boolean))];
+  const scopedRows = stageRows.filter((row) => (tpms.length ? tpms.includes(row.name) : divisions.includes(row.division)) || (role === "TPM报告" && row.name === selected));
+  return { mappings: scope, stageRows: scopedRows.length ? scopedRows : stageRows.filter((row) => role === "PM报告" ? row.name === selected || row.division === selected : role === "TPM报告" ? row.name === selected : divisions.includes(row.division) || row.name === selected), divisions, tpms };
+};
+const reportSupplyScope = (role, recipient, leaders, managers, workshops) => {
+  const config = reportConfig();
+  const mappings = reportActiveMappings(config.supplyMappings);
+  const selected = String(recipient || "").trim();
+  if (role === "供应链经理报告" || !selected) return { mappings, leaders, managers, workshops };
+  const selectedWorkshop = selected.split(" · ").pop().trim();
+  const selectedLeader = selected.split(" · ").pop().trim();
+  const matches = role === "机长报告"
+    ? mappings.filter((row) => row.leader === selected || row.leader === selectedLeader)
+    : mappings.filter((row) => row.manager === selected || row.workshop === selected || row.workshop === selectedWorkshop || String(row.workshop || "").includes(selectedWorkshop));
+  const leaderKeys = new Set(matches.map((row) => `${row.site}::${row.leader}`));
+  const workshopKeys = new Set(matches.map((row) => `${row.site}::${row.workshop}`));
+  const scopedLeaders = leaders.filter((row) => leaderKeys.has(`${row.site}::${row.name}`) || (role === "机长报告" && (row.name === selected || row.name === selectedLeader)));
+  const scopedManagers = managers.filter((row) => matches.some((map) => map.manager === (row.manager || row.name) && (!map.site || map.site === row.site)) || (role !== "机长报告" && (row.manager || row.name) === selected));
+  const scopedWorkshops = workshops.filter((row) => {
+    const workshopName = String(row.name || "").split("·").pop().trim();
+    return workshopKeys.has(`${row.site}::${workshopName}`) || matches.some((map) => map.site === row.site && map.workshop === workshopName);
+  });
+  return {
+    mappings: matches,
+    leaders: scopedLeaders.length ? scopedLeaders : leaders.filter((row) => role === "机长报告" ? row.name === selectedLeader : row.manager === selected || row.workshopManager === selected),
+    managers: scopedManagers.length ? scopedManagers : managers.filter((row) => row.manager === selected || row.name === selected),
+    workshops: matches.length && scopedWorkshops.length ? scopedWorkshops : workshops.filter((row) => String(row.name || "").split("·").pop().trim() === selectedWorkshop),
+  };
+};
+const reportDqaPersonMetrics = (person, dqa) => {
+  const stage = (dqa?.tpmStages || []).find((row) => row.name === person) || {};
+  const ecnRows = dqa?.ecn?.source?.numeratorRows || [];
+  const denominatorRows = dqa?.ecn?.source?.denominatorRows || [];
+  const ecn = ecnRows.filter((row) => row.tpm === person).length;
+  const denominator = denominatorRows.filter((row) => row.tpm === person).reduce((sum, row) => sum + reportNumber(row.materialCount), 0);
+  const part = (kind) => (dqa?.machinedParts?.[kind]?.tpms || []).filter((row) => row.tpm === person).reduce((sum, row) => sum + reportNumber(row.years?.find((item) => item.year === 2026)?.numerator), 0);
+  return { ...stage, ecn, ecnDenominator: denominator, nonBom: part("nonBom"), machinedEcn: part("ecn") };
+};
+const reportDqaMetricRow = (row, dqa) => {
+  const base = reportDqaPersonMetrics(row?.name || row?.tpm, dqa);
+  return {
+    ...base,
+    ...row,
+    review: row?.review ?? base.review,
+    production: row?.production ?? base.production,
+    onsite: row?.onsite ?? base.onsite,
+    ecn: row?.ecn ?? base.ecn,
+    ecnDenominator: row?.ecnDenominator ?? base.ecnDenominator,
+    nonBom: row?.nonBom ?? base.nonBom,
+    machinedEcn: row?.machinedEcn ?? base.machinedEcn,
+  };
+};
+const reportDqaAggregate = (rows, dqa) => {
+  const unique = new Map();
+  (rows || []).forEach((row) => {
+    const key = row?.__reportKey || `${row?.division || ""}::${row?.name || row?.tpm || ""}`;
+    if (key.replace(/:/g, "")) unique.set(key, row);
+  });
+  return [...unique.values()].reduce((sum, row) => {
+  const item = reportDqaMetricRow(row, dqa);
+  return { review: sum.review + reportNumber(item.review), production: sum.production + reportNumber(item.production), onsite: sum.onsite + reportNumber(item.onsite), ecn: sum.ecn + reportNumber(item.ecn), ecnDenominator: sum.ecnDenominator + reportNumber(item.ecnDenominator), nonBom: sum.nonBom + reportNumber(item.nonBom), machinedEcn: sum.machinedEcn + reportNumber(item.machinedEcn) };
+}, { review: 0, production: 0, onsite: 0, ecn: 0, ecnDenominator: 0, nonBom: 0, machinedEcn: 0 });
+};
+const reportExcelDate = (value) => {
+  if (value instanceof Date) return value;
+  if (typeof value === "number" && Number.isFinite(value)) return new Date(Date.UTC(1899, 11, 30) + value * 86400000);
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date;
+};
+const reportDateInRange = (value, dateRange) => {
+  const date = reportExcelDate(value);
+  if (!date) return false;
+  const year = date.getFullYear();
+  const start = year === 2025 ? dateRange?.start2025 : dateRange?.start2026;
+  const end = year === 2025 ? dateRange?.end2025 : dateRange?.end2026;
+  if (!start || !end) return year === 2026;
+  return date >= new Date(`${start}T00:00:00`) && date <= new Date(`${end}T23:59:59.999`);
+};
+const reportIpqcRawRows = (files = [], dateRange) => files.filter((file) => file.module === "IPQC" && file.kind !== "IPQC_LEADER_MAP").flatMap((file) => (file.rows || []).map((row) => ({ ...row, __reportSite: String(file.name || "").includes("杭州") ? "杭州" : "深圳" }))).filter((row) => reportDateInRange(row["日期"] || row["检验日期"] || row["发生日期"], dateRange));
+const reportIpqcOperators = (files, dateRange) => {
+  const rawRows = reportIpqcRawRows(files, dateRange);
+  const senderOf = (row) => String(row["送检人"] || row["送检人员"] || row["责任人"] || row["检验人"] || row["检验员"] || "").trim();
+  const uniqueRows = new Map();
+  rawRows.filter((row) => senderOf(row)).forEach((row) => {
+    const key = [row.__reportSite, row["日期"] || row["检验日期"] || row["发生日期"], row["任务单号"] || row["工单号"], row["组件类型"] || row["组件名称"], row["不良内容"] || row["异常内容"] || row["异常原因"], row["不良类型"] || row["异常类型"], senderOf(row), row["机长"]].map((value) => String(value ?? "").trim()).join("|");
+    if (!uniqueRows.has(key)) uniqueRows.set(key, row);
+  });
+  const rows = [...uniqueRows.values()];
+  const byName = new Map();
+  rows.forEach((row) => {
+    const name = senderOf(row);
+    if (!name || ["未填写", "无", "-"].includes(name)) return;
+    const item = byName.get(name) || { name, qty: 0, issues: 0, site: row.__reportSite, workshop: String(row["产品工坊"] || row["工坊"] || "未分工坊").trim(), leaders: new Set(), categories: new Map() };
+    const qty = reportNumber(row["送检数"] ?? row["送检数量"] ?? row["治具数量"] ?? row["检验数量"] ?? 1);
+    const issueText = row["不良内容"] || row["异常内容"] || row["异常原因"] || row["不良描述"] || "";
+    const issue = String(issueText).trim() ? 1 : 0;
+    item.qty += qty; item.issues += issue;
+    if (row["机长"]) item.leaders.add(String(row["机长"]).trim());
+    if (issue) { const category = String(row["不良类型"] || row["异常类型"] || "未分类").trim() || "未分类"; item.categories.set(category, (item.categories.get(category) || 0) + 1); }
+    byName.set(name, item);
+  });
+  return [...byName.values()].map((row) => ({ ...row, leaders: [...row.leaders], density: Number((row.issues / Math.max(row.qty, 1) * 100).toFixed(2)), categories: [...row.categories.entries()].map(([name, value]) => ({ name, value })).sort((a, b) => b.value - a.value) })).sort((a, b) => b.issues - a.issues);
+};
+const reportDqaSourceKind = (file) => {
+  if (file?.subKind) return file.subKind;
+  const name = String(file?.name || "");
+  const keys = new Set((file?.rows || []).flatMap((row) => Object.keys(row || {})));
+  if (name.includes("非BOM") || keys.has("申请人")) return "DQA_ENGINEER_NON_BOM";
+  if (name.includes("ECN查询导出") || keys.has("ECN编号") || keys.has("创建人")) return "DQA_ENGINEER_ECN";
+  if (name.includes("FPC事业部-研发问题") || keys.has("责任人\\处理人") || keys.has("研发工程师")) return "DQA_ENGINEER_PROBLEMS";
+  return "";
+};
+const reportDqaRawRows = (files = [], dateRange) => files
+  .filter((file) => file.module === "DQA" && reportDqaSourceKind(file) === "DQA_ENGINEER_PROBLEMS")
+  .flatMap((file) => (file.rows || []).map((row) => ({ ...row, __reportFile: file.name })))
+  .filter((row) => reportDateInRange(row["发生日期"] || row["日期"] || row["问题日期"], dateRange));
+const reportDqaEngineerField = (row) => {
+  const keys = ["__engineer", "研发工程师", "工程师", "RD工程师", "RDEngineer", "工程师姓名", "责任人\\处理人", "责任人/处理人", "责任人"];
+  const key = keys.find((name) => row?.[name] != null && String(row[name]).trim());
+  if (!key) return "";
+  const source = String(row[key] || "").trim();
+  const idName = source.match(/^\d+\s*[（(]([^）)]+)[）)]$/);
+  return idName ? idName[1].trim() : source.replace(/[（(][^）)]*[）)]/g, "").trim();
+};
+const reportDqaEngineerRows = (files = [], dqa = {}, dateRange) => {
+  if (Array.isArray(dqa.engineers) && dqa.engineers.length) return dqa.engineers;
+  const rawRows = reportDqaRawRows(files, dateRange);
+  const groups = new Map();
+  const getItem = (division = "未分配", name) => {
+    // One engineer may appear under a product department in the issue export and
+    // under a functional department in the ECN export; aggregate by person.
+    const key = name;
+    const item = groups.get(key) || { name, division, tpm: "", pm: "", productionDirector: "", review: 0, production: 0, onsite: 0, ecn: 0, nonBom: 0, nonBomRequests: 0 };
+    if ((!item.division || item.division === "未分配") && division) item.division = division;
+    groups.set(key, item);
+    return item;
+  };
+  rawRows.forEach((row) => {
+    const name = reportDqaEngineerField(row);
+    if (!name) return;
+    const division = String(row["产品部"] || row["产品线"] || "未分配").trim();
+    const tpm = String(row["TPM"] || row["TPM姓名"] || row["负责TPM"] || "").trim();
+    const pm = String(row["PM"] || row["PM姓名"] || row["负责PM"] || "").trim();
+    const productionDirector = String(row["产总"] || row["产品部负责人"] || "").trim();
+    const item = getItem(division, name);
+    item.tpm ||= tpm; item.pm ||= pm; item.productionDirector ||= productionDirector;
+    const stageText = String(row["阶段"] || row["问题阶段"] || row["问题发生地"] || row["问题反馈部门"] || "").trim();
+    const stage = /评审|设计评审/.test(stageText) ? "review" : /售后|现场/.test(stageText) ? "onsite" : "production";
+    if (row["问题描述"] || row["问题"] || row["问题内容"]) item[stage] += 1;
+  });
+  files.filter((file) => file.module === "DQA" && reportDqaSourceKind(file) === "DQA_ENGINEER_ECN")
+    .flatMap((file) => file.rows || [])
+    .filter((row) => reportDateInRange(row["申请日期"] || row["日期"], dateRange))
+    .forEach((row) => {
+      const name = reportDqaEngineerField(row);
+      if (!name) return;
+      const division = String(row["产品部"] || row["申请部门"] || "未分配").trim();
+      getItem(division, name).ecn += 1;
+    });
+  files.filter((file) => file.module === "DQA" && reportDqaSourceKind(file) === "DQA_ENGINEER_NON_BOM")
+    .flatMap((file) => file.rows || [])
+    .filter((row) => reportDateInRange(row["创建时间"] || row["需求日期"] || row["申请日期"], dateRange))
+    .forEach((row) => {
+      const name = reportDqaEngineerField(row);
+      if (!name) return;
+      const division = String(row["产品部"] || "未分配").trim();
+      const item = getItem(division, name);
+      item.nonBom += Math.max(reportNumber(row["申请数量"]), 1);
+      item.nonBomRequests += 1;
+    });
+  return [...groups.values()];
+};
+const reportOperatorsForScope = (operators, role, recipient, supplyMappings = []) => {
+  const selected = String(recipient || "").trim();
+  if (!selected) return operators;
+  const mappings = reportActiveMappings(supplyMappings);
+  const selectedWorkshop = selected.split(" · ").pop().trim();
+  const selectedLeader = selected.split(" · ").pop().trim();
+  const scopedMappings = role === "机长报告" ? mappings.filter((row) => row.leader === selected || row.leader === selectedLeader) : role === "交付经理报告" ? mappings.filter((row) => row.manager === selected || row.manager === selectedWorkshop) : [];
+  const leaders = new Set(scopedMappings.map((row) => row.leader));
+  const workshops = new Set(scopedMappings.map((row) => row.workshop));
+  return operators.filter((row) => (role === "机长报告" && (row.leaders || []).some((leader) => leaders.has(leader) || leader === selectedLeader)) || (role === "交付经理报告" && ((row.workshop && [...workshops].some((workshop) => row.workshop.includes(workshop))) || (row.leaders || []).some((leader) => leaders.has(leader)))));
+};
+const reportExamHistory = (role, recipient) => {
+  const roleName = examReportRole(role);
+  if (!roleName || !recipient) return [];
+  return safeParse(localStorage.getItem(qmdpExamRecordsKey), []).filter((item) => item.recipientName === recipient && item.roleName === roleName).sort((a, b) => new Date(b.submittedAt || 0) - new Date(a.submittedAt || 0)).slice(0, 5);
+};
+const reportSupervisor = (role, recipient, operators, config) => {
+  if (!recipient) return "";
+  if (role === "IPQC操作报告") {
+    const operator = operators.find((row) => row.name === recipient);
+    const leaders = new Set(operator?.leaders || []);
+    const maps = reportActiveMappings(config.supplyMappings).filter((row) => leaders.has(row.leader));
+    return [...new Set(maps.map((row) => `${row.manager}${row.workshop ? `（${row.workshop}）` : ""}`).filter(Boolean))].join("、");
+  }
+  if (role === "机长报告") {
+    const leader = String(recipient).split(" · ").pop().trim();
+    return [...new Set(reportActiveMappings(config.supplyMappings).filter((row) => row.leader === recipient || row.leader === leader).map((row) => row.manager).filter(Boolean))].join("、");
+  }
+  if (role === "交付经理报告") return "供应链经理";
+  if (role === "研发工程师报告") {
+    const maps = reportActiveMappings(config.orgMappings).filter((row) => reportNames(row.tpm).includes(recipient));
+    return [...new Set(maps.flatMap((row) => reportNames(row.pm)))].join("、");
+  }
+  if (role === "PM报告") return [...new Set(reportActiveMappings(config.orgMappings).filter((row) => reportNames(row.pm).includes(recipient)).flatMap((row) => reportNames(row.tpm)))].join("、");
+  if (role === "TPM报告") return [...new Set(reportActiveMappings(config.orgMappings).filter((row) => reportNames(row.tpm).includes(recipient)).flatMap((row) => reportNames(row.productionDirector)))].join("、");
+  if (role === "产总报告") return "董事长";
+  return "";
+};
+const reportSubordinateExamResults = (role, recipient, operators, config) => {
+  if (!recipient || !["机长报告", "交付经理报告"].includes(role)) return [];
+  const mappings = reportActiveMappings(config.supplyMappings);
+  const selectedLeader = String(recipient || "").split(" · ").pop().trim();
+  const allowedLeaders = new Set(role === "机长报告" ? [recipient, selectedLeader] : mappings.filter((row) => row.manager === recipient).map((row) => row.leader));
+  const names = new Set(operators.filter((row) => (row.leaders || []).some((leader) => allowedLeaders.has(leader))).map((row) => row.name));
+  return safeParse(localStorage.getItem(qmdpExamRecordsKey), []).filter((item) => item.roleName === "操作员" && names.has(item.recipientName)).sort((a, b) => new Date(b.submittedAt || 0) - new Date(a.submittedAt || 0)).slice(0, 20);
+};
+
+function buildWebRoleReport(data, role, recipient, dateRange, files = []) {
   const ipqc = data?.ipqc || {};
   const dqa = data?.dqa || {};
   const oqc = data?.oqc || {};
   const leaders = ipqc.leaderAnalysis?.bySite?.全公司?.leaders || [];
   const managers = ipqc.leaderAnalysis?.bySite?.全公司?.managers || [];
   const workshops = flattenIpqcRows(data).sort((a, b) => reportNumber(b.y2026Rate) - reportNumber(a.y2026Rate));
+  const operators = reportIpqcOperators(files, dateRange);
   const defects = Object.values(ipqc.rawTypesBySite || {}).flat().reduce((map, row) => map.set(row.name, (map.get(row.name) || 0) + reportNumber(row.y2026Count)), new Map());
   const defectRows = [...defects.entries()].map(([name, count]) => ({ name, value: count, detail: `2026异常 ${count.toLocaleString()} 项；占当前异常类型合计 ${reportSum([...defects.entries()].map(([n, c]) => ({ count: c })), "count") ? (count / reportSum([...defects.entries()].map(([n, c]) => ({ count: c })), "count") * 100).toFixed(1) : 0}%` })).sort((a, b) => b.value - a.value);
   let recipients = [];
@@ -2513,75 +2923,301 @@ function buildWebRoleReport(data, role, recipient, dateRange) {
   let summary = "";
   let risk = "";
   let decision = "";
+  let dataNotice = "";
   let examIssueCategories = [];
+  let subordinateItems = [];
+  let trendItems = [];
+  let closureItems = [];
   if (role === "IPQC操作报告") {
-    const rows = leaders.length ? leaders : workshops.map((row) => ({ name: row.name, issues: row.y2026Bad, qty: row.y2026Qty, density: row.y2026Rate, site: row.site }));
+    const rows = operators.length ? operators : [];
     recipients = rows.map((row) => row.name).filter(Boolean);
     const selected = rows.find((row) => row.name === recipient) || rows[0];
-    const selectedHeatmap = ipqc.leaderAnalysis?.bySite?.全公司?.heatmap?.rows?.find((row) => row.name === selected?.name);
-    examIssueCategories = selectedHeatmap?.values?.map((value, index) => value > 0 ? ipqc.leaderAnalysis?.bySite?.全公司?.heatmap?.categories?.[index] : "").filter(Boolean) || defectRows.slice(0, 5).map((row) => row.name);
-    metrics = [{ name: "检验数量", value: selected?.qty || reportSum(workshops, "y2026Qty"), note: "本人/当前范围" }, { name: "异常数量", value: selected?.issues || reportSum(workshops, "y2026Bad"), note: "需复盘异常" }, { name: "异常率", value: `${reportNumber(selected?.density || 0).toFixed(2)}%`, note: "过程质量表现" }];
-    focusItems = defectRows.slice(0, 8); rankingItems = rows.slice().sort((a, b) => reportNumber(b.issues) - reportNumber(a.issues)).slice(0, 10).map((row) => ({ name: `${row.site ? `${row.site} · ` : ""}${row.name}`, value: reportNumber(row.issues).toLocaleString(), detail: `检验 ${reportNumber(row.qty).toLocaleString()}；异常率 ${reportNumber(row.density).toFixed(2)}%` }));
-    comparisonItems = rows.slice(0, 12).map((row) => ({ name: row.name, value: reportNumber(row.issues), valueText: reportNumber(row.issues).toLocaleString(), selected: row.name === recipient }));
-    scopeText = "本人相关 IPQC 异常与责任人排名"; summary = `IPQC责任人范围共 ${rows.length} 个对象，当前选中对象异常 ${reportNumber(selected?.issues).toLocaleString()} 项。`; risk = `TOP异常类型：${defectRows.slice(0, 3).map((row) => row.name).join("、") || "暂无"}。`; decision = "围绕TOP异常做现场确认、复检闭环、标准更新和知识考试关联。";
+    examIssueCategories = selected?.categories?.slice(0, 5).map((row) => row.name) || defectRows.slice(0, 5).map((row) => row.name);
+    const selectedDefects = selected?.categories?.length ? selected.categories : defectRows;
+    metrics = [{ name: "检验数量", value: selected?.qty || 0, note: "本人责任记录" }, { name: "异常数量", value: selected?.issues || 0, note: "需复盘异常" }, { name: "异常率", value: `${reportNumber(selected?.density || 0).toFixed(2)}%`, note: "过程质量表现" }];
+    focusItems = selectedDefects.slice(0, 8).map((row) => ({ name: row.name, value: reportNumber(row.value).toLocaleString(), detail: `个人异常类型；占本人异常 ${selected?.issues ? (row.value / selected.issues * 100).toFixed(1) : 0}%` })); rankingItems = rows.slice().sort((a, b) => reportNumber(b.issues) - reportNumber(a.issues)).map((row) => ({ name: `${row.site ? `${row.site} · ` : ""}${row.name}`, value: reportNumber(row.issues).toLocaleString(), detail: `检验 ${reportNumber(row.qty).toLocaleString()}；异常率 ${reportNumber(row.density).toFixed(2)}%`, selected: row.name === recipient }));
+    comparisonItems = rows.slice().map((row) => ({ name: row.name, value: reportNumber(row.issues), valueText: reportNumber(row.issues).toLocaleString(), selected: row.name === recipient }));
+    trendItems = selected ? [{ name: "检验量", value: reportNumber(selected.qty), detail: "本人统计周期送检总量" }, { name: "异常量", value: reportNumber(selected.issues), detail: "本人统计周期异常总量" }, { name: "正常量", value: Math.max(reportNumber(selected.qty) - reportNumber(selected.issues), 0), detail: "送检量减异常量" }].filter((row) => row.value > 0) : [];
+    closureItems = selectedDefects.slice(0, 5).map((row) => ({ name: `关闭${row.name}重复异常`, value: "待确认", detail: "核对标准动作、复检记录和责任人，形成一次问题一次闭环" }));
+    scopeText = "本人责任人相关 IPQC 异常与同岗位排名"; summary = `IPQC操作人员范围共 ${rows.length} 人，当前选中人员异常 ${reportNumber(selected?.issues).toLocaleString()} 项。`; risk = `个人TOP异常类型：${selectedDefects.slice(0, 3).map((row) => row.name).join("、") || "暂无"}。`; decision = "围绕操作人员本人TOP异常做现场确认、复检闭环、标准更新和知识考试关联。";
   } else if (role === "机长报告" || role === "交付经理报告" || role === "供应链经理报告") {
-    const source = role === "机长报告" ? leaders : role === "交付经理报告" ? managers : workshops;
-    recipients = role === "供应链经理报告" ? [] : source.map((row) => row.name || row.manager).filter(Boolean);
-    const selected = source.find((row) => (row.name || row.manager) === recipient) || source[0];
-    const totalQty = role === "供应链经理报告" ? reportSum(workshops, "y2026Qty") : reportNumber(selected?.y2026Qty || selected?.qty);
-    const totalBad = role === "供应链经理报告" ? reportSum(workshops, "y2026Bad") : reportNumber(selected?.y2026Bad || selected?.issues);
-    const density = role === "机长报告" ? selected?.density : selected?.y2026Rate;
-    metrics = [{ name: "检验数量", value: totalQty, note: role === "供应链经理报告" ? "所辖工坊" : "负责范围" }, { name: "异常数量", value: totalBad, note: "过程异常" }, { name: "异常率", value: `${reportNumber(density || (totalBad / Math.max(totalQty, 1) * 100)).toFixed(2)}%`, note: "质量指标" }, { name: role === "机长报告" ? "操作人员" : "工坊数", value: role === "机长报告" ? new Set(leaders.map((row) => row.name)).size : workshops.length, note: "责任单元" }];
-    focusItems = (role === "供应链经理报告" ? workshops : source).slice(0, 8).map((row) => ({ name: `${row.site || ""}${row.site ? " · " : ""}${row.name || row.manager}`, value: reportNumber(row.y2026Bad || row.issues).toLocaleString(), detail: `异常率 ${reportNumber(row.y2026Rate || row.density).toFixed(2)}%` }));
-    rankingItems = role === "供应链经理报告" ? managers.slice(0, 8).map((row) => ({ name: `${row.site || ""} · ${row.name}`, value: reportNumber(row.y2026Bad).toLocaleString(), detail: `工坊 ${row.workshop || "未映射"}；异常率 ${reportNumber(row.y2026Rate).toFixed(2)}%` })) : leaders.slice(0, 8).map((row) => ({ name: row.name, value: reportNumber(row.issues).toLocaleString(), detail: `异常率 ${reportNumber(row.density).toFixed(2)}%` }));
-    comparisonItems = source.slice(0, 12).map((row) => ({ name: row.name || row.manager, value: reportNumber(row.y2026Bad || row.issues), valueText: reportNumber(row.y2026Bad || row.issues).toLocaleString(), selected: (row.name || row.manager) === recipient }));
-    scopeText = role === "供应链经理报告" ? "所辖工坊、交付经理、机长与责任人员" : role === "机长报告" ? "该机长班组过程异常与人员" : "该交付经理负责工坊/项目";
-    summary = `${scopeText}：异常 ${totalBad.toLocaleString()} 项，异常率 ${reportNumber(density || (totalBad / Math.max(totalQty, 1) * 100)).toFixed(2)}%。`; risk = `重点责任单元：${focusItems.slice(0, 3).map((row) => row.name).join("、") || "暂无"}。`; decision = "建立班前提醒、工坊周复盘、人员辅导与跨部门异常闭环。";
+    const supplyScope = reportSupplyScope(role, recipient, leaders, managers, workshops);
+    const config = reportConfig();
+    const supplyMappings = reportActiveMappings(config.supplyMappings);
+    const mappedLeaders = [...new Set(supplyMappings.map((row) => row.leader).filter(Boolean))];
+    const mappedManagers = [...new Set(supplyMappings.map((row) => row.manager).filter(Boolean))];
+    const source = role === "机长报告" ? supplyScope.leaders : supplyScope.workshops;
+    recipients = role === "供应链经理报告" ? ["供应链经理"] : role === "交付经理报告" ? mappedManagers : mappedLeaders;
+    if (!supplyMappings.length && role !== "供应链经理报告") dataNotice = "供应链映射表尚未配置，机长/交付经理报告不使用原始数据字段冒充收件人，请先导入供应链映射表。";
+    const selected = role === "交付经理报告" ? null : source.find((row) => (row.name || row.manager) === recipient) || source[0];
+    const scopeRows = role === "供应链经理报告" ? workshops : role === "交付经理报告" ? (recipient ? supplyScope.workshops : workshops) : supplyScope.leaders;
+    const totalQty = reportSum(scopeRows, role === "机长报告" ? "qty" : "y2026Qty");
+    const totalBad = reportSum(scopeRows, role === "机长报告" ? "issues" : "y2026Bad");
+    const density = totalBad / Math.max(totalQty, 1) * 100;
+    const scopedOperators = role === "供应链经理报告" ? operators : reportOperatorsForScope(operators, role, recipient, config.supplyMappings);
+    const managerPeersMap = new Map();
+    (managers || []).forEach((row) => {
+      const key = row.manager || row.name || "未配置交付经理";
+      const current = managerPeersMap.get(key) || { name: key, y2026Qty: 0, y2026Bad: 0, workshops: new Set() };
+      current.y2026Qty += reportNumber(row.y2026Qty);
+      current.y2026Bad += reportNumber(row.y2026Bad);
+      if (row.workshop) current.workshops.add(row.workshop);
+      managerPeersMap.set(key, current);
+    });
+    const managerPeers = [...managerPeersMap.values()].map((row) => ({ ...row, workshops: [...row.workshops], y2026Rate: Number((row.y2026Bad / Math.max(row.y2026Qty, 1) * 100).toFixed(2)) }));
+    mappedManagers.forEach((name) => {
+      if (!managerPeers.some((row) => row.name === name)) managerPeers.push({ name, y2026Qty: 0, y2026Bad: 0, workshops: [], y2026Rate: 0 });
+    });
+    metrics = [{ name: "检验数量", value: totalQty, note: role === "供应链经理报告" ? "所有工坊" : role === "交付经理报告" ? "负责工坊" : "机长班组" }, { name: "异常数量", value: totalBad, note: "过程异常" }, { name: "异常率", value: `${reportNumber(density).toFixed(2)}%`, note: "质量指标" }, { name: role === "机长报告" ? "操作人员" : "交付经理报告" === role ? "负责工坊" : "工坊数", value: role === "机长报告" ? new Set(scopedOperators.map((row) => row.name)).size : role === "交付经理报告" ? new Set(scopeRows.map((row) => `${row.site}-${row.name}`)).size : new Set(workshops.map((row) => `${row.site}-${row.name}`)).size, note: "责任单元" }];
+    focusItems = scopeRows.slice(0, 8).map((row) => ({ name: `${row.site || ""}${row.site ? " · " : ""}${row.name || row.manager}`, value: reportNumber(row.y2026Bad || row.issues).toLocaleString(), detail: `异常率 ${reportNumber(row.y2026Rate || row.density || density).toFixed(2)}%` }));
+    if (role === "供应链经理报告") focusItems = defectRows.slice(0, 8).map((row) => ({ name: row.name, value: reportNumber(row.value).toLocaleString(), detail: "全公司IPQC异常类型分布" }));
+    const peerRows = role === "机长报告" ? leaders : role === "供应链经理报告" ? workshops : managerPeers;
+    const peerName = (row) => role === "机长报告" || role === "供应链经理报告" ? `${row.site || ""}${row.site ? " · " : ""}${row.name || row.manager}`.trim() : String(row.name || row.manager || "").trim();
+    rankingItems = peerRows.slice().map((row) => ({ name: peerName(row), value: reportNumber(row.y2026Bad || row.issues).toLocaleString(), detail: role === "机长报告" ? `机长异常率 ${reportNumber(row.density).toFixed(2)}%` : role === "供应链经理报告" ? `工坊异常率 ${reportNumber(row.y2026Rate).toFixed(2)}%` : `负责工坊 ${row.workshops?.join("、") || row.workshop || "未映射"}；异常率 ${reportNumber(row.y2026Rate || row.density).toFixed(2)}%`, selected: role === "机长报告" ? (row.name || row.manager) === recipient || (row.name || row.manager) === String(recipient).split(" · ").pop().trim() : role === "交付经理报告" && (row.name || row.manager) === recipient }));
+    if (role === "供应链经理报告") {
+      comparisonItems = peerRows.slice().map((row) => ({ name: peerName(row), value: reportNumber(row.y2026Bad || row.issues), valueText: reportNumber(row.y2026Bad || row.issues).toLocaleString(), selected: false }));
+    } else {
+      comparisonItems = peerRows.slice().map((row) => ({ name: peerName(row), value: reportNumber(row.y2026Bad || row.issues), valueText: reportNumber(row.y2026Bad || row.issues).toLocaleString(), selected: role === "机长报告" ? (row.name || row.manager) === recipient || (row.name || row.manager) === String(recipient).split(" · ").pop().trim() : (row.name || row.manager) === recipient }));
+    }
+    subordinateItems = role === "机长报告" ? scopedOperators.slice(0, 10).map((row) => ({ name: row.name, value: `${row.issues}项`, detail: `送检 ${row.qty}；异常率 ${row.density}%` })) : role === "交付经理报告" ? supplyScope.leaders.slice(0, 8).map((row) => ({ name: `机长 · ${row.name}`, value: `${row.issues}项`, detail: `班组送检 ${row.qty}；异常率 ${row.density}%` })) : [...managerPeers.slice(0, 8).map((row) => ({ name: `交付经理 · ${row.name}`, value: `${row.y2026Bad || 0}项`, detail: `负责工坊 ${row.workshops?.join("、") || "未映射"}；异常率 ${row.y2026Rate}%` })), ...leaders.slice(0, 8).map((row) => ({ name: `机长 · ${row.name}`, value: `${row.issues}项`, detail: `班组异常率 ${row.density}%` })), ...operators.slice(0, 10).map((row) => ({ name: `IPQC操作者 · ${row.name}`, value: `${row.issues}项`, detail: `送检 ${row.qty}；异常率 ${row.density}%` }))];
+    closureItems = focusItems.slice(0, 5).map((row) => ({ name: `闭环：${row.name}`, value: "责任到人", detail: "由当前责任层级确认原因、措施、验证证据和关闭条件" }));
+    trendItems = role === "机长报告" ? scopedOperators.slice(0, 8).map((row) => ({ name: row.name, value: `${row.issues}项`, detail: `下属送检 ${row.qty}；异常率 ${row.density}%` })) : role === "交付经理报告" ? supplyScope.leaders.slice(0, 8).map((row) => ({ name: `机长 · ${row.name}`, value: `${row.issues}项`, detail: `负责工坊内异常率 ${row.density}%` })) : supplyScope.managers.slice(0, 8).map((row) => ({ name: `交付经理 · ${row.name || row.manager}`, value: `${row.y2026Bad || 0}项`, detail: `负责工坊 ${row.workshop || "未映射"}` }));
+    scopeText = role === "供应链经理报告" ? "所有工坊、交付经理、机长与操作人员" : role === "机长报告" ? "该机长班组、操作人员与异常类型" : "该交付工坊、机长与操作人员";
+    summary = `${scopeText}：异常 ${totalBad.toLocaleString()} 项，异常率 ${reportNumber(density).toFixed(2)}%。`; risk = `重点责任单元：${focusItems.slice(0, 3).map((row) => row.name).join("、") || "暂无"}。`; decision = role === "交付经理报告" ? "围绕负责工坊的TOP异常、机长对比和操作人员问题建立周复盘闭环。" : "建立班前提醒、工坊周复盘、人员辅导与跨部门异常闭环。";
   } else if (role === "研发工程师报告") {
-    const rows = dqa.tpmStages || [];
+    const rows = reportDqaEngineerRows(files, dqa, dateRange);
     recipients = rows.map((row) => row.name).filter(Boolean);
     const selected = rows.find((row) => row.name === recipient) || rows[0];
-    examIssueCategories = [selected?.division, "评审问题", "生产问题", "现场问题"].filter(Boolean);
     const total = (row) => reportNumber(row?.review) + reportNumber(row?.production) + reportNumber(row?.onsite);
-    metrics = [{ name: "综合记录", value: total(selected), note: "个人质量范围" }, { name: "评审问题", value: selected?.review || 0, note: "设计前端" }, { name: "生产问题", value: selected?.production || 0, note: "后端制造" }, { name: "现场问题", value: selected?.onsite || 0, note: "交付现场" }];
-    focusItems = rows.slice().sort((a, b) => total(b) - total(a)).slice(0, 8).map((row) => ({ name: row.name, value: total(row).toLocaleString(), detail: `${row.division || "未分配"}；评审 ${row.review || 0} / 生产 ${row.production || 0} / 现场 ${row.onsite || 0}` }));
-    rankingItems = focusItems; comparisonItems = rows.slice(0, 12).map((row) => ({ name: row.name, value: total(row), valueText: total(row).toLocaleString(), selected: row.name === recipient }));
-    scopeText = "个人研发问题、设计评审、生产和现场问题"; summary = `研发工程师范围共 ${rows.length} 人，选中对象综合记录 ${total(selected).toLocaleString()} 条。`; risk = `重点产品部：${selected?.division || "暂无"}；问题集中在 ${Object.entries({ 评审: selected?.review, 生产: selected?.production, 现场: selected?.onsite }).sort((a, b) => reportNumber(b[1]) - reportNumber(a[1]))[0]?.[0] || "暂无"}。`; decision = "推动设计前置评审、未关闭问题清理和高复用加工件标准化。";
+    examIssueCategories = [selected?.division, "评审问题", "生产问题", "现场问题", "ECN", "非BOM"].filter(Boolean);
+    metrics = [{ name: "综合记录", value: total(selected), note: "个人工程师字段" }, { name: "ECN申请", value: selected?.ecn || 0, note: "个人变更" }, { name: "非BOM加工件", value: selected?.nonBom || 0, note: "个人专项" }, { name: "研发问题", value: total(selected), note: `评审 ${selected?.review || 0} / 生产 ${selected?.production || 0} / 现场 ${selected?.onsite || 0}` }];
+    focusItems = selected ? [{ name: "评审问题", value: selected.review, detail: "个人前端设计质量" }, { name: "生产问题", value: selected.production, detail: "个人设计输出在生产端的问题" }, { name: "现场问题", value: selected.onsite, detail: "个人设计输出在现场端的问题" }, { name: "ECN", value: selected.ecn, detail: "个人变更记录" }, { name: "非BOM加工件", value: selected.nonBom, detail: "个人标准化机会" }].filter((row) => reportNumber(row.value) > 0) : [];
+    rankingItems = rows.slice().sort((a, b) => (total(b) + reportNumber(b.ecn)) - (total(a) + reportNumber(a.ecn))).map((row) => ({ name: row.name, value: (total(row) + reportNumber(row.ecn)).toLocaleString(), detail: `${row.division || "未分配"}；研发问题 ${total(row)} / ECN ${row.ecn || 0}`, selected: row.name === recipient }));
+    comparisonItems = rows.slice().sort((a, b) => (total(b) + reportNumber(b.ecn)) - (total(a) + reportNumber(a.ecn))).map((row) => ({ name: row.name, value: total(row) + reportNumber(row.ecn), valueText: (total(row) + reportNumber(row.ecn)).toLocaleString(), selected: row.name === recipient }));
+    trendItems = selected ? [{ name: "当前周期", value: total(selected), detail: "个人研发问题总量" }] : [];
+    closureItems = focusItems.slice(0, 5).map((row) => ({ name: `研发闭环：${row.name}`, value: "待验证", detail: "补齐根因证据、设计评审验证和复发监控" }));
+    scopeText = "个人研发工程师字段对应的 ECN、研发问题、设计评审和非BOM加工件";
+    summary = rows.length ? `研发工程师范围共 ${rows.length} 人，选中对象研发问题 ${total(selected).toLocaleString()} 条。` : "原始DQA数据未提供研发工程师字段，当前不使用TPM数据替代个人报告。";
+    risk = selected ? `重点产品部：${selected.division || "暂无"}；个人问题集中在 ${Object.entries({ 评审: selected.review, 生产: selected.production, 现场: selected.onsite, ECN: selected.ecn, 非BOM: selected.nonBom }).sort((a, b) => reportNumber(b[1]) - reportNumber(a[1]))[0]?.[0] || "暂无"}。` : "缺少研发工程师字段，无法形成个人风险判断。";
+    dataNotice = rows.length ? "研发工程师报告使用原始DQA中的研发工程师字段。" : "原始DQA当前只有TPM字段，未生成研发工程师个人数据，避免数据错位。";
+    decision = rows.length ? "推动设计前置评审、ECN变更闭环、未关闭问题清理和高复用加工件标准化。" : "请在DQA原始数据中补充研发工程师字段后再生成个人报告，禁止用TPM数据冒充工程师数据。";
   } else if (["PM报告", "TPM报告", "产总报告"].includes(role)) {
-    const rows = role === "TPM报告" ? dqa.tpmStages || [] : dqa.divisions || [];
-    recipients = rows.map((row) => row.name).filter(Boolean);
-    const selected = rows.find((row) => row.name === recipient) || rows[0];
+    const config = reportConfig();
+    const mappings = reportActiveMappings(config.orgMappings);
+    const rawEngineerRows = reportDqaEngineerRows(files, dqa, dateRange);
+    const allStageRows = dqa.tpmStages || [];
+    const uniqueNames = (values) => [...new Set(values.flatMap((value) => reportNames(value)).filter(Boolean))];
+    const mappingScopeFor = (kind, name) => mappings.filter((row) => {
+      if (kind === "pm") return reportNames(row.pm).includes(name);
+      if (kind === "tpm") return reportNames(row.tpm).includes(name);
+      return reportNames(row.productionDirector).includes(name);
+    });
+    const scopedData = (scopeRows) => {
+      const divisions = new Set(scopeRows.map((row) => row.productDept).filter(Boolean));
+      const tpms = new Set(uniqueNames(scopeRows.map((row) => row.tpm)));
+      const pms = new Set(uniqueNames(scopeRows.map((row) => row.pm)));
+      const engineers = rawEngineerRows.filter((row) => (row.tpm && tpms.has(row.tpm)) || (row.pm && pms.has(row.pm)) || (row.division && divisions.has(row.division)));
+      const stages = allStageRows.filter((row) => tpms.has(row.name) || divisions.has(row.division));
+      const rows = rawEngineerRows.length && engineers.length ? engineers.map((row) => ({ ...row, roleLabel: "研发工程师", __reportKey: `${row.division || ""}::${row.name}` })) : stages.map((row) => ({ ...reportDqaMetricRow(row, dqa), roleLabel: "TPM记录", __reportKey: `${row.division || ""}::${row.name}` }));
+      return { divisions: [...divisions], tpms: [...tpms], pms: [...pms], rows };
+    };
+    const groupRow = (name, roleLabel, scopeRows) => ({ name, roleLabel, ...reportDqaAggregate(scopedData(scopeRows).rows, dqa) });
+    const pmNames = uniqueNames(mappings.map((row) => row.pm));
+    const tpmNames = uniqueNames(mappings.map((row) => row.tpm));
+    const directorNames = uniqueNames(mappings.map((row) => row.productionDirector));
+    const pmRows = pmNames.map((name) => groupRow(name, "PM范围", mappingScopeFor("pm", name)));
+    const tpmRows = tpmNames.length ? tpmNames.map((name) => groupRow(name, "TPM范围", mappingScopeFor("tpm", name))) : allStageRows.map((row) => ({ name: row.name, roleLabel: "TPM记录", ...reportDqaAggregate([row], dqa) }));
+    const directorRows = directorNames.map((name) => groupRow(name, "产总范围", mappingScopeFor("director", name)));
+    recipients = role === "PM报告" ? pmNames : role === "TPM报告" ? (tpmNames.length ? tpmNames : tpmRows.map((row) => row.name).filter(Boolean)) : directorNames;
+    const selectedRecipient = recipients.includes(recipient) ? recipient : (recipients[0] || "");
+    const selectedScope = role === "PM报告" ? mappingScopeFor("pm", selectedRecipient) : role === "TPM报告" ? mappingScopeFor("tpm", selectedRecipient) : mappingScopeFor("director", selectedRecipient);
+    const selectedData = scopedData(selectedScope);
+    const selectedChildren = selectedData.rows;
+    const peerRows = role === "PM报告" ? pmRows : role === "TPM报告" ? tpmRows : directorRows;
+    const selected = peerRows.find((row) => row.name === selectedRecipient) || { name: selectedRecipient, roleLabel: role, ...reportDqaAggregate(selectedChildren, dqa) };
     const total = (row) => reportNumber(row?.review) + reportNumber(row?.production) + reportNumber(row?.onsite);
-    metrics = [{ name: "综合记录", value: total(selected), note: "负责范围" }, { name: "评审问题", value: selected?.review || 0, note: "前端质量" }, { name: "生产问题", value: selected?.production || 0, note: "制造质量" }, { name: "现场问题", value: selected?.onsite || 0, note: "交付质量" }];
-    focusItems = rows.slice().sort((a, b) => total(b) - total(a)).slice(0, 8).map((row) => ({ name: row.name, value: total(row).toLocaleString(), detail: `${row.division || "产品部范围"}；评审 ${row.review || 0} / 生产 ${row.production || 0} / 现场 ${row.onsite || 0}` }));
-    rankingItems = focusItems; comparisonItems = rows.slice(0, 12).map((row) => ({ name: row.name, value: total(row), valueText: total(row).toLocaleString(), selected: row.name === recipient }));
-    scopeText = role === "PM报告" ? "PM/产品部项目范围" : role === "TPM报告" ? "TPM负责产品线与PM组" : "产总负责产品部组合"; summary = `${scopeText}：综合质量记录 ${total(selected).toLocaleString()} 条。`; risk = `高风险对象：${focusItems.slice(0, 3).map((row) => row.name).join("、") || "暂无"}。`; decision = "按产品部和责任层级拆解ECN、研发问题、评审问题与标准化资源。";
+    metrics = [{ name: "综合记录", value: total(selected), note: role === "PM报告" ? "PM负责工程师范围" : role === "TPM报告" ? "TPM负责PM与工程师范围" : "产总负责产品部范围" }, { name: "ECN申请", value: reportNumber(selected?.ecn), note: "研发变更" }, { name: "非BOM加工件", value: reportNumber(selected?.nonBom), note: "加工件专项" }, { name: "研发问题", value: total(selected), note: `评审 ${selected?.review || 0} / 生产 ${selected?.production || 0} / 现场 ${selected?.onsite || 0}` }];
+    const selectedTotal = total(selected);
+    focusItems = [
+      { name: "ECN变更", value: reportNumber(selected?.ecn), detail: "当前责任对象范围内的变更记录" },
+      { name: "评审问题", value: reportNumber(selected?.review), detail: "前端设计评审阶段问题" },
+      { name: "生产问题", value: reportNumber(selected?.production), detail: "设计输出进入生产后的问题" },
+      { name: "现场问题", value: reportNumber(selected?.onsite), detail: "现场/售后阶段问题" },
+      { name: "非BOM加工件", value: reportNumber(selected?.nonBom), detail: "非标准加工件专项记录" },
+    ].filter((row) => row.value > 0);
+    rankingItems = peerRows.slice().sort((a, b) => (reportNumber(b.ecn) + total(b)) - (reportNumber(a.ecn) + total(a))).slice(0, 10).map((row) => ({ name: row.name, value: (reportNumber(row.ecn) + total(row)).toLocaleString(), detail: `${row.roleLabel}；ECN ${row.ecn || 0} / 问题 ${total(row)}`, selected: row.name === selectedRecipient }));
+    comparisonItems = peerRows.slice().sort((a, b) => (reportNumber(b.ecn) + total(b)) - (reportNumber(a.ecn) + total(a))).map((row) => ({ name: row.name, value: reportNumber(row.ecn) + total(row), valueText: (reportNumber(row.ecn) + total(row)).toLocaleString(), selected: row.name === selectedRecipient }));
+    subordinateItems = role === "PM报告"
+      ? selectedChildren.slice().sort((a, b) => (reportNumber(b.ecn) + total(b)) - (reportNumber(a.ecn) + total(a))).slice(0, 12).map((row) => ({ name: `${row.roleLabel || "研发记录"} · ${row.name}`, value: `${total(row)}项`, detail: `ECN ${row.ecn || 0}；评审 ${row.review || 0}；生产 ${row.production || 0}；现场 ${row.onsite || 0}` }))
+      : role === "TPM报告"
+        ? [...pmRows.filter((row) => selectedData.pms.includes(row.name)).map((row) => ({ name: `PM · ${row.name}`, value: `${total(row)}项`, detail: `ECN ${row.ecn || 0}；研发问题 ${total(row)}` }))]
+        : [...selectedData.divisions.map((division) => { const row = groupRow(division, "产品部范围", mappings.filter((item) => item.productDept === division)); return { name: `产品部 · ${division}`, value: `${total(row)}项`, detail: `ECN ${row.ecn || 0}；评审 ${row.review || 0}；生产 ${row.production || 0}；现场 ${row.onsite || 0}` }; }), ...tpmRows.filter((row) => selectedData.tpms.includes(row.name)).map((row) => ({ name: `TPM · ${row.name}`, value: `${total(row)}项`, detail: `PM范围汇总；ECN ${row.ecn || 0}` }))];
+    trendItems = [{ name: "评审阶段", value: reportNumber(selected?.review), detail: "问题在设计前端暴露的数量" }, { name: "生产阶段", value: reportNumber(selected?.production), detail: "问题在生产导入后暴露的数量" }, { name: "现场阶段", value: reportNumber(selected?.onsite), detail: "问题在现场/售后暴露的数量" }].filter((row) => row.value > 0);
+    closureItems = focusItems.slice(0, 5).map((row) => ({ name: `责任闭环：${row.name}`, value: "待验证", detail: "责任人、交付物、验证证据和复发升级规则必须完整" }));
+    scopeText = role === "PM报告" ? "PM负责范围内的研发工程师具体记录" : role === "TPM报告" ? "TPM负责范围内的PM聚合记录" : "产总负责范围内的产品部、TPM和PM聚合记录";
+    summary = `${scopeText}：综合质量记录 ${selectedTotal.toLocaleString()} 条，ECN ${reportNumber(selected?.ecn).toLocaleString()} 条。`;
+    risk = `当前对象主要风险：${focusItems.slice().sort((a, b) => reportNumber(b.value) - reportNumber(a.value)).slice(0, 3).map((row) => row.name).join("、") || "暂无"}。`;
+    dataNotice = rawEngineerRows.length ? "管理层报告使用研发工程师字段向上聚合；同级排名和下级汇总使用不同粒度。" : "当前DQA原始数据未提供研发工程师字段，个人工程师报告不使用TPM替代；管理层按TPM、PM和产品部映射汇总。";
+    if (!mappings.length) dataNotice = "研发组织映射表尚未配置，当前管理层报告不生成伪造的PM/TPM/产总个人数据；请先导入研发组织映射表。";
+    decision = "按当前责任层级跟踪结果、过程阶段、根因证据和改善行动，禁止用上级或下级数据代替当事人数据。";
   } else {
     const divisions = dqa.divisions || [];
     const totalDqa = divisions.reduce((sum, row) => sum + reportNumber(row.review) + reportNumber(row.production) + reportNumber(row.onsite), 0);
     const ipqcBad = reportSum(workshops, "y2026Bad");
     const oqcRows = oqc.monthlySummary?.divisions || [];
-    metrics = [{ name: "IPQC异常", value: ipqcBad, note: "公司级过程异常" }, { name: "DQA记录", value: totalDqa, note: "研发质量" }, { name: "OQC样本", value: reportSum(oqcRows, "y2026Count"), note: "出货评价" }, { name: "产品部", value: divisions.length, note: "组织范围" }];
-    recipients = []; focusItems = divisions.slice().sort((a, b) => (reportNumber(b.review) + reportNumber(b.production) + reportNumber(b.onsite)) - (reportNumber(a.review) + reportNumber(a.production) + reportNumber(a.onsite))).map((row) => ({ name: row.name, value: (reportNumber(row.review) + reportNumber(row.production) + reportNumber(row.onsite)).toLocaleString(), detail: `评审 ${row.review || 0} / 生产 ${row.production || 0} / 现场 ${row.onsite || 0}` })); rankingItems = (dqa.tpmStages || []).slice(0, 8).map((row) => ({ name: row.name, value: (reportNumber(row.review) + reportNumber(row.production) + reportNumber(row.onsite)).toLocaleString(), detail: row.division || "" })); comparisonItems = focusItems.map((row) => ({ name: row.name, value: reportNumber(row.value), valueText: row.value, selected: false })); scopeText = "公司级 IPQC、DQA、OQC 与产品部组织风险"; summary = `公司级质量视图：IPQC异常 ${ipqcBad.toLocaleString()} 项，DQA记录 ${totalDqa.toLocaleString()} 条，OQC样本 ${reportSum(oqcRows, "y2026Count").toLocaleString()} 条。`; risk = `最高风险组织：${focusItems.slice(0, 3).map((row) => row.name).join("、") || "暂无"}。`; decision = "将组织风险、流程漏洞、研发闭环和资源投入纳入经营会月度追踪。";
+    const qmsRiskRows = [...(data?.qms?.risks || []), ...(data?.qms?.suggestions || [])];
+    metrics = [{ name: "IPQC异常", value: ipqcBad, note: "公司级过程异常" }, { name: "DQA记录", value: totalDqa, note: "研发质量" }, { name: "OQC样本", value: reportSum(oqcRows, "y2026Count"), note: "出货评价" }, { name: "客户意见", value: qmsRiskRows.length, note: "QMS风险/建议" }];
+    recipients = ["董事长"]; focusItems = divisions.slice().sort((a, b) => (reportNumber(b.review) + reportNumber(b.production) + reportNumber(b.onsite)) - (reportNumber(a.review) + reportNumber(a.production) + reportNumber(a.onsite))).map((row) => ({ name: row.name, value: (reportNumber(row.review) + reportNumber(row.production) + reportNumber(row.onsite)).toLocaleString(), detail: `评审 ${row.review || 0} / 生产 ${row.production || 0} / 现场 ${row.onsite || 0}` })); rankingItems = (dqa.tpmStages || []).map((row) => ({ name: row.name, value: (reportNumber(row.review) + reportNumber(row.production) + reportNumber(row.onsite)).toLocaleString(), detail: row.division || "" })); comparisonItems = focusItems.map((row) => ({ name: row.name, value: reportNumber(row.value), valueText: row.value, selected: false })); subordinateItems = [...focusItems.slice(0, 8).map((row) => ({ name: `产品部 · ${row.name}`, value: row.value, detail: row.detail })), ...rankingItems.slice(0, 8).map((row) => ({ name: `TPM · ${row.name}`, value: row.value, detail: row.detail })), ...workshops.slice(0, 8).map((row) => ({ name: `工坊 · ${row.site} · ${row.name}`, value: `${row.y2026Bad || 0}项`, detail: `送检 ${row.y2026Qty || 0}；异常率 ${row.y2026Rate || 0}%` }))]; trendItems = [{ name: "IPQC异常", value: ipqcBad, detail: "全公司过程异常" }, { name: "DQA研发记录", value: totalDqa, detail: "评审、生产和现场问题" }, { name: "OQC评分样本", value: reportSum(oqcRows, "y2026Count"), detail: "出货质量评价样本" }, { name: "QMS客户意见", value: qmsRiskRows.length, detail: "客户风险与改进建议" }].filter((row) => row.value > 0); closureItems = focusItems.slice(0, 5).map((row) => ({ name: `公司级战役：${row.name}`, value: "经营会追踪", detail: "跨模块确认结果、过程、根因、责任、行动和复发门禁" })); scopeText = "公司级 IPQC、DQA、OQC、QMS客户意见与产品部组织风险"; summary = `公司级质量视图：IPQC异常 ${ipqcBad.toLocaleString()} 项，DQA记录 ${totalDqa.toLocaleString()} 条，OQC样本 ${reportSum(oqcRows, "y2026Count").toLocaleString()} 条，QMS客户意见 ${qmsRiskRows.length.toLocaleString()} 条。`; risk = `最高风险组织：${focusItems.slice(0, 3).map((row) => row.name).join("、") || "暂无"}${qmsRiskRows.length ? `；客户意见/风险 ${qmsRiskRows.length} 条` : ""}。`; decision = "将组织风险、流程漏洞、研发闭环、客户意见和资源投入纳入经营会月度追踪。";
   }
-  const actions = reportActions(data, role);
+  const resolvedRecipient = recipients.length ? (recipients.includes(recipient) ? recipient : recipients[0]) : "全局";
+  let actions = reportActions(data, role);
+  const qmsRowsForReport = [...(data?.qms?.risks || []), ...(data?.qms?.suggestions || [])].filter((row) => {
+    if (!row || !["PM报告", "TPM报告", "产总报告", "董事长报告"].includes(role)) return false;
+    if (role === "董事长报告") return true;
+    if (resolvedRecipient === "全局") return false;
+    const target = `${row.division || ""} ${row.rawDivision || ""} ${row.tpm || ""} ${row.pm || ""} ${row.project || ""}`;
+    return target.includes(resolvedRecipient);
+  }).slice(0, 6);
+  if (qmsRowsForReport.length) {
+    const qmsItems = qmsRowsForReport.map((row) => ({ name: row.project || row.customer || row.type || "QMS客户意见", value: row.score ?? row.lowestScore ?? "待评价", detail: row.content || row.suggestion || row.lowestDimension || "客户意见需纳入闭环" }));
+    focusItems = [...focusItems, ...qmsItems].slice(0, 12);
+    actions = [...actions, ...qmsItems.map((item) => ({ name: `QMS闭环：${item.name}`, value: "待闭环", detail: `责任范围：${recipient || "公司级"}；${item.detail}`, priority: "高" }))].slice(0, 12);
+  }
+  if (!subordinateItems.length && focusItems.length && !["IPQC操作报告", "研发工程师报告"].includes(role)) subordinateItems = focusItems.slice(0, 8).map((item) => ({ name: item.name, value: item.value, detail: item.detail || "当前责任范围内的下级质量对象" }));
+  if (!trendItems.length && focusItems.length) trendItems = focusItems.slice(0, 8).map((item) => ({ name: item.name, value: item.value, detail: "当前统计周期质量结果" }));
+  if (!closureItems.length && focusItems.length) closureItems = focusItems.slice(0, 5).map((item) => ({ name: `闭环：${item.name}`, value: "待确认", detail: "确认责任、措施、验证证据、关闭条件和复发门禁" }));
+  if (!actions.length) actions = closureItems.slice(0, 8);
+    rankingItems = reportEnsureSelectedItems(rankingItems, resolvedRecipient, 12);
+    comparisonItems = reportEnsureSelectedItems(comparisonItems, resolvedRecipient, 12);
+    if (["供应链经理报告", "产总报告"].includes(role)) {
+      rankingItems = [];
+      comparisonItems = [];
+    }
   const questions = safeParse(localStorage.getItem(qmdpQuestionsKey), []);
-  const knowledgeRuleItems = questions.filter((question) => `${question.stem || ""} ${question.categories || question.category || ""}`.includes(role.replace("报告", ""))).slice(0, 5).map((question) => ({ name: question.stem, value: question.type || "题目", detail: question.explanation || "已关联知识规则" }));
-  const qualityClosureItems = (data?.actions || []).filter((item) => item.status === "进行中" || item.status === "未开始").slice(0, 6).map((item) => ({ name: item.title, value: `${item.progress ?? 0}%`, detail: `${item.owner || "待指定"} · ${item.due || "待定"}` }));
-  return { id: `RPT-${Date.now()}`, role, recipient: recipient || "全局", recipients, generatedAt: new Date().toISOString(), period: `${dateRange?.start2026 || ""}—${dateRange?.end2026 || ""}`, recipientScope: reportScope(role, recipient, scopeText), personalIssueSummary: summary, metrics, focusItems, rankingItems, comparisonItems, actions, qualityClosureItems, knowledgeRuleItems, examSummary: knowledgeRuleItems.length ? `已匹配 ${knowledgeRuleItems.length} 条知识/考试规则。` : "暂无直接匹配的知识考试规则。", examIssueCategories, executiveSummary: summary, riskFocus: risk, decisionSuggestion: decision };
+  let knowledgeRuleItems = questions.filter((question) => `${question.stem || ""} ${question.categories || question.category || ""}`.includes(role.replace("报告", ""))).slice(0, 5).map((question) => ({ name: question.stem, value: question.type || "题目", detail: question.explanation || "已关联知识规则" }));
+  if (!knowledgeRuleItems.length && !examReportRole(role)) knowledgeRuleItems = [{ name: "重复问题门禁", value: "必须执行", detail: "同类问题未完成根因、措施、验证和关闭前，不得再次按已解决问题发送。" }, { name: "闭环证据", value: "必须留存", detail: "保留责任人、完成日期、验证数据和复发监控结果。" }];
+  let qualityClosureItems = (data?.actions || []).filter((item) => item.status === "进行中" || item.status === "未开始").slice(0, 6).map((item) => ({ name: item.title, value: `${item.progress ?? 0}%`, detail: `${item.owner || "待指定"} · ${item.due || "待定"}` }));
+  if (!qualityClosureItems.length) qualityClosureItems = closureItems.slice(0, 6);
+  const config = reportConfig();
+  const reportExamHistoryRows = reportExamHistory(role, resolvedRecipient);
+  const supervisorName = reportSupervisor(role, resolvedRecipient, operators, config);
+  const subordinateExamHistory = reportSubordinateExamResults(role, resolvedRecipient, operators, config);
+  const latestExam = reportExamHistoryRows[0];
+  const examResultSummary = latestExam ? `最近考试：${latestExam.score ?? 0} 分，${latestExam.passed ? "已通过" : "未通过"}（${latestExam.correct ?? 0}/${latestExam.total ?? 0} 题），${formatSyncDateTime(latestExam.submittedAt)}。` : "尚无已回传的考试结果。";
+  const subordinateExamSummary = subordinateExamHistory.length ? `下属考试回传 ${subordinateExamHistory.length} 条：${subordinateExamHistory.slice(0, 5).map((item) => `${item.recipientName} ${item.score ?? 0}分${item.passed ? "（通过）" : "（未通过）"}`).join("、")}。` : "暂无下属考试回传。";
+  return { id: `RPT-${Date.now()}`, role, recipient: resolvedRecipient, recipients, generatedAt: new Date().toISOString(), period: `${dateRange?.start2026 || ""}—${dateRange?.end2026 || ""}`, recipientScope: reportScope(role, resolvedRecipient, scopeText), personalIssueSummary: summary, dataNotice, metrics, focusItems, rankingItems, comparisonItems, subordinateItems, trendItems, closureItems, actions, qualityClosureItems, knowledgeRuleItems, examSummary: knowledgeRuleItems.length ? `已匹配 ${knowledgeRuleItems.length} 条知识/考试规则。` : "暂无直接匹配的知识考试规则。", examIssueCategories, examHistory: reportExamHistoryRows, examResultSummary, supervisorName, supervisorExamSummary: supervisorName ? `上级汇报对象：${supervisorName}；${examResultSummary}` : "", subordinateExamHistory, subordinateExamSummary, executiveSummary: summary, riskFocus: risk, decisionSuggestion: decision };
 }
-const downloadReportSnapshot = (snapshot, type = "json") => {
-  const safe = `${snapshot.role}-${snapshot.recipient}-${snapshot.generatedAt.replace(/[:.]/g, "-")}`;
-  const examHtml = snapshot.examLinks?.length ? `<section><h2>关联知识考核</h2><p>${snapshot.examSummary || "请完成以下与本人问题匹配的知识考试。"}</p><ul>${snapshot.examLinks.map((item) => `<li><strong>${item.title}</strong>：${item.summary}<br/><a href="${item.url}">${item.url}</a></li>`).join("")}</ul></section>` : "";
-  const content = type === "html" ? `<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>${snapshot.role}</title><style>body{font-family:Microsoft YaHei,Arial;color:#172033;max-width:1080px;margin:30px auto;padding:0 20px}section{border:1px solid #dfe7f0;border-radius:10px;padding:16px;margin:14px 0}h1{margin:0 0 8px}h2{font-size:16px;border-bottom:1px solid #edf2f7;padding-bottom:8px}li{margin:7px 0;line-height:1.5}.metric{display:inline-block;min-width:150px;margin:8px;padding:12px;background:#f4f8ff;border-radius:8px}.metric b{display:block;font-size:22px;color:#176ecf}a{color:#176ecf;word-break:break-all}</style><h1>${snapshot.role}</h1><p>${snapshot.recipientScope}<br/>周期：${snapshot.period}</p>${examHtml}<section><h2>指标</h2>${snapshot.metrics.map((item) => `<span class="metric"><small>${item.name}</small><b>${item.value}</b><small>${item.note}</small></span>`).join("")}</section>${[["风险焦点", snapshot.focusItems], ["同级排名", snapshot.rankingItems], ["改善行动", snapshot.actions], ["质量闭环", snapshot.qualityClosureItems], ["知识规则", snapshot.knowledgeRuleItems]].map(([title, items]) => `<section><h2>${title}</h2><ul>${(items || []).map((item) => `<li><strong>${item.name}</strong> · ${item.value}：${item.detail}</li>`).join("") || "<li>暂无</li>"}</ul></section>`).join("")}<section><h2>管理判断</h2><p>${snapshot.riskFocus}</p><p>${snapshot.decisionSuggestion}</p></section></html>` : JSON.stringify(snapshot, null, 2);
-  const blob = new Blob([content], { type: type === "html" ? "text/html;charset=utf-8" : "application/json;charset=utf-8" }); const url = URL.createObjectURL(blob); const link = document.createElement("a"); link.href = url; link.download = `${safe}.${type}`; link.click(); URL.revokeObjectURL(url);
+const escapeReportHtml = (value) => String(value ?? "").replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[char]));
+const reportSnapshotHtml = (snapshot) => {
+  const safe = (value) => escapeReportHtml(value);
+  const examHtml = snapshot.examLinks?.length ? `<section class="exam"><h2>关联知识考核</h2><p>${safe(snapshot.examSummary || "请完成以下与本人问题匹配的知识考试。")}</p><ul>${snapshot.examLinks.map((item) => `<li><strong>${safe(item.title)}</strong>：${safe(item.summary)}<br/><a href="${safe(item.url)}">${safe(item.url)}</a></li>`).join("")}</ul></section>` : "";
+  const examResultHtml = `<section><h2>考试结果与上级汇报</h2><p>${safe(snapshot.examResultSummary || "尚无已回传的考试结果。")} ${snapshot.supervisorExamSummary ? safe(snapshot.supervisorExamSummary) : ""}${snapshot.subordinateExamSummary ? `<br/>${safe(snapshot.subordinateExamSummary)}` : ""}</p></section>`;
+  const metricsHtml = (snapshot.metrics || []).map((item) => `<span class="metric"><small>${safe(item.name)}</small><b>${safe(item.value)}</b><small>${safe(item.note)}</small></span>`).join("");
+  const listSections = [["风险焦点", snapshot.focusItems], ["同级排名", snapshot.rankingItems], ["下级质量汇总", snapshot.subordinateItems], ["质量趋势", snapshot.trendItems], ["改善行动", snapshot.actions], ["闭环待办", snapshot.closureItems], ["质量闭环", snapshot.qualityClosureItems], ["知识规则", snapshot.knowledgeRuleItems]].map(([title, items]) => `<section><h2>${safe(title)}</h2><ul>${(items || []).map((item) => `<li><strong>${safe(item.name)}</strong> · ${safe(item.value)}：${safe(item.detail)}</li>`).join("") || "<li>暂无</li>"}</ul></section>`).join("");
+  return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><title>${safe(snapshot.role)}-${safe(snapshot.recipient)}</title><style>@page{size:A4;margin:16mm}body{font-family:Microsoft YaHei,Arial;color:#172033;max-width:1080px;margin:30px auto;padding:0 20px;line-height:1.55}h1{margin:0 0 8px;color:#102a43}h2{font-size:16px;border-bottom:1px solid #dfe7f0;padding-bottom:8px}section{border:1px solid #dfe7f0;border-radius:10px;padding:16px;margin:14px 0;break-inside:avoid}.exam{border-color:#8bbcf0;background:#f4f9ff}li{margin:7px 0;line-height:1.5}.metric{display:inline-block;min-width:150px;margin:8px;padding:12px;background:#f4f8ff;border-radius:8px;vertical-align:top}.metric b{display:block;font-size:22px;color:#176ecf}a{color:#176ecf;word-break:break-all}@media print{body{margin:0;max-width:none}.no-print{display:none}}</style></head><body><h1>${safe(snapshot.role)}</h1><p>${safe(snapshot.recipientScope)}<br/>周期：${safe(snapshot.period)}</p>${examHtml}${examResultHtml}<section><h2>指标</h2>${metricsHtml}</section>${listSections}<section><h2>管理判断</h2><p>${safe(snapshot.riskFocus)}</p><p>${safe(snapshot.decisionSuggestion)}</p></section></body></html>`;
 };
-function RoleQualityReportPage({ data, dateRange, role, onRoleChange }) {
+const downloadReportSnapshot = (snapshot, type = "json") => {
+  const safeName = `${snapshot.role}-${snapshot.recipient}-${snapshot.generatedAt.replace(/[:.]/g, "-")}`;
+  const content = type === "html" ? reportSnapshotHtml(snapshot) : JSON.stringify(snapshot, null, 2);
+  const blob = new Blob([content], { type: type === "html" ? "text/html;charset=utf-8" : "application/json;charset=utf-8" }); const url = URL.createObjectURL(blob); const link = document.createElement("a"); link.href = url; link.download = `${safeName}.${type}`; link.click(); URL.revokeObjectURL(url);
+};
+const printReportSnapshot = (snapshot) => {
+  const popup = window.open("", "_blank", "width=1100,height=850");
+  if (!popup) { window.alert("浏览器阻止了报告窗口，请允许弹出窗口后再导出 PDF。"); return; }
+  popup.document.open(); popup.document.write(reportSnapshotHtml(snapshot)); popup.document.close(); popup.focus(); setTimeout(() => popup.print(), 350);
+};
+const printReportSnapshots = (snapshots = []) => {
+  const popup = window.open("", "_blank", "width=1100,height=850");
+  if (!popup) { window.alert("浏览器阻止了报告窗口，请允许弹出窗口后再导出 PDF。"); return; }
+  popup.document.open(); popup.document.write(`<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><title>批量质量报告</title></head><body>${snapshots.map(reportSnapshotHtml).join("<div style='page-break-after:always'></div>")}</body></html>`); popup.document.close(); popup.focus(); setTimeout(() => popup.print(), 500);
+};
+const reportChartNumber = (value) => {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  const match = String(value ?? "").replace(/,/g, "").match(/-?\d+(?:\.\d+)?/);
+  return match ? Number(match[0]) : 0;
+};
+const reportChartRows = (items = [], limit = 8) => {
+  const mapped = (items || []).map((item) => ({
+    name: String(item?.name || "未命名").replace(/^闭环：|^风险：|^责任闭环：/, ""),
+    value: reportChartNumber(item?.value),
+    detail: item?.detail || "",
+    selected: item?.selected === true,
+    color: item?.selected === true ? "#ef4f4f" : item?.priority === "高" || /高风险|红色|待验证|待确认/.test(`${item?.value || ""} ${item?.detail || ""}`) ? "#ef4f4f" : undefined,
+  })).filter((item) => item.name && item.value > 0).sort((a, b) => b.value - a.value);
+  const top = mapped.slice(0, limit);
+  const selected = mapped.find((item) => item.selected);
+  return selected && !top.some((item) => item.selected) ? [...top.slice(0, Math.max(0, limit - 1)), selected] : top;
+};
+const reportStatusRows = (items = []) => {
+  const buckets = { "待确认": 0, "待验证": 0, "责任到人": 0, "进行中": 0, "已完成": 0 };
+  (items || []).forEach((item) => {
+    const text = `${item?.value || ""} ${item?.detail || ""}`;
+    const key = /已完成|已关闭|完成/.test(text) ? "已完成" : /进行中|执行中/.test(text) ? "进行中" : /责任到人|责任人/.test(text) ? "责任到人" : /待验证|验证/.test(text) ? "待验证" : "待确认";
+    buckets[key] += 1;
+  });
+  return Object.entries(buckets).map(([name, count]) => ({ name, count })).filter((item) => item.count > 0);
+};
+const ensureSelectedComparison = (rows = [], selectedName = "", limit = 12) => {
+  const sorted = [...rows].sort((a, b) => reportChartNumber(b.value) - reportChartNumber(a.value));
+  const matches = (row) => row.selected || row.name === selectedName || String(row.name || "").split(" · ").pop().trim() === String(selectedName || "").split(" · ").pop().trim();
+  const top = sorted.slice(0, limit).map((row) => matches(row) ? { ...row, selected: true } : row);
+  if (!selectedName || top.some((row) => row.selected)) return top;
+  const selected = sorted.find(matches);
+  return selected ? [...top.slice(0, Math.max(0, limit - 1)), { ...selected, selected: true }] : top;
+};
+const reportEnsureSelectedItems = (items = [], selectedName = "", limit = 12) => ensureSelectedComparison(items, selectedName, limit);
+const reportEvidenceRows = (report) => [
+  { name: "结果", value: (report.focusItems || []).length, color: "#176ecf" },
+  { name: "过程", value: (report.trendItems || []).length, color: "#f5822a" },
+  { name: "根因", value: (report.closureItems || []).length, color: "#ef4f4f" },
+  { name: "管理", value: (report.actions || []).length, color: "#50ad68" },
+].filter((item) => item.value > 0);
+const reportResponsibilityPath = (role) => {
+  if (["研发工程师报告", "PM报告", "TPM报告", "产总报告"].includes(role)) return ["董事长", "产总", "TPM", "PM", "研发工程师"];
+  return ["董事长", "供应链经理", "交付经理", "机长", "送检人"];
+};
+function ReportResponsibilityChain({ report }) {
+  const path = reportResponsibilityPath(report.role);
+  const activeNode = report.role.includes("IPQC操作") ? "送检人" : report.role.includes("研发工程师") ? "研发工程师" : report.role.includes("供应链") ? "供应链经理" : report.role.includes("交付经理") ? "交付经理" : report.role.includes("机长") ? "机长" : report.role.includes("TPM") ? "TPM" : report.role.includes("PM") ? "PM" : report.role.includes("产总") ? "产总" : "董事长";
+  const activeIndex = Math.max(0, path.indexOf(activeNode));
+  return <section className="qmdp-report-chain"><header><div><strong>责任分层</strong><small>对事分层、对人留有沟通空间</small></div><span>{report.recipient || "全局"}</span></header><div className="qmdp-report-chain-track">{path.map((item, index) => <div className={`qmdp-report-chain-node ${index === activeIndex ? "active" : ""}`} key={item}><b>{item}</b><small>{index === activeIndex ? "当前报告" : index < activeIndex ? "上级汇报" : "下级汇总"}</small></div>)} </div></section>;
+}
+function QualityReportCharts({ report }) {
+  const focusRows = reportChartRows(report.focusItems, 8);
+  const rankingRows = reportChartRows(ensureSelectedComparison(report.comparisonItems?.length ? report.comparisonItems : report.rankingItems, report.recipient, 8), 8);
+  const subordinateRows = reportChartRows(report.subordinateItems, 8);
+  const trendRows = reportChartRows(report.trendItems, 8);
+  const actionRows = reportChartRows(report.qualityClosureItems?.length ? report.qualityClosureItems : report.actions, 8);
+  const statusRows = reportStatusRows([...(report.closureItems || []), ...(report.qualityClosureItems || [])]);
+  const evidenceRows = reportEvidenceRows(report);
+  const chart = (title, subtitle, rows, key, unit = "") => <section className="qmdp-report-chart-card"><header><div><strong>{title}</strong><small>{subtitle}</small></div><span>{rows.length ? `${rows.length}项` : "暂无数据"}</span></header>{rows.length ? <ReportBarChart rows={rows} height={260} chartKey={`role-report-${key}-${report.role}-${report.recipient}`} unit={unit}/> : <div className="qmdp-report-chart-empty">暂无可量化数据</div>}</section>;
+  const phase = (number, title, subtitle, content) => <section className="qmdp-report-phase"><header><i>{number}</i><div><strong>{title}</strong><small>{subtitle}</small></div></header>{content}</section>;
+  return <div className="qmdp-report-management">
+    <div className="qmdp-report-management-intro"><div><span>质量经营报告</span><strong>{report.role} · {report.recipient || "全局"}</strong></div><div className="qmdp-report-intro-copy"><p>{report.riskFocus || "当前周期暂无明确风险焦点"}</p>{report.dataNotice && <small>{report.dataNotice}</small>}</div></div>
+    {phase("01", "事实结果", "先把发生了什么讲清楚，再讨论原因和责任", <div className="qmdp-report-chart-grid">{chart("风险焦点", "按异常量排序", focusRows, "focus")}{chart("当前周期分布", "按责任对象查看", trendRows, "trend")}</div>)}
+    {phase("02", "问题位置", "定位主要矛盾出现在哪个组织和哪个责任对象", <div className="qmdp-report-chart-grid">{chart("同级对比", "按责任对象比较", rankingRows, "ranking")}{chart("下级质量汇总", "按下属对象聚合", subordinateRows, "subordinate")}</div>)}
+    {phase("03", "原因判断", "结果、过程、根因、管理四层证据不能混在一起", <div className="qmdp-report-evidence-row"><section className="qmdp-report-evidence-card"><header><div><strong>证据层级覆盖</strong><small>当前报告已形成的分析证据</small></div><span>{evidenceRows.reduce((sum, item) => sum + item.value, 0)}项</span></header><div className="qmdp-report-evidence-bars">{evidenceRows.map((item) => <div key={item.name}><span>{item.name}</span><i><b style={{ width: `${Math.min(100, Math.max(8, item.value / Math.max(...evidenceRows.map((row) => row.value), 1) * 100))}%`, background: item.color }}/></i><strong>{item.value}</strong></div>)}</div></section><section className="qmdp-report-decision-card"><span>当前判断</span><strong>{report.decisionSuggestion || "先补齐事实和证据，再决定措施"}</strong><small>原则不变，方法因对象、时机和程度调整。</small></section></div>)}
+    {phase("04", "责任分层", "对事讲规则，对人讲沟通，避免只做个人排名", <ReportResponsibilityChain report={report}/>)}
+    {phase("05", "改善行动与闭环", "措施必须有责任人、交付物、验证指标和关闭条件", <div className="qmdp-report-chart-grid">{chart("改善行动进度", "按行动进度排序", actionRows, "actions", "%")}<section className="qmdp-report-chart-card"><header><div><strong>闭环状态</strong><small>待办与验证状态</small></div><span>{statusRows.reduce((sum, item) => sum + item.count, 0)}项</span></header>{statusRows.length ? <ReportStatusDonut rows={statusRows} height={260} chartKey={`role-report-status-${report.role}-${report.recipient}`}/> : <div className="qmdp-report-chart-empty">暂无闭环数据</div>}</section></div>)}
+  </div>;
+}
+function RoleQualityReportPage({ data, files, dateRange: globalDateRange, role, onRoleChange, onReportContext, reportPeriod, onReportPeriodChange }) {
   const [recipient, setRecipient] = useState("");
   const [savedAt, setSavedAt] = useState("");
   const [examState, setExamState] = useState({ status: "idle", links: [], message: "" });
-  const report = useMemo(() => buildWebRoleReport(data, role, recipient, dateRange), [data, role, recipient, dateRange]);
-  useEffect(() => { if (report.recipient !== recipient) setRecipient(report.recipient === "全局" ? "" : report.recipient); }, [report.recipient, recipient]);
+  const [examRefresh, setExamRefresh] = useState(0);
+  useEffect(() => { const refresh = () => setExamRefresh((value) => value + 1); window.addEventListener("focus", refresh); return () => window.removeEventListener("focus", refresh); }, []);
+  const activeReportPeriod = reportPeriod || { year: "2026", start: globalDateRange.start2026, end: globalDateRange.end2026 };
+  const reportDateRange = useMemo(() => activeReportPeriod.year === "2025"
+    ? { ...globalDateRange, start2025: activeReportPeriod.start, end2025: activeReportPeriod.end, start2026: "", end2026: "" }
+    : { ...globalDateRange, start2025: "", end2025: "", start2026: activeReportPeriod.start, end2026: activeReportPeriod.end }, [globalDateRange, activeReportPeriod]);
+  const dateRange = reportDateRange;
+  const reportData = useMemo(() => analyzeImported(files, reportDateRange), [files, reportDateRange]);
+  const report = useMemo(() => buildWebRoleReport(reportData, role, recipient, reportDateRange, files), [reportData, files, role, recipient, reportDateRange]);
+  useEffect(() => {
+    onReportPeriodChange?.((current) => ({ ...current, start: globalDateRange[`start${current.year}`] || current.start, end: globalDateRange[`end${current.year}`] || current.end }));
+  }, [globalDateRange.start2025, globalDateRange.end2025, globalDateRange.start2026, globalDateRange.end2026]);
+  useEffect(() => { if (report.recipient !== recipient) setRecipient(report.recipient === "全局" ? "" : report.recipient); onReportContext?.(report.recipient === "全局" ? "" : report.recipient); }, [report.recipient, recipient, onReportContext]);
   useEffect(() => {
     let cancelled = false;
     const enabled = Boolean(examReportRole(role) && report.recipient && report.recipient !== "全局");
@@ -2608,14 +3244,18 @@ function RoleQualityReportPage({ data, dateRange, role, onRoleChange }) {
     create();
     return () => { cancelled = true; };
   }, [role, report.recipient, report.id, report.examIssueCategories.join("|")]);
-  const reportWithExam = useMemo(() => ({ ...report, examLinks: examState.links, examSummary: examState.message || report.examSummary }), [report, examState]);
-  const save = () => { const snapshots = safeParse(localStorage.getItem(qmdpReportSnapshotsKey), []); const next = [reportWithExam, ...snapshots.filter((item) => !(item.role === reportWithExam.role && item.recipient === reportWithExam.recipient))].slice(0, 100); localStorage.setItem(qmdpReportSnapshotsKey, JSON.stringify(next)); const tasks = safeParse(localStorage.getItem(qmdpReportTasksKey), []); localStorage.setItem(qmdpReportTasksKey, JSON.stringify([{ id: reportWithExam.id, role: reportWithExam.role, recipient: reportWithExam.recipient, module: "质量报告", date: reportWithExam.generatedAt, status: "已生成", reportId: reportWithExam.id, examLinks: reportWithExam.examLinks }, ...tasks.filter((item) => item.reportId !== reportWithExam.id)].slice(0, 200))); setSavedAt(reportWithExam.generatedAt); };
-  const addSendTask = () => { const tasks = safeParse(localStorage.getItem(qmdpReportTasksKey), []); localStorage.setItem(qmdpReportTasksKey, JSON.stringify([{ id: `SEND-${Date.now()}`, role: reportWithExam.role, recipient: reportWithExam.recipient, module: "质量报告", date: new Date().toISOString(), status: "待发送", reportId: reportWithExam.id, examLinks: reportWithExam.examLinks }, ...tasks].slice(0, 200))); setSavedAt(new Date().toISOString()); };
-  return <div className="qmdp-page"><QmdpPageHeader icon={ChartBar} eyebrow="质量报告 / Role Report" title={role} description="按原 QMDP 角色报告口径输出收件人范围、指标、风险焦点、同级对比、改善行动与闭环。" action={<div className="qmdp-report-actions"><button className="qmdp-secondary-btn" onClick={() => downloadReportSnapshot(reportWithExam, "html")}><DownloadSimple size={16}/>HTML</button><button className="qmdp-secondary-btn" onClick={() => downloadReportSnapshot(reportWithExam, "json")}><DownloadSimple size={16}/>JSON</button><button className="qmdp-primary-btn" onClick={save} disabled={examState.status === "loading" && Boolean(examReportRole(role))}><FloppyDisk size={16}/>保存报告</button></div>}/><div className="qmdp-report-controls"><label>报告角色<select value={role} onChange={(event) => onRoleChange(event.target.value)}>{roleReportNames.map((item) => <option key={item}>{item}</option>)}</select></label>{report.recipients?.length > 0 && <label>收件人<select value={recipient} onChange={(event) => setRecipient(event.target.value)}><option value="">自动选择最高风险</option>{report.recipients.map((item) => <option key={item}>{item}</option>)}</select></label>}<span>统计周期：{dateRange.start2026}—{dateRange.end2026}</span>{savedAt && <small>已保存 · {formatSyncDateTime(savedAt)}</small>}<button className="qmdp-secondary-btn" onClick={addSendTask} disabled={examState.status === "loading" && Boolean(examReportRole(role))}><Bell size={15}/>创建发送任务</button></div><QmdpStatStrip items={[...reportWithExam.metrics.slice(0, 4).map((item) => ({ label: item.name, value: item.value, note: item.note })), { label: "报告状态", value: savedAt ? "已保存" : "未保存", note: "可在任务中心追踪" }]} /><section className="qmdp-report-sheet"><header><div><span>2026 半年度质量报告 · {reportWithExam.recipient}</span><h3>{role}</h3><p>{reportWithExam.recipientScope}</p></div><span className="qmdp-report-badge">数据范围已重算</span></header><section className="qmdp-exam-card"><header><strong>关联知识考核</strong><span>{examState.status === "loading" ? "匹配中" : `${reportWithExam.examLinks?.length || 0} 个入口`}</span></header><p>{reportWithExam.examSummary}</p>{reportWithExam.examLinks?.map((item) => <div className="qmdp-exam-link" key={item.url}><div><b>{item.title}</b><span>{item.summary}</span></div><a href={item.url} target="_blank" rel="noreferrer">打开答题链接</a><button className="qmdp-secondary-btn" onClick={() => navigator.clipboard?.writeText(item.url)}>复制链接</button></div>)}{examState.status === "empty" && <div className="qmdp-empty compact">暂无匹配题目，请先在题库管理导入相关题库。</div>}</section><div className="qmdp-report-summary"><div><b>报告摘要</b><p>{reportWithExam.executiveSummary}</p></div><div><b>风险焦点</b><p>{reportWithExam.riskFocus}</p></div><div><b>管理建议</b><p>{reportWithExam.decisionSuggestion}</p></div></div><div className="qmdp-report-grid">{[["风险焦点", reportWithExam.focusItems], ["同级排名", reportWithExam.rankingItems], ["改善行动", reportWithExam.actions], ["质量闭环 / CAPA", reportWithExam.qualityClosureItems], ["知识规则 / 考试关联", reportWithExam.knowledgeRuleItems]].map(([title, items]) => <section className="qmdp-report-card" key={title}><header><strong>{title}</strong><span>{items?.length || 0} 项</span></header>{(items || []).map((item, index) => <div className="qmdp-report-item" key={`${title}-${item.name}-${index}`}><div><b>{item.name}</b><span>{item.detail}</span></div><strong>{item.value}</strong></div>)}{!items?.length && <div className="qmdp-empty compact">暂无记录</div>}</section>)}</div><section className="qmdp-report-card qmdp-comparison-card"><header><strong>同级对比</strong><span>{reportWithExam.comparisonItems.length} 个对象</span></header>{reportWithExam.comparisonItems.map((item) => <div className="qmdp-rank-bar" key={item.name}><span>{item.name}</span><i><b className={item.selected ? "selected" : ""} style={{ width: `${Math.min(100, Math.max(3, item.value / Math.max(...reportWithExam.comparisonItems.map((row) => row.value), 1) * 100))}%` }}/></i><strong>{item.valueText}</strong></div>)}</section></section></div>;
+  const liveExamHistory = reportExamHistory(role, report.recipient === "全局" ? "" : report.recipient);
+  const liveLatestExam = liveExamHistory[0];
+  const liveExamResultSummary = liveLatestExam ? `最近考试：${liveLatestExam.score ?? 0} 分，${liveLatestExam.passed ? "已通过" : "未通过"}（${liveLatestExam.correct ?? 0}/${liveLatestExam.total ?? 0} 题），${formatSyncDateTime(liveLatestExam.submittedAt)}。` : report.examResultSummary;
+  const reportWithExam = useMemo(() => ({ ...report, examLinks: examState.links, examSummary: examState.message || report.examSummary, examHistory: liveExamHistory, examResultSummary: liveExamResultSummary, supervisorExamSummary: report.supervisorName ? `上级汇报对象：${report.supervisorName}；${liveExamResultSummary}` : report.supervisorExamSummary }), [report, examState, liveExamResultSummary, liveExamHistory]);
+  const save = () => { const snapshots = safeParse(localStorage.getItem(qmdpReportSnapshotsKey), []); const next = [reportWithExam, ...snapshots.filter((item) => !(item.role === reportWithExam.role && item.recipient === reportWithExam.recipient))].slice(0, 100); localStorage.setItem(qmdpReportSnapshotsKey, JSON.stringify(next)); const tasks = safeParse(localStorage.getItem(qmdpReportTasksKey), []); localStorage.setItem(qmdpReportTasksKey, JSON.stringify([{ id: reportWithExam.id, role: reportWithExam.role, recipient: reportWithExam.recipient, module: "质量报告", date: reportWithExam.generatedAt, status: "已生成", reportId: reportWithExam.id, examLinks: reportWithExam.examLinks, supervisorName: reportWithExam.supervisorName, supervisorExamSummary: reportWithExam.supervisorExamSummary }, ...tasks.filter((item) => item.reportId !== reportWithExam.id)].slice(0, 200))); setSavedAt(reportWithExam.generatedAt); };
+  const addSendTask = () => { const tasks = safeParse(localStorage.getItem(qmdpReportTasksKey), []); localStorage.setItem(qmdpReportTasksKey, JSON.stringify([{ id: `SEND-${Date.now()}`, role: reportWithExam.role, recipient: reportWithExam.recipient, module: "质量报告", date: new Date().toISOString(), status: "待发送", reportId: reportWithExam.id, examLinks: reportWithExam.examLinks, supervisorName: reportWithExam.supervisorName, supervisorExamSummary: reportWithExam.supervisorExamSummary }, ...tasks].slice(0, 200))); setSavedAt(new Date().toISOString()); };
+  return <div className="qmdp-page"><QmdpPageHeader icon={ChartBar} eyebrow="质量报告 / Role Report" title={role} description="按责任对象输出异常、题库考核、考试回传、下级汇总、改善行动与上级汇报内容。" action={<div className="qmdp-report-actions"><button className="qmdp-secondary-btn" onClick={() => downloadReportSnapshot(reportWithExam, "html")}><DownloadSimple size={16}/>HTML</button><button className="qmdp-secondary-btn" onClick={() => printReportSnapshot(reportWithExam)}><DownloadSimple size={16}/>PDF</button><button className="qmdp-secondary-btn" onClick={() => downloadReportSnapshot(reportWithExam, "json")}><DownloadSimple size={16}/>JSON</button><button className="qmdp-primary-btn" onClick={save} disabled={examState.status === "loading" && Boolean(examReportRole(role))}><FloppyDisk size={16}/>保存报告</button></div>}/><div className="qmdp-report-controls"><label>报告角色<select value={role} onChange={(event) => onRoleChange(event.target.value)}>{roleReportNames.map((item) => <option key={item}>{item}</option>)}</select></label>{report.recipients?.length > 0 && <label>{role === "IPQC操作报告" ? "送检人" : "收件人"}<select value={recipient} onChange={(event) => setRecipient(event.target.value)}><option value="">自动选择最高风险</option>{report.recipients.map((item) => <option key={item}>{item}</option>)}</select></label>}<span>统计周期：{dateRange.start2026}—{dateRange.end2026}</span>{savedAt && <small>已保存 · {formatSyncDateTime(savedAt)}</small>}<button className="qmdp-secondary-btn" onClick={addSendTask} disabled={examState.status === "loading" && Boolean(examReportRole(role))}><Bell size={15}/>创建发送任务</button></div><QmdpStatStrip items={[...reportWithExam.metrics.slice(0, 4).map((item) => ({ label: item.name, value: item.value, note: item.note })), { label: "报告状态", value: savedAt ? "已保存" : "未保存", note: "可在任务中心追踪" }]} /><section className="qmdp-report-sheet"><header><div><span>2026 半年度质量报告 · {reportWithExam.recipient}</span><h3>{role}</h3><p>{reportWithExam.recipientScope}</p></div><span className="qmdp-report-badge">数据范围已重算</span></header><section className="qmdp-exam-card"><header><strong>关联知识考核</strong><span>{examState.status === "loading" ? "匹配中" : `${reportWithExam.examLinks?.length || 0} 个入口`}</span></header><p>{reportWithExam.examSummary}</p><p><strong>考试回传：</strong>{reportWithExam.examResultSummary}{reportWithExam.supervisorExamSummary && <><br/><strong>上级汇报：</strong>{reportWithExam.supervisorExamSummary}</>}{reportWithExam.subordinateExamSummary && <><br/><strong>下属考试：</strong>{reportWithExam.subordinateExamSummary}</>}</p>{reportWithExam.examLinks?.map((item) => <div className="qmdp-exam-link" key={item.url}><div><b>{item.title}</b><span>{item.summary}</span></div><a href={item.url} target="_blank" rel="noreferrer">打开答题链接</a><button className="qmdp-secondary-btn" onClick={() => navigator.clipboard?.writeText(item.url)}>复制链接</button></div>)}{examState.status === "empty" && <div className="qmdp-empty compact">暂无匹配题目，请先在题库管理导入相关题库。</div>}</section><div className="qmdp-report-summary"><div><b>报告摘要</b><p>{reportWithExam.executiveSummary}</p></div><div><b>风险焦点</b><p>{reportWithExam.riskFocus}</p></div><div><b>管理建议</b><p>{reportWithExam.decisionSuggestion}</p></div></div><div className="qmdp-report-grid">{[["风险焦点", reportWithExam.focusItems], ["同级排名", reportWithExam.rankingItems], ["下级质量汇总", reportWithExam.subordinateItems], ["质量趋势", reportWithExam.trendItems], ["改善行动", reportWithExam.actions], ["闭环待办", reportWithExam.closureItems], ["质量闭环 / CAPA", reportWithExam.qualityClosureItems], ["知识规则 / 考试关联", reportWithExam.knowledgeRuleItems]].map(([title, items]) => <section className="qmdp-report-card" key={title}><header><strong>{title}</strong><span>{items?.length || 0} 项</span></header>{(items || []).map((item, index) => <div className="qmdp-report-item" key={`${title}-${item.name}-${index}`}><div><b>{item.name}</b><span>{item.detail}</span></div><strong>{item.value}</strong></div>)}{!items?.length && <div className="qmdp-empty compact">暂无记录</div>}</section>)}</div><section className="qmdp-report-card qmdp-comparison-card"><header><strong>同级对比</strong><span>{reportWithExam.comparisonItems.length} 个对象</span></header>{reportWithExam.comparisonItems.map((item) => <div className={`qmdp-rank-bar ${item.selected ? "selected" : ""}`} key={item.name}><span>{item.name}</span><i><b className={item.selected ? "selected" : ""} style={{ width: `${Math.min(100, Math.max(3, item.value / Math.max(...reportWithExam.comparisonItems.map((row) => row.value), 1) * 100))}%` }}/></i><strong>{item.valueText}</strong></div>)}</section></section></div>;
 }
 function ReportTaskCenterPage() {
   const [tasks, setTasks] = useState(() => safeParse(localStorage.getItem(qmdpReportTasksKey), []));
   const [snapshots, setSnapshots] = useState(() => safeParse(localStorage.getItem(qmdpReportSnapshotsKey), []));
+  const agentTasks = [];
   const [query, setQuery] = useState(""); const [roleFilter, setRoleFilter] = useState("全部"); const [statusFilter, setStatusFilter] = useState("全部"); const [fromDate, setFromDate] = useState(""); const [toDate, setToDate] = useState("");
   useEffect(() => { localStorage.setItem(qmdpReportTasksKey, JSON.stringify(tasks)); }, [tasks]);
   const refresh = () => { setTasks(safeParse(localStorage.getItem(qmdpReportTasksKey), [])); setSnapshots(safeParse(localStorage.getItem(qmdpReportSnapshotsKey), [])); };
@@ -2623,13 +3263,27 @@ function ReportTaskCenterPage() {
   const roles = ["全部", ...roleReportNames];
   const visibleTasks = tasks.filter((item) => { const day = String(item.date || "").slice(0, 10); return (roleFilter === "全部" || item.role === roleFilter) && (statusFilter === "全部" || item.status === statusFilter) && (!fromDate || day >= fromDate) && (!toDate || day <= toDate) && (!query || `${item.role} ${item.recipient} ${item.module} ${item.status}`.toLowerCase().includes(query.toLowerCase())); });
   const visibleReports = snapshots.filter((item) => !query || `${item.role} ${item.recipient}`.toLowerCase().includes(query.toLowerCase()));
-  const batchExport = () => visibleReports.forEach((item) => downloadReportSnapshot(item, "html"));
-  return <div className="qmdp-page"><QmdpPageHeader icon={Rows} eyebrow="质量报告 / Task Center" title="报告任务中心" description="对应原 QMDP 的已生成报告、发送记录、筛选和文件打开能力。" action={<><button className="qmdp-secondary-btn" onClick={refresh}><ArrowsClockwise size={15}/>刷新记录</button><button className="qmdp-secondary-btn" onClick={batchExport} disabled={!visibleReports.length}><DownloadSimple size={15}/>批量导出</button><button className="qmdp-primary-btn" onClick={addTask}><Plus size={16}/>新建发送任务</button></>}/><QmdpStatStrip items={[{ label: "记录总数", value: tasks.length, note: "生成与发送" }, { label: "待发送", value: tasks.filter((item) => item.status === "待发送").length, note: "需要处理" }, { label: "已生成报告", value: snapshots.length, note: "可重新打开" }]} /><div className="qmdp-toolbar"><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="按角色、收件人或状态搜索"/><select value={roleFilter} onChange={(event) => setRoleFilter(event.target.value)}>{roles.map((item) => <option key={item}>{item}</option>)}</select><select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}><option>全部</option><option>已生成</option><option>待发送</option><option>已发送</option><option>已取消</option></select><input type="date" value={fromDate} onChange={(event) => setFromDate(event.target.value)} aria-label="开始日期"/><input type="date" value={toDate} onChange={(event) => setToDate(event.target.value)} aria-label="结束日期"/><span>当前显示 {visibleTasks.length} 条任务 · {visibleReports.length} 份报告</span></div><section className="qmdp-task-table"><div className="qmdp-task-row head"><span>报告模块</span><span>角色</span><span>收件人</span><span>时间</span><span>状态</span><span>操作</span></div>{visibleTasks.map((item) => <div className="qmdp-task-row" key={item.id}><span>{item.module || "质量报告"}</span><strong>{item.role}</strong><span>{item.recipient}</span><span>{formatSyncDateTime(item.date)}</span><select value={item.status} onChange={(event) => setTasks((current) => current.map((row) => row.id === item.id ? { ...row, status: event.target.value } : row))}><option>已生成</option><option>待发送</option><option>已发送</option><option>已取消</option></select><span className="qmdp-task-actions">{item.examLinks?.[0]?.url && <a className="qmdp-task-link" href={item.examLinks[0].url} target="_blank" rel="noreferrer">考试链接</a>}{item.reportId && <button className="qmdp-secondary-btn" onClick={() => { const report = snapshots.find((row) => row.id === item.reportId); if (report) downloadReportSnapshot(report, "html"); }}>打开</button>}<button className="qmdp-danger-btn" onClick={() => setTasks((current) => current.filter((row) => row.id !== item.id))}><Trash size={14}/>删除</button></span></div>)}{!visibleTasks.length && <div className="qmdp-empty compact">暂无报告任务记录。</div>}</section><section className="qmdp-saved-reports"><header><strong>已保存报告</strong><span>{visibleReports.length} 份</span></header>{visibleReports.map((item) => <div key={item.id}><div><b>{item.role} · {item.recipient}</b><span>{item.period} · {formatSyncDateTime(item.generatedAt)}</span></div><button className="qmdp-secondary-btn" onClick={() => downloadReportSnapshot(item, "html")}><DownloadSimple size={14}/>打开报告</button></div>)}{!visibleReports.length && <div className="qmdp-empty compact">保存报告后会出现在这里。</div>}</section></div>;
+  const batchExport = (type = "html") => visibleReports.forEach((item, index) => setTimeout(() => downloadReportSnapshot(item, type), index * 120));
+  const batchPrint = () => printReportSnapshots(visibleReports);
+  return <div className="qmdp-page"><QmdpPageHeader icon={Rows} eyebrow="质量报告 / Task Center" title="报告任务中心" description="对应原 QMDP 的已生成报告、发送记录、筛选和批量导出能力。" action={<><button className="qmdp-secondary-btn" onClick={refresh}><ArrowsClockwise size={15}/>刷新记录</button><button className="qmdp-secondary-btn" onClick={() => batchExport("html")} disabled={!visibleReports.length}><DownloadSimple size={15}/>批量HTML</button><button className="qmdp-secondary-btn" onClick={batchPrint} disabled={!visibleReports.length}><DownloadSimple size={15}/>批量PDF</button><button className="qmdp-primary-btn" onClick={addTask}><Plus size={16}/>新建发送任务</button></>}/><QmdpStatStrip items={[{ label: "记录总数", value: tasks.length, note: "生成与发送" }, { label: "待发送", value: tasks.filter((item) => item.status === "待发送").length, note: "需要处理" }, { label: "已生成报告", value: snapshots.length, note: "可重新打开" }]} /><div className="qmdp-toolbar"><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="按角色、收件人或状态搜索"/><select value={roleFilter} onChange={(event) => setRoleFilter(event.target.value)}>{roles.map((item) => <option key={item}>{item}</option>)}</select><select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}><option>全部</option><option>已生成</option><option>待发送</option><option>已发送</option><option>已取消</option></select><input type="date" value={fromDate} onChange={(event) => setFromDate(event.target.value)} aria-label="开始日期"/><input type="date" value={toDate} onChange={(event) => setToDate(event.target.value)} aria-label="结束日期"/><span>当前显示 {visibleTasks.length} 条任务 · {visibleReports.length} 份报告 · Agent任务 {agentTasks.length} 条</span></div><section className="qmdp-task-table"><div className="qmdp-task-row head"><span>报告模块</span><span>角色</span><span>收件人</span><span>时间</span><span>状态</span><span>操作</span></div>{visibleTasks.map((item) => <div className="qmdp-task-row" key={item.id}><span>{item.module || "质量报告"}</span><strong>{item.role}</strong><span>{item.recipient}</span><span>{formatSyncDateTime(item.date)}</span><select value={item.status} onChange={(event) => setTasks((current) => current.map((row) => row.id === item.id ? { ...row, status: event.target.value } : row))}><option>已生成</option><option>待发送</option><option>已发送</option><option>已取消</option></select><span className="qmdp-task-actions">{item.examLinks?.[0]?.url && <a className="qmdp-task-link" href={item.examLinks[0].url} target="_blank" rel="noreferrer">考试链接</a>}{item.reportId && <button className="qmdp-secondary-btn" onClick={() => { const report = snapshots.find((row) => row.id === item.reportId); if (report) downloadReportSnapshot(report, "html"); }}>打开</button>}<button className="qmdp-danger-btn" onClick={() => setTasks((current) => current.filter((row) => row.id !== item.id))}><Trash size={14}/>删除</button></span></div>)}{!visibleTasks.length && <div className="qmdp-empty compact">暂无报告任务记录。</div>}</section><section className="qmdp-saved-reports"><header><strong>已保存报告</strong><span>{visibleReports.length} 份</span></header>{visibleReports.map((item) => <div key={item.id}><div><b>{item.role} · {item.recipient}</b><span>{item.period} · {formatSyncDateTime(item.generatedAt)}</span></div><span className="qmdp-task-actions"><button className="qmdp-secondary-btn" onClick={() => downloadReportSnapshot(item, "html")}><DownloadSimple size={14}/>HTML</button><button className="qmdp-secondary-btn" onClick={() => printReportSnapshot(item)}><DownloadSimple size={14}/>PDF</button></span></div>)}{!visibleReports.length && <div className="qmdp-empty compact">保存报告后会出现在这里。</div>}</section><section className="qmdp-saved-reports qmdp-agent-task-list"><header><strong>质量分析 Agent发送任务</strong><span>{agentTasks.length} 条</span></header>{agentTasks.map((item) => <div key={item.fileName}><div><b>{item.module} · {item.role} · {item.recipient}</b><span>{item.reportPath || item.reportFileName} · {formatSyncDateTime(item.createdAt)}</span></div><span className="qmdp-task-status">{item.status}</span></div>)}{!agentTasks.length && <div className="qmdp-empty compact">暂无 Agent发送任务。请在质量分析 Agent中生成报告并创建任务。</div>}</section></div>;
 }
 
-function QualityReportsPage({ active, data, dateRange, onRoleChange }) {
+function RoleReportPeriodControls({ value, dateRange, onChange }) {
+  const setYear = (year) => onChange({ year, start: dateRange[`start${year}`] || `${year}-01-01`, end: dateRange[`end${year}`] || `${year}-12-31` });
+  return <div className="qmdp-report-period-controls"><span>报告统计周期</span><label>年份<select value={value.year} onChange={(event) => setYear(event.target.value)}><option value="2026">2026</option><option value="2025">2025</option></select></label><label>开始<input type="date" value={value.start || ""} onChange={(event) => onChange({ ...value, start: event.target.value })}/></label><i>—</i><label>结束<input type="date" value={value.end || ""} onChange={(event) => onChange({ ...value, end: event.target.value })}/></label>{value.start > value.end && <em>日期范围无效</em>}<small>支持按月或自定义区间生成角色报告</small></div>;
+}
+
+function QualityReportsPage({ active, data, files, dateRange, onRoleChange }) {
+  const [visualRecipient, setVisualRecipient] = useState("");
+  const [reportPeriod, setReportPeriod] = useState(() => ({ year: "2026", start: dateRange.start2026, end: dateRange.end2026 }));
+  useEffect(() => { setReportPeriod((current) => ({ ...current, start: dateRange[`start${current.year}`] || current.start, end: dateRange[`end${current.year}`] || current.end })); }, [dateRange.start2025, dateRange.end2025, dateRange.start2026, dateRange.end2026]);
   if (active === "报告任务中心") return <ReportTaskCenterPage data={data}/>;
-  return <RoleQualityReportPage data={data} dateRange={dateRange} role={active} onRoleChange={onRoleChange}/>;
+  const visualDateRange = useMemo(() => reportPeriod.year === "2025"
+    ? { ...dateRange, start2025: reportPeriod.start, end2025: reportPeriod.end, start2026: "", end2026: "" }
+    : { ...dateRange, start2025: "", end2025: "", start2026: reportPeriod.start, end2026: reportPeriod.end }, [dateRange, reportPeriod]);
+  const visualData = useMemo(() => analyzeImported(files, visualDateRange), [files, visualDateRange]);
+  const visualReport = buildWebRoleReport(visualData, active, visualRecipient, visualDateRange, files);
+  return <div className="qmdp-report-visual-shell"><RoleReportPeriodControls value={reportPeriod} dateRange={dateRange} onChange={setReportPeriod}/><RoleQualityReportPage data={data} files={files} dateRange={dateRange} role={active} onRoleChange={onRoleChange} onReportContext={setVisualRecipient} reportPeriod={reportPeriod} onReportPeriodChange={setReportPeriod}/><section className="qmdp-report-visual-charts"><QualityReportCharts report={visualReport}/></section></div>;
 }
 
 const defaultQmdpSystemConfig = { orgMappings: [{ productDept: "产品部", productionDirector: "待配置", tpm: "待配置", pm: "待配置", active: true }], supplyMappings: [], employees: [], weights: { ecn: 20, issue: 20, severity: 20, review: 15, nonBom: 15, open: 10 }, wecom: { corpId: "", agentId: "", secret: "" }, logs: [] };
@@ -2637,6 +3291,8 @@ function SystemManagementPage({ active, data, auth }) {
   const [tab, setTab] = useState(active);
   const [config, setConfig] = useState(() => ({ ...defaultQmdpSystemConfig, ...safeParse(localStorage.getItem(qmdpSystemKey), {}) }));
   const [status, setStatus] = useState("");
+  const [importingKind, setImportingKind] = useState("");
+  const mappingInputRef = useRef(null);
   useEffect(() => { localStorage.setItem(qmdpSystemKey, JSON.stringify(config)); }, [config]);
   useEffect(() => { setTab(active); }, [active]);
   const editable = auth?.isAdmin || auth?.isDeputy;
@@ -2644,41 +3300,75 @@ function SystemManagementPage({ active, data, auth }) {
   const setField = (section, index, field, value) => setConfig((current) => ({ ...current, [section]: current[section].map((row, rowIndex) => rowIndex === index ? { ...row, [field]: value } : row) }));
   const addRow = (section, row) => { setConfig((current) => ({ ...current, [section]: [...(current[section] || []), row] })); log(`新增${section}记录`); };
   const saveMessage = (message) => { log(message); setStatus(message); setTimeout(() => setStatus(""), 2200); };
+  const importMapping = async (event, kind) => {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+    setImportingKind(kind);
+    try {
+      const rows = await parseQmdpMappingWorkbook(file, kind);
+      const section = kind === "org" ? "orgMappings" : "supplyMappings";
+      setConfig((current) => ({ ...current, [section]: rows, importMeta: { ...(current.importMeta || {}), [kind]: { name: file.name, importedAt: new Date().toISOString(), count: rows.length } }, logs: [{ id: Date.now(), message: `${kind === "org" ? "研发组织" : "供应链"}映射已从 ${file.name} 导入 ${rows.length} 条`, at: new Date().toISOString() }, ...(current.logs || [])].slice(0, 100) }));
+      setStatus(`${kind === "org" ? "研发组织" : "供应链"}映射导入成功：${rows.length} 条`);
+    } catch (error) {
+      setStatus(`导入失败：${error?.message || "无法解析 Excel"}`);
+    } finally {
+      setImportingKind("");
+    }
+  };
+  const openMappingImport = (kind) => {
+    if (!editable || importingKind) return;
+    mappingInputRef.current?.setAttribute("data-kind", kind);
+    mappingInputRef.current?.click();
+  };
   const mappings = config.orgMappings || [];
   const supply = config.supplyMappings || [];
   const employees = config.employees || [];
   const renderMapping = () => <div className="qmdp-admin-table"><div className="qmdp-admin-row head"><span>产品部/厂区</span><span>负责人</span><span>TPM</span><span>PM/交付经理</span><span>状态</span></div>{mappings.map((row, index) => <div className="qmdp-admin-row" key={index}><input disabled={!editable} value={row.productDept || ""} onChange={(event) => setField("orgMappings", index, "productDept", event.target.value)}/><input disabled={!editable} value={row.productionDirector || ""} onChange={(event) => setField("orgMappings", index, "productionDirector", event.target.value)}/><input disabled={!editable} value={row.tpm || ""} onChange={(event) => setField("orgMappings", index, "tpm", event.target.value)}/><input disabled={!editable} value={row.pm || ""} onChange={(event) => setField("orgMappings", index, "pm", event.target.value)}/><select disabled={!editable} value={row.active ? "启用" : "停用"} onChange={(event) => setField("orgMappings", index, "active", event.target.value === "启用")}><option>启用</option><option>停用</option></select></div>)}</div>;
   const renderSupply = () => <div className="qmdp-admin-table"><div className="qmdp-admin-row head"><span>厂区</span><span>工坊</span><span>交付经理</span><span>机长</span><span>状态</span></div>{supply.map((row, index) => <div className="qmdp-admin-row" key={index}><input disabled={!editable} value={row.site || ""} onChange={(event) => setField("supplyMappings", index, "site", event.target.value)}/><input disabled={!editable} value={row.workshop || ""} onChange={(event) => setField("supplyMappings", index, "workshop", event.target.value)}/><input disabled={!editable} value={row.manager || ""} onChange={(event) => setField("supplyMappings", index, "manager", event.target.value)}/><input disabled={!editable} value={row.leader || ""} onChange={(event) => setField("supplyMappings", index, "leader", event.target.value)}/><select disabled={!editable} value={row.active ? "启用" : "停用"} onChange={(event) => setField("supplyMappings", index, "active", event.target.value === "启用")}><option>启用</option><option>停用</option></select></div>)}</div>;
   const renderEmployees = () => <div className="qmdp-admin-table"><div className="qmdp-admin-row head"><span>工号</span><span>姓名</span><span>部门</span><span>职位</span><span>企业微信 userid</span></div>{employees.map((row, index) => <div className="qmdp-admin-row" key={index}>{["id", "name", "dept", "role", "wecom"].map((field) => <input key={field} disabled={!editable} value={row[field] || ""} onChange={(event) => setField("employees", index, field, event.target.value)}/>)}</div>)}</div>;
-  const content = tab === "组织映射" ? <><Panel title="组织映射维护" subtitle="产品部、产总、TPM、PM 的责任关系">{renderMapping()}<button className="qmdp-secondary-btn" disabled={!editable} onClick={() => addRow("orgMappings", { productDept: "新产品部", productionDirector: "", tpm: "", pm: "", active: true })}><Plus size={15}/>新增映射</button></Panel></> : tab === "供应链映射" ? <><Panel title="供应链人员映射" subtitle="厂区、工坊、交付经理与机长">{renderSupply()}<button className="qmdp-secondary-btn" disabled={!editable} onClick={() => addRow("supplyMappings", { site: "深圳", workshop: "", manager: "", leader: "", active: true })}><Plus size={15}/>新增映射</button></Panel></> : tab === "员工信息" ? <><Panel title="员工信息 / 企业微信 userid">{renderEmployees()}<button className="qmdp-secondary-btn" disabled={!editable} onClick={() => addRow("employees", { id: "", name: "", dept: "", role: "", wecom: "" })}><Plus size={15}/>新增员工</button></Panel></> : tab === "评分权重" ? <Panel title="质量风险评分权重" subtitle="权重总和应为 100"><div className="qmdp-weight-grid">{[["ecn", "ECN个人占比"], ["issue", "研发问题数量"], ["severity", "高严重度问题"], ["review", "设计评审问题占比"], ["nonBom", "非BOM加工件比例"], ["open", "未关闭问题数量"]].map(([key, label]) => <label key={key}><span>{label}</span><input type="number" min="0" max="100" value={config.weights?.[key] ?? 0} disabled={!editable} onChange={(event) => setConfig((current) => ({ ...current, weights: { ...current.weights, [key]: Number(event.target.value) } }))}/></label>)}</div><div className="qmdp-weight-total">当前权重合计：<strong>{Object.values(config.weights || {}).reduce((sum, value) => sum + Number(value || 0), 0)}%</strong><button className="qmdp-primary-btn" disabled={!editable} onClick={() => saveMessage("质量评分权重已保存")}>保存权重</button></div></Panel> : tab === "企业微信" ? <Panel title="企业微信应用配置" subtitle="用于报告发送，密钥只保存在本机状态"><div className="qmdp-form-grid">{[["corpId", "CorpId"], ["agentId", "AgentId"], ["secret", "Secret"]].map(([key, label]) => <label key={key}><span>{label}</span><input type={key === "secret" ? "password" : "text"} value={config.wecom?.[key] || ""} disabled={!editable} onChange={(event) => setConfig((current) => ({ ...current, wecom: { ...current.wecom, [key]: event.target.value } }))}/></label>)}</div><button className="qmdp-primary-btn" disabled={!editable} onClick={() => saveMessage("企业微信配置已保存")}>保存配置</button></Panel> : <Panel title="操作日志" subtitle="记录映射、权重与发送配置的变更"><div className="qmdp-log-list">{(config.logs || []).map((item) => <div key={item.id}><span>{formatSyncDateTime(item.at)}</span><strong>{item.message}</strong></div>)}{!(config.logs || []).length && <div className="qmdp-empty compact">暂无操作日志。</div>}</div></Panel>;
-  return <div className="qmdp-page"><QmdpPageHeader icon={GearSix} eyebrow="系统管理 / Administration" title={tab} description={editable ? "副管理员和主管理员可维护映射、权重与发送配置。" : "当前账号仅可查看系统配置。"} action={status && <span className="qmdp-inline-status"><CheckCircle size={15}/>{status}</span>}/><div className="qmdp-admin-tabs">{qmdpMenuGroups.find((group) => group.label === "系统管理").children.map((item) => <button key={item} className={tab === item ? "active" : ""} onClick={() => setTab(item)}>{item}</button>)}</div>{content}<div className="qmdp-note"><Database size={15}/>系统管理数据与现有数据导入、IPQC过程管控、研发质量分析相互隔离。</div></div>;
+  const importActions = (kind, section) => <div style={{ display: "flex", gap: 8, alignItems: "center" }}><button className="qmdp-secondary-btn" disabled={!editable || importingKind === kind} onClick={() => openMappingImport(kind)}><UploadSimple size={15}/>{importingKind === kind ? "解析中…" : "导入 Excel"}</button><span style={{ color: "#8190a2", fontSize: 10 }}>{config.importMeta?.[kind]?.name ? `最近导入：${config.importMeta[kind].name}（${config.importMeta[kind].count} 条）` : `支持 ${kind === "org" ? "产品部 / 产总 / TPM / PM" : "厂区 / 工坊 / 交付经理 / 机长"} 表头`}</span></div>;
+  const content = tab === "研发组织映射" ? <><Panel title="研发组织映射维护" subtitle="产品部、产总、TPM、PM 的责任关系" action={importActions("org", "orgMappings")}>{renderMapping()}<button className="qmdp-secondary-btn" disabled={!editable} onClick={() => addRow("orgMappings", { productDept: "新产品部", productionDirector: "", tpm: "", pm: "", active: true })}><Plus size={15}/>新增映射</button></Panel></> : tab === "供应链映射" ? <><Panel title="供应商/供应链人员映射" subtitle="厂区、工坊、交付经理与机长" action={importActions("supply", "supplyMappings")}>{renderSupply()}<button className="qmdp-secondary-btn" disabled={!editable} onClick={() => addRow("supplyMappings", { site: "深圳", workshop: "", manager: "", leader: "", active: true })}><Plus size={15}/>新增映射</button></Panel></> : tab === "员工信息" ? <><Panel title="员工信息 / 企业微信 userid">{renderEmployees()}<button className="qmdp-secondary-btn" disabled={!editable} onClick={() => addRow("employees", { id: "", name: "", dept: "", role: "", wecom: "" })}><Plus size={15}/>新增员工</button></Panel></> : tab === "评分权重" ? <Panel title="质量风险评分权重" subtitle="权重总和应为 100"><div className="qmdp-weight-grid">{[["ecn", "ECN个人占比"], ["issue", "研发问题数量"], ["severity", "高严重度问题"], ["review", "设计评审问题占比"], ["nonBom", "非BOM加工件比例"], ["open", "未关闭问题数量"]].map(([key, label]) => <label key={key}><span>{label}</span><input type="number" min="0" max="100" value={config.weights?.[key] ?? 0} disabled={!editable} onChange={(event) => setConfig((current) => ({ ...current, weights: { ...current.weights, [key]: Number(event.target.value) } }))}/></label>)}</div><div className="qmdp-weight-total">当前权重合计：<strong>{Object.values(config.weights || {}).reduce((sum, value) => sum + Number(value || 0), 0)}%</strong><button className="qmdp-primary-btn" disabled={!editable} onClick={() => saveMessage("质量评分权重已保存")}>保存权重</button></div></Panel> : tab === "企业微信" ? <Panel title="企业微信应用配置" subtitle="用于报告发送，密钥只保存在本机状态"><div className="qmdp-form-grid">{[["corpId", "CorpId"], ["agentId", "AgentId"], ["secret", "Secret"]].map(([key, label]) => <label key={key}><span>{label}</span><input type={key === "secret" ? "password" : "text"} value={config.wecom?.[key] || ""} disabled={!editable} onChange={(event) => setConfig((current) => ({ ...current, wecom: { ...current.wecom, [key]: event.target.value } }))}/></label>)}</div><button className="qmdp-primary-btn" disabled={!editable} onClick={() => saveMessage("企业微信配置已保存")}>保存配置</button></Panel> : <Panel title="操作日志" subtitle="记录映射、权重与发送配置的变更"><div className="qmdp-log-list">{(config.logs || []).map((item) => <div key={item.id}><span>{formatSyncDateTime(item.at)}</span><strong>{item.message}</strong></div>)}{!(config.logs || []).length && <div className="qmdp-empty compact">暂无操作日志。</div>}</div></Panel>;
+  return <div className="qmdp-page"><input ref={mappingInputRef} type="file" accept=".xlsx,.xls,.xlsm" hidden onChange={(event) => importMapping(event, mappingInputRef.current?.getAttribute("data-kind") || "supply")}/><QmdpPageHeader icon={GearSix} eyebrow="系统管理 / Administration" title={tab} description={editable ? "副管理员和主管理员可维护映射、权重与发送配置。" : "当前账号仅可查看系统配置。"} action={status && <span className="qmdp-inline-status"><CheckCircle size={15}/>{status}</span>}/><div className="qmdp-admin-tabs">{qmdpMenuGroups.find((group) => group.label === "系统管理").children.map((item) => <button key={item} className={tab === item ? "active" : ""} onClick={() => setTab(item)}>{item}</button>)}</div>{content}<div className="qmdp-note"><Database size={15}/>系统管理数据与现有数据导入、IPQC过程管控、研发质量分析相互隔离。</div></div>;
 }
 
-function ExecutiveDashboard({ data, files, onImport, onDeleteSource, onSourcesChanged, view, onViewChange, dateRange, teamDefaultRange, lastServerSavedAt, serverSyncStatus, onDateRange, onRefreshDate, dateRefreshStatus, refreshProgress, fontSize, onFontSize, analysisKey, labelControlsVisible, onToggleLabelControls, uiTheme, onThemeChange, sidebarCollapsed, onToggleSidebar, auth, permissions, onPermissionsChanged }) {
+function ExecutiveDashboard({ data, files, dqaEngineerSupplement, onImport, onDeleteSource, onSourcesChanged, onImportDqaEngineerSupplement, onClearDqaEngineerSupplement, onDeleteDqaEngineerSupplementFile, view, onViewChange, dateRange, teamDefaultRange, lastServerSavedAt, serverSyncStatus, onDateRange, onRefreshDate, dateRefreshStatus, refreshProgress, fontSize, onFontSize, analysisKey, labelControlsVisible, onToggleLabelControls, uiTheme, onThemeChange, sidebarCollapsed, onToggleSidebar, auth, permissions, onPermissionsChanged }) {
   const [active, setActive] = useState("总览");
+  const [sidebarWidth, setSidebarWidth] = useState(() => clampSidebarWidth(localStorage.getItem("qms-sidebar-width") || sidebarWidthLimits.default));
   const moduleView = ["IQC", "IPQC", "OQC", "DQA", "QMS"].includes(active) ? active : null;
   const qmdpKnowledgeView = ["知识库", "题库管理", "知识考试"].includes(active);
   const qmdpReportView = ["IPQC操作报告", "机长报告", "交付经理报告", "供应链经理报告", "研发工程师报告", "PM报告", "TPM报告", "产总报告", "董事长报告", "报告任务中心"].includes(active);
-  const qmdpSystemView = ["组织映射", "供应链映射", "员工信息", "评分权重", "企业微信", "操作日志"].includes(active);
-  const qmdpView = qmdpKnowledgeView || qmdpReportView || qmdpSystemView;
+  const qmdpSystemView = ["研发组织映射", "供应链映射", "员工信息", "评分权重", "企业微信", "操作日志"].includes(active);
+  const qualityAgentView = qualityAgentMenuItems.includes(active);
+  const agentRoleReportView = agentRoleMenuItems.includes(active);
+  const agentExamStatsView = agentUtilityMenuItems.includes(active);
+  const qmdpView = qmdpKnowledgeView || qmdpReportView || qmdpSystemView || qualityAgentView || agentRoleReportView || agentExamStatsView;
+  const activeMenuGroup = qmdpMenuGroups.find((group) => group.children.includes(active));
+  const menuDenied = activeMenuGroup ? !canUseMenu(auth, permissions, activeMenuGroup.label, active) : ["AI分析", "AI接口", "权限设置"].includes(active) && !canUseMenu(auth, permissions, active);
   const allowImport = canUseFeature(auth, permissions, "dataImport");
   const allowWorkspace = canUseFeature(auth, permissions, "workspace");
   const allowAnnotationEdit = canUseFeature(auth, permissions, "annotationEdit");
   const allowAnnotationView = canUseFeature(auth, permissions, "annotationView");
   const allowExport = canUseFeature(auth, permissions, "exportReport");
   const allowTemporaryRefresh = canUseFeature(auth, permissions, "dateTemporaryRefresh");
+  const agentFiles = useMemo(() => {
+    const source = buildDqaEngineerSupplementSource(dqaEngineerSupplement, dateRange);
+    return source ? [...files, source] : files;
+  }, [files, dqaEngineerSupplement, dateRange]);
   useEffect(() => {
-    if ((active === "数据导入" && !allowImport) || (active === "AI分析" && !canUseFeature(auth, permissions, "aiAnalysis")) || (active === "AI接口" && !canUseFeature(auth, permissions, "aiInterface")) || (active === "权限设置" && !auth?.isAdmin)) setActive("总览");
-  }, [active, allowImport, auth, permissions]);
-  return <div className={`executive-shell theme-${uiTheme} ${sidebarCollapsed ? "sidebar-collapsed" : ""} ${active === "权限设置" ? "permission-active" : ""}`}>
-    <ExecutiveSidebar active={active} setActive={setActive} uiTheme={uiTheme} onThemeChange={onThemeChange} collapsed={sidebarCollapsed} onToggleCollapsed={onToggleSidebar} permissions={permissions} auth={auth} />
+    if (menuDenied || (active === "数据导入" && !allowImport) || (active === "AI分析" && !canUseFeature(auth, permissions, "aiAnalysis")) || ([...qualityAgentMenuItems, ...agentRoleMenuItems, ...agentUtilityMenuItems].includes(active) && !canUseFeature(auth, permissions, "qualityAgent")) || (active === "AI接口" && !canUseFeature(auth, permissions, "aiInterface")) || (active === "权限设置" && !auth?.isAdmin)) setActive("总览");
+  }, [active, allowImport, auth, menuDenied, permissions]);
+  const changeSidebarWidth = (value) => setSidebarWidth((current) => { const next = clampSidebarWidth(value); if (next !== current) localStorage.setItem("qms-sidebar-width", String(next)); return next; });
+  const shellStyle = { "--sidebar-width": `${sidebarCollapsed ? 70 : sidebarWidth}px` };
+  return <div className={`executive-shell theme-${uiTheme} ${sidebarCollapsed ? "sidebar-collapsed" : ""} ${active === "权限设置" ? "permission-active" : ""}`} style={shellStyle}>
+    <ExecutiveSidebar active={active} setActive={setActive} uiTheme={uiTheme} onThemeChange={onThemeChange} collapsed={sidebarCollapsed} onToggleCollapsed={onToggleSidebar} permissions={permissions} auth={auth} width={sidebarWidth} onWidthChange={changeSidebarWidth} />
     <main className="executive-main">
       <header className="executive-topbar">
-        <div><h1>{moduleView ? `${moduleView} 专题分析` : qmdpView ? active : active === "AI分析" ? "AI质量经营分析" : active === "AI接口" ? "AI接口配置" : active === "数据导入" ? "数据源管理" : "经营驾驶舱"}</h1><p>{moduleView ? "从原始数据下钻到TOP问题与责任对象" : qmdpKnowledgeView ? "知识文件、题库与考试" : qmdpReportView ? "按角色和管理范围生成质量报告" : qmdpSystemView ? "组织、人员、评分与发送配置" : active === "AI分析" ? "展示 generate-quality-review-report 正式审核版结论" : active === "AI接口" ? "配置本机第三方模型网关并验证调用" : "全局质量运营总览"}</p></div>
+        <div><h1>{moduleView ? `${moduleView} 专题分析` : qmdpView ? active : active === "AI分析" ? "AI质量经营分析" : active === "AI接口" ? "AI接口配置" : active === "数据导入" ? "数据源管理" : "经营驾驶舱"}</h1><p>{moduleView ? "从原始数据下钻到TOP问题与责任对象" : qmdpKnowledgeView ? "知识文件、题库与考试" : qmdpReportView ? "按角色和管理范围生成质量报告" : qualityAgentView ? "独立的质量分析 Agent 工作流，不改变现有统计和报告" : qmdpSystemView ? "组织、人员、评分与发送配置" : active === "AI分析" ? "展示 generate-quality-review-report 正式审核版结论" : active === "AI接口" ? "配置本机第三方模型网关并验证调用" : "全局质量运营总览"}</p></div>
         <div className="top-actions"><ServerSyncBadge value={serverSyncStatus}/><Switcher view={view} onChange={onViewChange} canWorkspace={allowWorkspace} />{allowAnnotationEdit && <AnnotationEditButton defaultModule={moduleView || "\u603b\u89c8"} />}{allowAnnotationView && <AnnotationViewButton />}{allowExport && <ExportReportButton />}<button className={`label-controls-toggle ${labelControlsVisible ? "active" : ""}`} onClick={onToggleLabelControls}>{labelControlsVisible ? "隐藏数值设置" : "显示数值设置"}</button>{allowImport && <button className="import-btn" onClick={() => onImport(null)}><UploadSimple size={17} />导入数据</button>}</div>
       </header>
       {!qmdpView && <DateRangeFilter value={dateRange} teamDefaultRange={teamDefaultRange} lastServerSavedAt={lastServerSavedAt} onChange={onDateRange} onRefresh={onRefreshDate} refreshStatus={dateRefreshStatus} refreshProgress={refreshProgress} canRefresh={allowTemporaryRefresh} fontSize={fontSize} onFontSize={onFontSize}/>}
-      {active === "权限设置" && auth?.isAdmin ? <PermissionSettingsPage auth={auth} permissions={permissions} onPermissionsChanged={onPermissionsChanged}/> : qmdpKnowledgeView ? <KnowledgeManagementPage active={active}/> : qmdpReportView ? <QualityReportsPage active={active} data={data} dateRange={dateRange} onRoleChange={setActive}/> : qmdpSystemView ? <SystemManagementPage active={active} data={data} auth={auth}/> : active === "AI接口" && canUseFeature(auth, permissions, "aiInterface") ? <AiInterfacePage/> : active === "数据导入" && allowImport ? <DataSourcePage files={files} onImportModule={onImport} onDelete={onDeleteSource} onSourcesChanged={onSourcesChanged}/> : active === "AI分析" && canUseFeature(auth, permissions, "aiAnalysis") ? <AiAnalysisPage data={data} dateRange={dateRange} analysisKey={analysisKey}/> : moduleView ? <ModuleDetail key={`${moduleView}-${analysisKey}`} module={moduleView} data={data} /> : <>
+      {active === "权限设置" && auth?.isAdmin ? <PermissionSettingsPage auth={auth} permissions={permissions} onPermissionsChanged={onPermissionsChanged}/> : qmdpKnowledgeView ? <KnowledgeManagementPage active={active}/> : qmdpReportView ? <QualityReportsPage active={active} data={data} files={files} dateRange={dateRange} onRoleChange={setActive}/> : qualityAgentView && canUseFeature(auth, permissions, "qualityAgent") ? <QualityAgentPage key={active} data={data} files={files} dateRange={dateRange} module={qualityAgentMenuModules[active]}/> : agentRoleReportView && canUseFeature(auth, permissions, "qualityAgent") ? <AgentRoleReportPage key={active} initialRole={agentRoleMenuRoles[active]} data={data} files={agentFiles} dateRange={dateRange}/> : agentExamStatsView && canUseFeature(auth, permissions, "qualityAgent") ? <AgentExamStatsPage/> : qmdpSystemView ? <SystemManagementPage active={active} data={data} auth={auth}/> : active === "AI接口" && canUseFeature(auth, permissions, "aiInterface") ? <AiInterfacePage/> : active === "数据导入" && allowImport ? <DataSourcePage files={files} onImportModule={onImport} onDelete={onDeleteSource} onSourcesChanged={onSourcesChanged} dqaEngineerSupplement={dqaEngineerSupplement} onImportDqaEngineerSupplement={onImportDqaEngineerSupplement} onClearDqaEngineerSupplement={onClearDqaEngineerSupplement} onDeleteDqaEngineerSupplementFile={onDeleteDqaEngineerSupplementFile}/> : active === "AI分析" && canUseFeature(auth, permissions, "aiAnalysis") ? <AiAnalysisPage data={data} dateRange={dateRange} analysisKey={analysisKey}/> : moduleView ? <ModuleDetail key={`${moduleView}-${analysisKey}`} module={moduleView} data={data} /> : <>
         <OverviewKpiCards data={data}/>
         <div className="dashboard-grid">
           <MainSupplierOverview data={data}/>
@@ -2693,13 +3383,13 @@ function ExecutiveDashboard({ data, files, onImport, onDeleteSource, onSourcesCh
   </div>;
 }
 
-function WorkspaceTop({ view, onViewChange, auth, permissions }) {
+function WorkspaceTop({ view, onViewChange, uiTheme, onThemeChange, auth, permissions }) {
   const allowAnnotationEdit = canUseFeature(auth, permissions, "annotationEdit");
   const allowAnnotationView = canUseFeature(auth, permissions, "annotationView");
   const allowExport = canUseFeature(auth, permissions, "exportReport");
   return <header className="workspace-top summary-workspace-top">
     <div className="workspace-brand"><ShieldCheck size={24} weight="fill" /><strong>总结报告</strong></div>
-    <div className="workspace-actions"><Switcher view={view} onChange={onViewChange} canWorkspace />{allowAnnotationEdit && <AnnotationEditButton defaultModule="\u8d28\u91cf\u5de5\u4f5c\u53f0" />}{allowAnnotationView && <AnnotationViewButton />}{allowExport && <ExportReportButton />}</div>
+    <div className="workspace-actions"><Switcher view={view} onChange={onViewChange} canWorkspace />{allowAnnotationEdit && <AnnotationEditButton defaultModule="\u8d28\u91cf\u5de5\u4f5c\u53f0" />}{allowAnnotationView && <AnnotationViewButton />}{allowExport && <ExportReportButton />}<ThemeToggle value={uiTheme} onChange={onThemeChange}/></div>
   </header>;
 }
 
@@ -2824,9 +3514,9 @@ function TodoTable({ rows, onChange }) {
   </div>;
 }
 
-function WorkspaceDashboard({ data, files, onImport, view, onViewChange, uiTheme, auth, permissions }) {
+function WorkspaceDashboard({ data, files, onImport, view, onViewChange, uiTheme, onThemeChange, auth, permissions }) {
   return <div className={`workspace-shell summary-report-shell annotation-only-workspace theme-${uiTheme}`}>
-    <WorkspaceTop onImport={onImport} view={view} onViewChange={onViewChange} auth={auth} permissions={permissions} />
+    <WorkspaceTop onImport={onImport} view={view} onViewChange={onViewChange} uiTheme={uiTheme} onThemeChange={onThemeChange} auth={auth} permissions={permissions} />
     <main className="workspace-main summary-report-page">
       <section className="dataset-section"><div className="section-label">数据集状态（与经营驾驶舱一致）<Question size={14} /></div><DatasetStatus files={files} /></section>
       <Panel title={annotationText.pool} subtitle={annotationText.poolSub} action={<AnnotationTransferActions />} className="report-todos-panel"><AnnotationReportPanel /></Panel>
@@ -4930,6 +5620,7 @@ export function App() {
   const [view, setView] = useState(() => location.hash.includes("workspace") ? "workspace" : "executive");
   const [data, setData] = useState(null);
   const [files, setFiles] = useState([]);
+  const [dqaEngineerSupplement, setDqaEngineerSupplement] = useState(null);
   const [importOpen, setImportOpen] = useState(false);
   const [importModule, setImportModule] = useState(null);
   const [storageReady, setStorageReady] = useState(false);
@@ -4963,12 +5654,14 @@ export function App() {
     });
     return nextData;
   }, [analyzeInBackground]);
+  const cleanPrimarySources = useCallback((sources = []) => sources.filter((source) => !isLegacyDqaEngineerSource(source)), []);
   const ensureQmsSources = useCallback(async (sources = []) => {
     if (sources.some((source) => source.module === "QMS")) return sources;
     const qmsDefaults = await loadDefaultQmsSources();
     return qmsDefaults.length ? [...sources, ...qmsDefaults] : sources;
   }, []);
   const prepareSourcesForAnalysis = useCallback(async (sources, onProgress = () => {}) => {
+    sources = cleanPrimarySources(sources);
     if (!sources?.length || sources.every((source) => Array.isArray(source.rows) && source.rows.length)) return sources;
     const downloadable = sources.filter((source) => source.serverFile);
     if (!downloadable.length) return sources;
@@ -4979,10 +5672,10 @@ export function App() {
     const parsed = await parseFiles(downloadedFiles);
     const metaByKey = new Map(sources.map((source) => [`${source.module}::${source.name}`, source]));
     const parsedKeys = new Set(parsed.map((source) => `${source.module}::${source.name}`));
-    const hydrated = parsed.map((source) => ({ ...source, ...(metaByKey.get(`${source.module}::${source.name}`) || {}), rows: source.rows }));
+    const hydrated = parsed.map((source) => ({ ...(metaByKey.get(`${source.module}::${source.name}`) || {}), ...source, rows: source.rows }));
     const rest = sources.filter((source) => !parsedKeys.has(`${source.module}::${source.name}`));
     return [...rest, ...hydrated];
-  }, []);
+  }, [cleanPrimarySources]);
   const saveAnalysisCacheFor = useCallback((sources, range, nextData) => {
     if (!sources?.length || !nextData) return Promise.resolve(null);
     return saveCachedAnalysis({
@@ -5016,6 +5709,12 @@ export function App() {
     if (view === "workspace" && !canUseFeature(auth, permissions, "workspace")) setView("executive");
   }, [view, auth, permissions]);
   useEffect(() => {
+    if (!authReady || !auth.isAuthorized) return undefined;
+    let cancelled = false;
+    loadDqaEngineerSupplement().then((value) => { if (!cancelled) setDqaEngineerSupplement(value); }).catch(() => {});
+    return () => { cancelled = true; };
+  }, [authReady, auth.isAuthorized]);
+  useEffect(() => {
     const theme = uiTheme === "apple" ? "apple" : "classic";
     document.documentElement.dataset.uiTheme = theme;
     localStorage.setItem("qms-ui-theme", theme);
@@ -5036,7 +5735,7 @@ export function App() {
         } : null;
         if (!cancelled && cached?.version === ANALYSIS_CACHE_VERSION && cached?.data && cachedRange) {
           setUsingDefaultAnalysis(false);
-          setFiles(cached.files || []);
+          setFiles(cleanPrimarySources(cached.files || []));
           setDateRange(cachedRange);
           setAppliedDateRange(cachedRange);
           setTeamDefaultRange(cachedRange);
@@ -5047,10 +5746,11 @@ export function App() {
           setStorageReady(true);
           loadImportedSources().then(async (stored) => {
             if (cancelled || !stored.length) return;
-            const sourcesWithQms = await ensureQmsSources(stored);
+            const sourcesWithQms = await ensureQmsSources(cleanPrimarySources(stored));
             if (cancelled) return;
             setFiles(sourcesWithQms);
-            if (!cacheMatchesSources(cached, sourcesWithQms)) {
+            const needsSourceHydration = sourcesWithQms.some((source) => ["IPQC", "DQA"].includes(source.module) && source.subKind !== "DQA_ECN" && source.subKind !== "DQA_MACHINED_PARTS" && (!Array.isArray(source.rows) || !source.rows.length) && source.serverFile);
+            if (!cacheMatchesSources(cached, sourcesWithQms) || needsSourceHydration) {
               const hydrated = await prepareSourcesForAnalysis(sourcesWithQms);
               if (cancelled) return;
               setFiles(hydrated);
@@ -5080,7 +5780,7 @@ export function App() {
         if (cancelled) return;
         if (stored.length) {
           setUsingDefaultAnalysis(false);
-          const sourcesWithQms = await ensureQmsSources(stored);
+          const sourcesWithQms = await ensureQmsSources(cleanPrimarySources(stored));
           if (cancelled) return;
           setFiles(sourcesWithQms);
           const hydrated = await prepareSourcesForAnalysis(sourcesWithQms);
@@ -5149,12 +5849,83 @@ export function App() {
     localStorage.setItem("qms-chart-label-controls-visible-v2", String(labelControlsVisible));
     window.dispatchEvent(new CustomEvent("qms-chart-label-controls", { detail: labelControlsVisible }));
   }, [labelControlsVisible]);
+  const normalizeDqaEngineerSupplement = (value) => {
+    const current = value || {};
+    const files = (current.files || []).map((file) => ({
+      ...file,
+      sourceId: file.sourceId || `legacy:${file.kind || "unknown"}:${file.name || "unknown"}`,
+    }));
+    const attachSource = (records, kind) => {
+      const kindFiles = files.filter((file) => file.kind === kind);
+      return (records || []).map((record, index) => {
+        if (record.sourceId) return record;
+        const source = kindFiles[0];
+        return {
+          ...record,
+          sourceId: source?.sourceId || `legacy:${kind}:${index}`,
+          sourceName: record.sourceName || source?.name || "历史导入数据",
+        };
+      });
+    };
+    return {
+      ...current,
+      files,
+      ecnRecords: attachSource(current.ecnRecords, "ECN"),
+      nonBomRecords: attachSource(current.nonBomRecords, "非BOM"),
+      reviewRecords: attachSource(current.reviewRecords, "研发评审"),
+    };
+  };
+  const importDqaEngineerSupplement = async (selectedFiles) => {
+    const parsed = await parseDqaEngineerSupplementFiles(selectedFiles);
+    if (!parsed.ecnRecords.length && !parsed.nonBomRecords.length && !parsed.reviewRecords.length) throw new Error("未识别到 ECN、非BOM 或研发评审数据");
+    const current = normalizeDqaEngineerSupplement(dqaEngineerSupplement);
+    const existingIds = new Set((current.files || []).map((file) => file.sourceId));
+    const newFiles = (parsed.files || []).filter((file) => !existingIds.has(file.sourceId));
+    const newIds = new Set(newFiles.map((file) => file.sourceId));
+    const merged = {
+      version: 1,
+      kind: parsed.kind,
+      updatedAt: new Date().toISOString(),
+      files: [...(current.files || []), ...newFiles],
+      ecnRecords: [...(current.ecnRecords || []), ...parsed.ecnRecords.filter((record) => newIds.has(record.sourceId))],
+      nonBomRecords: [...(current.nonBomRecords || []), ...parsed.nonBomRecords.filter((record) => newIds.has(record.sourceId))],
+      reviewRecords: [...(current.reviewRecords || []), ...parsed.reviewRecords.filter((record) => newIds.has(record.sourceId))],
+    };
+    const saved = await saveDqaEngineerSupplement(merged);
+    setDqaEngineerSupplement(saved || merged);
+    return saved || merged;
+  };
+  const deleteDqaEngineerSupplementFile = async (file) => {
+    const current = normalizeDqaEngineerSupplement(dqaEngineerSupplement);
+    const sourceId = file?.sourceId || `legacy:${file?.kind || "unknown"}:${file?.name || "unknown"}`;
+    const next = {
+      ...current,
+      updatedAt: new Date().toISOString(),
+      files: (current.files || []).filter((item) => item.sourceId !== sourceId),
+      ecnRecords: (current.ecnRecords || []).filter((record) => record.sourceId !== sourceId),
+      nonBomRecords: (current.nonBomRecords || []).filter((record) => record.sourceId !== sourceId),
+      reviewRecords: (current.reviewRecords || []).filter((record) => record.sourceId !== sourceId),
+    };
+    if (!next.files.length) {
+      await clearDqaEngineerSupplementState();
+      setDqaEngineerSupplement(null);
+      return null;
+    }
+    const saved = await saveDqaEngineerSupplement(next);
+    setDqaEngineerSupplement(saved || next);
+    return saved || next;
+  };
+  const clearDqaEngineerSupplement = async () => {
+    await clearDqaEngineerSupplementState();
+    setDqaEngineerSupplement(null);
+  };
   const openImport = (module = null) => {
     if (!canUseFeature(auth, permissions, "dataImport")) return;
     setImportModule(module);
     setImportOpen(true);
   };
   const applySources = async (sources, result = {}, onProgress = () => {}) => {
+    sources = cleanPrimarySources(sources);
     setUsingDefaultAnalysis(false);
     setFiles(sources);
     onProgress({ state: "loading", label: "正在保存数据源清单" });
@@ -5321,8 +6092,8 @@ export function App() {
 
   return <UiThemeContext.Provider value={uiTheme === "apple" ? "apple" : "classic"}>
     {view === "executive"
-      ? <ExecutiveDashboard data={data} files={files} onImport={openImport} onDeleteSource={deleteSource} onSourcesChanged={applySources} view={view} onViewChange={setView} dateRange={dateRange} teamDefaultRange={teamDefaultRange} lastServerSavedAt={lastServerSavedAt} serverSyncStatus={serverSyncStatus} appliedDateRange={appliedDateRange} onDateRange={updateDateRange} onRefreshDate={refreshDateData} dateRefreshStatus={dateRefreshStatus} refreshProgress={refreshProgress} fontSize={fontSize} onFontSize={setFontSize} analysisKey={analysisRevision} labelControlsVisible={labelControlsVisible} onToggleLabelControls={() => setLabelControlsVisible((current) => !current)} uiTheme={uiTheme === "apple" ? "apple" : "classic"} onThemeChange={changeUiTheme} sidebarCollapsed={sidebarCollapsed} onToggleSidebar={() => setSidebarCollapsed((current) => !current)} auth={auth} permissions={permissions} onPermissionsChanged={(next) => setPermissions(normalizePermissions(next))} />
-      : <WorkspaceDashboard key={`workspace-${analysisRevision}`} data={data} files={files} onImport={() => openImport(null)} view={view} onViewChange={setView} onExport={exportData} onSave={saveTemplate} dateRange={dateRange} appliedDateRange={appliedDateRange} onDateRange={updateDateRange} onRefreshDate={refreshDateData} dateRefreshStatus={dateRefreshStatus} fontSize={fontSize} onFontSize={setFontSize} uiTheme={uiTheme === "apple" ? "apple" : "classic"} auth={auth} permissions={permissions} />}
+      ? <ExecutiveDashboard data={data} files={files} dqaEngineerSupplement={dqaEngineerSupplement} onImport={openImport} onDeleteSource={deleteSource} onSourcesChanged={applySources} onImportDqaEngineerSupplement={importDqaEngineerSupplement} onClearDqaEngineerSupplement={clearDqaEngineerSupplement} onDeleteDqaEngineerSupplementFile={deleteDqaEngineerSupplementFile} view={view} onViewChange={setView} dateRange={dateRange} teamDefaultRange={teamDefaultRange} lastServerSavedAt={lastServerSavedAt} serverSyncStatus={serverSyncStatus} appliedDateRange={appliedDateRange} onDateRange={updateDateRange} onRefreshDate={refreshDateData} dateRefreshStatus={dateRefreshStatus} refreshProgress={refreshProgress} fontSize={fontSize} onFontSize={setFontSize} analysisKey={analysisRevision} labelControlsVisible={labelControlsVisible} onToggleLabelControls={() => setLabelControlsVisible((current) => !current)} uiTheme={uiTheme === "apple" ? "apple" : "classic"} onThemeChange={changeUiTheme} sidebarCollapsed={sidebarCollapsed} onToggleSidebar={() => setSidebarCollapsed((current) => !current)} auth={auth} permissions={permissions} onPermissionsChanged={(next) => setPermissions(normalizePermissions(next))} />
+      : <WorkspaceDashboard key={`workspace-${analysisRevision}`} data={data} files={files} onImport={() => openImport(null)} view={view} onViewChange={setView} onExport={exportData} onSave={saveTemplate} dateRange={dateRange} appliedDateRange={appliedDateRange} onDateRange={updateDateRange} onRefreshDate={refreshDateData} dateRefreshStatus={dateRefreshStatus} fontSize={fontSize} onFontSize={setFontSize} uiTheme={uiTheme === "apple" ? "apple" : "classic"} onThemeChange={changeUiTheme} auth={auth} permissions={permissions} />}
     <ImportModal open={importOpen} onClose={() => setImportOpen(false)} onSourcesChanged={applySources} files={files} dateRange={appliedDateRange} targetModule={importModule} />
     {saved && <div className="toast"><CheckCircle size={19} weight="fill" />当前分析视图已保存为本机模板</div>}
     {sourceNotice && <div className="toast"><Database size={19}/>{sourceNotice}</div>}

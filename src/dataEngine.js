@@ -584,6 +584,115 @@ export async function parseFiles(files) {
   return parsed;
 }
 
+const DQA_ENGINEER_SUPPLEMENT_KIND = "DQA_ENGINEER_SUPPLEMENT";
+const supplementText = (value) => text(value);
+const supplementPerson = (value) => {
+  const source = supplementText(value);
+  const parenthesized = source.match(/^(.+?)[\uFF08(]([^\uFF09)]+)[\uFF09)]$/);
+  if (parenthesized) return (/^\d+$/.test(parenthesized[1].trim()) ? parenthesized[2] : parenthesized[1]).trim();
+  return source.replace(/^\d+\s*/, "").trim();
+};
+const supplementDate = (value) => {
+  const raw = supplementText(value).trim();
+  const dateOnly = raw.match(/^(\d{4})[\/-](\d{1,2})[\/-](\d{1,2})$/);
+  if (dateOnly) return `${dateOnly[1]}-${String(dateOnly[2]).padStart(2, "0")}-${String(dateOnly[3]).padStart(2, "0")}`;
+  const parsed = businessDate(value);
+  return parsed ? parsed.toISOString().slice(0, 10) : "";
+};
+const supplementSplitPeople = (value) => supplementText(value)
+  .replace(/^(?:\u53c2\u4e0e|\u7f3a\u5e2d|\u8bf7\u5047)\s*[：:]?/u, "")
+  .split(/[\s,，、;；]+/)
+  .map(supplementPerson)
+  .filter(Boolean);
+const supplementRowsFromWorkbook = (workbook) => workbook.SheetNames.flatMap((sheetName) => {
+  const matrix = sheetMatrix(workbook.Sheets[sheetName]);
+  const headerIndex = matrix.findIndex((row) => row.some((cell) => ["ECN\u7f16\u53f7", "\u7533\u8bf7\u4eba", "\u8bc4\u5ba1\u6210\u5458", "\u63d0\u51fa\u4eba"].includes(supplementText(cell))));
+  if (headerIndex < 0) return [];
+  const headers = matrix[headerIndex].map(supplementText);
+  return matrix.slice(headerIndex + 1).filter((row) => row.some((cell) => supplementText(cell))).map((values) => Object.fromEntries(headers.map((header, index) => [header, values[index]]).filter(([header]) => header)));
+});
+const supplementReviewDate = (matrix) => {
+  for (const row of matrix.slice(0, 8)) {
+    for (const cell of row) {
+      const match = supplementText(cell).match(/\u66f4\u65b0\u65e5\u671f\s*[：:]\s*(.+)$/u);
+      if (match) {
+        const date = supplementDate(match[1]);
+        if (date) return date;
+      }
+    }
+  }
+  return "";
+};
+const supplementReviewRecord = (workbook, fileName) => workbook.SheetNames.map((sheetName) => {
+  const matrix = sheetMatrix(workbook.Sheets[sheetName]);
+  const date = supplementReviewDate(matrix);
+  const memberRow = matrix.find((row) => supplementText(row[0]) === "\u8bc4\u5ba1\u6210\u5458");
+  const memberCell = supplementText(memberRow?.find((cell) => /\u53c2\u4e0e|\u7f3a\u5e2d|\u8bf7\u5047/u.test(supplementText(cell))) || memberRow?.[2]);
+  const members = supplementSplitPeople(memberCell.split(/\n?\u7f3a\u5e2d|\n?\u8bf7\u5047/u)[0]);
+  const headerIndex = matrix.findIndex((row) => row.some((cell) => supplementText(cell) === "\u63d0\u51fa\u4eba"));
+  const proposerIndex = headerIndex >= 0 ? matrix[headerIndex].findIndex((cell) => supplementText(cell) === "\u63d0\u51fa\u4eba") : -1;
+  const proposers = proposerIndex >= 0 ? matrix.slice(headerIndex + 1).filter((row) => /^\d+$/.test(supplementText(row[0]))).flatMap((row) => supplementSplitPeople(row[proposerIndex])) : [];
+  const projectName = matrix.find((row) => supplementText(row[0]) === "\u9879\u76ee\u540d\u79f0")?.find((cell) => supplementText(cell) && supplementText(cell) !== "\u9879\u76ee\u540d\u79f0") || sheetName;
+  return { fileName, sheetName, projectName: supplementText(projectName), updateDate: date, members: [...new Set(members)], proposers };
+}).filter((record) => record.updateDate || record.members.length || record.proposers.length);
+
+const supplementContentFingerprint = (bytes) => {
+  let hash = 2166136261;
+  for (const byte of bytes) hash = Math.imul(hash ^ byte, 16777619);
+  return (hash >>> 0).toString(16);
+};
+
+export async function parseDqaEngineerSupplementFiles(files = []) {
+  const result = { version: 1, kind: DQA_ENGINEER_SUPPLEMENT_KIND, updatedAt: new Date().toISOString(), files: [], ecnRecords: [], nonBomRecords: [], reviewRecords: [] };
+  for (const file of files) {
+    const buffer = await file.arrayBuffer();
+    const sourceId = `supplement:${supplementText(file.name)}:${supplementContentFingerprint(new Uint8Array(buffer))}`;
+    const sourceMeta = { sourceId, sourceName: supplementText(file.name) };
+    const workbook = XLSX.read(buffer, xlsxReadOptions);
+    const lowerName = supplementText(file.name).toLowerCase();
+    const records = supplementRowsFromWorkbook(workbook);
+    if (lowerName.includes("ecn") || records.some((row) => row["ECN\u7f16\u53f7"] != null || row["\u521b\u5efa\u4eba"] != null)) {
+      records.forEach((row) => {
+        const engineer = supplementPerson(row["\u521b\u5efa\u4eba"]);
+        if (!engineer) return;
+        result.ecnRecords.push({ ...sourceMeta, engineer, date: supplementDate(row["\u7533\u8bf7\u65e5\u671f"]), ecnNo: supplementText(row["ECN\u7f16\u53f7"]), reason: supplementText(row["\u53d8\u66f4\u539f\u56e0"]), changeType: supplementText(row["\u53d8\u66f4\u7c7b\u578b"]), materialCode: supplementText(row["\u7269\u6599\u4ee3\u7801"]), property: supplementText(row["ECN\u5c5e\u6027"]), isMachined: supplementText(row["\u7269\u6599\u4ee3\u7801"]).startsWith("35") });
+      });
+      result.files.push({ ...sourceMeta, name: file.name, kind: "ECN", rowCount: records.length, sheets: workbook.SheetNames, importedAt: result.updatedAt });
+    } else if (lowerName.includes("\u975ebom") || records.some((row) => row["\u7533\u8bf7\u4eba"] != null && row["\u7269\u6599\u4ee3\u7801"] != null)) {
+      records.forEach((row) => {
+        const engineer = supplementPerson(row["\u7533\u8bf7\u4eba"]);
+        if (!engineer) return;
+        const materialCode = supplementText(row["\u7269\u6599\u4ee3\u7801"]);
+        result.nonBomRecords.push({ ...sourceMeta, engineer, date: supplementDate(row["\u521b\u5efa\u65f6\u95f4"] || row["\u9700\u6c42\u65e5\u671f"]), materialCode, quantity: number(row["\u7533\u8bf7\u6570\u91cf"]), reason: supplementText(row["\u7533\u8bf7\u539f\u56e0"]), productDept: supplementText(row["\u4ea7\u54c1\u90e8"]), isMachined: materialCode.startsWith("35") });
+      });
+      result.files.push({ ...sourceMeta, name: file.name, kind: "\u975eBOM", rowCount: records.length, sheets: workbook.SheetNames, importedAt: result.updatedAt });
+    } else {
+      result.reviewRecords.push(...supplementReviewRecord(workbook, file.name).map((record) => ({ ...sourceMeta, ...record })));
+      result.files.push({ ...sourceMeta, name: file.name, kind: "\u7814\u53d1\u8bc4\u5ba1", rowCount: records.length, sheets: workbook.SheetNames, importedAt: result.updatedAt });
+    }
+  }
+  return result;
+}
+
+const dateInRange = (date, range = {}) => {
+  const value = supplementText(date);
+  if (!value) return true;
+  const start = range.start2026 || "0000-01-01";
+  const end = range.end2026 || "9999-12-31";
+  return value >= start && value <= end;
+};
+export const buildDqaEngineerSupplementSource = (supplement, dateRange = {}) => {
+  if (!supplement?.kind) return null;
+  const rows = [];
+  (supplement.ecnRecords || []).filter((record) => dateInRange(record.date, dateRange)).forEach((record) => rows.push({ __engineer: record.engineer, "\u7814\u53d1\u5de5\u7a0b\u5e08": record.engineer, "\u95ee\u9898\u7c7b\u578b": record.reason || record.changeType || "ECN", "\u95ee\u9898\u6765\u6e90": "ECN", "\u7269\u6599\u4ee3\u7801": record.materialCode, "\u52a0\u5de5\u4ef6": record.isMachined ? 1 : 0 }));
+  (supplement.nonBomRecords || []).filter((record) => dateInRange(record.date, dateRange)).forEach((record) => rows.push({ __engineer: record.engineer, "\u7814\u53d1\u5de5\u7a0b\u5e08": record.engineer, "\u95ee\u9898\u7c7b\u578b": record.reason || "\u975eBOM", "\u95ee\u9898\u6765\u6e90": "\u975eBOM", "\u7269\u6599\u4ee3\u7801": record.materialCode, "\u52a0\u5de5\u4ef6": record.isMachined ? 1 : 0 }));
+  (supplement.reviewRecords || []).filter((record) => dateInRange(record.updateDate, dateRange)).forEach((record) => {
+    [...new Set(record.members || [])].forEach((engineer) => rows.push({ __engineer: engineer, "\u7814\u53d1\u5de5\u7a0b\u5e08": engineer, "\u95ee\u9898\u7c7b\u578b": "\u8bc4\u5ba1\u53c2\u4e0e", "\u95ee\u9898\u6765\u6e90": "\u8bc4\u5ba1" }));
+    (record.proposers || []).forEach((engineer) => rows.push({ __engineer: engineer, "\u7814\u53d1\u5de5\u7a0b\u5e08": engineer, "\u95ee\u9898\u7c7b\u578b": "\u8bc4\u5ba1\u610f\u89c1", "\u95ee\u9898\u6765\u6e90": "\u8bc4\u5ba1" }));
+  });
+  return { module: "DQA", name: "\u7814\u53d1\u00b7 ECN/\u975eBOM/\u8bc4\u5ba1", kind: "STANDARD", subKind: DQA_ENGINEER_SUPPLEMENT_KIND, rows, rowCount: rows.length, importedAt: supplement.updatedAt, supplement };
+};
+
 const groupCount = (items, getter) => {
   const map = new Map();
   items.forEach((item) => {
@@ -1750,7 +1859,7 @@ const buildEcnReasonRows = (entities, values, years, numeratorRows, entityGetter
 });
 
 const buildDqaEcn = (dqaFiles, dateRange) => {
-  const ecnFiles = dqaFiles.filter((file) => file.subKind === "DQA_ECN" || file.name.includes("ECN") || file.sheets?.some((sheet) => sheet.includes("ECN")));
+  const ecnFiles = dqaFiles.filter((file) => file.subKind === "DQA_ECN" || (!file.subKind && file.name.includes("ECN") && file.sheets?.some((sheet) => sheet.includes("分子") || sheet.includes("分母"))));
   if (!ecnFiles.length) return null;
   const range = ecnDateRange(dateRange);
   const numeratorRows = [];
@@ -2397,9 +2506,9 @@ export function analyzeImported(files, dateRange) {
     }
   }
 
-  const dqa = byModule("DQA");
+  const dqaFiles = files.filter((file) => file.module === "DQA");
+  const dqa = dqaFiles.flatMap((file) => file.rows || []);
   if (dqa.length) {
-    const dqaFiles = files.filter((file) => file.module === "DQA");
     next.dqa.ecn = buildDqaEcn(dqaFiles, dateRange);
     next.dqa.machinedParts = buildDqaMachinedPartsStable(dqaFiles);
     const issueRows = dqa.filter((r) => r["问题描述"]);

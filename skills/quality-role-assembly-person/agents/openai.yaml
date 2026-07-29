@@ -1,0 +1,4 @@
+interface:
+  display_name: "组装人员质量闭环角色报告"
+  short_description: "为组装人员生成基于本人IPQC异常的具体质量闭环报告。"
+  default_prompt: "请按组装人员角色 Skill 生成本人质量问题、知识考试和改善闭环报告。"

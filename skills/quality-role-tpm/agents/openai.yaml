@@ -1,0 +1,4 @@
+interface:
+  display_name: "TPM质量闭环角色报告"
+  short_description: "为TPM生成基于所辖PM和研发工程师的管理质量报告。"
+  default_prompt: "请按TPM角色 Skill 生成产品质量风险、PM对比和管理闭环报告。"

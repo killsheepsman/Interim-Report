@@ -1,0 +1,4 @@
+interface:
+  display_name: "供应链经理质量闭环角色报告"
+  short_description: "为供应链经理生成公司供应链范围的工坊、机长和组装人员质量报告。"
+  default_prompt: "请按供应链经理角色 Skill 生成供应链管理汇总和改善闭环报告。"

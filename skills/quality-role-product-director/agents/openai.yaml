@@ -1,0 +1,4 @@
+interface:
+  display_name: "产总质量闭环角色报告"
+  short_description: "为产总生成产品部范围的TPM、PM、工程师和质量趋势报告。"
+  default_prompt: "请按产总角色 Skill 生成产品部质量经营和改善闭环报告。"

@@ -296,6 +296,30 @@ export function HorizontalRank({ rows, height = 330, chartKey = "five-rate-rank"
   }} /></div>;
 }
 
+export function ReportBarChart({ rows = [], height = 280, chartKey = "report-bar", unit = "" }) {
+  const palette = ["#176ecf", "#2f7ee6", "#f5822a", "#ef4f4f", "#50ad68", "#8b5cf6", "#0ea5a8", "#64748b"];
+  const data = rows.filter((row) => row && row.name && Number.isFinite(Number(row.value)) && Number(row.value) >= 0).slice(0, 10);
+  return <ScaledChart style={{ height }} option={{
+    tooltip: { trigger: "axis", axisPointer: { type: "shadow" }, formatter: (params) => { const item = params?.[0]; const row = data[item?.dataIndex] || {}; return item ? `${item.name}<br/>${item.marker}${item.value}${unit}${row.detail ? `<br/><span style="color:#6b7c91">${row.detail}</span>` : ""}` : ""; } },
+    grid: { left: 128, right: 42, top: 14, bottom: 22, containLabel: true },
+    xAxis: { type: "value", min: 0, axisLabel: { formatter: (value) => `${value}${unit}` }, splitLine: { lineStyle: { color: "#eef3f9", type: "dashed" } } },
+    yAxis: { type: "category", inverse: true, data: data.map((row) => row.name), axisLabel: { width: 116, overflow: "truncate", color: "#526174", fontWeight: 700 } },
+    series: [{ type: "bar", data: data.map((row, index) => ({ value: Number(row.value), itemStyle: { color: row.color || palette[index % palette.length], borderRadius: [0, 7, 7, 0] } })), barMaxWidth: 24, label: { show: true, position: "right", formatter: ({ value, dataIndex }) => `${data[dataIndex]?.selected ? "★ " : ""}${Number(value).toLocaleString()}${unit}`, color: (params) => data[params.dataIndex]?.selected ? "#c0362c" : "#243b53", fontWeight: 800 }, labelLayout: { hideOverlap: false } }],
+  }} />;
+}
+
+export function ReportStatusDonut({ rows = [], height = 280, chartKey = "report-status-donut" }) {
+  const palette = ["#ef4f4f", "#f5822a", "#f2c94c", "#50ad68", "#176ecf", "#8b5cf6"];
+  const data = rows.filter((row) => row && row.name && Number(row.count) > 0).map((row, index) => ({ name: row.name, value: Number(row.count), itemStyle: { color: row.color || palette[index % palette.length] } }));
+  const total = data.reduce((sum, row) => sum + row.value, 0);
+  return <ScaledChart style={{ height }} option={{
+    tooltip: { trigger: "item", formatter: (item) => `${item.name}<br/>${item.value}项（${item.percent}%）` },
+    legend: { type: "scroll", bottom: 0, left: 10, right: 10, textStyle: { color: "#526174", fontWeight: 700 } },
+    graphic: [{ type: "text", left: "center", top: "38%", style: { text: `${total}\n项`, textAlign: "center", fill: "#243b53", fontSize: 20, fontWeight: 800, lineHeight: 28 } }],
+    series: [{ type: "pie", radius: ["48%", "72%"], center: ["50%", "42%"], data, label: { show: true, formatter: "{b} {d}%", fontSize: 10, fontWeight: 700 }, labelLine: { length: 8, length2: 8 }, itemStyle: { borderColor: "#fff", borderWidth: 3 } }],
+  }} />;
+}
+
 export function StackedStage({ rows, height = 330, chartKey = "stage-distribution" }) {
   const totals = rows.map((x) => Math.max(x.review + x.production + x.onsite, 1));
   const [positions, setPositions] = usePersistentPositions("stacked-stage", chartKey, { "评审问题": "inside", "生产问题": "inside", "现场问题": "inside" });
