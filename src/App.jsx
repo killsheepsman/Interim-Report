@@ -8,7 +8,7 @@ import {
   UploadSimple, User, Warning, WarningCircle, X,
 } from "@phosphor-icons/react";
 import { analyzeImported, buildDqaEngineerSupplementSource, downloadJson, normalizeIpqcLeaderMapRows, normalizeIpqcWorkshop, parseDqaEngineerSupplementFiles, parseFiles } from "./dataEngine.js";
-import { clearDqaEngineerSupplement as clearDqaEngineerSupplementState, createExamSession, createSourcesSignature, downloadSourceFiles, loadAiConfig, loadAiModels, loadAppliedDateRange, loadCachedAnalysis, loadCurrentUser, loadDefaultAnalysis, loadDefaultAnnotations, loadDefaultQmsSources, loadDefaultSources, loadDqaEngineerSupplement, loadExamSession, loadImportedSources, loadPermissionConfig, mergeImportedSources, requestAiChat, saveAiConfig, saveAiReport, saveAppliedDateRange, saveCachedAnalysis, saveDqaEngineerSupplement, saveImportedSources, savePermissionConfig, sourceRowCount, submitExamSession, summarizeSources, testAiConfig, uploadSourceFiles } from "./dataStore.js";
+import { clearDqaEngineerSupplement as clearDqaEngineerSupplementState, createExamSession, createSourcesSignature, downloadSourceFiles, loadAiConfig, loadAiModels, loadAppliedDateRange, loadCachedAnalysis, loadCurrentUser, loadDefaultAnalysis, loadDefaultAnnotations, loadDefaultQmsSources, loadDefaultSources, loadDqaEngineerSupplement, loadExamSession, loadImportedSources, loadPermissionConfig, mergeImportedSources, requestAiChat, saveAiConfig, saveAiReport, saveLocalAiReport, saveAppliedDateRange, saveCachedAnalysis, saveDqaEngineerSupplement, saveImportedSources, savePermissionConfig, sourceRowCount, submitExamSession, summarizeSources, testAiConfig, uploadSourceFiles } from "./dataStore.js";
 import { sampleData } from "./sampleData.js";
 import { BarCompare, Donut, HorizontalRank, MachinedTpmCompareChart, Pareto, QmsDivisionCombo, QmsScoreCompare, QmsTpmRank, QmsTrendCombo, QuantityRateCombo, ReportBarChart, ReportStatusDonut, ScoreMonthlyCombo, ScoreYearCompare, StackedStage, WorkshopCategoryHeatmap, YearStackedCompare } from "./charts.jsx";
 import { QualityAgentPage } from "./agent/QualityAgentPage.jsx";
@@ -51,6 +51,8 @@ const defaultFeaturePermissions = {
   aiAnalysis: { public: false, deputy: true, label: "AI分析" },
   aiInterface: { public: false, deputy: true, label: "AI接口" },
   qualityAgent: { public: true, deputy: true, label: "质量分析 Agent" },
+  qualityAgentStart: { public: false, deputy: false, label: "启动 Agent 分析" },
+  agentRoleReportGenerate: { public: false, deputy: false, label: "生成全部角色报告" },
 };
 const defaultApiPermissions = {
   "POST /api/uploads": { public: false, deputy: true, label: "上传原始Excel" },
@@ -77,7 +79,7 @@ const normalizePermissions = (value = {}) => ({
   ordinaryUsers: normalizePermissionMembers(value.ordinaryUsers),
   allowIntranetUsers: value.allowIntranetUsers === true,
   menus: normalizeMenuPermissions(value.menus),
-  features: Object.fromEntries(Object.entries(defaultFeaturePermissions).map(([key, item]) => [key, { ...item, ...(value.features?.[key] || {}) }])),
+  features: Object.fromEntries(Object.entries(defaultFeaturePermissions).map(([key, item]) => [key, { ...item, ...(value.features?.[key] || {}), label: item.label }])),
   apis: Object.fromEntries(Object.entries(defaultApiPermissions).map(([key, item]) => [key, { ...item, ...(value.apis?.[key] || {}) }])),
 });
 const canUseFeature = (auth, permissions, key) => {
@@ -1412,7 +1414,7 @@ const buildAiCrossStagePrompt = ({ stage, reportPackage, outputs, skillName }) =
 质量链与公司战役：${outputs.crossActions}`;
 };
 
-function AiAnalysisPage({ data, dateRange, analysisKey }) {
+function AiAnalysisPage({ data, dateRange, analysisKey, canSaveToServer = false }) {
   const [module, setModule] = useState("IQC");
   const [skillName, setSkillName] = useState(() => localStorage.getItem("qms-ai-selected-skill") || "generate-quality-review-report");
   const [revision, setRevision] = useState(0);
@@ -1561,9 +1563,9 @@ function AiAnalysisPage({ data, dateRange, analysisKey }) {
     setReportSaveState({ status: "saving", message: "正在保存到项目文件夹…", module: targetModule });
     try {
       const payload = { schemaVersion: "qms-ai-review-v1", module: targetModule, period: dateRange, model: record.model, skillName: record.skillName, generatedAt: record.generatedAt, sourceModules: record.sourceModules || null, content: sanitizeAiReportContent(record.content) };
-      const saved = await saveAiReport(payload);
+      const saved = canSaveToServer ? await saveAiReport(payload) : saveLocalAiReport(payload);
       setGenerated((old) => ({ ...old, [targetModule === aiCrossModule ? "CROSS" : targetModule]: { ...(old[targetModule === aiCrossModule ? "CROSS" : targetModule] || record), savedAt: saved.savedAt, savedFileName: saved.fileName, savedRelativePath: saved.relativePath } }));
-      setReportSaveState({ status: "saved", message: `已保存：${saved.relativePath || saved.fileName}`, module: targetModule });
+      setReportSaveState({ status: "saved", message: canSaveToServer ? `已保存到服务器：${saved.relativePath || saved.fileName}` : `已保存到本机：${saved.fileName}`, module: targetModule });
     } catch (error) {
       setReportSaveState({ status: "error", message: `保存失败：${error.message}`, module: targetModule });
     }
@@ -1572,8 +1574,9 @@ function AiAnalysisPage({ data, dateRange, analysisKey }) {
     const reports = Object.fromEntries([...aiBaseModules, "CROSS"].filter((key) => ["done", "imported"].includes(generated[key]?.status)).map((key) => [key === "CROSS" ? aiCrossModule : key, generated[key]]));
     setReportSaveState({ status: "saving", message: "正在保存全部报告包…", module: "ALL" });
     try {
-      const saved = await saveAiReport({ schemaVersion: "qms-ai-review-package-v1", module: "全部报告包", exportedAt: new Date().toISOString(), period: dateRange, selectedSkill: skillName, reports });
-      setReportSaveState({ status: "saved", message: `已保存：${saved.relativePath || saved.fileName}`, module: "ALL" });
+      const payload = { schemaVersion: "qms-ai-review-package-v1", module: "全部报告包", exportedAt: new Date().toISOString(), period: dateRange, selectedSkill: skillName, reports };
+      const saved = canSaveToServer ? await saveAiReport(payload) : saveLocalAiReport(payload);
+      setReportSaveState({ status: "saved", message: canSaveToServer ? `已保存到服务器：${saved.relativePath || saved.fileName}` : `已保存到本机：${saved.fileName}`, module: "ALL" });
     } catch (error) {
       setReportSaveState({ status: "error", message: `保存失败：${error.message}`, module: "ALL" });
     }
@@ -1607,7 +1610,7 @@ function AiAnalysisPage({ data, dateRange, analysisKey }) {
   </div></div>;
 }
 
-function AiInterfacePage() {
+function AiInterfacePage({ canSaveToServer = false }) {
   const [config, setConfig] = useState({ baseUrl: "https://new.ahei.asia/v1", model: "", apiKey: "" });
   const [addressHistory, setAddressHistory] = useState(() => normalizeAiEndpointHistory(safeParse(localStorage.getItem(aiEndpointHistoryKey), [])));
   const [models, setModels] = useState([]);
@@ -1647,15 +1650,20 @@ function AiInterfacePage() {
   };
   const save = async () => {
     setStatus({ type: "loading", text: "正在保存本机配置…" });
-    try { const saved = await saveAiConfig(config); rememberAddress(config.baseUrl); setConfig((old) => ({ ...old, ...saved, apiKey: "" })); setStatus({ type: "success", text: "配置已保存到本机后端，API密钥不会返回浏览器。" }); }
+    try {
+      const saved = await saveAiConfig(config, { saveToServer: canSaveToServer });
+      rememberAddress(config.baseUrl);
+      setConfig((old) => ({ ...old, ...saved, apiKey: "" }));
+      setStatus({ type: "success", text: canSaveToServer ? "已保存到本机，并同步为服务器默认 AI 接口，其他用户可直接使用。" : "已保存到本机浏览器，仅当前用户使用。" });
+    }
     catch (error) { setStatus({ type: "error", text: error.message }); }
   };
   const fetchModels = async () => {
     setStatus({ type: "loading", text: "正在读取模型列表…" });
     try {
-      if (config.apiKey) await saveAiConfig(config);
+      if (config.apiKey) await saveAiConfig(config, { saveToServer: false });
       rememberAddress(config.baseUrl);
-      const result = await loadAiModels();
+      const result = await loadAiModels(config);
       const providerModels = [...new Set((result.models || []).map((item) => String(item).trim()).filter(Boolean))];
       const staleModel = config.model && providerModels.length > 0 && !providerModels.includes(config.model);
       const nextModels = providerModels.length ? providerModels : (config.model ? [config.model] : []);
@@ -1678,7 +1686,7 @@ function AiInterfacePage() {
     catch (error) { setStatus({ type: "error", text: error.message }); }
   };
   return <div className="ai-interface-page">
-    <section className="ai-interface-hero"><div><span>LOCAL AI GATEWAY</span><h2>AI接口配置</h2><p>本机联网调用第三方大模型；离线服务器仅导入审核后的分析包。</p></div><aside><ShieldCheck size={22} weight="fill"/><strong>密钥仅保存在本机后端</strong><p>不会写入前端、本地存储、导出包或GitHub。</p></aside></section>
+    <section className="ai-interface-hero"><div><span>LOCAL AI GATEWAY</span><h2>AI接口配置</h2><p>主管理员可设置服务器默认接口；其他用户可直接使用，也可在本机覆盖配置。</p></div><aside><ShieldCheck size={22} weight="fill"/><strong>默认共享，本机可覆盖</strong><p>管理员配置供授权用户使用；普通用户的 API 配置只保存在当前浏览器，不会写入服务器。</p></aside></section>
     <div className="ai-interface-grid">
       <section className="ai-config-card"><header><div><GearSix size={21}/><h3>接口参数</h3></div><em>{config.hasApiKey ? `已配置 ${config.apiKeyHint || "API密钥"}` : "尚未配置密钥"}</em></header>
         <label><span>API请求地址</span><div className="ai-endpoint-input"><input list="qms-ai-endpoint-history" value={config.baseUrl} onChange={(event) => update("baseUrl", event.target.value)} onBlur={() => rememberAddress(config.baseUrl)} disabled={loading}/><select aria-label="选择已保存的API地址" value="" onChange={(event) => event.target.value && update("baseUrl", event.target.value)} disabled={loading || !addressHistory.length}><option value="">历史地址</option>{addressHistory.map((address) => <option key={address} value={address}>{address}</option>)}</select><datalist id="qms-ai-endpoint-history">{addressHistory.map((address) => <option key={address} value={address}/>)}</datalist></div><small>支持任意 HTTPS OpenAI兼容接口；本机 Ollama/LM Studio 可使用 http://127.0.0.1 或 http://localhost。当前通道：{/\/api\/plan\/v3\/?$/i.test(config.baseUrl || "") ? "Responses（方舟 Agent/Coding Plan）" : "Chat Completions（通用兼容接口）"}</small>{addressHistory.length > 0 && <div className="ai-endpoint-history">{addressHistory.map((address) => <div key={address}><code>{address}</code><button type="button" aria-label={`删除地址${address}`} onClick={() => removeAddress(address)}><Trash size={13}/></button></div>)}</div>}</label>
@@ -3368,7 +3376,7 @@ function ExecutiveDashboard({ data, files, dqaEngineerSupplement, onImport, onDe
         <div className="top-actions"><ServerSyncBadge value={serverSyncStatus}/><Switcher view={view} onChange={onViewChange} canWorkspace={allowWorkspace} />{allowAnnotationEdit && <AnnotationEditButton defaultModule={moduleView || "\u603b\u89c8"} />}{allowAnnotationView && <AnnotationViewButton />}{allowExport && <ExportReportButton />}<button className={`label-controls-toggle ${labelControlsVisible ? "active" : ""}`} onClick={onToggleLabelControls}>{labelControlsVisible ? "隐藏数值设置" : "显示数值设置"}</button>{allowImport && <button className="import-btn" onClick={() => onImport(null)}><UploadSimple size={17} />导入数据</button>}</div>
       </header>
       {!qmdpView && <DateRangeFilter value={dateRange} teamDefaultRange={teamDefaultRange} lastServerSavedAt={lastServerSavedAt} onChange={onDateRange} onRefresh={onRefreshDate} refreshStatus={dateRefreshStatus} refreshProgress={refreshProgress} canRefresh={allowTemporaryRefresh} fontSize={fontSize} onFontSize={onFontSize}/>}
-      {active === "权限设置" && auth?.isAdmin ? <PermissionSettingsPage auth={auth} permissions={permissions} onPermissionsChanged={onPermissionsChanged}/> : qmdpKnowledgeView ? <KnowledgeManagementPage active={active}/> : qmdpReportView ? <QualityReportsPage active={active} data={data} files={files} dateRange={dateRange} onRoleChange={setActive}/> : qualityAgentView && canUseFeature(auth, permissions, "qualityAgent") ? <QualityAgentPage key={active} data={data} files={files} dateRange={dateRange} module={qualityAgentMenuModules[active]}/> : agentRoleReportView && canUseFeature(auth, permissions, "qualityAgent") ? <AgentRoleReportPage key={active} initialRole={agentRoleMenuRoles[active]} data={data} files={agentFiles} dateRange={dateRange}/> : agentExamStatsView && canUseFeature(auth, permissions, "qualityAgent") ? <AgentExamStatsPage/> : qmdpSystemView ? <SystemManagementPage active={active} data={data} auth={auth}/> : active === "AI接口" && canUseFeature(auth, permissions, "aiInterface") ? <AiInterfacePage/> : active === "数据导入" && allowImport ? <DataSourcePage files={files} onImportModule={onImport} onDelete={onDeleteSource} onSourcesChanged={onSourcesChanged} dqaEngineerSupplement={dqaEngineerSupplement} onImportDqaEngineerSupplement={onImportDqaEngineerSupplement} onClearDqaEngineerSupplement={onClearDqaEngineerSupplement} onDeleteDqaEngineerSupplementFile={onDeleteDqaEngineerSupplementFile}/> : active === "AI分析" && canUseFeature(auth, permissions, "aiAnalysis") ? <AiAnalysisPage data={data} dateRange={dateRange} analysisKey={analysisKey}/> : moduleView ? <ModuleDetail key={`${moduleView}-${analysisKey}`} module={moduleView} data={data} /> : <>
+      {active === "权限设置" && auth?.isAdmin ? <PermissionSettingsPage auth={auth} permissions={permissions} onPermissionsChanged={onPermissionsChanged}/> : qmdpKnowledgeView ? <KnowledgeManagementPage active={active}/> : qmdpReportView ? <QualityReportsPage active={active} data={data} files={files} dateRange={dateRange} onRoleChange={setActive}/> : qualityAgentView && canUseFeature(auth, permissions, "qualityAgent") ? <QualityAgentPage key={active} data={data} files={files} dateRange={dateRange} module={qualityAgentMenuModules[active]} canStart={canUseFeature(auth, permissions, "qualityAgentStart")} canSaveToServer={auth?.isAdmin === true}/> : agentRoleReportView && canUseFeature(auth, permissions, "qualityAgent") ? <AgentRoleReportPage key={active} initialRole={agentRoleMenuRoles[active]} data={data} files={agentFiles} dateRange={dateRange} canGenerate={canUseFeature(auth, permissions, "agentRoleReportGenerate")} canSaveToServer={auth?.isAdmin === true}/> : agentExamStatsView && canUseFeature(auth, permissions, "qualityAgent") ? <AgentExamStatsPage/> : qmdpSystemView ? <SystemManagementPage active={active} data={data} auth={auth}/> : active === "AI接口" && canUseFeature(auth, permissions, "aiInterface") ? <AiInterfacePage canSaveToServer={auth?.isAdmin === true}/> : active === "数据导入" && allowImport ? <DataSourcePage files={files} onImportModule={onImport} onDelete={onDeleteSource} onSourcesChanged={onSourcesChanged} dqaEngineerSupplement={dqaEngineerSupplement} onImportDqaEngineerSupplement={onImportDqaEngineerSupplement} onClearDqaEngineerSupplement={onClearDqaEngineerSupplement} onDeleteDqaEngineerSupplementFile={onDeleteDqaEngineerSupplementFile}/> : active === "AI分析" && canUseFeature(auth, permissions, "aiAnalysis") ? <AiAnalysisPage data={data} dateRange={dateRange} analysisKey={analysisKey} canSaveToServer={auth?.isAdmin === true}/> : moduleView ? <ModuleDetail key={`${moduleView}-${analysisKey}`} module={moduleView} data={data} /> : <>
         <OverviewKpiCards data={data}/>
         <div className="dashboard-grid">
           <MainSupplierOverview data={data}/>

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ArrowsClockwise, Brain, CaretDown, CaretRight, CheckCircle, DownloadSimple, FileArrowUp, FloppyDisk, Trash, WarningCircle } from "@phosphor-icons/react";
-import { deleteAgentReport, loadAgentReport, loadAgentReports, loadAgentSkills, requestAiChat, saveAgentReportFile } from "../dataStore.js";
+import { deleteAgentReport, deleteLocalAgentReport, loadAgentReport, loadAgentReports, loadLocalAgentReports, loadAgentSkills, requestAiChat, saveAgentReportFile, saveLocalAgentReport } from "../dataStore.js";
 import { buildQualityAgentSnapshot } from "./qualitySnapshot.js";
 import { loadQualityAgentRuns, qualityAgentSnapshotHash, QUALITY_AGENT_STAGES, runQualityAgent, saveQualityAgentRuns } from "./qualityAgent.js";
 
@@ -134,7 +134,7 @@ const renderAgentMarkdown = (content) => {
   return output.join("");
 };
 
-export function QualityAgentPage({ data, files = [], dateRange, module = "DQA" }) {
+export function QualityAgentPage({ data, files = [], dateRange, module = "DQA", canStart = false, canSaveToServer = false }) {
   const [skillName, setSkillName] = useState("generate-quality-review-report");
   const [skillContent, setSkillContent] = useState(DEFAULT_SKILLS[0].content);
   const [skills, setSkills] = useState(DEFAULT_SKILLS);
@@ -169,15 +169,18 @@ export function QualityAgentPage({ data, files = [], dateRange, module = "DQA" }
     try {
       const value = await loadAgentReports();
       const reports = Array.isArray(value?.reports) ? value.reports : [];
-      setSavedReports(reports);
-      return reports;
+      const localReports = loadLocalAgentReports().filter((item) => item.module === module);
+      const merged = [...localReports, ...reports];
+      setSavedReports(merged);
+      return merged;
     } catch {
-      setSavedReports([]);
-      return [];
+      const localReports = loadLocalAgentReports().filter((item) => item.module === module);
+      setSavedReports(localReports);
+      return localReports;
     }
   };
   const moduleReports = useMemo(
-    () => savedReports.filter((item) => item.fileName.includes(`QMS-Agent报告-${module}-`)),
+    () => savedReports.filter((item) => item.localOnly ? item.module === module : item.fileName.includes(`QMS-Agent报告-${module}-`)),
     [savedReports, module],
   );
   const selectedReport = moduleReports.find((item) => item.fileName === selectedReportName) || null;
@@ -217,6 +220,11 @@ export function QualityAgentPage({ data, files = [], dateRange, module = "DQA" }
       setSelectedReportState({ status: "idle", message: "" });
       return () => { active = false; };
     }
+    if (selectedReport?.localOnly) {
+      setSelectedReportContent(String(selectedReport.content || ""));
+      setSelectedReportState({ status: "loaded", message: "" });
+      return () => { active = false; };
+    }
     setSelectedReportState({ status: "loading", message: "正在读取已保存报告…" });
     loadAgentReport(selectedReportName).then((value) => {
       if (!active) return;
@@ -228,7 +236,7 @@ export function QualityAgentPage({ data, files = [], dateRange, module = "DQA" }
       setSelectedReportState({ status: "error", message: `报告读取失败：${loadError.message}` });
     });
     return () => { active = false; };
-  }, [selectedReportName]);
+  }, [selectedReportName, selectedReport]);
   useEffect(() => { saveQualityAgentRuns(runs); }, [runs]);
   useEffect(() => {
     loadAgentSkills().then((value) => {
@@ -244,6 +252,10 @@ export function QualityAgentPage({ data, files = [], dateRange, module = "DQA" }
   }, []);
 
   const start = async () => {
+    if (!canStart) {
+      setError("当前账号没有“启动 Agent 分析”权限，请联系主管理员");
+      return;
+    }
     setError("");
     const controller = new AbortController();
     abortRef.current = controller;
@@ -252,7 +264,7 @@ export function QualityAgentPage({ data, files = [], dateRange, module = "DQA" }
       const sameSnapshot = record.snapshotHash === currentHash || record.snapshotHash === currentHash.slice(0, 80);
       const hasCompleteReport = record.status === "done" && Boolean(record.content);
       if (hasCompleteReport && sameSnapshot && !window.confirm("当前数据和统计周期均未变化，已生成报告。是否继续重新分析？")) return;
-      const next = await runQualityAgent({ snapshot, skillName, skillContent, existing: hasCompleteReport && sameSnapshot ? null : record, requestChat: requestAiChat, signal: controller.signal, onUpdate: update });
+      const next = await runQualityAgent({ snapshot, skillName, skillContent, existing: hasCompleteReport && sameSnapshot ? null : record, requestChat: (messages, options = {}) => requestAiChat(messages, { ...options, operation: "quality-agent-start" }), signal: controller.signal, onUpdate: update });
       if (next.status === "error") setError(`${next.currentStage || "Agent分析"}：${next.error}`);
     } finally {
       if (abortRef.current === controller) abortRef.current = null;
@@ -265,10 +277,12 @@ export function QualityAgentPage({ data, files = [], dateRange, module = "DQA" }
     if (!record.content) return;
     setSaveState({ status: "saving", message: "正在保存导出内容到项目报告库…" });
     try {
-      const saved = await saveAgentReportFile({ module, skillName: record.skillName || skillName, period: snapshot.period, content: record.content });
+      const saved = canSaveToServer
+        ? await saveAgentReportFile({ module, skillName: record.skillName || skillName, period: snapshot.period, content: record.content })
+        : saveLocalAgentReport({ module, skillName: record.skillName || skillName, period: snapshot.period, content: record.content });
       const reports = await refreshReports();
       setSelectedReportName(saved.fileName || reports[0]?.fileName || "");
-      setSaveState({ status: "saved", message: `已保存：${saved.relativePath || saved.fileName}` });
+      setSaveState({ status: "saved", message: canSaveToServer ? `已保存到服务器：${saved.relativePath || saved.fileName}` : `已保存到本机：${saved.fileName}` });
     } catch (saveError) {
       setSaveState({ status: "error", message: `保存失败：${saveError.message}` });
     }
@@ -276,7 +290,14 @@ export function QualityAgentPage({ data, files = [], dateRange, module = "DQA" }
 
   const removeSavedReport = async (fileName) => {
     if (!window.confirm("确定删除这份 Agent 项目报告吗？")) return;
-    try { await deleteAgentReport(fileName); await refreshReports(); } catch (deleteError) { setSaveState({ status: "error", message: `删除失败：${deleteError.message}` }); }
+    try {
+      if (String(fileName).startsWith("本地-Agent报告-") || selectedReport?.localOnly) deleteLocalAgentReport(fileName);
+      else {
+        if (!canSaveToServer) { setSaveState({ status: "error", message: "普通用户不能删除服务器报告" }); return; }
+        await deleteAgentReport(fileName);
+      }
+      await refreshReports();
+    } catch (deleteError) { setSaveState({ status: "error", message: `删除失败：${deleteError.message}` }); }
   };
 
   const importReport = async (event) => {
@@ -330,7 +351,7 @@ export function QualityAgentPage({ data, files = [], dateRange, module = "DQA" }
         <button className="qmdp-secondary-btn" onClick={() => importInputRef.current?.click()}><FileArrowUp size={15}/>导入 Agent 报告</button>
         <label>外部报告<select value={selectedImportedId} onChange={(event) => setSelectedImportedId(event.target.value)} disabled={!importedReports.length}><option value="">暂无导入报告</option>{importedReports.map((item) => <option key={item.id} value={item.id}>{item.fileName} · {new Date(item.importedAt).toLocaleString("zh-CN")}</option>)}</select></label>
       </div>
-      {record.status === "running" ? <button className="qmdp-danger-btn" onClick={stop}><WarningCircle size={16}/>停止 Agent分析</button> : <button className="qmdp-primary-btn" onClick={start}><Brain size={16}/>{record.status === "error" ? "继续 Agent分析" : "启动 Agent分析"}</button>}
+      {record.status === "running" ? <button className="qmdp-danger-btn" onClick={stop}><WarningCircle size={16}/>停止 Agent分析</button> : <button className="qmdp-primary-btn" onClick={start} disabled={!canStart} title={!canStart ? "仅主管理员可以启动 Agent 分析" : "启动 Agent 分析"}><Brain size={16}/>{record.status === "error" ? "继续 Agent分析" : "启动 Agent分析"}</button>}
     </section>
     <section className="quality-agent-collapsible-workflow">{QUALITY_AGENT_STAGES.filter((stage) => stage.id !== "audit").map((stage) => { const item = record.stages?.[stage.id] || {}; const open = Boolean(stageOpen[stage.id]); return <article className={`qmdp-card quality-agent-stage ${item.status || "pending"}`} key={stage.id}><header><button type="button" className="quality-agent-stage-toggle" onClick={() => setStageOpen((current) => ({ ...current, [stage.id]: !current[stage.id] }))}><span>{item.status === "done" ? <CheckCircle size={18} weight="fill"/> : item.status === "error" ? <WarningCircle size={18} weight="fill"/> : item.status === "running" ? <ArrowsClockwise size={18} className="spin"/> : stage.id === "analysis" ? "1" : stage.id === "actions" ? "2" : "3"}</span><strong>{stage.label}</strong>{open ? <CaretDown size={16}/> : <CaretRight size={16}/>}</button><small>{item.status === "done" ? "已完成" : item.status === "error" ? "失败，可继续" : item.status === "running" ? "执行中" : "等待执行"}</small></header>{open && item.content && <div className="quality-agent-stage-content" dangerouslySetInnerHTML={{ __html: renderAgentMarkdown(item.content) }}/>} {open && item.error && <p className="quality-agent-error">{item.error}</p>}</article>; })}</section>
     <section className="quality-agent-workflow">{QUALITY_AGENT_STAGES.filter((stage) => stage.id !== "audit").map((stage) => { const item = record.stages?.[stage.id] || {}; return <article className={`qmdp-card quality-agent-stage ${item.status || "pending"}`} key={stage.id}><header><div><span>{item.status === "done" ? <CheckCircle size={18} weight="fill"/> : item.status === "error" ? <WarningCircle size={18} weight="fill"/> : item.status === "running" ? <ArrowsClockwise size={18} className="spin"/> : stage.id === "analysis" ? "1" : stage.id === "actions" ? "2" : "3"}</span><strong>{stage.label}</strong></div><small>{item.status === "done" ? "已完成" : item.status === "error" ? "失败，可继续" : item.status === "running" ? "执行中" : "等待执行"}</small></header>{item.content && <div className="quality-agent-stage-content" dangerouslySetInnerHTML={{ __html: renderAgentMarkdown(item.content) }}/>} {item.error && <p className="quality-agent-error">{item.error}</p>}</article>; })}</section>

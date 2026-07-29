@@ -7,6 +7,62 @@ const ANALYSIS_CACHE_KEY = "analysis-cache-v1";
 const REMOTE_ANALYSIS_CACHE_KEY = "analysis-cache";
 const REMOTE_APPLIED_DATE_RANGE_KEY = "applied-date-range";
 const DQA_ENGINEER_SUPPLEMENT_KEY = "dqa-engineer-supplement";
+const LOCAL_AI_CONFIG_KEY = "qms-ai-config-local-v1";
+const LOCAL_AGENT_REPORTS_KEY = "qms-local-agent-reports-v1";
+const LOCAL_AI_REPORTS_KEY = "qms-local-ai-reports-v1";
+
+const defaultLocalAiConfig = { baseUrl: "https://new.ahei.asia/v1", model: "", apiKey: "" };
+const readLocalAiConfig = () => {
+  if (typeof localStorage === "undefined") return { ...defaultLocalAiConfig };
+  try {
+    const value = JSON.parse(localStorage.getItem(LOCAL_AI_CONFIG_KEY) || "{}");
+    return { ...defaultLocalAiConfig, ...(value && typeof value === "object" ? value : {}) };
+  } catch { return { ...defaultLocalAiConfig }; }
+};
+const publicLocalAiConfig = (config) => ({
+  baseUrl: String(config.baseUrl || defaultLocalAiConfig.baseUrl),
+  model: String(config.model || ""),
+  hasApiKey: Boolean(config.apiKey),
+  apiKeyHint: config.apiKey ? `••••${String(config.apiKey).slice(-4)}` : "",
+  apiKey: "",
+});
+const fullLocalAiConfig = (config = {}) => {
+  const current = readLocalAiConfig();
+  return {
+    baseUrl: String(config.baseUrl || current.baseUrl || defaultLocalAiConfig.baseUrl),
+    model: String(config.model ?? current.model ?? ""),
+    apiKey: String(config.apiKey || current.apiKey || ""),
+  };
+};
+const localAiRequestConfig = (config = {}) => {
+  const next = fullLocalAiConfig(config);
+  return next.apiKey ? next : null;
+};
+
+const readLocalAgentReports = () => {
+  if (typeof localStorage === "undefined") return [];
+  try {
+    const value = JSON.parse(localStorage.getItem(LOCAL_AGENT_REPORTS_KEY) || "[]");
+    return Array.isArray(value) ? value : [];
+  } catch { return []; }
+};
+const writeLocalAgentReports = (reports) => {
+  if (typeof localStorage !== "undefined") {
+    try { localStorage.setItem(LOCAL_AGENT_REPORTS_KEY, JSON.stringify(reports.slice(0, 300))); } catch {}
+  }
+};
+const readLocalAiReports = () => {
+  if (typeof localStorage === "undefined") return [];
+  try {
+    const value = JSON.parse(localStorage.getItem(LOCAL_AI_REPORTS_KEY) || "[]");
+    return Array.isArray(value) ? value : [];
+  } catch { return []; }
+};
+const writeLocalAiReports = (reports) => {
+  if (typeof localStorage !== "undefined") {
+    try { localStorage.setItem(LOCAL_AI_REPORTS_KEY, JSON.stringify(reports.slice(0, 100))); } catch {}
+  }
+};
 
 const sharedApiBase = () => {
   if (typeof window === "undefined") return "";
@@ -346,13 +402,36 @@ const aiApiJson = async (path, options = {}) => {
   return payload;
 };
 
-export const loadAiConfig = async () => await aiApiJson("/ai/config", { method: "GET", cache: "no-store" });
-export const saveAiConfig = async (config) => await aiApiJson("/ai/config", { method: "PUT", body: JSON.stringify(config) });
-export const loadAiModels = async () => await aiApiJson("/ai/models", { method: "GET", cache: "no-store" });
-export const testAiConfig = async (config) => await aiApiJson("/ai/test", { method: "POST", body: JSON.stringify(config) });
+export const loadAiConfig = async () => {
+  const local = readLocalAiConfig();
+  const localConfigured = Boolean(local.apiKey);
+  let remote = {};
+  try { remote = await aiApiJson("/ai/config", { method: "GET", cache: "no-store" }); } catch {}
+  return localConfigured
+    ? { ...remote, ...publicLocalAiConfig(local) }
+    : { baseUrl: remote.baseUrl || defaultLocalAiConfig.baseUrl, model: remote.model || "", hasApiKey: Boolean(remote.hasApiKey), apiKeyHint: remote.apiKeyHint || "", apiKey: "" };
+};
+export const saveAiConfig = async (config, options = {}) => {
+  const next = fullLocalAiConfig(config);
+  if (typeof localStorage !== "undefined") localStorage.setItem(LOCAL_AI_CONFIG_KEY, JSON.stringify(next));
+  if (options.saveToServer && next.apiKey) {
+    return await aiApiJson("/ai/config", { method: "PUT", body: JSON.stringify({ config: next }) });
+  }
+  return publicLocalAiConfig(next);
+};
+export const loadAiModels = async (config = {}) => {
+  const local = localAiRequestConfig(config);
+  return await aiApiJson("/ai/models", { method: "POST", body: JSON.stringify(local ? { config: local } : {}) });
+};
+export const testAiConfig = async (config) => {
+  const next = localAiRequestConfig(config);
+  if (next && typeof localStorage !== "undefined") localStorage.setItem(LOCAL_AI_CONFIG_KEY, JSON.stringify(next));
+  return await aiApiJson("/ai/test", { method: "POST", body: JSON.stringify(next ? { config: next } : {}) });
+};
 export const requestAiChat = async (messages, options = {}) => {
-  const { signal, ...payload } = options || {};
-  return await aiApiJson("/ai/chat", { method: "POST", body: JSON.stringify({ messages, ...payload }), signal });
+  const { signal, config, ...payload } = options || {};
+  const local = localAiRequestConfig(config || {});
+  return await aiApiJson("/ai/chat", { method: "POST", body: JSON.stringify({ messages, ...payload, ...(local ? { config: local } : {}) }), signal });
 };
 export const saveAiReport = async (report) => await aiApiJson("/ai/reports", { method: "POST", body: JSON.stringify(report) });
 export const saveAgentDispatch = async (dispatch) => await aiApiJson("/ai/agent-dispatch", { method: "POST", body: JSON.stringify(dispatch) });
@@ -362,6 +441,32 @@ export const loadAgentReports = async () => await aiApiJson("/ai/agent-reports",
 export const loadAgentReport = async (fileName) => await aiApiJson(`/ai/agent-reports/${encodeURIComponent(fileName)}`, { method: "GET", cache: "no-store" });
 export const saveAgentReportFile = async (report) => await aiApiJson("/ai/agent-reports", { method: "POST", body: JSON.stringify({ ...report, feature: "qualityAgent" }) });
 export const deleteAgentReport = async (fileName) => await aiApiJson(`/ai/agent-reports/${encodeURIComponent(fileName)}`, { method: "DELETE" });
+
+export const loadLocalAgentReports = () => readLocalAgentReports();
+export const saveLocalAgentReport = (report = {}) => {
+  const now = new Date();
+  const stamp = now.toISOString().replace(/[:.]/g, "-");
+  const safe = String(report.module || "AI分析").replace(/[\\/:*?"<>|]/g, "-");
+  const fileName = report.fileName || `本地-Agent报告-${safe}-${stamp}.md`;
+  const item = { ...report, fileName, localOnly: true, updatedAt: now.toISOString(), savedAt: now.toISOString() };
+  const reports = [item, ...readLocalAgentReports().filter((entry) => entry.fileName !== fileName)];
+  writeLocalAgentReports(reports);
+  return item;
+};
+export const deleteLocalAgentReport = (fileName) => {
+  const reports = readLocalAgentReports().filter((entry) => entry.fileName !== fileName);
+  writeLocalAgentReports(reports);
+  return { ok: true, fileName };
+};
+export const saveLocalAiReport = (report = {}) => {
+  const now = new Date();
+  const stamp = now.toISOString().replace(/[:.]/g, "-");
+  const safe = String(report.module || "AI分析").replace(/[\\/:*?"<>|]/g, "-");
+  const item = { ...report, fileName: report.fileName || `本地-AI分析-${safe}-${stamp}.json`, localOnly: true, savedAt: now.toISOString() };
+  writeLocalAiReports([item, ...readLocalAiReports().filter((entry) => entry.fileName !== item.fileName)]);
+  return item;
+};
+export const loadLocalAiReports = () => readLocalAiReports();
 
 const examApiJson = async (path, options = {}) => {
   const base = sharedApiBase();

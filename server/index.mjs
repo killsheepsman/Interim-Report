@@ -13,9 +13,9 @@ const stateDir = path.join(dataDir, "state");
 const uploadDir = path.join(dataDir, "uploads");
 const aiReportDir = path.resolve(rootDir, "..", "outputs", "ai_saved_reports");
 const agentSkillDir = path.join(rootDir, "skills");
+const aiConfigFile = path.join(dataDir, "ai-config.json");
 const adminIpsFile = path.join(dataDir, "admin-ips.json");
 const permissionFile = path.join(dataDir, "permission-config.json");
-const aiConfigFile = path.join(dataDir, "ai-config.json");
 const examSessionsFile = path.join(dataDir, "exam-sessions.json");
 const port = Number(process.env.PORT || 4173);
 const host = process.env.HOST || "0.0.0.0";
@@ -23,6 +23,7 @@ const trustProxy = process.env.TRUST_PROXY === "true";
 const maxBodyBytes = Number(process.env.MAX_BODY_MB || 1024) * 1024 * 1024;
 const allowedKeys = new Set(["imported-sources", "analysis-cache", "applied-date-range", "dqa-engineer-supplement"]);
 const defaultValueFor = (key) => key === "analysis-cache" || key === "applied-date-range" || key === "dqa-engineer-supplement" ? null : [];
+// TEMP: 本机权限验证用。上传 GitHub 前必须删除这行临时管理员 IP。
 // Local temporary admin entries remain only in the local worktree.
 const TEMP_LOCAL_ADMIN_IPS = [];
 
@@ -32,36 +33,38 @@ const defaultPermissionConfig = {
   ordinaryUsers: [],
   allowIntranetUsers: false,
   features: {
-    dataImport: { public: false, deputy: true, label: "????" },
-    workspace: { public: false, deputy: true, label: "?????" },
-    annotationEdit: { public: false, deputy: true, label: "??????" },
-    annotationView: { public: false, deputy: true, label: "????" },
-    exportReport: { public: true, deputy: true, label: "????" },
-    dateTemporaryRefresh: { public: true, deputy: true, label: "??????" },
-    aiAnalysis: { public: false, deputy: true, label: "AI??" },
-    aiInterface: { public: false, deputy: true, label: "AI??" },
-    qualityAgent: { public: true, deputy: true, label: "???? Agent" },
+    dataImport: { public: false, deputy: true, label: "数据导入" },
+    workspace: { public: false, deputy: true, label: "质量工作台" },
+    annotationEdit: { public: false, deputy: true, label: "分析改善措施" },
+    annotationView: { public: false, deputy: true, label: "分析显示" },
+    exportReport: { public: true, deputy: true, label: "保存报告" },
+    dateTemporaryRefresh: { public: true, deputy: true, label: "临时刷新日期" },
+    aiAnalysis: { public: false, deputy: true, label: "AI分析" },
+    aiInterface: { public: false, deputy: true, label: "AI接口" },
+    qualityAgent: { public: true, deputy: true, label: "质量分析 Agent" },
+    qualityAgentStart: { public: false, deputy: false, label: "启动 Agent 分析" },
+    agentRoleReportGenerate: { public: false, deputy: false, label: "生成全部角色报告" },
   },
   apis: {
-    "POST /api/uploads": { public: false, deputy: true, label: "????Excel" },
-    "PUT /api/state/imported-sources": { public: false, deputy: true, label: "???????" },
-    "PUT /api/state/analysis-cache": { public: false, deputy: true, label: "??????" },
-    "PUT /api/state/applied-date-range": { public: false, deputy: true, label: "??????" },
-    "PUT /api/permissions": { public: false, deputy: false, label: "??????" },
-    "GET /api/state/analysis-cache": { public: true, deputy: true, label: "??????" },
-    "GET /api/state/imported-sources": { public: true, deputy: true, label: "???????" },
-    "GET /api/state/applied-date-range": { public: true, deputy: true, label: "??????" },
-    "GET /api/uploads/*": { public: true, deputy: true, label: "????Excel" },
-    "POST /api/exam-sessions": { public: false, deputy: true, label: "????????" },
-    "GET /api/exam-sessions/*": { public: true, deputy: true, label: "??????" },
-    "POST /api/exam-sessions/*/submit": { public: true, deputy: true, label: "??????" },
-    "GET /api/me": { public: true, deputy: true, label: "??????" },
-    "GET /api/permissions": { public: true, deputy: true, label: "??????" },
+    "POST /api/uploads": { public: false, deputy: true, label: "上传原始Excel" },
+    "PUT /api/state/imported-sources": { public: false, deputy: true, label: "保存数据源清单" },
+    "PUT /api/state/analysis-cache": { public: false, deputy: true, label: "保存分析结果" },
+    "PUT /api/state/applied-date-range": { public: false, deputy: true, label: "保存默认日期" },
+    "PUT /api/permissions": { public: false, deputy: false, label: "保存权限设置" },
+    "GET /api/state/analysis-cache": { public: true, deputy: true, label: "读取分析结果" },
+    "GET /api/state/imported-sources": { public: true, deputy: true, label: "读取数据源清单" },
+    "GET /api/state/applied-date-range": { public: true, deputy: true, label: "读取默认日期" },
+    "GET /api/uploads/*": { public: true, deputy: true, label: "读取原始Excel" },
+    "POST /api/exam-sessions": { public: false, deputy: true, label: "生成知识考试链接" },
+    "GET /api/exam-sessions/*": { public: true, deputy: true, label: "读取知识考试" },
+    "POST /api/exam-sessions/*/submit": { public: true, deputy: true, label: "提交知识考试" },
+    "GET /api/me": { public: true, deputy: true, label: "读取当前权限" },
+    "GET /api/permissions": { public: true, deputy: true, label: "读取权限配置" },
   },
 };
 
-defaultPermissionConfig.apis["PUT /api/state/dqa-engineer-supplement"] = { public: false, deputy: true, label: "??? ECN/?BOM/??" };
-defaultPermissionConfig.apis["GET /api/state/dqa-engineer-supplement"] = { public: true, deputy: true, label: "??? ECN/?BOM/??" };
+defaultPermissionConfig.apis["PUT /api/state/dqa-engineer-supplement"] = { public: false, deputy: true, label: "研发· ECN/非BOM/评审" };
+defaultPermissionConfig.apis["GET /api/state/dqa-engineer-supplement"] = { public: true, deputy: true, label: "研发· ECN/非BOM/评审" };
 
 const mimeTypes = {
   ".html": "text/html; charset=utf-8",
@@ -97,15 +100,15 @@ const loadAiConfig = async () => {
     const saved = JSON.parse(await fs.readFile(aiConfigFile, "utf8"));
     return { baseUrl: normalizeAiBaseUrl(saved.baseUrl), model: String(saved.model || "").trim(), apiKey: String(saved.apiKey || "").trim() };
   } catch (error) {
-    if (error.code !== "ENOENT") console.error("Failed to load AI config", error);
+    if (error.code !== "ENOENT") console.error("Failed to load shared AI config", error);
     return { ...defaultAiConfig };
   }
 };
 const saveAiConfig = async (config) => {
   const current = await loadAiConfig();
   const next = {
-    baseUrl: normalizeAiBaseUrl(config.baseUrl || current.baseUrl),
-    model: String(config.model ?? current.model ?? "").trim(),
+    baseUrl: normalizeAiBaseUrl(config.baseUrl || current.baseUrl || defaultAiConfig.baseUrl),
+    model: String(config.model || current.model || "").trim(),
     apiKey: String(config.apiKey || "").trim() || current.apiKey,
   };
   await fs.mkdir(dataDir, { recursive: true });
@@ -114,13 +117,23 @@ const saveAiConfig = async (config) => {
   await fs.rename(temporary, aiConfigFile);
   return next;
 };
-const publicAiConfig = (config) => ({ baseUrl: config.baseUrl, model: config.model, hasApiKey: !!config.apiKey, apiKeyHint: config.apiKey ? `????${config.apiKey.slice(-4)}` : "" });
+const publicAiConfig = (config) => ({ baseUrl: config.baseUrl, model: config.model, hasApiKey: !!config.apiKey, apiKeyHint: config.apiKey ? `••••${config.apiKey.slice(-4)}` : "" });
+const configFromPayload = async (payload = {}) => {
+  const supplied = payload && payload.config && typeof payload.config === "object" ? payload.config : null;
+  // No local override means use the administrator's shared default config.
+  if (!supplied) return await loadAiConfig();
+  return {
+    baseUrl: normalizeAiBaseUrl(supplied.baseUrl || defaultAiConfig.baseUrl),
+    model: String(supplied.model || "").trim(),
+    apiKey: String(supplied.apiKey || "").trim(),
+  };
+};
 const usesArkPlanResponses = (config) => /\/api\/plan\/v3\/?$/i.test(config.baseUrl || "");
 const aiCatalogKey = (config) => `${config.baseUrl}|${config.apiKey.slice(-8)}`;
 const assertKnownAiModel = (config) => {
   const catalog = aiModelCatalog.get(aiCatalogKey(config));
   if (catalog?.models?.length && !catalog.models.includes(config.model)) {
-    throw new Error(`?? ${config.model} ???? API ????????????????????????`);
+    throw new Error(`模型 ${config.model} 不在当前 API 密钥可用模型列表中，请重新读取模型并选择可用模型`);
   }
 };
 const extractAiText = (value) => {
@@ -166,16 +179,16 @@ const requestAi = async (config, pathname, options = {}) => {
     let body;
     try { body = text ? JSON.parse(text) : {}; } catch { body = { error: { message: text.slice(0, 500) || "Invalid AI response" } }; }
     if (!response.ok) {
-      if (response.status === 504) throw new Error("AI???????504?????????????????????????????");
+      if (response.status === 504) throw new Error("AI上游网关超时（504）：请使用更快的模型或缩短当前阶段请求；已完成阶段不会丢失");
       const upstreamMessage = body?.error?.message || body?.message || text.slice(0, 500) || "No error detail returned";
       if (response.status === 404 && /model.+not supported|no available channel/i.test(upstreamMessage)) {
-        throw new Error(`?? API ??/??????? ${config.model}????AI????????????????????????${pathname}`);
+        throw new Error(`当前 API 密钥/分组不支持模型 ${config.model}，请在“AI接口”重新读取模型并选择可用模型；当前请求通道：${pathname}`);
       }
-      throw new Error(`AI???? ${response.status}?${upstreamMessage}`);
+      throw new Error(`AI上游返回 ${response.status}：${upstreamMessage}`);
     }
     return body;
   } catch (error) {
-    if (error?.name === "AbortError") throw new Error(`AI????${Math.round(timeoutMs / 1000)}???????????????????`);
+    if (error?.name === "AbortError") throw new Error(`AI分析超过${Math.round(timeoutMs / 1000)}秒，已停止本次请求；已完成阶段不会丢失`);
     throw error;
   } finally {
     clearTimeout(timeout);
@@ -240,7 +253,7 @@ const mergePermissionConfig = (config = {}) => {
     if (!merged.menus[key]) merged.menus[key] = { public: true, deputy: true, ...value, children: value?.children || {} };
   });
   Object.entries(defaultPermissionConfig.features).forEach(([key, value]) => {
-    merged.features[key] = { ...value, ...(config.features?.[key] || {}) };
+    merged.features[key] = { ...value, ...(config.features?.[key] || {}), label: value.label };
   });
   Object.entries(defaultPermissionConfig.apis).forEach(([key, value]) => {
     merged.apis[key] = { ...value, ...(config.apis?.[key] || {}) };
@@ -296,7 +309,7 @@ const currentUser = async (req) => {
   const isAuthorized = isAdmin || isDeputy || isOrdinary;
   return {
     ip,
-    name: deputy?.name || ordinary?.name || (isAdmin ? "????" : isIntranetUser ? "??????" : ""),
+    name: deputy?.name || ordinary?.name || (isAdmin ? "主管理员" : isIntranetUser ? "公司内网用户" : ""),
     isAdmin,
     isDeputy,
     isOrdinary,
@@ -580,7 +593,7 @@ const handleExamSessions = async (req, res) => {
       correctAnswers: Array.isArray(question.correctAnswers) ? question.correctAnswers.map(Number).filter(Number.isFinite) : (Number.isFinite(Number(question.answer)) ? [Number(question.answer)] : []),
       answerText: String(question.answerText || question.correctAnswer || ""),
     })).filter((question) => question.questionText);
-    if (!questions.length) return sendJson(res, 400, { error: "??????????" });
+    if (!questions.length) return sendJson(res, 400, { error: "没有可关联的考试题目" });
     const now = new Date();
     const expiresAt = new Date(now.getTime() + Math.max(1, Number(payload.validDays) || 14) * 86400000);
     const session = { id: randomUUID(), token: randomUUID().replaceAll("-", ""), roleName: String(payload.roleName || ""), recipientName: String(payload.recipientName || ""), issueCategories: Array.isArray(payload.issueCategories) ? payload.issueCategories.map(String).slice(0, 20) : [], reportId: String(payload.reportId || ""), createdAt: now.toISOString(), expiresAt: expiresAt.toISOString(), questions, submittedAt: null, result: null };
@@ -594,7 +607,7 @@ const handleExamSessions = async (req, res) => {
     const user = await ensureApiAllowed(req, res);
     if (!user) return;
     const session = (await loadExamSessions()).find((item) => item.token === decodeURIComponent(match[1]));
-    if (!session || new Date(session.expiresAt).getTime() < Date.now() && !session.submittedAt) return sendJson(res, 404, { error: "???????????" });
+    if (!session || new Date(session.expiresAt).getTime() < Date.now() && !session.submittedAt) return sendJson(res, 404, { error: "答题链接不存在或已失效" });
     return sendJson(res, 200, { id: session.id, token: session.token, roleName: session.roleName, recipientName: session.recipientName, issueCategories: session.issueCategories, expiresAt: session.expiresAt, isSubmitted: !!session.submittedAt, result: session.result, questions: session.submittedAt ? [] : session.questions.map(examQuestionForClient) });
   }
   const submitMatch = pathname.match(/^\/api\/exam-sessions\/([^/]+)\/submit$/);
@@ -604,7 +617,7 @@ const handleExamSessions = async (req, res) => {
     const token = decodeURIComponent(submitMatch[1]);
     const sessions = await loadExamSessions();
     const session = sessions.find((item) => item.token === token);
-    if (!session) return sendJson(res, 404, { error: "???????????" });
+    if (!session) return sendJson(res, 404, { error: "答题链接不存在或已失效" });
     if (session.submittedAt) return sendJson(res, 200, { ...session.result, alreadySubmitted: true });
     if (new Date(session.expiresAt).getTime() < Date.now()) return sendJson(res, 200, { isExpired: true });
     const payload = JSON.parse(await readBody(req) || "{}");
@@ -685,47 +698,62 @@ const handlePermissions = async (req, res) => {
 
 const handleAi = async (req, res) => {
   const user = await currentUser(req);
-  const pathname = new URL(req.url, "http://local").pathname;
+  const rawPathname = new URL(req.url, "http://local").pathname;
+  const legacyChatAlias = rawPathname === "/api/chat";
+  const pathname = legacyChatAlias ? "/api/ai/chat" : rawPathname;
   let requestPayload = null;
   const getPayload = async () => {
     if (requestPayload === null) requestPayload = JSON.parse(await readBody(req) || "{}");
     return requestPayload;
   };
-  const preliminaryPayload = pathname === "/api/ai/chat" || pathname === "/api/ai/reports" || pathname === "/api/ai/agent-dispatch" || pathname === "/api/ai/agent-reports"
+  const preliminaryPayload = ["/api/ai/chat", "/api/ai/reports", "/api/ai/agent-dispatch", "/api/ai/agent-reports", "/api/ai/models", "/api/ai/test", "/api/ai/config"].includes(pathname)
     ? (req.method === "POST" ? await getPayload() : {}) : {};
-  const isQualityAgentRequest = preliminaryPayload?.feature === "qualityAgent" || preliminaryPayload?.agentTitle === "???? Agent" || preliminaryPayload?.agent === true;
-  const featureKey = isQualityAgentRequest || pathname === "/api/ai/skills" || pathname === "/api/ai/agent-dispatch" || pathname.startsWith("/api/ai/agent-reports") ? "qualityAgent" : (["/api/ai/config", "/api/ai/models", "/api/ai/test"].includes(pathname) ? "aiInterface" : "aiAnalysis");
+  const isQualityAgentRequest = preliminaryPayload?.feature === "qualityAgent" || preliminaryPayload?.agentTitle === "质量分析 Agent" || preliminaryPayload?.agent === true;
+  const operationFeatureKey = preliminaryPayload?.operation === "quality-agent-start"
+    ? "qualityAgentStart"
+    : preliminaryPayload?.operation === "agent-role-report-generate"
+      ? "agentRoleReportGenerate"
+      : "";
+  const featureKey = operationFeatureKey || (legacyChatAlias ? "aiInterface" : (isQualityAgentRequest || pathname === "/api/ai/skills" || pathname === "/api/ai/agent-dispatch" || pathname.startsWith("/api/ai/agent-reports") ? "qualityAgent" : (["/api/ai/config", "/api/ai/models", "/api/ai/test"].includes(pathname) ? "aiInterface" : "aiAnalysis")));
   const featureRule = user.permissions?.features?.[featureKey] || {};
   const featureAllowed = user.isAdmin || (user.isDeputy ? featureRule.deputy !== false : featureRule.public === true);
-  if (!featureAllowed) return sendJson(res, 403, { error: `${featureKey === "aiInterface" ? "AI??" : featureKey === "qualityAgent" ? "???? Agent" : "AI??"}?????` });
+  if (!featureAllowed) {
+    const featureLabel = { aiInterface: "AI接口", aiAnalysis: "AI分析", qualityAgent: "质量分析 Agent", qualityAgentStart: "启动 Agent 分析", agentRoleReportGenerate: "生成全部角色报告" }[featureKey] || featureKey;
+    return sendJson(res, 403, { error: `${featureLabel}权限未开启` });
+  }
   if (pathname === "/api/ai/config" && req.method === "GET") return sendJson(res, 200, publicAiConfig(await loadAiConfig()));
   if (pathname === "/api/ai/config" && req.method === "PUT") {
+    if (!user.isAdmin) return sendJson(res, 403, { error: "只有主管理员可以更新服务器默认 AI 接口" });
     const payload = await getPayload();
-    return sendJson(res, 200, publicAiConfig(await saveAiConfig(payload)));
+    const config = await configFromPayload(payload);
+    if (!config.apiKey || !config.model) return sendJson(res, 400, { error: "服务器默认 AI 接口需要 API 密钥和模型" });
+    return sendJson(res, 200, publicAiConfig(await saveAiConfig(config)));
   }
   if (pathname === "/api/ai/reports" && req.method === "POST") {
+    if (!user.isAdmin) return sendJson(res, 403, { error: "只有主管理员可以保存报告到服务器" });
     const payload = await getPayload();
     const hasSingleReport = typeof payload.content === "string" && payload.content.trim();
     const hasReportPackage = payload.reports && typeof payload.reports === "object" && !Array.isArray(payload.reports);
-    if (!hasSingleReport && !hasReportPackage) return sendJson(res, 400, { error: "???????????" });
+    if (!hasSingleReport && !hasReportPackage) return sendJson(res, 400, { error: "报告内容为空，无法保存" });
     const now = new Date();
     const local = new Date(now.getTime() - now.getTimezoneOffset() * 60000);
     const stamp = local.toISOString().replace(/[-:]/g, "").replace("T", "-").replace(/\.(\d{3})Z$/, "-$1");
-    const moduleName = sanitizeSegment(payload.module || (hasReportPackage ? "?????" : "AI??"));
-    const fileName = `QMS-AI??-${moduleName}-${stamp}.json`;
+    const moduleName = sanitizeSegment(payload.module || (hasReportPackage ? "全部报告包" : "AI分析"));
+    const fileName = `QMS-AI分析-${moduleName}-${stamp}.json`;
     const savedPayload = { ...payload, content: hasSingleReport ? payload.content.trim() : payload.content, savedAt: now.toISOString() };
     await fs.mkdir(aiReportDir, { recursive: true });
     await fs.writeFile(path.join(aiReportDir, fileName), JSON.stringify(savedPayload, null, 2), "utf8");
     return sendJson(res, 200, { ok: true, fileName, savedAt: savedPayload.savedAt, relativePath: `outputs/ai_saved_reports/${fileName}` });
   }
   if (pathname === "/api/ai/agent-dispatch" && req.method === "POST") {
+    if (!user.isAdmin) return sendJson(res, 403, { error: "只有主管理员可以创建服务器发送任务" });
     const payload = await getPayload();
-    if (!payload.reportFileName || !payload.role || !payload.recipient) return sendJson(res, 400, { error: "Agent?????????????????" });
+    if (!payload.reportFileName || !payload.role || !payload.recipient) return sendJson(res, 400, { error: "Agent发送任务缺少报告文件、角色或收件人" });
     const now = new Date();
     const local = new Date(now.getTime() - now.getTimezoneOffset() * 60000);
     const stamp = local.toISOString().replace(/[-:]/g, "").replace("T", "-").replace(/\.(\d{3})Z$/, "-$1");
-    const fileName = `QMS-Agent????-${sanitizeSegment(payload.module || "????")}-${stamp}.json`;
-    const savedPayload = { schemaVersion: "quality-agent-dispatch-v1", ...payload, status: "???", createdAt: now.toISOString() };
+    const fileName = `QMS-Agent发送任务-${sanitizeSegment(payload.module || "质量分析")}-${stamp}.json`;
+    const savedPayload = { schemaVersion: "quality-agent-dispatch-v1", ...payload, status: "待发送", createdAt: now.toISOString() };
     await fs.mkdir(aiReportDir, { recursive: true });
     await fs.writeFile(path.join(aiReportDir, fileName), JSON.stringify(savedPayload, null, 2), "utf8");
     return sendJson(res, 200, { ok: true, fileName, savedAt: savedPayload.createdAt, relativePath: `outputs/ai_saved_reports/${fileName}`, status: savedPayload.status });
@@ -754,7 +782,7 @@ const handleAi = async (req, res) => {
         try {
           const text = await fs.readFile(filePath, "utf8");
           const name = text.match(/^name:\s*(.+)$/m)?.[1]?.trim() || entry.name;
-          const description = text.match(/^description:\s*(.+)$/m)?.[1]?.trim() || "?? Agent ??";
+          const description = text.match(/^description:\s*(.+)$/m)?.[1]?.trim() || "项目 Agent 技能";
           skills.push({ id: entry.name, name, description, content: text.slice(0, 60000) });
         } catch {}
       }
@@ -762,14 +790,15 @@ const handleAi = async (req, res) => {
     return sendJson(res, 200, { skills: skills.sort((left, right) => left.name.localeCompare(right.name, "zh-CN")) });
   }
   if (pathname === "/api/ai/agent-reports" && req.method === "POST") {
+    if (!user.isAdmin) return sendJson(res, 403, { error: "只有主管理员可以保存 Agent 报告到服务器" });
     const payload = await getPayload();
     const content = String(payload.content || "");
-    if (!content.trim()) return sendJson(res, 400, { error: "Agent???????????" });
+    if (!content.trim()) return sendJson(res, 400, { error: "Agent报告内容为空，无法保存" });
     const now = new Date();
     const local = new Date(now.getTime() - now.getTimezoneOffset() * 60000);
     const stamp = local.toISOString().replace(/[-:]/g, "").replace("T", "-").replace(/\.(\d{3})Z$/, "-$1");
-    const fileSegments = [payload.module || "????", payload.role, payload.recipient].filter(Boolean).map((value) => sanitizeSegment(value));
-    const fileName = `QMS-Agent??-${fileSegments.join("-")}-${stamp}.md`;
+    const fileSegments = [payload.module || "质量分析", payload.role, payload.recipient].filter(Boolean).map((value) => sanitizeSegment(value));
+    const fileName = `QMS-Agent报告-${fileSegments.join("-")}-${stamp}.md`;
     await fs.mkdir(aiReportDir, { recursive: true });
     await fs.writeFile(path.join(aiReportDir, fileName), content, "utf8");
     return sendJson(res, 200, { ok: true, fileName, savedAt: now.toISOString(), relativePath: `outputs/ai_saved_reports/${fileName}` });
@@ -778,7 +807,7 @@ const handleAi = async (req, res) => {
     await fs.mkdir(aiReportDir, { recursive: true });
     const names = await fs.readdir(aiReportDir);
     const reports = [];
-    for (const name of names.filter((item) => /^QMS-Agent??-.+\.md$/i.test(item))) {
+    for (const name of names.filter((item) => /^QMS-Agent报告-.+\.md$/i.test(item))) {
       const stat = await fs.stat(path.join(aiReportDir, name));
       reports.push({ fileName: name, relativePath: `outputs/ai_saved_reports/${name}`, size: stat.size, updatedAt: stat.mtime.toISOString() });
     }
@@ -788,19 +817,20 @@ const handleAi = async (req, res) => {
   const agentReportMatch = pathname.match(/^\/api\/ai\/agent-reports\/([^/]+)$/);
   if (agentReportMatch) {
     const fileName = decodeURIComponent(agentReportMatch[1]);
-    if (!/^QMS-Agent??-.+\.md$/i.test(fileName) || fileName.includes("..")) return sendJson(res, 400, { error: "??? Agent ????" });
+    if (!/^QMS-Agent报告-.+\.md$/i.test(fileName) || fileName.includes("..")) return sendJson(res, 400, { error: "无效的 Agent 报告文件" });
     const filePath = path.join(aiReportDir, fileName);
     if (req.method === "GET") {
       try { return sendJson(res, 200, { fileName, content: await fs.readFile(filePath, "utf8") }); }
-      catch { return sendJson(res, 404, { error: "Agent ?????" }); }
+      catch { return sendJson(res, 404, { error: "Agent 报告不存在" }); }
     }
     if (req.method === "DELETE") {
+      if (!user.isAdmin) return sendJson(res, 403, { error: "只有主管理员可以删除服务器 Agent 报告" });
       try { await fs.unlink(filePath); return sendJson(res, 200, { ok: true, fileName }); }
-      catch { return sendJson(res, 404, { error: "Agent ?????" }); }
+      catch { return sendJson(res, 404, { error: "Agent 报告不存在" }); }
     }
   }
-  if (pathname === "/api/ai/models" && req.method === "GET") {
-    const config = await loadAiConfig();
+  if (pathname === "/api/ai/models" && (req.method === "GET" || req.method === "POST")) {
+    const config = req.method === "POST" ? await configFromPayload(await getPayload()) : await loadAiConfig();
     if (usesArkPlanResponses(config)) return sendJson(res, 200, { models: ["ark-code-latest"], configuredModel: config.model, manualOnly: true });
     const result = await requestAi(config, "/models", { method: "GET", headers: { "Content-Type": undefined } });
     const models = (Array.isArray(result?.data) ? result.data : []).map((item) => String(item?.id || "").trim()).filter(Boolean).sort();
@@ -809,7 +839,7 @@ const handleAi = async (req, res) => {
   }
   if (pathname === "/api/ai/test" && req.method === "POST") {
     const payload = await getPayload();
-    const config = await saveAiConfig(payload);
+    const config = await configFromPayload(payload);
     if (!config.model) return sendJson(res, 400, { error: "Please select or enter a model" });
     assertKnownAiModel(config);
     // Keep the connectivity probe minimal: some compatible gateways reject optional sampling fields.
@@ -820,10 +850,14 @@ const handleAi = async (req, res) => {
   }
   if (pathname === "/api/ai/chat" && req.method === "POST") {
     const payload = await getPayload();
-    const config = await loadAiConfig();
+    const config = await configFromPayload(payload);
     if (!config.model) return sendJson(res, 400, { error: "AI model is not configured" });
     assertKnownAiModel(config);
-    const messages = Array.isArray(payload.messages) ? payload.messages.slice(-20).map((item) => ({ role: ["system", "assistant", "user"].includes(item?.role) ? item.role : "user", content: String(item?.content || "").slice(0, 120000) })) : [];
+    const messages = Array.isArray(payload.messages)
+      ? payload.messages.slice(-20).map((item) => ({ role: ["system", "assistant", "user"].includes(item?.role) ? item.role : "user", content: String(item?.content || "").slice(0, 120000) }))
+      : (legacyChatAlias && [payload.prompt, payload.message, payload.content].some((value) => String(value || "").trim())
+        ? [{ role: "user", content: String(payload.prompt || payload.message || payload.content).slice(0, 120000) }]
+        : []);
     if (!messages.length) return sendJson(res, 400, { error: "messages is required" });
     const requestedMaxTokens = Number(payload.max_tokens);
     const maxTokens = Number.isFinite(requestedMaxTokens) ? Math.min(12000, Math.max(256, Math.round(requestedMaxTokens))) : null;
@@ -881,7 +915,7 @@ const server = createServer(async (req, res) => {
   try {
     if (req.url === "/api/me") return await handleMe(req, res);
     if (req.url === "/api/permissions") return await handlePermissions(req, res);
-    if (req.url.startsWith("/api/ai/")) return await handleAi(req, res);
+    if (req.url.startsWith("/api/ai/") || new URL(req.url, "http://local").pathname === "/api/chat") return await handleAi(req, res);
     if (req.url.startsWith("/api/exam-sessions")) return await handleExamSessions(req, res);
     if (req.url.startsWith("/api/uploads/")) return await handleUploadedFile(req, res);
     if (req.url === "/api/uploads") return await handleUpload(req, res);
@@ -890,7 +924,7 @@ const server = createServer(async (req, res) => {
   } catch (error) {
     console.error(error);
     if (req.url.startsWith("/api/ai/")) {
-      return sendJson(res, 502, { error: String(error?.message || "AI??????").slice(0, 1000) });
+      return sendJson(res, 502, { error: String(error?.message || "AI接口调用失败").slice(0, 1000) });
     }
     return sendJson(res, 500, { error: "Internal server error" });
   }
@@ -899,4 +933,3 @@ const server = createServer(async (req, res) => {
 server.listen(port, host, () => {
   console.log(`QMS server listening on http://${host}:${port}`);
 });
-

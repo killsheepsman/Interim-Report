@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ArrowsClockwise, Brain, FloppyDisk, PaperPlaneTilt, WarningCircle } from "@phosphor-icons/react";
 import { ReportBarChart } from "../charts.jsx";
-import { createExamSession, loadAgentReport, loadAgentReports, loadAgentSkills, requestAiChat, saveAgentDispatch, saveAgentReportFile } from "../dataStore.js";
+import { createExamSession, loadAgentReport, loadAgentReports, loadAgentSkills, requestAiChat, saveAgentDispatch, saveAgentReportFile, saveLocalAgentReport } from "../dataStore.js";
 import { loadQualityAgentRuns } from "./qualityAgent.js";
 import { loadImportedAgentReports } from "./agentReportStorage.js";
 
@@ -378,7 +378,7 @@ const buildRoleRowIndex = (rows, fields) => {
 };
 const roleSourceSignature = (role, spec, baselineFiles, recipients, dateRange, sourceRevision = "", skillName = "", skillContent = "") => JSON.stringify({ version: REPORT_PROMPT_VERSION, role, modules: spec.modules, baseline: baselineFiles.map((item) => ({ fileName: item.fileName, updatedAt: item.updatedAt || item.updated_at || "", imported: Boolean(item.imported) })), recipients, period: dateRange, sourceRevision, skillName, skillContent });
 
-export function AgentRoleReportPage({ initialRole = "组装人员", data = {}, files = [], dateRange = {} }) {
+export function AgentRoleReportPage({ initialRole = "组装人员", data = {}, files = [], dateRange = {}, canGenerate = false, canSaveToServer = false }) {
   const role = initialRole;
   const spec = roleSpecs[role] || roleSpecs.组装人员;
   const roleSkillId = roleSkillIds[role] || "quality-role-assembly-person";
@@ -492,6 +492,10 @@ export function AgentRoleReportPage({ initialRole = "组装人员", data = {}, f
   }, [projectReports, recipient, role, cacheEntry, sourceSignature]);
 
   const generateAll = async () => {
+    if (!canGenerate) {
+      setState({ status: "error", message: "当前账号没有“生成全部角色报告”权限，请联系主管理员" });
+      return;
+    }
     if (!period.start || !period.end || period.start > period.end) { setState({ status: "error", message: "请选择有效的统计年份和时间段" }); return; }
     if (!hasCompleteBaseline(baseline.files, spec.modules)) { setState({ status: "error", message: `请先在对应模块 Agent 中生成、保存或导入报告：${spec.modules.filter((module) => !baseline.files.some((item) => baselineMatchesModule(item, module))).join("、")}` }); return; }
     if (!recipients.length) { setState({ status: "error", message: "没有找到可用的人员名单，请先检查原始数据或映射表" }); return; }
@@ -522,7 +526,7 @@ export function AgentRoleReportPage({ initialRole = "组装人员", data = {}, f
         const result = await requestAiChat([
           { role: "system", content: `你是质量分析 Agent 的角色闭环报告生成器。只能使用输入的固定 Agent报告和人员证据，不得新增数字，不得用上级数据冒充本人。${managerInstruction}报告必须包含：结果指标、过程暴露、根因证据/待核实、责任链汇报、改善措施、30/60/90天待办、验证指标和关闭条件。输出结构化 Markdown，使用一级/二级标题、表格和清晰列表；排名章节只输出章节标题，不要生成排名数据表，系统会在该标题下插入统一排名图表。必须严格执行角色 Skill，不得违反其中的角色边界、数据口径和禁止事项。\n\n角色 Skill：\n${roleSkill.content}` },
           { role: "user", content: `角色：${role}\n角色 Skill 名称：${roleSkill.name}\n责任链：${spec.chain}\n统计年份：${roleDateRange._periodYear}\n统计周期：${roleDateRange._periodStart}—${roleDateRange._periodEnd}\n当前人员：${name}\n本人员工证据摘要：${JSON.stringify(evidence)}\n排名图表数据（只可引用，不得重算）：${JSON.stringify(rankingRows)}\n基线 Agent 报告：${baselineText}\n${managerInstruction}\n请只输出该人员的 Markdown 报告；没有证据的部分写“待核实”，不得把下属问题写成管理者个人问题。` },
-        ], { max_tokens: 3000, agent: true, signal: controller.signal });
+        ], { max_tokens: 3000, agent: true, operation: "agent-role-report-generate", signal: controller.signal });
         let reportContent = result.content || "暂无报告";
         if (individualRoles.has(role)) {
           const exam = await createAgentExamLink(role, name, evidence);
@@ -531,7 +535,9 @@ export function AgentRoleReportPage({ initialRole = "组装人员", data = {}, f
         reportContent = `${reportContent.trim()}\n\n${REPORT_VERSION_MARKER}`;
         reports[name] = reportContent;
         try {
-          const saved = await saveAgentReportFile({ module: `角色报告-${role}`, role, recipient: name, skillName: roleSkill.name, period: roleDateRange, content: reportContent });
+          const saved = canSaveToServer
+            ? await saveAgentReportFile({ module: `角色报告-${role}`, role, recipient: name, skillName: roleSkill.name, period: roleDateRange, content: reportContent })
+            : saveLocalAgentReport({ module: `角色报告-${role}`, role, recipient: name, skillName: roleSkill.name, period: roleDateRange, content: reportContent });
           autoSaved += 1;
           autoSaveError = saved.relativePath || saved.fileName || autoSaveError;
         } catch (error) {
@@ -559,12 +565,15 @@ export function AgentRoleReportPage({ initialRole = "组装人员", data = {}, f
     if (!selectedContent || !recipient) return;
     setState({ status: "running", message: "正在保存角色报告…" });
     try {
-      const result = await saveAgentReportFile({ module: `角色报告-${role}`, role, recipient, skillName: roleSkill.name, period: roleDateRange, content: selectedContent });
-      setState({ status: "done", message: `已保存：${result.relativePath || result.fileName}` });
+      const result = canSaveToServer
+        ? await saveAgentReportFile({ module: `角色报告-${role}`, role, recipient, skillName: roleSkill.name, period: roleDateRange, content: selectedContent })
+        : saveLocalAgentReport({ module: `角色报告-${role}`, role, recipient, skillName: roleSkill.name, period: roleDateRange, content: selectedContent });
+      setState({ status: "done", message: canSaveToServer ? `已保存到服务器：${result.relativePath || result.fileName}` : `已保存到本机：${result.fileName}` });
       await refresh();
     } catch (error) { setState({ status: "error", message: `保存失败：${error.message}` }); }
   };
   const dispatch = async () => {
+    if (!canSaveToServer) { setState({ status: "error", message: "普通用户不能创建服务器发送任务" }); return; }
     if (!selectedContent || !recipient) { setState({ status: "error", message: "请先生成并选择人员报告" }); return; }
     setState({ status: "running", message: "正在创建角色发送任务…" });
     try {
@@ -591,10 +600,10 @@ export function AgentRoleReportPage({ initialRole = "组装人员", data = {}, f
       {period.start > period.end && <span className="quality-agent-period-invalid">日期范围无效</span>}
       <span>基线：{spec.modules.join(" + ")} · 缓存：{cachedComplete ? "已完成" : `${Object.keys(cacheEntry?.reports || {}).length}/${recipients.length}`}</span>
       <button className="qmdp-secondary-btn" onClick={refresh} disabled={state.status === "running"}><ArrowsClockwise size={15}/>刷新基线</button>
-      {state.status === "running" && abortRef.current ? <button className="qmdp-danger-btn" onClick={stop}><WarningCircle size={15}/>停止批量生成</button> : <button className="qmdp-primary-btn" onClick={generateAll}><Brain size={16}/>{cachedComplete ? "重新生成全部报告" : "生成全部角色报告"}</button>}
+      {state.status === "running" && abortRef.current ? <button className="qmdp-danger-btn" onClick={stop}><WarningCircle size={15}/>停止批量生成</button> : <button className="qmdp-primary-btn" onClick={generateAll} disabled={!canGenerate} title={!canGenerate ? "仅主管理员可以生成全部角色报告" : "生成全部角色报告"}><Brain size={16}/>{cachedComplete ? "重新生成全部报告" : "生成全部角色报告"}</button>}
     </section>
     <section className="qmdp-card quality-agent-base-preview"><header><strong>角色报告基线</strong><span>{baseline.files.map((item) => `${item.module || spec.modules.find((module) => baselineMatchesModule(item, module))} · ${item.imported ? "外部导入" : item.fileName.startsWith("本地缓存-") ? "本地缓存" : "项目报告库"}`).join("、") || "尚未找到对应 Agent 报告"}</span></header><p>供应链角色只使用 IPQC Agent；研发角色同时使用 OQC、DQA、QMS Agent。个人证据不足时报告必须标记“待核实”。外部导入报告仅作为角色报告基线使用，不会覆盖项目报告库。</p></section>
-    {selectedContent && <section className="qmdp-card quality-agent-report"><header><strong>{role} · {recipient}</strong><div><button className="qmdp-primary-btn" onClick={save}><FloppyDisk size={15}/>保存报告</button><button className="qmdp-primary-btn" onClick={dispatch}><PaperPlaneTilt size={15}/>创建发送任务</button></div></header><div className="quality-agent-report-content" dangerouslySetInnerHTML={{ __html: reportContentParts.before }}/>{rankingRows.length > 0 && <RoleRankingChart rows={rankingRows} title={rankingTitle} metric={rankingMetric} role={role} recipient={recipient} period={roleDateRange}/>}<div className="quality-agent-report-content" dangerouslySetInnerHTML={{ __html: reportContentParts.after }}/></section>}
+    {selectedContent && <section className="qmdp-card quality-agent-report"><header><strong>{role} · {recipient}</strong><div><button className="qmdp-primary-btn" onClick={save}><FloppyDisk size={15}/>保存报告</button>{canSaveToServer && <button className="qmdp-primary-btn" onClick={dispatch}><PaperPlaneTilt size={15}/>创建发送任务</button>}</div></header><div className="quality-agent-report-content" dangerouslySetInnerHTML={{ __html: reportContentParts.before }}/>{rankingRows.length > 0 && <RoleRankingChart rows={rankingRows} title={rankingTitle} metric={rankingMetric} role={role} recipient={recipient} period={roleDateRange}/>}<div className="quality-agent-report-content" dangerouslySetInnerHTML={{ __html: reportContentParts.after }}/></section>}
     {!selectedContent && <section className="qmdp-card quality-agent-report"><header><strong>请选择人员查看报告</strong><span>{cachedComplete ? "缓存已完成" : "请先生成全部角色报告"}</span></header></section>}
     {state.message && <div className={`quality-agent-save-state ${state.status}`}><WarningCircle size={16}/>{state.message}</div>}
   </div>;
