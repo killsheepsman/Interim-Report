@@ -183,7 +183,7 @@ export function LineCompare({ data, height = 300, chartKey = data.series.map((it
     series: data.series.map((s, i) => ({ name: s.name, type: "line", smooth: true, symbolSize: 7, data: s.data, label: { show: labelVisible(positions[s.name]), position: labelPosition(positions[s.name]), formatter: "{c}", fontSize: 9 }, labelLayout: { hideOverlap: false, moveOverlap: "shiftY" }, lineStyle: { width: 3 }, itemStyle: { color: i ? cyan : blue }, areaStyle: i === 0 ? { color: "rgba(47,126,230,.07)" } : undefined })),
   }} /></div>;
 }
-export function BarCompare({ labels, first, second, names = ["2025", "2026"], percent = true, height = 310, chartKey = names.join("-"), rateAxisOverride = null, hideRateAxisControl = false }) {
+export function BarCompare({ labels, first, second, names = ["2025", "2026"], percent = true, height = 310, chartKey = names.join("-"), rateAxisOverride = null, hideRateAxisControl = false, scrollable = false }) {
   const [positions, setPositions] = usePersistentPositions("bar", chartKey, { [names[0]]: "top", [names[1]]: "top" });
   const [rateAxis, setRateAxis] = usePersistentAxisRange("bar", chartKey, { min: 0, max: 100 });
   const effectiveRateAxis = rateAxisOverride || rateAxis;
@@ -192,6 +192,7 @@ export function BarCompare({ labels, first, second, names = ["2025", "2026"], pe
     tooltip: { trigger: "axis", axisPointer: { type: "shadow" }, valueFormatter: (v) => percent ? `${v}%` : v },
     legend: topLegend(6),
     grid: { left: 46, right: 18, top: 42, bottom: 54 },
+    dataZoom: scrollable && labels.length > 12 ? [{ type: "slider", show: true, height: 16, bottom: 8, start: 0, end: Math.min(100, 1200 / Math.max(labels.length, 1)) }, { type: "inside" }] : undefined,
     xAxis: { type: "category", data: labels, axisLabel: { interval: 0, rotate: labels.length > 7 ? 25 : 0, color: "#596273" }, axisLine: { lineStyle: { color: "#d8dee7" } } },
     yAxis: { type: "value", min: percent ? Number(effectiveRateAxis.min) || 0 : undefined, max: percent ? Math.max(Number(effectiveRateAxis.max) || 100, (Number(effectiveRateAxis.min) || 0) + 0.1) : undefined, axisLabel: { formatter: percent ? "{value}%" : "{value}" }, splitLine: { lineStyle: { color: "#edf0f4" } } },
     series: [
@@ -381,6 +382,42 @@ export function Pareto({ rows, height = 315, chartKey = "pareto" }) {
     series: [
       { name: "问题数", type: "bar", data: rows.map((x) => x.count), itemStyle: { color: blue, borderRadius: [5, 5, 0, 0] }, barMaxWidth: 32, label: { show: labelVisible(positions.问题数), position: labelPosition(positions.问题数), formatter: "{c}", fontSize: 9 }, labelLayout: { hideOverlap: false } },
       { name: "累计占比", type: "line", yAxisIndex: 1, data: cumulative, smooth: true, itemStyle: { color: orange }, label: { show: labelVisible(positions.累计占比), position: labelPosition(positions.累计占比), formatter: "{c}%", fontSize: 9 }, labelLayout: { hideOverlap: false, moveOverlap: "shiftY" } },
+    ],
+  }} /></div>;
+}
+
+export function EquipmentQuantityDistributionPareto({ rows = [], height = 340, chartKey = "equipment-quantity-distribution" }) {
+  const total2025 = rows.reduce((sum, row) => sum + Number(row.y2025Count || 0), 0);
+  const total2026 = rows.reduce((sum, row) => sum + Number(row.y2026Count || 0), 0);
+  let running2025 = 0;
+  let running2026 = 0;
+  const cumulative2025 = rows.map((row) => {
+    running2025 += Number(row.y2025Count || 0);
+    return Number((running2025 / Math.max(total2025, 1) * 100).toFixed(1));
+  });
+  const cumulative2026 = rows.map((row) => {
+    running2026 += Number(row.y2026Count || 0);
+    return Number((running2026 / Math.max(total2026, 1) * 100).toFixed(1));
+  });
+  const [positions, setPositions] = usePersistentPositions("equipment-quantity-distribution", chartKey, {
+    "2025项目数": "top", "2026项目数": "top", "2025累计占比": "bottom", "2026累计占比": "bottom",
+  });
+  const [rateAxis, setRateAxis] = usePersistentAxisRange("equipment-quantity-distribution", chartKey, { min: 0, max: 100 });
+  const changePosition = (name, value) => setPositions((current) => ({ ...current, [name]: value }));
+  return <div className="chart-config-wrap"><div className="chart-control-row"><RateAxisControl range={rateAxis} onChange={setRateAxis}/><LabelPositionControl positions={positions} onChange={changePosition}/></div><ScaledChart style={{ height }} option={{
+    tooltip: { trigger: "axis", axisPointer: { type: "shadow" }, formatter: (params) => `${params[0]?.name || ""}<br/>${params.map((item) => `${item.marker}${item.seriesName}：${item.value}${item.seriesName.includes("占比") ? "%" : "个"}`).join("<br/>")}` },
+    legend: topLegend(0),
+    grid: { left: 50, right: 54, top: 48, bottom: 64 },
+    xAxis: { type: "category", data: rows.map((row) => row.name), axisLabel: { interval: 0, rotate: rows.length > 10 ? 35 : 0 } },
+    yAxis: [
+      { type: "value", name: "项目数", min: 0, minInterval: 1, splitLine: { lineStyle: { color: "#eef1f5" } } },
+      { type: "value", name: "累计占比", min: Number(rateAxis.min) || 0, max: Math.max(Number(rateAxis.max) || 100, (Number(rateAxis.min) || 0) + 0.1), axisLabel: { formatter: "{value}%" }, splitLine: { show: false } },
+    ],
+    series: [
+      { name: "2025项目数", type: "bar", data: rows.map((row) => row.y2025Count), barMaxWidth: 22, itemStyle: { color: blue, borderRadius: [5, 5, 0, 0] }, label: { show: labelVisible(positions["2025项目数"]), position: labelPosition(positions["2025项目数"]), formatter: "{c}", fontSize: 9 }, labelLayout: { hideOverlap: false } },
+      { name: "2026项目数", type: "bar", data: rows.map((row) => row.y2026Count), barMaxWidth: 22, itemStyle: { color: orange, borderRadius: [5, 5, 0, 0] }, label: { show: labelVisible(positions["2026项目数"]), position: labelPosition(positions["2026项目数"]), formatter: "{c}", fontSize: 9 }, labelLayout: { hideOverlap: false } },
+      { name: "2025累计占比", type: "line", yAxisIndex: 1, data: cumulative2025, smooth: true, symbolSize: 7, itemStyle: { color: "#176ecf" }, lineStyle: { color: "#176ecf", width: 2.5 }, label: { show: labelVisible(positions["2025累计占比"]), position: labelPosition(positions["2025累计占比"]), formatter: "{c}%", fontSize: 9 }, labelLayout: { hideOverlap: false, moveOverlap: "shiftY" } },
+      { name: "2026累计占比", type: "line", yAxisIndex: 1, data: cumulative2026, smooth: true, symbolSize: 7, itemStyle: { color: "#d66b16" }, lineStyle: { color: "#d66b16", width: 2.5 }, label: { show: labelVisible(positions["2026累计占比"]), position: labelPosition(positions["2026累计占比"]), formatter: "{c}%", fontSize: 9 }, labelLayout: { hideOverlap: false, moveOverlap: "shiftY" } },
     ],
   }} /></div>;
 }

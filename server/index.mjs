@@ -3,6 +3,7 @@ import { createReadStream, promises as fs } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
+import { buildOqcRuleDimensionChartCache } from "../src/dataEngine.js";
 import { gzip } from "node:zlib";
 import { promisify } from "node:util";
 import { deletePostgresAgentReport, initPostgres, listPostgresAgentReports, readPostgresAgentReport, readPostgresState, writePostgresAgentReport, writePostgresState } from "./postgresStore.mjs";
@@ -30,8 +31,10 @@ const port = Number(process.env.PORT || 4173);
 const host = process.env.HOST || "0.0.0.0";
 const trustProxy = process.env.TRUST_PROXY === "true";
 const maxBodyBytes = Number(process.env.MAX_BODY_MB || 1024) * 1024 * 1024;
-const allowedKeys = new Set(["imported-sources", "analysis-cache", "applied-date-range", "dqa-engineer-supplement"]);
-const defaultValueFor = (key) => key === "analysis-cache" || key === "applied-date-range" || key === "dqa-engineer-supplement" ? null : [];
+const OQC_EQUIPMENT_RULE_CACHE_KEY = "oqc-equipment-rule-cache";
+const oqcRuleDimensionKeys = ["client", "customerProductCategory", "series", "businessCategory", "productForm", "detailCategory", "process"];
+const allowedKeys = new Set(["imported-sources", "analysis-cache", "applied-date-range", "dqa-engineer-supplement", "project-name-mapping", OQC_EQUIPMENT_RULE_CACHE_KEY]);
+const defaultValueFor = (key) => key === "analysis-cache" || key === "applied-date-range" || key === "dqa-engineer-supplement" ? null : key === "project-name-mapping" ? { rules: {}, mappings: [] } : key === OQC_EQUIPMENT_RULE_CACHE_KEY ? { ready: false, results: {} } : [];
 
 const migrateAgentReportFilesToPostgres = async () => {
   await fs.mkdir(aiReportDir, { recursive: true });
@@ -114,6 +117,10 @@ const defaultPermissionConfig = {
 
 defaultPermissionConfig.apis["PUT /api/state/dqa-engineer-supplement"] = { public: false, deputy: true, label: "研发· ECN/非BOM/评审" };
 defaultPermissionConfig.apis["GET /api/state/dqa-engineer-supplement"] = { public: true, deputy: true, label: "研发· ECN/非BOM/评审" };
+defaultPermissionConfig.apis["PUT /api/state/project-name-mapping"] = { public: false, deputy: true, label: "项目名称映射" };
+defaultPermissionConfig.apis["GET /api/state/project-name-mapping"] = { public: true, deputy: true, label: "项目名称映射" };
+
+defaultPermissionConfig.apis["GET /api/state/oqc-equipment-rule-cache"] = { public: true, deputy: true, label: "OQC equipment rule cache" };
 
 const mimeTypes = {
   ".html": "text/html; charset=utf-8",
@@ -742,6 +749,67 @@ const loadStateValue = async (key) => {
 };
 
 const writeQueues = new Map();
+let oqcRuleCacheTimer = null;
+let oqcRuleCacheBuild = null;
+let oqcRuleCacheRebuildPending = false;
+
+const oqcRuleCacheSignature = (analysisCache, projectMapping) => JSON.stringify({
+  sourceSignature: analysisCache?.sourceSignature || "",
+  dateRange: analysisCache?.dateRange || {},
+  mappingImportedAt: projectMapping?.rules?.importedAt || "",
+  overrides: (projectMapping?.overrides || []).map(({ sourceName, values, updatedAt }) => ({ sourceName, values, updatedAt })),
+});
+
+const rebuildOqcEquipmentRuleCache = async () => {
+  const [analysisCache, projectMapping, existing] = await Promise.all([
+    loadStateValue("analysis-cache"),
+    loadStateValue("project-name-mapping"),
+    loadStateValue(OQC_EQUIPMENT_RULE_CACHE_KEY),
+  ]);
+  const dispersion = analysisCache?.data?.oqc?.equipmentDispersion;
+  const cacheKey = oqcRuleCacheSignature(analysisCache, projectMapping);
+  if (!Array.isArray(dispersion?.sourceRecords) || !dispersion.sourceRecords.length) {
+    return await saveStateValue(OQC_EQUIPMENT_RULE_CACHE_KEY, {
+      version: 1, ready: false, cacheKey, generatedAt: new Date().toISOString(), results: {},
+    });
+  }
+  if (existing?.ready && existing.cacheKey === cacheKey && existing.results) return existing;
+  await saveStateValue(OQC_EQUIPMENT_RULE_CACHE_KEY, {
+    version: 1, ready: false, cacheKey, generatedAt: new Date().toISOString(), results: {},
+  });
+  const results = buildOqcRuleDimensionChartCache(dispersion, projectMapping || {}, oqcRuleDimensionKeys);
+  return await saveStateValue(OQC_EQUIPMENT_RULE_CACHE_KEY, {
+    version: 1,
+    ready: true,
+    cacheKey,
+    sourceSignature: analysisCache?.sourceSignature || "",
+    dateRange: analysisCache?.dateRange || {},
+    mappingImportedAt: projectMapping?.rules?.importedAt || "",
+    generatedAt: new Date().toISOString(),
+    results,
+  });
+};
+
+const queueOqcEquipmentRuleCacheRebuild = () => {
+  if (oqcRuleCacheTimer) clearTimeout(oqcRuleCacheTimer);
+  oqcRuleCacheTimer = setTimeout(() => {
+    oqcRuleCacheTimer = null;
+    if (oqcRuleCacheBuild) {
+      oqcRuleCacheRebuildPending = true;
+      return;
+    }
+    oqcRuleCacheBuild = rebuildOqcEquipmentRuleCache()
+      .catch((error) => console.error("[oqc-cache] Failed to build equipment rule cache", error))
+      .finally(() => {
+        oqcRuleCacheBuild = null;
+        if (oqcRuleCacheRebuildPending) {
+          oqcRuleCacheRebuildPending = false;
+          queueOqcEquipmentRuleCacheRebuild();
+        }
+      });
+  }, 200);
+};
+
 const saveStateValue = async (key, value) => {
   const filePath = safeKeyPath(key);
   if (!filePath) return value;
@@ -757,7 +825,9 @@ const saveStateValue = async (key, value) => {
     return value;
   });
   writeQueues.set(key, next);
-  return await next;
+  const saved = await next;
+  if (key === "analysis-cache" || key === "project-name-mapping") queueOqcEquipmentRuleCacheRebuild();
+  return saved;
 };
 
 const loadExamSessions = async () => {
@@ -1239,6 +1309,7 @@ const startServer = async () => {
     console.log(`[storage] Agent reports ready in PostgreSQL (${migration.migrated} migrated / ${migration.total} files)`);
   }
   await knowledgeService.resume();
+  queueOqcEquipmentRuleCacheRebuild();
   server.listen(port, host, () => {
     console.log(`QMS server listening on http://${host}:${port}`);
   });

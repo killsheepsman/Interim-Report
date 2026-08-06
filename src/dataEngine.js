@@ -270,7 +270,7 @@ const oqcShipmentDetailRows = (workbook) => {
       if (!values.some((v) => text(v))) return;
       const row = { __sheet: name };
       headers.forEach((h, i) => {
-        if (["日期", "产品部", "TPM", "机台分类", "机台数量", "最终评分"].includes(h)) row[h] = values[i];
+        if (["日期", "治具名称", "产品部", "TPM", "SN码", "机台分类", "机台数量", "最终评分"].includes(h)) row[h] = values[i];
       });
       if (Object.keys(row).length > 1) rows.push(row);
     });
@@ -2240,6 +2240,239 @@ const qmsNormalizeDivision = (value, year) => {
   if (year === 2026 && ["北美项目部", "传感器产品部", "IC载板产品部", "IC载版产品部"].includes(division)) return "半导体&北美";
   return division;
 };
+
+export const resolveOqcProjectName = (sourceName, mappings = []) => {
+  const source = text(sourceName);
+  if (!source) return "";
+  const match = (Array.isArray(mappings) ? mappings : []).find((item) => item?.active !== false
+    && Array.isArray(item?.sourceNames)
+    && item.sourceNames.some((name) => text(name) === source));
+  return match?.standardName ? text(match.standardName) : source;
+};
+
+const oqcProjectMappingFor = (sourceName, mappings = []) => (Array.isArray(mappings) ? mappings : []).find((item) => item?.active !== false
+  && Array.isArray(item?.sourceNames)
+  && item.sourceNames.some((name) => text(name) === text(sourceName)));
+
+export const buildOqcStandardCategoryBreakdown = (dispersion, mappings = []) => {
+  const fields = ["client", "customerProductCategory", "series", "businessCategory", "productForm", "detailCategory", "process"];
+  const keyText = (key = {}) => fields.map((field) => key[field] || "-").join(" / ");
+  const sourceRecords = Array.isArray(dispersion?.sourceRecords) ? dispersion.sourceRecords : [];
+  const scopes = [
+    { key: "overall", name: "总体", match: () => true },
+    { key: "fixture", name: "治具", match: (row) => row.machineCategory === "治具" },
+    { key: "automation", name: "自动化", match: (row) => row.machineCategory === "自动化" },
+  ];
+  return scopes.map((scope) => {
+    const groups = new Map();
+    sourceRecords.filter(scope.match).forEach((row) => {
+      const mapping = oqcProjectMappingFor(row.sourceProjectName, mappings);
+      const standardName = mapping?.standardName || row.sourceProjectName;
+      const binding = mapping?.bindings?.find((item) => text(item.sourceName) === text(row.sourceProjectName));
+      const classificationKey = mapping ? keyText(binding?.key || mapping.key) : "未维护映射";
+      const groupKey = [row.machineCategory, standardName, classificationKey].join("||");
+      const group = groups.get(groupKey) || { machineCategory: row.machineCategory, standardName, classificationKey, mapped: Boolean(mapping), sourceNames: new Set(), years: {} };
+      group.sourceNames.add(row.sourceProjectName);
+      const year = group.years[row.year] || { machines: 0, sourceNames: new Set() };
+      year.machines += row.quantity;
+      year.sourceNames.add(row.sourceProjectName);
+      group.years[row.year] = year;
+      groups.set(groupKey, group);
+    });
+    return {
+      key: scope.key,
+      name: scope.name,
+      groups: [...groups.values()].map((group) => ({
+        machineCategory: group.machineCategory,
+        standardName: group.standardName,
+        classificationKey: group.classificationKey,
+        mapped: group.mapped,
+        sourceCount: group.sourceNames.size,
+        y2025Machines: group.years[2025]?.machines || 0,
+        y2026Machines: group.years[2026]?.machines || 0,
+        y2025Projects: group.years[2025]?.sourceNames.size || 0,
+        y2026Projects: group.years[2026]?.sourceNames.size || 0,
+      })).sort((a, b) => b.y2026Machines - a.y2026Machines || b.y2025Machines - a.y2025Machines || a.standardName.localeCompare(b.standardName, "zh-CN")),
+    };
+  });
+};
+
+export const buildOqcEquipmentDispersion = (rows = [], options = {}) => {
+  const projectNameResolver = typeof options === "function"
+    ? options
+    : typeof options?.projectNameResolver === "function"
+      ? options.projectNameResolver
+      : (name) => text(name);
+  const scopes = [
+    { key: "overall", name: "总体", match: () => true },
+    { key: "fixture", name: "治具", match: (row) => row.machineCategory === "治具" },
+    { key: "automation", name: "自动化", match: (row) => row.machineCategory === "自动化" },
+  ];
+  const sourceRecords = Array.isArray(options?.sourceRecords) ? options.sourceRecords : rows.map((row) => ({
+    year: yearOf(row["日期"]),
+    division: oqcDisplayDivision(row["产品部"]),
+    sourceProjectName: text(row["治具名称"]),
+    machineCategory: text(row["机台分类"]) || "未分类",
+    quantity: Math.max(0, number(row["机台数量"])),
+    score: number(row["最终评分"]),
+  }));
+  const records = sourceRecords.map((row) => ({
+    ...row,
+    sourceProjectName: text(row.sourceProjectName),
+    projectName: projectNameResolver(text(row.sourceProjectName)),
+  })).filter((row) => {
+    if (![2025, 2026].includes(row.year) || !row.division || !row.projectName || row.quantity <= 0 || row.score <= 0) return false;
+    return true;
+  });
+
+  const metricsFor = (source) => {
+    const projects = new Map();
+    source.forEach((row) => projects.set(row.projectName, (projects.get(row.projectName) || 0) + row.quantity));
+    const projectRows = [...projects.entries()].map(([name, quantity]) => ({ name, quantity })).sort((a, b) => b.quantity - a.quantity || a.name.localeCompare(b.name, "zh-CN"));
+    const machineCount = projectRows.reduce((sum, row) => sum + row.quantity, 0);
+    const projectCount = projectRows.length;
+    const shares = projectRows.map((row) => row.quantity / Math.max(machineCount, 1));
+    const hhi = shares.reduce((sum, share) => sum + share * share, 0);
+    const distribution = [
+      { name: "1台", test: (quantity) => quantity === 1 },
+      { name: "2-3台", test: (quantity) => quantity >= 2 && quantity <= 3 },
+      { name: "4台及以上", test: (quantity) => quantity >= 4 },
+    ].map((bucket) => {
+      const bucketRows = projectRows.filter((row) => bucket.test(row.quantity));
+      return { name: bucket.name, projects: bucketRows.length, machines: bucketRows.reduce((sum, row) => sum + row.quantity, 0) };
+    });
+    const quantityDistribution = [...projectRows.reduce((counts, row) => {
+      counts.set(row.quantity, (counts.get(row.quantity) || 0) + 1);
+      return counts;
+    }, new Map()).entries()].map(([quantity, projects]) => ({ quantity, projects }))
+      .sort((a, b) => a.quantity - b.quantity);
+    const top = projectRows[0] || null;
+    return {
+      projectCount,
+      machineCount,
+      avgMachinesPerProject: Number((machineCount / Math.max(projectCount, 1)).toFixed(2)),
+      dispersionIndex: Number((1 - hhi).toFixed(4)),
+      effectiveProjectCount: Number((1 / Math.max(hhi, 0.000001)).toFixed(1)),
+      projectsPer100Machines: Number((projectCount / Math.max(machineCount, 1) * 100).toFixed(1)),
+      singleProjectCount: distribution[0].projects,
+      singleProjectShare: Number((distribution[0].projects / Math.max(projectCount, 1) * 100).toFixed(1)),
+      topProjectName: top?.name || "",
+      topProjectQuantity: top?.quantity || 0,
+      topProjectShare: Number((top ? top.quantity / Math.max(machineCount, 1) * 100 : 0).toFixed(1)),
+      distribution,
+      quantityDistribution,
+      projectRows,
+    };
+  };
+
+  const scopeRows = scopes.map((scope) => {
+    const metrics = { 2025: metricsFor(records.filter((row) => row.year === 2025 && scope.match(row))), 2026: metricsFor(records.filter((row) => row.year === 2026 && scope.match(row))) };
+    const projects25 = new Map(metrics[2025].projectRows.map((row) => [row.name, row.quantity]));
+    const projects26 = new Map(metrics[2026].projectRows.map((row) => [row.name, row.quantity]));
+    const sameProjectRows = [...projects25.keys()].filter((name) => projects26.has(name)).map((name) => ({ name, y2025Quantity: projects25.get(name), y2026Quantity: projects26.get(name), deltaQuantity: projects26.get(name) - projects25.get(name) }))
+      .sort((a, b) => Math.abs(b.deltaQuantity) - Math.abs(a.deltaQuantity) || b.y2026Quantity - a.y2026Quantity || a.name.localeCompare(b.name, "zh-CN"));
+    return {
+      key: scope.key,
+      name: scope.name,
+      y2025: metrics[2025],
+      y2026: metrics[2026],
+      deltaProjectCount: metrics[2026].projectCount - metrics[2025].projectCount,
+      deltaMachineCount: metrics[2026].machineCount - metrics[2025].machineCount,
+      deltaDispersionIndex: Number((metrics[2026].dispersionIndex - metrics[2025].dispersionIndex).toFixed(4)),
+      deltaSingleProjectShare: Number((metrics[2026].singleProjectShare - metrics[2025].singleProjectShare).toFixed(1)),
+      continuedProjectCount: sameProjectRows.length,
+      newProjectCount: [...projects26.keys()].filter((name) => !projects25.has(name)).length,
+      discontinuedProjectCount: [...projects25.keys()].filter((name) => !projects26.has(name)).length,
+      sameProjectRows,
+    };
+  });
+  return {
+    sourceRecordCount: records.length,
+    sourceRecords: records.map(({ projectName, ...row }) => row),
+    scopes: scopeRows,
+  };
+};
+
+export const remapOqcEquipmentDispersion = (dispersion, mappings = []) => buildOqcEquipmentDispersion([], {
+  sourceRecords: Array.isArray(dispersion?.sourceRecords) ? dispersion.sourceRecords : [],
+  projectNameResolver: (name) => resolveOqcProjectName(name, mappings),
+});
+
+const oqcRuleNormalize = (value) => text(value).replace(/\u00a0/g, " ").replace(/\s+/g, " ").trim();
+const oqcRuleTokens = (value) => oqcRuleNormalize(value).split(/[\s,，;；()（）_]+/).filter(Boolean);
+const oqcRuleLabel = (entry) => entry?.name && entry.name !== entry.code ? `${entry.code} · ${entry.name}` : entry?.code || "";
+const oqcRuleExactEntry = (tokens, entries = []) => (entries || []).find((entry) => {
+  const code = oqcRuleNormalize(entry?.code);
+  return code && tokens.some((token) => token.toLowerCase() === code.toLowerCase());
+}) || null;
+const oqcRuleTextEntry = (source, entries = []) => (entries || []).find((entry) => {
+  const code = oqcRuleNormalize(entry?.code);
+  const name = oqcRuleNormalize(entry?.name);
+  return (name.length >= 2 && source.includes(name)) || (code.length >= 2 && source.includes(code));
+}) || null;
+const oqcRuleNameEntry = (source, entries = []) => (entries || []).find((entry) => {
+  const name = oqcRuleNormalize(entry?.name);
+  return name.length >= 2 && source.includes(name);
+}) || null;
+
+export const parseOqcProjectNameByRules = (sourceName, rules = {}) => {
+  const source = oqcRuleNormalize(sourceName);
+  const tokens = oqcRuleTokens(source);
+  const fields = rules?.fields || {};
+  const exactOrText = (entries) => oqcRuleExactEntry(tokens, entries) || oqcRuleTextEntry(source, entries);
+  // Short codes such as IC must be standalone tokens; otherwise ICT would be classified incorrectly.
+  const exactOrName = (entries) => oqcRuleExactEntry(tokens, entries) || oqcRuleNameEntry(source, entries);
+  const result = {
+    client: exactOrText(fields.client),
+    customerProductCategory: exactOrName(fields.customerProductCategory),
+    series: exactOrText(fields.series),
+    businessCategory: exactOrName(fields.businessCategory),
+    productForm: exactOrName(fields.productForm),
+    detailCategory: oqcRuleTextEntry(source, fields.detailCategory),
+    process: exactOrText(fields.process),
+  };
+  return Object.fromEntries(Object.entries(result).map(([key, entry]) => [key, entry ? { code: entry.code || "", name: entry.name || "", label: oqcRuleLabel(entry) } : null]));
+};
+
+export const buildOqcRuleDimensionDispersions = (dispersion, projectMapping = {}, dimensions = []) => {
+  const sourceRecords = Array.isArray(dispersion?.sourceRecords) ? dispersion.sourceRecords : [];
+  const overrides = new Map((projectMapping?.overrides || []).map((item) => [text(item?.sourceName), item?.values || {}]));
+  const parsedByName = new Map();
+  const parsedFor = (sourceName) => {
+    const source = text(sourceName);
+    if (!parsedByName.has(source)) parsedByName.set(source, parseOqcProjectNameByRules(source, projectMapping?.rules));
+    return { source, parsed: parsedByName.get(source) };
+  };
+  return Object.fromEntries((dimensions || []).map((dimension) => {
+    const resolve = (sourceName) => {
+      const { source, parsed } = parsedFor(sourceName);
+      const override = overrides.get(source)?.[dimension];
+      if (override?.code || override?.label || override?.name) return override.label || oqcRuleLabel(override) || override.code;
+      return parsed?.[dimension]?.label || "未识别";
+    };
+    const classifiedRecordCount = sourceRecords.reduce((sum, record) => sum + (resolve(record.sourceProjectName) === "未识别" ? 0 : 1), 0);
+    return [dimension, {
+      dimension,
+      sourceRecordCount: sourceRecords.length,
+      classifiedRecordCount,
+      unknownRecordCount: sourceRecords.length - classifiedRecordCount,
+      dispersion: buildOqcEquipmentDispersion([], { sourceRecords, projectNameResolver: resolve }),
+    }];
+  }));
+};
+
+export const buildOqcRuleDimensionDispersion = (dispersion, projectMapping = {}, dimension = "client") => buildOqcRuleDimensionDispersions(dispersion, projectMapping, [dimension])[dimension];
+
+export const buildOqcRuleDimensionChartCache = (dispersion, projectMapping = {}, dimensions = []) => {
+  const results = buildOqcRuleDimensionDispersions(dispersion, projectMapping, dimensions);
+  return Object.fromEntries((dimensions || []).map((dimension) => {
+    const overall = results[dimension]?.dispersion?.scopes?.find((scope) => scope.key === "overall") || {};
+    return [dimension, {
+      y2025: overall.y2025?.projectRows || [],
+      y2026: overall.y2026?.projectRows || [],
+    }];
+  }));
+};
 const qmsMetrics = (rows = []) => {
   const scored = rows.filter((row) => number(row["总体得分"]) > 0);
   const scoreTotal = scored.reduce((sum, row) => sum + number(row["总体得分"]), 0);
@@ -2469,6 +2702,7 @@ export function analyzeImported(files, dateRange) {
     const shipmentDetailRows = files.filter((file) => file.module === "OQC" && file.kind === "OQC_SHIPMENT_DETAIL").flatMap((file) => file.rows);
     if (shipmentDetailRows.length) {
       next.oqc.shipmentDetail = buildOqcShipmentDetail(shipmentDetailRows, dateRange);
+      next.oqc.equipmentDispersion = buildOqcEquipmentDispersion(shipmentDetailRows);
       if (next.oqc.shipmentDetail.monthlySummary) next.oqc.monthlySummary = next.oqc.shipmentDetail.monthlySummary;
       const y2025 = next.oqc.shipmentDetail.overall?.y2025 || {};
       const y2026 = next.oqc.shipmentDetail.overall?.y2026 || {};

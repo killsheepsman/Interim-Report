@@ -7,6 +7,8 @@ const ANALYSIS_CACHE_KEY = "analysis-cache-v1";
 const REMOTE_ANALYSIS_CACHE_KEY = "analysis-cache";
 const REMOTE_APPLIED_DATE_RANGE_KEY = "applied-date-range";
 const DQA_ENGINEER_SUPPLEMENT_KEY = "dqa-engineer-supplement";
+const PROJECT_NAME_MAPPING_KEY = "project-name-mapping";
+const OQC_EQUIPMENT_RULE_CACHE_KEY = "oqc-equipment-rule-cache";
 const LOCAL_AI_CONFIG_KEY = "qms-ai-config-local-v1";
 const LOCAL_AGENT_REPORTS_KEY = "qms-local-agent-reports-v1";
 const LOCAL_AGENT_REPORTS_INDEX_KEY = "qms-local-agent-reports-index-v2";
@@ -350,6 +352,14 @@ export const loadCachedAnalysis = async () => {
   return localCache;
 };
 
+export const loadOqcEquipmentRuleCache = async () => {
+  const payload = await requestSharedState(OQC_EQUIPMENT_RULE_CACHE_KEY, { method: "GET", cache: "no-store" });
+  const remote = payload?.value ?? null;
+  return remote && typeof remote === "object" && !Array.isArray(remote)
+    ? remote
+    : { ready: false, results: {} };
+};
+
 export const saveCachedAnalysis = async (cache) => {
   await saveAnalysisCacheLocal(cache);
   const remoteSaved = await saveRemoteState(REMOTE_ANALYSIS_CACHE_KEY, cache);
@@ -387,6 +397,22 @@ export const saveDqaEngineerSupplement = async (value) => {
 export const clearDqaEngineerSupplement = async () => {
   await transaction("readwrite", (store) => store.delete(DQA_ENGINEER_SUPPLEMENT_KEY));
   return await saveRemoteState(DQA_ENGINEER_SUPPLEMENT_KEY, null);
+};
+
+export const loadProjectNameMapping = async () => {
+  const local = await transaction("readonly", (store) => store.get(PROJECT_NAME_MAPPING_KEY)).catch(() => null);
+  const remote = await loadRemoteState(PROJECT_NAME_MAPPING_KEY);
+  if (remote && typeof remote === "object" && !Array.isArray(remote)) {
+    transaction("readwrite", (store) => store.put(remote, PROJECT_NAME_MAPPING_KEY)).catch(() => {});
+    return remote;
+  }
+  return local && typeof local === "object" && !Array.isArray(local) ? local : { rules: {}, mappings: [] };
+};
+
+export const saveProjectNameMapping = async (value) => {
+  const next = value && typeof value === "object" ? value : { rules: {}, mappings: [] };
+  await transaction("readwrite", (store) => store.put(next, PROJECT_NAME_MAPPING_KEY));
+  return await saveRemoteState(PROJECT_NAME_MAPPING_KEY, next);
 };
 
 export const loadCurrentUser = async () => {

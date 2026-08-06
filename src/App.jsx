@@ -7,10 +7,11 @@ import {
   Question, Rows, ShieldCheck, SidebarSimple, Sparkle, Table, Target, Trash,
   UploadSimple, User, Warning, WarningCircle, X,
 } from "@phosphor-icons/react";
-import { analyzeImported, buildDqaEngineerSupplementSource, downloadJson, normalizeIpqcLeaderMapRows, normalizeIpqcWorkshop, parseDqaEngineerSupplementFiles, parseFiles } from "./dataEngine.js";
-import { clearDqaEngineerSupplement as clearDqaEngineerSupplementState, createExamSession, createKnowledgeDocument, createSourcesSignature, deleteKnowledgeDocument, downloadSourceFiles, generateKnowledgeMatches, loadAgentSkills, loadAiConfig, loadAiModels, loadAppliedDateRange, loadCachedAnalysis, loadCurrentUser, loadDefaultAnalysis, loadDefaultAnnotations, loadDefaultQmsSources, loadDefaultSources, loadDistilledKnowledge, loadDqaEngineerSupplement, loadExamResults, loadExamSession, loadImportedSources, loadKnowledgeClauses, loadKnowledgeDocuments, loadKnowledgeIssues, loadKnowledgeMatches, loadKnowledgeRecurrences, loadPermissionConfig, mergeImportedSources, reparseKnowledgeDocument, requestAiChat, reviewKnowledgeMatch, saveAiConfig, saveAiReport, saveKnowledgeDistillation, saveKnowledgeRecurrenceAction, saveLocalAiReport, saveAppliedDateRange, saveCachedAnalysis, saveDqaEngineerSupplement, saveImportedSources, savePermissionConfig, sourceRowCount, startKnowledgeDistillation, submitExamSession, summarizeSources, syncKnowledgeIssues, testAiConfig, updateKnowledgeJob, uploadSourceFiles } from "./dataStore.js";
+import { analyzeImported, buildDqaEngineerSupplementSource, buildOqcRuleDimensionDispersions, downloadJson, normalizeIpqcLeaderMapRows, normalizeIpqcWorkshop, parseDqaEngineerSupplementFiles, parseFiles, parseOqcProjectNameByRules } from "./dataEngine.js";
+import { clearDqaEngineerSupplement as clearDqaEngineerSupplementState, createExamSession, createKnowledgeDocument, createSourcesSignature, deleteKnowledgeDocument, downloadSourceFiles, generateKnowledgeMatches, loadAgentSkills, loadAiConfig, loadAiModels, loadAppliedDateRange, loadCachedAnalysis, loadCurrentUser, loadDefaultAnalysis, loadDefaultAnnotations, loadDefaultQmsSources, loadDefaultSources, loadDistilledKnowledge, loadDqaEngineerSupplement, loadExamResults, loadExamSession, loadImportedSources, loadKnowledgeClauses, loadKnowledgeDocuments, loadKnowledgeIssues, loadKnowledgeMatches, loadKnowledgeRecurrences, loadPermissionConfig, loadProjectNameMapping, mergeImportedSources, reparseKnowledgeDocument, requestAiChat, reviewKnowledgeMatch, saveAiConfig, saveAiReport, saveKnowledgeDistillation, saveKnowledgeRecurrenceAction, saveLocalAiReport, saveAppliedDateRange, saveCachedAnalysis, saveDqaEngineerSupplement, saveImportedSources, savePermissionConfig, saveProjectNameMapping, sourceRowCount, startKnowledgeDistillation, submitExamSession, summarizeSources, syncKnowledgeIssues, testAiConfig, updateKnowledgeJob, uploadSourceFiles } from "./dataStore.js";
+import { loadOqcEquipmentRuleCache } from "./dataStore.js";
 import { sampleData } from "./sampleData.js";
-import { BarCompare, Donut, HorizontalRank, MachinedTpmCompareChart, Pareto, QmsDivisionCombo, QmsScoreCompare, QmsTpmRank, QmsTrendCombo, QuantityRateCombo, ReportBarChart, ReportStatusDonut, ScoreMonthlyCombo, ScoreYearCompare, StackedStage, WorkshopCategoryHeatmap, YearStackedCompare } from "./charts.jsx";
+import { BarCompare, Donut, EquipmentQuantityDistributionPareto, HorizontalRank, MachinedTpmCompareChart, Pareto, QmsDivisionCombo, QmsScoreCompare, QmsTpmRank, QmsTrendCombo, QuantityRateCombo, ReportBarChart, ReportStatusDonut, ScoreMonthlyCombo, ScoreYearCompare, StackedStage, WorkshopCategoryHeatmap, YearStackedCompare } from "./charts.jsx";
 import { QualityAgentPage } from "./agent/QualityAgentPage.jsx";
 import { AgentRoleReportPage } from "./agent/AgentRoleReportPage.jsx";
 import { AgentExamStatsPage } from "./agent/AgentExamStatsPage.jsx";
@@ -29,7 +30,7 @@ const isLegacyDqaEngineerSource = (source = {}) => {
 };
 const UiThemeContext = createContext("classic");
 const useUiTheme = () => useContext(UiThemeContext);
-const ANALYSIS_CACHE_VERSION = "server-analysis-cache-v5";
+const ANALYSIS_CACHE_VERSION = "server-analysis-cache-v6-equipment-mapping";
 const safeParse = (value, fallback) => {
   try { return value ? JSON.parse(value) : fallback; } catch { return fallback; }
 };
@@ -59,10 +60,12 @@ const defaultApiPermissions = {
   "PUT /api/state/imported-sources": { public: false, deputy: true, label: "保存数据源清单" },
   "PUT /api/state/analysis-cache": { public: false, deputy: true, label: "保存分析结果" },
   "PUT /api/state/applied-date-range": { public: false, deputy: true, label: "保存默认日期" },
+  "PUT /api/state/project-name-mapping": { public: false, deputy: true, label: "保存项目名称映射" },
   "PUT /api/permissions": { public: false, deputy: false, label: "保存权限设置" },
   "GET /api/state/analysis-cache": { public: true, deputy: true, label: "读取分析结果" },
   "GET /api/state/imported-sources": { public: true, deputy: true, label: "读取数据源清单" },
   "GET /api/state/applied-date-range": { public: true, deputy: true, label: "读取默认日期" },
+  "GET /api/state/project-name-mapping": { public: true, deputy: true, label: "读取项目名称映射" },
   "GET /api/uploads/*": { public: true, deputy: true, label: "读取原始Excel" },
   "GET /api/exam-results": { public: true, deputy: true, label: "读取知识考试结果" },
   "GET /api/knowledge/*": { public: true, deputy: true, label: "读取知识库" },
@@ -70,6 +73,7 @@ const defaultApiPermissions = {
   "PUT /api/knowledge/*": { public: false, deputy: true, label: "更新知识任务" },
   "DELETE /api/knowledge/*": { public: false, deputy: true, label: "删除知识文件" },
 };
+defaultApiPermissions["GET /api/state/oqc-equipment-rule-cache"] = { public: true, deputy: true, label: "OQC equipment rule cache" };
 const normalizePermissionMembers = (items = []) => {
   const byIp = new Map();
   (Array.isArray(items) ? items : []).forEach((item) => {
@@ -706,7 +710,7 @@ const qmdpMenuGroups = [
   { label: "质量分析 Agent", icon: Brain, children: ["IQC Agent", "IPQC Agent", "OQC Agent", "DQA Agent", "QMS Agent"] },
   { label: "Agent角色报告", icon: ChartBar, children: ["组装人员 Agent报告", "机长 Agent报告", "交付经理 Agent报告", "供应链经理 Agent报告", "研发工程师 Agent报告", "PM Agent报告", "TPM Agent报告", "产总 Agent报告"] },
   { label: "Agent工具", icon: Brain, children: ["Agent考试统计"] },
-  { label: "系统管理", icon: GearSix, children: ["研发组织映射", "供应链映射", "员工信息", "评分权重", "企业微信", "操作日志"] },
+  { label: "系统管理", icon: GearSix, children: ["研发组织映射", "供应链映射", "项目名称映射", "员工信息", "评分权重", "企业微信", "操作日志"] },
 ];
 const menuPermissionDefinitions = [
   ...qmdpMenuGroups.map((group) => ({ key: group.label, children: group.children })),
@@ -3313,6 +3317,56 @@ const parseQmdpMappingWorkbook = async (file, kind) => {
   return [...unique.values()];
 };
 
+const projectNameRuleFields = [
+  { key: "client", label: "客户", codeHeaders: ["客户简称"], nameHeaders: ["客户名称"] },
+  { key: "customerProductCategory", label: "客户产品大类", codeHeaders: ["客户产品大类简称"], nameHeaders: ["客户产品大类名称"] },
+  { key: "series", label: "产品系列", codeHeaders: ["产品系列简称"], nameHeaders: ["产品系列名称"] },
+  { key: "businessCategory", label: "业务类别", codeHeaders: ["业务类别简称"], nameHeaders: ["业务类别"] },
+  { key: "productForm", label: "产品形态", codeHeaders: ["产品形态", "产品形态简称"], nameHeaders: ["产品形态名称"] },
+  { key: "detailCategory", label: "详细分类", codeHeaders: ["详细分类简称", "详细分类:简称"], nameHeaders: ["详细分类名称", "详细分类"] },
+  { key: "process", label: "制程工序", codeHeaders: ["制程工序简称"], nameHeaders: ["制程工序"] },
+];
+const projectNameText = (value) => String(value ?? "").replace(/[\u3000\s]+/g, " ").trim();
+const findHeaderIndex = (headers, candidates) => candidates.map((candidate) => headers.indexOf(candidate)).find((index) => index >= 0) ?? -1;
+const parseProjectNameRuleWorkbook = async (file) => {
+  const workbook = XLSX.read(await file.arrayBuffer(), { type: "array", cellDates: false, dense: true });
+  const fields = Object.fromEntries(projectNameRuleFields.map(({ key }) => [key, []]));
+  workbook.SheetNames.forEach((sheetName) => {
+    const matrix = XLSX.utils.sheet_to_json(workbook.Sheets[sheetName], { header: 1, defval: "", blankrows: false });
+    const headerIndex = matrix.findIndex((line) => projectNameRuleFields.some((field) => field.codeHeaders.some((header) => line.map(projectNameText).includes(header))));
+    if (headerIndex < 0) return;
+    const headers = matrix[headerIndex].map(projectNameText);
+    projectNameRuleFields.forEach((field) => {
+      const codeIndex = findHeaderIndex(headers, field.codeHeaders);
+      const nameIndex = findHeaderIndex(headers, field.nameHeaders);
+      if (codeIndex < 0) return;
+      matrix.slice(headerIndex + 1).forEach((row) => {
+        const code = projectNameText(row[codeIndex]);
+        const name = projectNameText(nameIndex >= 0 ? row[nameIndex] : "");
+        if (code) fields[field.key].push({ code, name });
+      });
+    });
+  });
+  const normalized = Object.fromEntries(Object.entries(fields).map(([key, entries]) => [key, [...new Map(entries.map((entry) => [entry.code, entry])).values()].sort((a, b) => b.code.length - a.code.length || a.code.localeCompare(b.code, "zh-CN"))]));
+  const count = Object.values(normalized).reduce((sum, entries) => sum + entries.length, 0);
+  if (!count) throw new Error("未识别到商务代码规则表，请确认包含客户简称、客户产品大类简称、产品系列简称、业务类别简称、产品形态、详细分类简称或制程工序简称列");
+  return { sourceName: file.name, importedAt: new Date().toISOString(), fields: normalized };
+};
+const matchProjectRuleField = (sourceName, entries = []) => {
+  const source = projectNameText(sourceName);
+  return entries.find((entry) => entry.code && source.includes(entry.code)) || null;
+};
+const suggestProjectNameMapping = (sourceName, rules = {}) => {
+  const key = Object.fromEntries(projectNameRuleFields.map((field) => [field.key, matchProjectRuleField(sourceName, rules?.fields?.[field.key] || [])?.code || ""]));
+  const labels = projectNameRuleFields.map((field) => {
+    const match = (rules?.fields?.[field.key] || []).find((item) => item.code === key[field.key]);
+    return match?.name || match?.code || "";
+  }).filter(Boolean);
+  const resolved = labels.length;
+  return { key, resolved, confidence: resolved >= 5 ? "高" : resolved >= 3 ? "中" : "待确认", suggestedName: labels.join(" · ") };
+};
+const projectMappingKeyText = (key = {}) => projectNameRuleFields.map((field) => key[field.key] || "-").join(" / ");
+
 const reportConfig = () => ({ ...defaultQmdpSystemConfig, ...safeParse(localStorage.getItem(qmdpSystemKey), {}) });
 const reportActiveMappings = (rows = []) => (Array.isArray(rows) ? rows : []).filter((row) => row.active !== false);
 const reportNames = (value) => String(value || "").split(/[、,，/\n]/).map((item) => item.trim()).filter((item) => item && !["待配置", "未配置", "新产品部"].includes(item));
@@ -3932,22 +3986,54 @@ const defaultQmdpSystemConfig = { orgMappings: [{ productDept: "产品部", prod
 function SystemManagementPage({ active, data, auth }) {
   const [tab, setTab] = useState(active);
   const [config, setConfig] = useState(() => ({ ...defaultQmdpSystemConfig, ...safeParse(localStorage.getItem(qmdpSystemKey), {}) }));
+  const [projectMapping, setProjectMapping] = useState({ rules: {}, mappings: [] });
+  const [projectMappingLoading, setProjectMappingLoading] = useState(true);
+  const [projectMappingStatus, setProjectMappingStatus] = useState("");
+  const [selectedProjectName, setSelectedProjectName] = useState("");
+  const [projectOverrideValues, setProjectOverrideValues] = useState({});
+  const [mappingTargetId, setMappingTargetId] = useState("new");
+  const [projectMappingDraft, setProjectMappingDraft] = useState({ standardName: "", category: "", note: "" });
   const [status, setStatus] = useState("");
   const [importingKind, setImportingKind] = useState("");
   const mappingInputRef = useRef(null);
   useEffect(() => { localStorage.setItem(qmdpSystemKey, JSON.stringify(config)); }, [config]);
   useEffect(() => { setTab(active); }, [active]);
+  useEffect(() => {
+    let mounted = true;
+    loadProjectNameMapping().then((value) => {
+      if (mounted) setProjectMapping({ rules: value?.rules || {}, mappings: Array.isArray(value?.mappings) ? value.mappings : [] });
+    }).catch(() => {
+      if (mounted) setProjectMappingStatus("项目名称映射读取失败，当前显示本机缓存");
+    }).finally(() => { if (mounted) setProjectMappingLoading(false); });
+    return () => { mounted = false; };
+  }, []);
   const editable = auth?.isAdmin || auth?.isDeputy;
   const log = (message) => setConfig((current) => ({ ...current, logs: [{ id: Date.now(), message, at: new Date().toISOString() }, ...(current.logs || [])].slice(0, 100) }));
   const setField = (section, index, field, value) => setConfig((current) => ({ ...current, [section]: current[section].map((row, rowIndex) => rowIndex === index ? { ...row, [field]: value } : row) }));
   const addRow = (section, row) => { setConfig((current) => ({ ...current, [section]: [...(current[section] || []), row] })); log(`新增${section}记录`); };
   const saveMessage = (message) => { log(message); setStatus(message); setTimeout(() => setStatus(""), 2200); };
+  const saveProjectMappingState = async (next, message) => {
+    setProjectMapping(next);
+    try {
+      await saveProjectNameMapping(next);
+      setProjectMappingStatus(message);
+      window.dispatchEvent(new CustomEvent("qms-project-name-mapping-changed", { detail: next }));
+    } catch (error) {
+      setProjectMappingStatus(`已保存到本机，服务器同步失败：${error?.message || "请检查服务"}`);
+    }
+  };
   const importMapping = async (event, kind) => {
     const file = event.target.files?.[0];
     event.target.value = "";
     if (!file) return;
     setImportingKind(kind);
     try {
+      if (kind === "projectRules") {
+        const rules = await parseProjectNameRuleWorkbook(file);
+        const next = { ...projectMapping, rules };
+        await saveProjectMappingState(next, `商务代码规则已导入：${Object.values(rules.fields).reduce((sum, items) => sum + items.length, 0)} 条`);
+        return;
+      }
       const rows = await parseQmdpMappingWorkbook(file, kind);
       const section = kind === "org" ? "orgMappings" : "supplyMappings";
       setConfig((current) => ({ ...current, [section]: rows, importMeta: { ...(current.importMeta || {}), [kind]: { name: file.name, importedAt: new Date().toISOString(), count: rows.length } }, logs: [{ id: Date.now(), message: `${kind === "org" ? "研发组织" : "供应链"}映射已从 ${file.name} 导入 ${rows.length} 条`, at: new Date().toISOString() }, ...(current.logs || [])].slice(0, 100) }));
@@ -3966,11 +4052,91 @@ function SystemManagementPage({ active, data, auth }) {
   const mappings = config.orgMappings || [];
   const supply = config.supplyMappings || [];
   const employees = config.employees || [];
+  const sourceProjectNames = useMemo(() => [...new Set((data?.oqc?.equipmentDispersion?.scopes || []).flatMap((scope) => [scope.y2025, scope.y2026]).flatMap((year) => year?.projectRows || []).map((row) => projectNameText(row.name)).filter(Boolean))].sort((a, b) => a.localeCompare(b, "zh-CN")), [data]);
+  const selectedProjectSuggestion = useMemo(() => suggestProjectNameMapping(selectedProjectName, projectMapping.rules), [selectedProjectName, projectMapping.rules]);
+  const selectProjectForRules = (sourceName) => {
+    const source = projectNameText(sourceName);
+    setSelectedProjectName(source);
+    const parsed = parseOqcProjectNameByRules(source, projectMapping.rules);
+    const saved = (projectMapping.overrides || []).find((item) => item.sourceName === source)?.values || {};
+    setProjectOverrideValues(Object.fromEntries(projectNameRuleFields.map((field) => [field.key, saved[field.key] || parsed[field.key] || {}])));
+  };
+  const saveProjectRuleOverride = async () => {
+    const sourceName = projectNameText(selectedProjectName);
+    if (!sourceName) return setProjectMappingStatus("请先选择一个原始治具名称");
+    const next = { ...projectMapping, overrides: [...(projectMapping.overrides || []).filter((item) => item.sourceName !== sourceName), { sourceName, values: projectOverrideValues, updatedAt: new Date().toISOString() }] };
+    await saveProjectMappingState(next, `已保存“${sourceName}”的项目规则字段`);
+  };
+  const bindProjectName = async () => {
+    const sourceName = projectNameText(selectedProjectName);
+    if (!sourceName) return setProjectMappingStatus("请先选择一个原始治具名称");
+    const existing = (projectMapping.mappings || []).find((item) => item.id === mappingTargetId);
+    const standardName = projectNameText(existing?.standardName || projectMappingDraft.standardName || selectedProjectSuggestion.suggestedName);
+    if (!standardName) return setProjectMappingStatus("请填写标准项目名称后再绑定");
+    const remaining = (projectMapping.mappings || []).map((item) => ({
+      ...item,
+      sourceNames: (item.sourceNames || []).filter((name) => name !== sourceName),
+      bindings: (item.bindings || []).filter((binding) => binding.sourceName !== sourceName),
+    }));
+    const nextItem = existing
+      ? { ...existing, sourceNames: [...new Set([...(existing.sourceNames || []), sourceName])], bindings: [...(existing.bindings || (existing.sourceNames || []).map((name) => ({ sourceName: name, key: existing.key || {} }))).filter((binding) => binding.sourceName !== sourceName), { sourceName, key: selectedProjectSuggestion.key }], updatedAt: new Date().toISOString() }
+      : { id: `project-${Date.now()}`, active: true, standardName, category: projectNameText(projectMappingDraft.category), key: selectedProjectSuggestion.key, sourceNames: [sourceName], bindings: [{ sourceName, key: selectedProjectSuggestion.key }], note: projectNameText(projectMappingDraft.note), createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
+    const next = { ...projectMapping, mappings: [...remaining.filter((item) => item.id !== nextItem.id && item.sourceNames?.length), nextItem] };
+    await saveProjectMappingState(next, `已将“${sourceName}”绑定到“${standardName}”`);
+    setMappingTargetId(nextItem.id);
+    setProjectMappingDraft({ standardName: nextItem.standardName, category: nextItem.category || "", note: nextItem.note || "" });
+  };
+  const removeProjectMapping = async (id) => {
+    await saveProjectMappingState({ ...projectMapping, mappings: (projectMapping.mappings || []).filter((item) => item.id !== id) }, "标准项目类别已删除，相关原始名称将恢复独立统计");
+    if (mappingTargetId === id) setMappingTargetId("new");
+  };
   const renderMapping = () => <div className="qmdp-admin-table"><div className="qmdp-admin-row head"><span>产品部/厂区</span><span>负责人</span><span>TPM</span><span>PM/交付经理</span><span>状态</span></div>{mappings.map((row, index) => <div className="qmdp-admin-row" key={index}><input disabled={!editable} value={row.productDept || ""} onChange={(event) => setField("orgMappings", index, "productDept", event.target.value)}/><input disabled={!editable} value={row.productionDirector || ""} onChange={(event) => setField("orgMappings", index, "productionDirector", event.target.value)}/><input disabled={!editable} value={row.tpm || ""} onChange={(event) => setField("orgMappings", index, "tpm", event.target.value)}/><input disabled={!editable} value={row.pm || ""} onChange={(event) => setField("orgMappings", index, "pm", event.target.value)}/><select disabled={!editable} value={row.active ? "启用" : "停用"} onChange={(event) => setField("orgMappings", index, "active", event.target.value === "启用")}><option>启用</option><option>停用</option></select></div>)}</div>;
   const renderSupply = () => <div className="qmdp-admin-table"><div className="qmdp-admin-row head"><span>厂区</span><span>工坊</span><span>交付经理</span><span>机长</span><span>状态</span></div>{supply.map((row, index) => <div className="qmdp-admin-row" key={index}><input disabled={!editable} value={row.site || ""} onChange={(event) => setField("supplyMappings", index, "site", event.target.value)}/><input disabled={!editable} value={row.workshop || ""} onChange={(event) => setField("supplyMappings", index, "workshop", event.target.value)}/><input disabled={!editable} value={row.manager || ""} onChange={(event) => setField("supplyMappings", index, "manager", event.target.value)}/><input disabled={!editable} value={row.leader || ""} onChange={(event) => setField("supplyMappings", index, "leader", event.target.value)}/><select disabled={!editable} value={row.active ? "启用" : "停用"} onChange={(event) => setField("supplyMappings", index, "active", event.target.value === "启用")}><option>启用</option><option>停用</option></select></div>)}</div>;
   const renderEmployees = () => <div className="qmdp-admin-table"><div className="qmdp-admin-row head"><span>工号</span><span>姓名</span><span>部门</span><span>职位</span><span>企业微信 userid</span></div>{employees.map((row, index) => <div className="qmdp-admin-row" key={index}>{["id", "name", "dept", "role", "wecom"].map((field) => <input key={field} disabled={!editable} value={row[field] || ""} onChange={(event) => setField("employees", index, field, event.target.value)}/>)}</div>)}</div>;
+  const renderLegacyProjectNameMapping = () => {
+    const ruleCount = Object.values(projectMapping.rules?.fields || {}).reduce((sum, items) => sum + (items?.length || 0), 0);
+    const mappedSourceNames = new Set((projectMapping.mappings || []).flatMap((item) => item.sourceNames || []));
+    const activeMapping = (projectMapping.mappings || []).find((item) => item.id === mappingTargetId);
+    return <>
+      <Panel title="项目名称映射" subtitle="按六字段解析治具名称；仅人工确认的名称会合并为标准项目类别。" action={<div className="qmdp-project-rule-action"><button className="qmdp-secondary-btn" disabled={!editable || importingKind === "projectRules"} onClick={() => openMappingImport("projectRules")}><UploadSimple size={15}/>{importingKind === "projectRules" ? "解析中…" : "导入商务代码规则"}</button><small>{projectMapping.rules?.sourceName ? `${projectMapping.rules.sourceName} · ${ruleCount} 条规则` : "尚未导入规则表"}</small></div>}>
+        <div className="qmdp-project-mapping-layout">
+          <section className="qmdp-project-binding-card">
+            <header><strong>原始治具名称绑定</strong><span>{sourceProjectNames.length} 个原始项目</span></header>
+            <label>原始治具名称<select value={selectedProjectName} disabled={projectMappingLoading} onChange={(event) => setSelectedProjectName(event.target.value)}><option value="">选择 OQC 原始治具名称</option>{sourceProjectNames.map((name) => <option key={name} value={name}>{mappedSourceNames.has(name) ? "已映射 · " : ""}{name}</option>)}</select></label>
+            <div className="qmdp-project-suggestion"><span>自动解析建议</span><strong>{selectedProjectSuggestion.suggestedName || "等待选择原始名称"}</strong><small>置信度：{selectedProjectSuggestion.confidence} · {projectMappingKeyText(selectedProjectSuggestion.key)}</small></div>
+            <label>绑定方式<select value={mappingTargetId} disabled={!editable} onChange={(event) => { const id = event.target.value; setMappingTargetId(id); const item = (projectMapping.mappings || []).find((row) => row.id === id); setProjectMappingDraft(item ? { standardName: item.standardName || "", category: item.category || "", note: item.note || "" } : { standardName: selectedProjectSuggestion.suggestedName, category: "", note: "" }); }}><option value="new">新建标准项目类别</option>{(projectMapping.mappings || []).map((item) => <option key={item.id} value={item.id}>{item.standardName}{item.category ? ` · ${item.category}` : ""}</option>)}</select></label>
+            {!activeMapping && <><label>标准项目名称<input disabled={!editable} value={projectMappingDraft.standardName} placeholder="例如：MFS W2 双工位治具" onChange={(event) => setProjectMappingDraft((current) => ({ ...current, standardName: event.target.value }))}/></label><label>项目类别<input disabled={!editable} value={projectMappingDraft.category} placeholder="例如：功能测试治具" onChange={(event) => setProjectMappingDraft((current) => ({ ...current, category: event.target.value }))}/></label><label>备注<input disabled={!editable} value={projectMappingDraft.note} placeholder="人工归类说明（可选）" onChange={(event) => setProjectMappingDraft((current) => ({ ...current, note: event.target.value }))}/></label></>}
+            <button className="qmdp-primary-btn" disabled={!editable || !selectedProjectName} onClick={bindProjectName}><Plus size={15}/>确认绑定</button>
+            {projectMappingStatus && <small className="qmdp-inline-status-text">{projectMappingStatus}</small>}
+          </section>
+          <section className="qmdp-project-rule-card"><header><strong>七字段归类主键</strong><span>用于生成候选，不自动合并</span></header>{projectNameRuleFields.map((field) => <div key={field.key}><span>{field.label}</span><b>{projectMapping.rules?.fields?.[field.key]?.length || 0} 条</b><small>{projectMapping.rules?.fields?.[field.key]?.slice(0, 5).map((item) => item.code).join(" · ") || "待导入"}</small></div>)}</section>
+        </div>
+      </Panel>
+      <Panel title="已维护的标准项目类别" subtitle="删除类别后，其绑定的原始名称会自动恢复按原始治具名称独立统计。">
+        {(projectMapping.mappings || []).length ? <div className="qmdp-project-mapping-table"><div className="head"><span>标准项目类别</span><span>归类主键</span><span>已绑定原始治具名称</span><span>操作</span></div>{(projectMapping.mappings || []).map((item) => <div key={item.id}><strong>{item.standardName}<small>{item.category || "未分类"}</small></strong><span title={projectMappingKeyText(item.key)}>{projectMappingKeyText(item.key)}</span><span>{(item.sourceNames || []).join("；")}</span><button className="qmdp-secondary-btn" disabled={!editable} onClick={() => removeProjectMapping(item.id)}><Trash size={15}/>删除</button></div>)}</div> : <div className="qmdp-empty compact">尚无人工确认映射。导入规则后，从左侧选择原始治具名称逐项绑定。</div>}
+      </Panel>
+    </>;
+  };
+  const renderProjectNameMapping = () => {
+    const ruleCount = Object.values(projectMapping.rules?.fields || {}).reduce((sum, items) => sum + (items?.length || 0), 0);
+    const overrideCount = (projectMapping.overrides || []).length;
+    const rulesNeedRefresh = Boolean(projectMapping.rules?.sourceName) && ["customerProductCategory", "businessCategory", "productForm"].some((key) => !(projectMapping.rules?.fields?.[key] || []).length);
+    return <>
+      <Panel title="项目名称规则" subtitle="保留项目名称中可稳定识别的七个字段，用于 OQC 设备离散分析的分类统计。" action={<div className="qmdp-project-rule-action"><button className="qmdp-secondary-btn" disabled={!editable || importingKind === "projectRules"} onClick={() => openMappingImport("projectRules")}><UploadSimple size={15}/>{importingKind === "projectRules" ? "解析中…" : "导入商务代码规则"}</button><small>{projectMapping.rules?.sourceName ? `${projectMapping.rules.sourceName} · ${ruleCount} 条规则` : "尚未导入规则表"}</small></div>}>
+        <div className="qmdp-project-rule-dimensions">{projectNameRuleFields.map((field) => <section key={field.key}><strong>{field.label}</strong><b>{projectMapping.rules?.fields?.[field.key]?.length || 0}</b><small>{projectMapping.rules?.fields?.[field.key]?.slice(0, 6).map((item) => item.code).join(" · ") || "待导入"}</small></section>)}</div>
+        <div className="qmdp-note"><Database size={15}/>选择其中任一字段后，系统按字段值汇总机台数。无法从项目名称解析的记录会显示为“未识别”，不参与漏统或猜测归类。</div>
+        {rulesNeedRefresh && <div className="qmdp-note"><Warning size={15}/>规则分类已升级为七个字段，请重新导入商务代码规则，以启用客户产品大类、业务类别和产品形态统计。</div>}
+      </Panel>
+      <Panel title="历史项目字段补充" subtitle="仅对自动解析失败或不完整的项目逐字段校正；保存后会直接进入对应的分类统计。">
+        <div className="qmdp-project-override-layout"><label>原始治具名称<select value={selectedProjectName} disabled={projectMappingLoading} onChange={(event) => selectProjectForRules(event.target.value)}><option value="">选择 OQC 原始治具名称</option>{sourceProjectNames.map((name) => <option key={name} value={name}>{(projectMapping.overrides || []).some((item) => item.sourceName === name) ? "已校正 · " : ""}{name}</option>)}</select></label>
+          <div className="qmdp-project-override-grid">{projectNameRuleFields.map((field) => <label key={field.key}>{field.label}<select disabled={!editable || !selectedProjectName} value={projectOverrideValues[field.key]?.code || ""} onChange={(event) => { const entry = (projectMapping.rules?.fields?.[field.key] || []).find((item) => item.code === event.target.value) || {}; setProjectOverrideValues((current) => ({ ...current, [field.key]: entry.code ? { code: entry.code, name: entry.name || "", label: entry.name && entry.name !== entry.code ? `${entry.code} · ${entry.name}` : entry.code } : {} })); }}><option value="">未识别 / 不适用</option>{(projectMapping.rules?.fields?.[field.key] || []).map((item) => <option key={item.code} value={item.code}>{item.name && item.name !== item.code ? `${item.code} · ${item.name}` : item.code}</option>)}</select></label>)}</div>
+          <div className="qmdp-project-override-actions"><button className="qmdp-primary-btn" disabled={!editable || !selectedProjectName} onClick={saveProjectRuleOverride}><FloppyDisk size={15}/>保存字段校正</button><small>{overrideCount ? `已校正 ${overrideCount} 个历史项目名称` : "尚未保存人工校正"}</small>{projectMappingStatus && <small className="qmdp-inline-status-text">{projectMappingStatus}</small>}</div>
+        </div>
+      </Panel>
+    </>;
+  };
   const importActions = (kind, section) => <div style={{ display: "flex", gap: 8, alignItems: "center" }}><button className="qmdp-secondary-btn" disabled={!editable || importingKind === kind} onClick={() => openMappingImport(kind)}><UploadSimple size={15}/>{importingKind === kind ? "解析中…" : "导入 Excel"}</button><span style={{ color: "#8190a2", fontSize: 10 }}>{config.importMeta?.[kind]?.name ? `最近导入：${config.importMeta[kind].name}（${config.importMeta[kind].count} 条）` : `支持 ${kind === "org" ? "产品部 / 产总 / TPM / PM" : "厂区 / 工坊 / 交付经理 / 机长"} 表头`}</span></div>;
-  const content = tab === "研发组织映射" ? <><Panel title="研发组织映射维护" subtitle="产品部、产总、TPM、PM 的责任关系" action={importActions("org", "orgMappings")}>{renderMapping()}<button className="qmdp-secondary-btn" disabled={!editable} onClick={() => addRow("orgMappings", { productDept: "新产品部", productionDirector: "", tpm: "", pm: "", active: true })}><Plus size={15}/>新增映射</button></Panel></> : tab === "供应链映射" ? <><Panel title="供应商/供应链人员映射" subtitle="厂区、工坊、交付经理与机长" action={importActions("supply", "supplyMappings")}>{renderSupply()}<button className="qmdp-secondary-btn" disabled={!editable} onClick={() => addRow("supplyMappings", { site: "深圳", workshop: "", manager: "", leader: "", active: true })}><Plus size={15}/>新增映射</button></Panel></> : tab === "员工信息" ? <><Panel title="员工信息 / 企业微信 userid">{renderEmployees()}<button className="qmdp-secondary-btn" disabled={!editable} onClick={() => addRow("employees", { id: "", name: "", dept: "", role: "", wecom: "" })}><Plus size={15}/>新增员工</button></Panel></> : tab === "评分权重" ? <Panel title="质量风险评分权重" subtitle="权重总和应为 100"><div className="qmdp-weight-grid">{[["ecn", "ECN个人占比"], ["issue", "研发问题数量"], ["severity", "高严重度问题"], ["review", "设计评审问题占比"], ["nonBom", "非BOM加工件比例"], ["open", "未关闭问题数量"]].map(([key, label]) => <label key={key}><span>{label}</span><input type="number" min="0" max="100" value={config.weights?.[key] ?? 0} disabled={!editable} onChange={(event) => setConfig((current) => ({ ...current, weights: { ...current.weights, [key]: Number(event.target.value) } }))}/></label>)}</div><div className="qmdp-weight-total">当前权重合计：<strong>{Object.values(config.weights || {}).reduce((sum, value) => sum + Number(value || 0), 0)}%</strong><button className="qmdp-primary-btn" disabled={!editable} onClick={() => saveMessage("质量评分权重已保存")}>保存权重</button></div></Panel> : tab === "企业微信" ? <Panel title="企业微信应用配置" subtitle="用于报告发送，密钥只保存在本机状态"><div className="qmdp-form-grid">{[["corpId", "CorpId"], ["agentId", "AgentId"], ["secret", "Secret"]].map(([key, label]) => <label key={key}><span>{label}</span><input type={key === "secret" ? "password" : "text"} value={config.wecom?.[key] || ""} disabled={!editable} onChange={(event) => setConfig((current) => ({ ...current, wecom: { ...current.wecom, [key]: event.target.value } }))}/></label>)}</div><button className="qmdp-primary-btn" disabled={!editable} onClick={() => saveMessage("企业微信配置已保存")}>保存配置</button></Panel> : <Panel title="操作日志" subtitle="记录映射、权重与发送配置的变更"><div className="qmdp-log-list">{(config.logs || []).map((item) => <div key={item.id}><span>{formatSyncDateTime(item.at)}</span><strong>{item.message}</strong></div>)}{!(config.logs || []).length && <div className="qmdp-empty compact">暂无操作日志。</div>}</div></Panel>;
+  const content = tab === "研发组织映射" ? <><Panel title="研发组织映射维护" subtitle="产品部、产总、TPM、PM 的责任关系" action={importActions("org", "orgMappings")}>{renderMapping()}<button className="qmdp-secondary-btn" disabled={!editable} onClick={() => addRow("orgMappings", { productDept: "新产品部", productionDirector: "", tpm: "", pm: "", active: true })}><Plus size={15}/>新增映射</button></Panel></> : tab === "供应链映射" ? <><Panel title="供应商/供应链人员映射" subtitle="厂区、工坊、交付经理与机长" action={importActions("supply", "supplyMappings")}>{renderSupply()}<button className="qmdp-secondary-btn" disabled={!editable} onClick={() => addRow("supplyMappings", { site: "深圳", workshop: "", manager: "", leader: "", active: true })}><Plus size={15}/>新增映射</button></Panel></> : tab === "项目名称映射" ? renderProjectNameMapping() : tab === "员工信息" ? <><Panel title="员工信息 / 企业微信 userid">{renderEmployees()}<button className="qmdp-secondary-btn" disabled={!editable} onClick={() => addRow("employees", { id: "", name: "", dept: "", role: "", wecom: "" })}><Plus size={15}/>新增员工</button></Panel></> : tab === "评分权重" ? <Panel title="质量风险评分权重" subtitle="权重总和应为 100"><div className="qmdp-weight-grid">{[["ecn", "ECN个人占比"], ["issue", "研发问题数量"], ["severity", "高严重度问题"], ["review", "设计评审问题占比"], ["nonBom", "非BOM加工件比例"], ["open", "未关闭问题数量"]].map(([key, label]) => <label key={key}><span>{label}</span><input type="number" min="0" max="100" value={config.weights?.[key] ?? 0} disabled={!editable} onChange={(event) => setConfig((current) => ({ ...current, weights: { ...current.weights, [key]: Number(event.target.value) } }))}/></label>)}</div><div className="qmdp-weight-total">当前权重合计：<strong>{Object.values(config.weights || {}).reduce((sum, value) => sum + Number(value || 0), 0)}%</strong><button className="qmdp-primary-btn" disabled={!editable} onClick={() => saveMessage("质量评分权重已保存")}>保存权重</button></div></Panel> : tab === "企业微信" ? <Panel title="企业微信应用配置" subtitle="用于报告发送，密钥只保存在本机状态"><div className="qmdp-form-grid">{[["corpId", "CorpId"], ["agentId", "AgentId"], ["secret", "Secret"]].map(([key, label]) => <label key={key}><span>{label}</span><input type={key === "secret" ? "password" : "text"} value={config.wecom?.[key] || ""} disabled={!editable} onChange={(event) => setConfig((current) => ({ ...current, wecom: { ...current.wecom, [key]: event.target.value } }))}/></label>)}</div><button className="qmdp-primary-btn" disabled={!editable} onClick={() => saveMessage("企业微信配置已保存")}>保存配置</button></Panel> : <Panel title="操作日志" subtitle="记录映射、权重与发送配置的变更"><div className="qmdp-log-list">{(config.logs || []).map((item) => <div key={item.id}><span>{formatSyncDateTime(item.at)}</span><strong>{item.message}</strong></div>)}{!(config.logs || []).length && <div className="qmdp-empty compact">暂无操作日志。</div>}</div></Panel>;
   return <div className="qmdp-page"><input ref={mappingInputRef} type="file" accept=".xlsx,.xls,.xlsm" hidden onChange={(event) => importMapping(event, mappingInputRef.current?.getAttribute("data-kind") || "supply")}/><QmdpPageHeader icon={GearSix} eyebrow="系统管理 / Administration" title={tab} description={editable ? "副管理员和主管理员可维护映射、权重与发送配置。" : "当前账号仅可查看系统配置。"} action={status && <span className="qmdp-inline-status"><CheckCircle size={15}/>{status}</span>}/><div className="qmdp-admin-tabs">{qmdpMenuGroups.find((group) => group.label === "系统管理").children.map((item) => <button key={item} className={tab === item ? "active" : ""} onClick={() => setTab(item)}>{item}</button>)}</div>{content}<div className="qmdp-note"><Database size={15}/>系统管理数据与现有数据导入、IPQC过程管控、研发质量分析相互隔离。</div></div>;
 }
 
@@ -3980,7 +4146,7 @@ function ExecutiveDashboard({ data, files, dqaEngineerSupplement, onImport, onDe
   const moduleView = ["IQC", "IPQC", "OQC", "DQA", "QMS"].includes(active) ? active : null;
   const qmdpKnowledgeView = ["知识库", "题库管理", "知识考试"].includes(active);
   const qmdpReportView = ["IPQC操作报告", "机长报告", "交付经理报告", "供应链经理报告", "研发工程师报告", "PM报告", "TPM报告", "产总报告", "董事长报告", "报告任务中心"].includes(active);
-  const qmdpSystemView = ["研发组织映射", "供应链映射", "员工信息", "评分权重", "企业微信", "操作日志"].includes(active);
+  const qmdpSystemView = ["研发组织映射", "供应链映射", "项目名称映射", "员工信息", "评分权重", "企业微信", "操作日志"].includes(active);
   const qualityAgentView = qualityAgentMenuItems.includes(active);
   const agentRoleReportView = agentRoleMenuItems.includes(active);
   const agentExamStatsView = agentUtilityMenuItems.includes(active);
@@ -4013,7 +4179,7 @@ function ExecutiveDashboard({ data, files, dqaEngineerSupplement, onImport, onDe
         <div className="top-actions"><ServerSyncBadge value={serverSyncStatus}/><Switcher view={view} onChange={onViewChange} canWorkspace={allowWorkspace} />{allowAnnotationEdit && <AnnotationEditButton defaultModule={moduleView || "\u603b\u89c8"} />}{allowAnnotationView && <AnnotationViewButton />}{allowExport && <ExportReportButton />}<button className={`label-controls-toggle ${labelControlsVisible ? "active" : ""}`} onClick={onToggleLabelControls}>{labelControlsVisible ? "隐藏数值设置" : "显示数值设置"}</button>{allowImport && <button className="import-btn" onClick={() => onImport(null)}><UploadSimple size={17} />导入数据</button>}</div>
       </header>
       {!qmdpView && <DateRangeFilter value={dateRange} teamDefaultRange={teamDefaultRange} lastServerSavedAt={lastServerSavedAt} onChange={onDateRange} onRefresh={onRefreshDate} refreshStatus={dateRefreshStatus} refreshProgress={refreshProgress} canRefresh={allowTemporaryRefresh} fontSize={fontSize} onFontSize={onFontSize}/>}
-      {active === "权限设置" && auth?.isAdmin ? <PermissionSettingsPage auth={auth} permissions={permissions} onPermissionsChanged={onPermissionsChanged}/> : qmdpKnowledgeView ? <KnowledgeManagementPage active={active} qualitySources={agentFiles} onEnsureAgentSources={onEnsureAgentSources}/> : qmdpReportView ? <QualityReportsPage active={active} data={data} files={files} dateRange={dateRange} onRoleChange={setActive}/> : qualityAgentView && canUseFeature(auth, permissions, "qualityAgent") ? <QualityAgentPage key={active} data={data} files={files} dateRange={dateRange} module={qualityAgentMenuModules[active]} onEnsureAgentSources={onEnsureAgentSources} canStart={canUseFeature(auth, permissions, "qualityAgentStart")} canSaveToServer={auth?.isAdmin === true}/> : agentRoleReportView && canUseFeature(auth, permissions, "qualityAgent") ? <AgentRoleReportPage key={active} initialRole={agentRoleMenuRoles[active]} data={data} files={agentFiles} dateRange={dateRange} onEnsureAgentSources={onEnsureAgentSources} canGenerate={canUseFeature(auth, permissions, "agentRoleReportGenerate")} canSaveToServer={auth?.isAdmin === true}/> : agentExamStatsView && canUseFeature(auth, permissions, "qualityAgent") ? <AgentExamStatsPage/> : qmdpSystemView ? <SystemManagementPage active={active} data={data} auth={auth}/> : active === "AI接口" && canUseFeature(auth, permissions, "aiInterface") ? <AiInterfacePage canSaveToServer={auth?.isAdmin === true}/> : active === "数据导入" && allowImport ? <DataSourcePage files={files} onImportModule={onImport} onDelete={onDeleteSource} onSourcesChanged={onSourcesChanged} dqaEngineerSupplement={dqaEngineerSupplement} onImportDqaEngineerSupplement={onImportDqaEngineerSupplement} onClearDqaEngineerSupplement={onClearDqaEngineerSupplement} onDeleteDqaEngineerSupplementFile={onDeleteDqaEngineerSupplementFile}/> : active === "AI分析" && canUseFeature(auth, permissions, "aiAnalysis") ? <AiAnalysisPage data={data} dateRange={dateRange} analysisKey={analysisKey} canSaveToServer={auth?.isAdmin === true}/> : moduleView ? <ModuleDetail key={`${moduleView}-${analysisKey}`} module={moduleView} data={data} /> : <>
+      {active === "权限设置" && auth?.isAdmin ? <PermissionSettingsPage auth={auth} permissions={permissions} onPermissionsChanged={onPermissionsChanged}/> : qmdpKnowledgeView ? <KnowledgeManagementPage active={active} qualitySources={agentFiles} onEnsureAgentSources={onEnsureAgentSources}/> : qmdpReportView ? <QualityReportsPage active={active} data={data} files={files} dateRange={dateRange} onRoleChange={setActive}/> : qualityAgentView && canUseFeature(auth, permissions, "qualityAgent") ? <QualityAgentPage key={active} data={data} files={files} dateRange={dateRange} module={qualityAgentMenuModules[active]} onEnsureAgentSources={onEnsureAgentSources} canStart={canUseFeature(auth, permissions, "qualityAgentStart")} canSaveToServer={auth?.isAdmin === true}/> : agentRoleReportView && canUseFeature(auth, permissions, "qualityAgent") ? <AgentRoleReportPage key={active} initialRole={agentRoleMenuRoles[active]} data={data} files={agentFiles} dateRange={dateRange} onEnsureAgentSources={onEnsureAgentSources} canGenerate={canUseFeature(auth, permissions, "agentRoleReportGenerate")} canSaveToServer={auth?.isAdmin === true}/> : agentExamStatsView && canUseFeature(auth, permissions, "qualityAgent") ? <AgentExamStatsPage/> : qmdpSystemView ? <SystemManagementPage active={active} data={data} auth={auth}/> : active === "AI接口" && canUseFeature(auth, permissions, "aiInterface") ? <AiInterfacePage canSaveToServer={auth?.isAdmin === true}/> : active === "数据导入" && allowImport ? <DataSourcePage files={files} onImportModule={onImport} onDelete={onDeleteSource} onSourcesChanged={onSourcesChanged} dqaEngineerSupplement={dqaEngineerSupplement} onImportDqaEngineerSupplement={onImportDqaEngineerSupplement} onClearDqaEngineerSupplement={onClearDqaEngineerSupplement} onDeleteDqaEngineerSupplementFile={onDeleteDqaEngineerSupplementFile}/> : active === "AI分析" && canUseFeature(auth, permissions, "aiAnalysis") ? <AiAnalysisPage data={data} dateRange={dateRange} analysisKey={analysisKey} canSaveToServer={auth?.isAdmin === true}/> : moduleView ? <ModuleDetail key={`${moduleView}-${analysisKey}`} module={moduleView} data={data} files={files} /> : <>
         <OverviewKpiCards data={data}/>
         <div className="dashboard-grid">
           <MainSupplierOverview data={data}/>
@@ -4959,6 +5125,91 @@ function OqcShipmentDetailAnalysis({ data }) {
   </div>;
 }
 
+const oqcDispersionNumber = (value, digits = 0) => Number(value || 0).toLocaleString("zh-CN", {
+  minimumFractionDigits: digits,
+  maximumFractionDigits: digits,
+});
+
+function OqcDispersionMetricCard({ label, value, unit = "", baseline, detail }) {
+  return <div className="oqc-dispersion-kpi">
+    <span>{label}</span>
+    <strong>{value}<small>{unit}</small></strong>
+    <div><em>2025：{baseline}{unit}</em>{detail && <b>{detail}</b>}</div>
+  </div>;
+}
+
+function OqcEquipmentDispersionAnalysis({ data, dispersionOverride }) {
+  const dispersion = dispersionOverride || data.oqc.equipmentDispersion;
+  const [scopeKey, setScopeKey] = useState("overall");
+  if (!dispersion?.scopes?.length) return <div className="summary-note oqc-dispersion-empty"><strong>待导入出货明细</strong><p>请导入包含“治具名称、机台分类、机台数量”的 2025、2026 出货汇总文件，生成设备离散分析。</p></div>;
+  const scope = dispersion.scopes.find((item) => item.key === scopeKey) || dispersion.scopes[0];
+  const y2025 = scope.y2025;
+  const y2026 = scope.y2026;
+  const percentageDelta = (value) => `${value >= 0 ? "较2025 +" : "较2025 "}${Math.abs(value).toFixed(1)}pp`;
+  const countDelta = (value) => `${value >= 0 ? "较2025 +" : "较2025 "}${Math.abs(value).toLocaleString()}个`;
+  const quantityDistributionRows = [...new Set([
+    ...(y2025.quantityDistribution || []).map((item) => item.quantity),
+    ...(y2026.quantityDistribution || []).map((item) => item.quantity),
+  ])].sort((a, b) => a - b).map((quantity) => ({
+    name: `${quantity}台`,
+    y2025Count: y2025.quantityDistribution?.find((item) => item.quantity === quantity)?.projects || 0,
+    y2026Count: y2026.quantityDistribution?.find((item) => item.quantity === quantity)?.projects || 0,
+  }));
+  const quantityRangeRows = [
+    { name: "1台", match: (quantity) => quantity === 1 },
+    { name: "2-3台", match: (quantity) => quantity >= 2 && quantity <= 3 },
+    { name: "4-10台", match: (quantity) => quantity >= 4 && quantity <= 10 },
+    { name: "10台以上", match: (quantity) => quantity > 10 },
+  ].map((range) => ({
+    name: range.name,
+    y2025Count: y2025.projectRows.filter((row) => range.match(row.quantity)).length,
+    y2026Count: y2026.projectRows.filter((row) => range.match(row.quantity)).length,
+  }));
+  const allScopeLabels = dispersion.scopes.map((item) => item.name);
+  const trendSignals = [
+    y2026.dispersionIndex > y2025.dispersionIndex ? "离散指数上升" : y2026.dispersionIndex < y2025.dispersionIndex ? "离散指数下降" : "离散指数持平",
+    y2026.singleProjectShare > y2025.singleProjectShare ? "单台项目占比上升" : y2026.singleProjectShare < y2025.singleProjectShare ? "单台项目占比下降" : "单台项目占比持平",
+    y2026.avgMachinesPerProject < y2025.avgMachinesPerProject ? "平均单项目台数下降" : y2026.avgMachinesPerProject > y2025.avgMachinesPerProject ? "平均单项目台数上升" : "平均单项目台数持平",
+  ];
+  return <div className="oqc-dispersion-analysis">
+    <div className="oqc-section-heading oqc-dispersion-heading">
+      <span className="section-number">3.E</span>
+      <div><h2>设备离散分析 · 出货明细</h2><p>以“治具名称”为项目名，按机台数量汇总；仅项目名称完全一致才视作同一项目。</p></div>
+      <AppliedPeriodTag data={data}/>
+    </div>
+    <div className="oqc-dispersion-scope-summary">
+      <div><strong>分析样本</strong><span>{dispersion.sourceRecordCount.toLocaleString()} 条有效评分出货明细</span></div>
+      <div><strong>识别目标</strong><span>定位低批量、项目分散带来的非标化信号</span></div>
+    </div>
+    <div className="oqc-dispersion-scope-tabs">
+      <div className="site-tabs" role="tablist" aria-label="设备分类范围">
+        {dispersion.scopes.map((item) => <button key={item.key} role="tab" aria-selected={scope.key === item.key} className={scope.key === item.key ? "active" : ""} onClick={() => preserveScrollPosition(() => setScopeKey(item.key))}>{item.name}</button>)}
+      </div>
+    </div>
+    <div className="oqc-dispersion-kpi-grid">
+      <OqcDispersionMetricCard label="项目数" value={oqcDispersionNumber(y2026.projectCount)} unit="个" baseline={oqcDispersionNumber(y2025.projectCount)} detail={countDelta(scope.deltaProjectCount)}/>
+      <OqcDispersionMetricCard label="出货机台数" value={oqcDispersionNumber(y2026.machineCount)} unit="台" baseline={oqcDispersionNumber(y2025.machineCount)} detail={`${scope.deltaMachineCount >= 0 ? "较2025 +" : "较2025 "}${Math.abs(scope.deltaMachineCount).toLocaleString()}台`}/>
+      <OqcDispersionMetricCard label="项目离散指数" value={oqcDispersionNumber(y2026.dispersionIndex * 100, 1)} unit="%" baseline={oqcDispersionNumber(y2025.dispersionIndex * 100, 1)} detail={percentageDelta(scope.deltaDispersionIndex * 100)}/>
+      <OqcDispersionMetricCard label="单台项目占比" value={oqcDispersionNumber(y2026.singleProjectShare, 1)} unit="%" baseline={oqcDispersionNumber(y2025.singleProjectShare, 1)} detail={percentageDelta(scope.deltaSingleProjectShare)}/>
+      <OqcDispersionMetricCard label="平均每项目机台数" value={oqcDispersionNumber(y2026.avgMachinesPerProject, 2)} unit="台" baseline={oqcDispersionNumber(y2025.avgMachinesPerProject, 2)} detail={`有效项目数：${oqcDispersionNumber(y2026.effectiveProjectCount, 1)}`}/>
+    </div>
+    <div className="iqc-analysis-grid">
+      <Panel title="总体项目与设备同比" subtitle="全部分类同步对比，先判断项目结构变化来自治具还是自动化" className="iqc-wide">
+        <div className="oqc-dispersion-chart-grid">
+          <BarCompare labels={allScopeLabels} first={dispersion.scopes.map((item) => item.y2025.projectCount)} second={dispersion.scopes.map((item) => item.y2026.projectCount)} names={["2025项目数", "2026项目数"]} percent={false} chartKey="oqc-dispersion-project-count"/>
+          <BarCompare labels={allScopeLabels} first={dispersion.scopes.map((item) => item.y2025.machineCount)} second={dispersion.scopes.map((item) => item.y2026.machineCount)} names={["2025机台数", "2026机台数"]} percent={false} chartKey="oqc-dispersion-machine-count"/>
+        </div>
+      </Panel>
+      <div className="oqc-section-heading"><span className="section-number">3.E1</span><div><h2>{scope.name}项目批量结构</h2><p>单台项目越多、平均每项目机台数越低，非标化特征通常越强。</p></div></div>
+      <div className="oqc-dispersion-chart-grid">
+        <Panel title="项目机台量分布" subtitle="柱形为对应机台数的项目数，折线为由低到高的累计项目占比"><EquipmentQuantityDistributionPareto rows={quantityDistributionRows} chartKey={`oqc-dispersion-distribution-${scope.key}`}/></Panel>
+        <Panel title="项目机台分布范围" subtitle="柱形为各机台区间的项目数，折线为由低到高的累计项目占比"><EquipmentQuantityDistributionPareto rows={quantityRangeRows} chartKey={`oqc-dispersion-range-${scope.key}`}/></Panel>
+      </div>
+      <div className="oqc-dispersion-note"><strong>非标化信号</strong><p>{trendSignals.join("；")}。当“离散指数上升 + 单台项目占比上升 + 平均每项目台数下降”同时出现时，应优先核查项目复用、标准模块覆盖和订单拆分情况。</p></div>
+    </div>
+  </div>;
+}
+
 function OqcSummaryAnalysis({ data, summary }) {
   const [focusDivision, setFocusDivision] = useState("FPC事业部");
   if (!summary) return <div className="module-summary"><KpiCard item={data.kpis[2]} /><div className="summary-note"><strong>待导入月度汇总表</strong><p>请导入“2025年-2026年评分按月汇总.xlsx”生成同期评分分析。</p></div></div>;
@@ -5009,10 +5260,73 @@ function OqcSummaryAnalysis({ data, summary }) {
   </div>;
 }
 
-function OqcAnalysis({ data }) {
+function LazyOqcRuleDimensionChart({ dimension, rows, scopeKey }) {
+  const hostRef = useRef(null);
+  const [ready, setReady] = useState(false);
+  const chartHeight = Math.max(330, Math.min(520, rows.length * 22 + 150));
+  useEffect(() => {
+    const host = hostRef.current;
+    if (!host) return undefined;
+    if (typeof IntersectionObserver === "undefined") {
+      setReady(true);
+      return undefined;
+    }
+    const observer = new IntersectionObserver((entries) => {
+      if (entries.some((entry) => entry.isIntersecting)) {
+        setReady(true);
+        observer.disconnect();
+      }
+    }, { rootMargin: "280px 0px" });
+    observer.observe(host);
+    return () => observer.disconnect();
+  }, []);
+  return <Panel title={`${dimension.label}分类`} subtitle={`按${dimension.label}分别统计机台数；${rows.length}个分类值`}><div ref={hostRef} style={{ minHeight: chartHeight }}>{ready ? <BarCompare labels={rows.map((row) => row.name)} first={rows.map((row) => row.y2025)} second={rows.map((row) => row.y2026)} names={["2025 机台数", "2026 机台数"]} percent={false} height={chartHeight} chartKey={`oqc-rule-dimension-${dimension.key}-${scopeKey}`} scrollable/> : <div className="summary-note compact" style={{ minHeight: chartHeight }}>图表加载中…</div>}</div></Panel>;
+}
+
+function OqcRuleClassificationAnalysis({ data, classificationCache = null }) {
+  const dimensions = projectNameRuleFields;
+  const overview = data.oqc.equipmentDispersion;
+  const scope = overview?.scopes?.find((item) => item.key === "overall") || overview?.scopes?.[0];
+  const dimensionResults = classificationCache?.ready ? classificationCache.results : null;
+  if (!scope) return <div className="summary-note oqc-dispersion-empty"><strong>待导入出货明细</strong><p>请先导入 OQC 出货明细和商务代码规则。</p></div>;
+  const dimensionChartRows = (result) => {
+    const selected = result || {};
+    const byName = new Map();
+    (selected.y2025 || []).forEach((row) => byName.set(row.name, { name: row.name, y2025: row.quantity, y2026: 0 }));
+    (selected.y2026 || []).forEach((row) => byName.set(row.name, { ...(byName.get(row.name) || { name: row.name, y2025: 0 }), y2026: row.quantity }));
+    return [...byName.values()].sort((a, b) => b.y2026 - a.y2026 || b.y2025 - a.y2025 || a.name.localeCompare(b.name, "zh-CN"));
+  };
+  return <div className="oqc-dispersion-analysis oqc-rule-classification-analysis">
+    <div className="oqc-section-heading oqc-dispersion-heading"><span className="section-number">3.E2</span><div><h2>设备离散分析 · 项目规则分类</h2><p>按项目名称可识别字段分类汇总；所有记录均保留，无法解析的项目进入“未识别”。</p></div><AppliedPeriodTag data={data}/></div>
+    {!dimensionResults ? <div className="summary-note compact">正在整理项目规则分类数据…</div> : <div className="oqc-rule-dimension-grid">{dimensions.map((dimension) => <LazyOqcRuleDimensionChart key={dimension.key} dimension={dimension} rows={dimensionChartRows(dimensionResults[dimension.key])} scopeKey={scope.key}/>)}</div>}
+  </div>;
+}
+
+function OqcAnalysis({ data, files = [] }) {
   const [oqcTab, setOqcTab] = useState("summary");
+  const [classificationCache, setClassificationCache] = useState(null);
   const summary = data.oqc.monthlySummary;
   const hasDetail = Boolean(data.oqc.shipmentDetail);
+  const hasEquipmentDispersion = Boolean(data.oqc.equipmentDispersion);
+  useEffect(() => {
+    if (oqcTab !== "dispersion") {
+      setClassificationCache(null);
+      return undefined;
+    }
+    let cancelled = false;
+    let retryTimer = null;
+    const load = async () => {
+      const next = await loadOqcEquipmentRuleCache();
+      if (cancelled) return;
+      setClassificationCache(next);
+      if (!next?.ready) retryTimer = window.setTimeout(load, 1600);
+    };
+    load();
+    return () => {
+      cancelled = true;
+      if (retryTimer) window.clearTimeout(retryTimer);
+    };
+  }, [oqcTab]);
   return <div className="module-page iqc-supplier-page oqc-page">
     <div className="iqc-section-title">
       <div><span className="section-number">3</span><div><h2>OQC出货评分同期分析</h2><p>按顶部已应用日期范围进行同期对比；低分定义为最终评分≤3分</p></div></div>
@@ -5021,8 +5335,9 @@ function OqcAnalysis({ data }) {
     <div className="dqa-sub-tabs oqc-sub-tabs">
       <button className={oqcTab === "summary" ? "active" : ""} onClick={() => setOqcTab("summary")}>评分汇总分析</button>
       <button className={oqcTab === "detail" ? "active" : ""} onClick={() => setOqcTab("detail")}>出货明细分析{hasDetail ? "" : "（待导入）"}</button>
+      <button className={oqcTab === "dispersion" ? "active" : ""} onClick={() => setOqcTab("dispersion")}>设备离散分析{hasEquipmentDispersion ? "" : "（待导入）"}</button>
     </div>
-    {oqcTab === "detail" ? <OqcShipmentDetailAnalysis data={data}/> : <OqcSummaryAnalysis data={data} summary={summary}/>}
+    {oqcTab === "detail" ? <OqcShipmentDetailAnalysis data={data}/> : oqcTab === "dispersion" ? <><OqcEquipmentDispersionAnalysis data={data} dispersionOverride={data.oqc.equipmentDispersion}/><OqcRuleClassificationAnalysis data={data} classificationCache={classificationCache}/></> : <OqcSummaryAnalysis data={data} summary={summary}/>}
   </div>;
 }
 
@@ -5891,10 +6206,10 @@ function QmsAnalysis({ data }) {
   </div>;
 }
 
-function ModuleDetail({ module, data }) {
+function ModuleDetail({ module, data, files }) {
   if (module === "IQC") return <IqcSupplierAnalysis data={data} />;
   if (module === "IPQC") return <IpqcAnalysis data={data} />;
-  if (module === "OQC") return <OqcAnalysis data={data} />;
+  if (module === "OQC") return <OqcAnalysis data={data} files={files} />;
   if (module === "DQA") return <DqaAnalysis data={data}/>;
   if (module === "QMS") return <QmsAnalysis data={data}/>;
   return null;
