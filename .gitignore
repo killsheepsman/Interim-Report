@@ -9,9 +9,14 @@ public/defaultQmsSources.json.gz
 public/defaultAnnotations.json
 data/ai-config.json
 data/
+.env
+.env.*
+!.env.example
 screenshots/
 .vite/
 *.log
+__pycache__/
+*.pyc
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*

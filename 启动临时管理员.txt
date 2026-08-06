@@ -1,0 +1,6 @@
+cd "C:\Users\77247\Desktop\半年报\quality-analytics-web"
+
+$env:PORT="4174"
+$env:HOST="127.0.0.1"
+cmd
+npm run server

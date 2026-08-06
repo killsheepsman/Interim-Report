@@ -1,0 +1,4 @@
+interface:
+  display_name: "QMS质量分析"
+  short_description: "分析客户评分、客户意见、重复问题、责任归属及反馈关闭闭环"
+  default_prompt: "Use $quality-analysis-qms to analyze the fixed QMS snapshot and customer quality risks."

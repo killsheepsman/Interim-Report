@@ -1,0 +1,11 @@
+cd "/c/Users/77247/Desktop/半年报/quality-analytics-web"
+
+git status
+
+git add server/index.mjs src/App.jsx src/dataStore.js src/styles.css
+
+git diff --cached --stat
+
+git commit -m "更新代码"
+
+git push

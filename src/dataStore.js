@@ -9,6 +9,8 @@ const REMOTE_APPLIED_DATE_RANGE_KEY = "applied-date-range";
 const DQA_ENGINEER_SUPPLEMENT_KEY = "dqa-engineer-supplement";
 const LOCAL_AI_CONFIG_KEY = "qms-ai-config-local-v1";
 const LOCAL_AGENT_REPORTS_KEY = "qms-local-agent-reports-v1";
+const LOCAL_AGENT_REPORTS_INDEX_KEY = "qms-local-agent-reports-index-v2";
+const LOCAL_AGENT_REPORT_CONTENT_PREFIX = "qms-local-agent-report-content-v2:";
 const LOCAL_AI_REPORTS_KEY = "qms-local-ai-reports-v1";
 
 const defaultLocalAiConfig = { baseUrl: "https://new.ahei.asia/v1", model: "", apiKey: "" };
@@ -39,18 +41,26 @@ const localAiRequestConfig = (config = {}) => {
   return next.apiKey ? next : null;
 };
 
-const readLocalAgentReports = () => {
+const readLegacyLocalAgentReports = () => {
   if (typeof localStorage === "undefined") return [];
   try {
     const value = JSON.parse(localStorage.getItem(LOCAL_AGENT_REPORTS_KEY) || "[]");
     return Array.isArray(value) ? value : [];
   } catch { return []; }
 };
-const writeLocalAgentReports = (reports) => {
+const readLocalAgentReportIndex = () => {
+  if (typeof localStorage === "undefined") return [];
+  try {
+    const value = JSON.parse(localStorage.getItem(LOCAL_AGENT_REPORTS_INDEX_KEY) || "[]");
+    return Array.isArray(value) ? value : [];
+  } catch { return []; }
+};
+const writeLocalAgentReportIndex = (reports) => {
   if (typeof localStorage !== "undefined") {
-    try { localStorage.setItem(LOCAL_AGENT_REPORTS_KEY, JSON.stringify(reports.slice(0, 300))); } catch {}
+    try { localStorage.setItem(LOCAL_AGENT_REPORTS_INDEX_KEY, JSON.stringify(reports.slice(0, 300))); } catch {}
   }
 };
+let localAgentReportStorePromise = null;
 const readLocalAiReports = () => {
   if (typeof localStorage === "undefined") return [];
   try {
@@ -210,6 +220,31 @@ export const uploadSourceFiles = async (sources = [], rawFiles = []) => {
     const uploaded = uploadedByKey.get(`${source.module}::${source.name}`);
     return uploaded ? { ...source, ...uploaded } : source;
   });
+};
+
+const ensureLocalAgentReportStore = async () => {
+  if (localAgentReportStorePromise) return localAgentReportStorePromise;
+  localAgentReportStorePromise = (async () => {
+    const currentIndex = readLocalAgentReportIndex();
+    const legacy = readLegacyLocalAgentReports();
+    if (!currentIndex.length && legacy.length) {
+      const index = legacy.map(({ content, ...metadata }) => ({ ...metadata, localOnly: true }));
+      await transaction("readwrite", (store) => {
+        legacy.forEach((item) => store.put(item, `${LOCAL_AGENT_REPORT_CONTENT_PREFIX}${item.fileName}`));
+        return store.put(index, LOCAL_AGENT_REPORTS_INDEX_KEY);
+      });
+      writeLocalAgentReportIndex(index);
+      try { localStorage.removeItem(LOCAL_AGENT_REPORTS_KEY); } catch {}
+    } else if (!currentIndex.length) {
+      await transaction("readwrite", (store) => store.put([], LOCAL_AGENT_REPORTS_INDEX_KEY));
+      writeLocalAgentReportIndex([]);
+    }
+    return true;
+  })().catch((error) => {
+    localAgentReportStorePromise = null;
+    throw error;
+  });
+  return localAgentReportStorePromise;
 };
 
 export const loadImportedSources = async () => {
@@ -437,25 +472,65 @@ export const saveAiReport = async (report) => await aiApiJson("/ai/reports", { m
 export const saveAgentDispatch = async (dispatch) => await aiApiJson("/ai/agent-dispatch", { method: "POST", body: JSON.stringify(dispatch) });
 export const loadAgentDispatches = async () => await aiApiJson("/ai/agent-dispatch", { method: "GET", cache: "no-store" });
 export const loadAgentSkills = async () => await aiApiJson("/ai/skills", { method: "GET", cache: "no-store" });
-export const loadAgentReports = async () => await aiApiJson("/ai/agent-reports", { method: "GET", cache: "no-store" });
+export const loadAgentReports = async (filters = {}) => {
+  const query = new URLSearchParams(Object.entries(filters).filter(([, value]) => value !== undefined && value !== null && String(value).trim()).map(([key, value]) => [key, String(value)]));
+  return await aiApiJson(`/ai/agent-reports${query.size ? `?${query.toString()}` : ""}`, { method: "GET", cache: "no-store" });
+};
 export const loadAgentReport = async (fileName) => await aiApiJson(`/ai/agent-reports/${encodeURIComponent(fileName)}`, { method: "GET", cache: "no-store" });
 export const saveAgentReportFile = async (report) => await aiApiJson("/ai/agent-reports", { method: "POST", body: JSON.stringify({ ...report, feature: "qualityAgent" }) });
 export const deleteAgentReport = async (fileName) => await aiApiJson(`/ai/agent-reports/${encodeURIComponent(fileName)}`, { method: "DELETE" });
 
-export const loadLocalAgentReports = () => readLocalAgentReports();
-export const saveLocalAgentReport = (report = {}) => {
+export const loadLocalAgentReports = async () => {
+  try {
+    await ensureLocalAgentReportStore();
+    return readLocalAgentReportIndex();
+  } catch {
+    return readLegacyLocalAgentReports().map(({ content, ...metadata }) => ({ ...metadata, localOnly: true }));
+  }
+};
+export const loadLocalAgentReport = async (fileName) => {
+  try {
+    await ensureLocalAgentReportStore();
+    const value = await transaction("readonly", (store) => store.get(`${LOCAL_AGENT_REPORT_CONTENT_PREFIX}${fileName}`));
+    return value || null;
+  } catch {
+    return readLegacyLocalAgentReports().find((item) => item.fileName === fileName) || null;
+  }
+};
+export const saveLocalAgentReport = async (report = {}) => {
   const now = new Date();
   const stamp = now.toISOString().replace(/[:.]/g, "-");
   const safe = String(report.module || "AI分析").replace(/[\\/:*?"<>|]/g, "-");
   const fileName = report.fileName || `本地-Agent报告-${safe}-${stamp}.md`;
   const item = { ...report, fileName, localOnly: true, updatedAt: now.toISOString(), savedAt: now.toISOString() };
-  const reports = [item, ...readLocalAgentReports().filter((entry) => entry.fileName !== fileName)];
-  writeLocalAgentReports(reports);
+  try {
+    await ensureLocalAgentReportStore();
+    const reports = [item, ...readLocalAgentReportIndex().filter((entry) => entry.fileName !== fileName)].slice(0, 300);
+    const metadata = reports.map(({ content, ...entry }) => ({ ...entry, localOnly: true }));
+    await transaction("readwrite", (store) => {
+      store.put(item, `${LOCAL_AGENT_REPORT_CONTENT_PREFIX}${fileName}`);
+      return store.put(metadata, LOCAL_AGENT_REPORTS_INDEX_KEY);
+    });
+    writeLocalAgentReportIndex(metadata);
+  } catch {
+    const reports = [item, ...readLegacyLocalAgentReports().filter((entry) => entry.fileName !== fileName)];
+    try { localStorage.setItem(LOCAL_AGENT_REPORTS_KEY, JSON.stringify(reports.slice(0, 30))); } catch {}
+  }
   return item;
 };
-export const deleteLocalAgentReport = (fileName) => {
-  const reports = readLocalAgentReports().filter((entry) => entry.fileName !== fileName);
-  writeLocalAgentReports(reports);
+export const deleteLocalAgentReport = async (fileName) => {
+  try {
+    await ensureLocalAgentReportStore();
+    const reports = readLocalAgentReportIndex().filter((entry) => entry.fileName !== fileName);
+    await transaction("readwrite", (store) => {
+      store.delete(`${LOCAL_AGENT_REPORT_CONTENT_PREFIX}${fileName}`);
+      return store.put(reports, LOCAL_AGENT_REPORTS_INDEX_KEY);
+    });
+    writeLocalAgentReportIndex(reports);
+  } catch {
+    const reports = readLegacyLocalAgentReports().filter((entry) => entry.fileName !== fileName);
+    try { localStorage.setItem(LOCAL_AGENT_REPORTS_KEY, JSON.stringify(reports.slice(0, 30))); } catch {}
+  }
   return { ok: true, fileName };
 };
 export const saveLocalAiReport = (report = {}) => {
@@ -467,6 +542,48 @@ export const saveLocalAiReport = (report = {}) => {
   return item;
 };
 export const loadLocalAiReports = () => readLocalAiReports();
+
+const knowledgeApiJson = async (path, options = {}) => {
+  const base = sharedApiBase();
+  if (!base) throw new Error("当前页面未连接QMS后端，请通过项目服务地址打开");
+  let response;
+  try { response = await fetch(`${base}${path}`, { headers: { "Content-Type": "application/json", ...(options.headers || {}) }, ...options }); }
+  catch { throw new Error("无法连接QMS知识库服务，请先启动或重启项目服务"); }
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(payload?.error || `知识库请求失败（${response.status}）`);
+  return payload;
+};
+
+export const loadKnowledgeDocuments = async () => knowledgeApiJson("/knowledge/documents", { method: "GET", cache: "no-store" });
+export const createKnowledgeDocument = async (document) => knowledgeApiJson("/knowledge/documents", { method: "POST", body: JSON.stringify(document) });
+export const deleteKnowledgeDocument = async (documentId) => knowledgeApiJson(`/knowledge/documents/${encodeURIComponent(documentId)}`, { method: "DELETE" });
+export const reparseKnowledgeDocument = async (documentId) => knowledgeApiJson(`/knowledge/documents/${encodeURIComponent(documentId)}/parse`, { method: "POST" });
+export const loadKnowledgeClauses = async (documentId, { limit = 100, offset = 0, query = "" } = {}) => {
+  const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
+  if (query) params.set("query", query);
+  return knowledgeApiJson(`/knowledge/documents/${encodeURIComponent(documentId)}/clauses?${params.toString()}`, { method: "GET", cache: "no-store" });
+};
+export const startKnowledgeDistillation = async (documentId, skillId) => knowledgeApiJson(`/knowledge/documents/${encodeURIComponent(documentId)}/distillation-jobs`, { method: "POST", body: JSON.stringify({ skillId }) });
+export const updateKnowledgeJob = async (jobId, patch) => knowledgeApiJson(`/knowledge/jobs/${encodeURIComponent(jobId)}`, { method: "PUT", body: JSON.stringify(patch) });
+export const saveKnowledgeDistillation = async (documentId, payload) => knowledgeApiJson(`/knowledge/documents/${encodeURIComponent(documentId)}/distillations`, { method: "POST", body: JSON.stringify(payload) });
+export const loadDistilledKnowledge = async (documentId, { limit = 100, offset = 0 } = {}) => knowledgeApiJson(`/knowledge/documents/${encodeURIComponent(documentId)}/distillations?limit=${encodeURIComponent(limit)}&offset=${encodeURIComponent(offset)}`, { method: "GET", cache: "no-store" });
+export const syncKnowledgeIssues = async (issues) => knowledgeApiJson("/knowledge/issues", { method: "POST", body: JSON.stringify({ issues }) });
+export const loadKnowledgeIssues = async ({ module = "", personName = "", query = "", status = "", limit = 30, offset = 0 } = {}) => {
+  const params = new URLSearchParams({ module, personName, query, status, limit: String(limit), offset: String(offset) });
+  return knowledgeApiJson(`/knowledge/issues?${params.toString()}`, { method: "GET", cache: "no-store" });
+};
+export const generateKnowledgeMatches = async (issueId) => knowledgeApiJson(`/knowledge/issues/${encodeURIComponent(issueId)}/matches`, { method: "POST", body: "{}" });
+export const loadKnowledgeMatches = async (issueId) => knowledgeApiJson(`/knowledge/issues/${encodeURIComponent(issueId)}/matches`, { method: "GET", cache: "no-store" });
+export const reviewKnowledgeMatch = async (matchId, status) => knowledgeApiJson(`/knowledge/matches/${encodeURIComponent(matchId)}`, { method: "PUT", body: JSON.stringify({ status }) });
+export const loadConfirmedKnowledgeMatches = async ({ module = "", personName = "", limit = 5000 } = {}) => {
+  const params = new URLSearchParams({ module, personName, limit: String(limit) });
+  return knowledgeApiJson(`/knowledge/matches/confirmed?${params.toString()}`, { method: "GET", cache: "no-store" });
+};
+export const loadKnowledgeRecurrences = async ({ module = "IPQC", query = "", state = "", limit = 20, offset = 0, compact = false } = {}) => {
+  const params = new URLSearchParams({ module, query, state, limit: String(limit), offset: String(offset), compact: compact ? "true" : "false" });
+  return knowledgeApiJson(`/knowledge/recurrences?${params.toString()}`, { method: "GET", cache: "no-store" });
+};
+export const saveKnowledgeRecurrenceAction = async (recurrenceKey, action) => knowledgeApiJson(`/knowledge/recurrences/${encodeURIComponent(recurrenceKey)}/action`, { method: "PUT", body: JSON.stringify(action) });
 
 const examApiJson = async (path, options = {}) => {
   const base = sharedApiBase();
@@ -482,6 +599,14 @@ const examApiJson = async (path, options = {}) => {
 export const createExamSession = async (payload) => examApiJson("/exam-sessions", { method: "POST", body: JSON.stringify(payload) });
 export const loadExamSession = async (token) => examApiJson(`/exam-sessions/${encodeURIComponent(token)}`, { method: "GET", cache: "no-store" });
 export const submitExamSession = async (token, answers) => examApiJson(`/exam-sessions/${encodeURIComponent(token)}/submit`, { method: "POST", body: JSON.stringify({ answers }) });
+export const loadExamResults = async ({ roleName = "", recipientName = "", includePending = false, limit = 300 } = {}) => {
+  const params = new URLSearchParams();
+  if (roleName) params.set("roleName", roleName);
+  if (recipientName) params.set("recipientName", recipientName);
+  if (includePending) params.set("includePending", "true");
+  params.set("limit", String(Math.min(1000, Math.max(1, Number(limit) || 300))));
+  return examApiJson(`/exam-results?${params.toString()}`, { method: "GET", cache: "no-store" });
+};
 
 export const clearImportedSources = async () => {
   await transaction("readwrite", (store) => store.delete(SOURCES_KEY));

@@ -1,0 +1,4 @@
+interface:
+  display_name: "质量知识蒸馏"
+  short_description: "将公司规范原文提炼为可追溯且可检索的质量知识点"
+  default_prompt: "Use $quality-knowledge-distillation to distill traceable quality knowledge from company standards."

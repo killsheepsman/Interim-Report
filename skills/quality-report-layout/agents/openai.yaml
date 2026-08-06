@@ -1,0 +1,4 @@
+interface:
+  display_name: "质量报告排版"
+  short_description: "将质量分析结果转换为统一的 App/Notion 风格报告"
+  default_prompt: "请使用质量报告排版 Skill，将输入的结构化质量分析结果排版为可读的 App/Notion 风格报告。"

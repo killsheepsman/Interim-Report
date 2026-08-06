@@ -14,3 +14,4 @@ When implementing from a selected generated mock, treat that image as the source
 - Users import IQC, IPQC, OQC, and DQA Excel files locally in the browser.
 - Preserve the existing quality-analysis formulas and raw-text classification approach.
 - The product must support reusable templates, interactive charts, saved views, exported analysis data, and improvement action tracking.
+- Agent report layout skills must be executed by a deterministic renderer, not only appended to the model prompt. Apple and Notion modes must remain visibly distinct, reuse the same audited data, convert short factual metrics into KPI blocks, keep risk/action/evidence semantics, and replace duplicate ranking tables with charts in the original ranking section.

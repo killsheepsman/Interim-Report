@@ -1,0 +1,4 @@
+interface:
+  display_name: "Notion 报告排版"
+  short_description: "将质量 Agent 报告排成结构清晰的 Notion 风格"
+  default_prompt: "Use $quality-report-layout-notion to format this quality Agent report in a Notion-inspired management layout."

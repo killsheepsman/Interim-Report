@@ -1,0 +1,4 @@
+interface:
+  display_name: "IPQC质量分析"
+  short_description: "分析基地、工坊、过程异常、重复问题及现场改善验证闭环"
+  default_prompt: "Use $quality-analysis-ipqc to analyze the fixed IPQC snapshot and process quality risks."

@@ -1,0 +1,4 @@
+interface:
+  display_name: "跨模块质量分析"
+  short_description: "基于追溯键分析研发、来料、过程、出货到客户反馈质量链"
+  default_prompt: "Use $quality-analysis-cross-module to analyze evidence-linked risks across DQA, IQC, IPQC, OQC, and QMS."

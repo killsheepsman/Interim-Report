@@ -1,0 +1,4 @@
+interface:
+  display_name: "质量分析核心"
+  short_description: "统一质量分析的数据证据、风险判断、责任分解与行动闭环规则"
+  default_prompt: "Use $quality-analysis-core to audit a fixed quality snapshot and produce evidence-based management actions."

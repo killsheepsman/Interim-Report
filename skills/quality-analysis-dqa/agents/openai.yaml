@@ -1,0 +1,4 @@
+interface:
+  display_name: "DQA质量分析"
+  short_description: "分析研发问题、设计评审、ECN、非BOM及研发责任闭环"
+  default_prompt: "Use $quality-analysis-dqa to analyze the fixed DQA snapshot and development quality risks."

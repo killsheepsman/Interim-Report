@@ -1,0 +1,4 @@
+interface:
+  display_name: "IQC质量分析"
+  short_description: "分析来料批次、供应商、厂区风险及供应商改善验证闭环"
+  default_prompt: "Use $quality-analysis-iqc to analyze the fixed IQC snapshot and supplier quality risks."

@@ -1,0 +1,4 @@
+interface:
+  display_name: "QMS Exam Bank"
+  short_description: "Generate import-ready QMS exam banks from Word knowledge documents."
+  default_prompt: "Use $generate-qms-exam-bank to create import-ready exam-bank Excel files from QMS Word knowledge documents."

@@ -1,0 +1,4 @@
+interface:
+  display_name: "OQC质量分析"
+  short_description: "分析产品部、项目、出货评分、低分风险与发货门禁闭环"
+  default_prompt: "Use $quality-analysis-oqc to analyze the fixed OQC snapshot and shipment quality risks."

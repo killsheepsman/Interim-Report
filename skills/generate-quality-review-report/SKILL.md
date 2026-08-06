@@ -1,30 +1,20 @@
 ---
 name: generate-quality-review-report
-description: Audit fixed quality analytics results and produce evidence-based management reviews for DQA, IQC, IPQC, OQC, QMS and cross-module quality.
+description: 为既有报告和旧版配置保留的质量复盘兼容入口。新质量分析 Agent 应组合 quality-analysis-core 与对应的 IQC、IPQC、OQC、DQA、QMS 或跨模块 Skill。
 ---
 
-# Generate Quality Review Report
+# 质量复盘兼容入口
 
-Use the software snapshot as the source of truth. Do not recalculate, change metric definitions, or invent missing values.
+此 Skill 仅用于兼容已保存报告和旧版调用，不再作为质量分析 Agent 的默认 Skill。
 
-## Workflow
+新分析按模块组合：
 
-1. Confirm period, module, scope, denominator and source limitations.
-2. Reconcile the snapshot with the visible quality-data totals.
-3. Apply organizational Pareto and mechanism Pareto, then cross the two results.
-4. Separate result, process, root-cause hypothesis, responsibility and action.
-5. Mark unsupported causes as 待核实; distinguish data signals, hypotheses and verified causes.
-6. Produce 30/60/90-day actions with owner, due date, deliverable, leading indicator, lagging indicator, acceptance and escalation rules.
-7. For cross-module data, link DQA -> IQC -> IPQC -> OQC -> QMS only when identifiers or evidence support the link.
-8. Write each priority as: 分析结论、风险判断、改善措施、待办事项.
+- 共通规则：`quality-analysis-core`
+- IQC：`quality-analysis-iqc`
+- IPQC：`quality-analysis-ipqc`
+- OQC：`quality-analysis-oqc`
+- DQA：`quality-analysis-dqa`
+- QMS：`quality-analysis-qms`
+- 跨模块：`quality-analysis-cross-module`
 
-## Risk
-
-- 红色：客户/现场影响、重复扩散、重大损失或控制门禁失效。
-- 橙色：高生产暴露或可能向后端逃逸的系统性弱点。
-- 黄色：主要内部发现但反复发生的过程弱点。
-- 蓝色：局部受控、低频且有标准化证据。
-
-## Output
-
-Use concise Markdown with an executive summary, metric dictionary, data confidence, Pareto evidence, three responsibility levels, risks, actions and publication limitations.
+只能解释软件固定统计快照，不重新计算指标。必须核对周期、分子、分母、组织映射和数据可信度，区分已证实事实、合理推断与待验证假设，按“分析结论—风险判断—改善措施—待办事项”输出，并保留“结果—过程—根因—责任—行动”证据链。

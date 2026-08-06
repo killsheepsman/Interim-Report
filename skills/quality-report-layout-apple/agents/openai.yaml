@@ -1,0 +1,4 @@
+interface:
+  display_name: "Apple 报告排版"
+  short_description: "将质量 Agent 报告排成克制清晰的 Apple 风格"
+  default_prompt: "Use $quality-report-layout-apple to format this quality Agent report in an Apple-inspired management layout."

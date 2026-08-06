@@ -3,9 +3,17 @@ import { createReadStream, promises as fs } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
+import { gzip } from "node:zlib";
+import { promisify } from "node:util";
+import { deletePostgresAgentReport, initPostgres, listPostgresAgentReports, readPostgresAgentReport, readPostgresState, writePostgresAgentReport, writePostgresState } from "./postgresStore.mjs";
+import { createKnowledgeService } from "./knowledgeService.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const gzipAsync = promisify(gzip);
 const rootDir = path.resolve(__dirname, "..");
+// Node 20+ can load the project-local .env without adding a runtime package.
+// Existing shell variables keep precedence, while .env remains ignored by Git.
+try { process.loadEnvFile(path.join(rootDir, ".env")); } catch {}
 const publicDir = path.join(rootDir, "dist");
 const dataDir = process.env.QMS_DATA_DIR || path.join(rootDir, "data");
 const dataFile = path.join(dataDir, "shared-state.json");
@@ -17,15 +25,51 @@ const aiConfigFile = path.join(dataDir, "ai-config.json");
 const adminIpsFile = path.join(dataDir, "admin-ips.json");
 const permissionFile = path.join(dataDir, "permission-config.json");
 const examSessionsFile = path.join(dataDir, "exam-sessions.json");
+const knowledgeStoreFile = path.join(dataDir, "knowledge-store.json");
 const port = Number(process.env.PORT || 4173);
 const host = process.env.HOST || "0.0.0.0";
 const trustProxy = process.env.TRUST_PROXY === "true";
 const maxBodyBytes = Number(process.env.MAX_BODY_MB || 1024) * 1024 * 1024;
 const allowedKeys = new Set(["imported-sources", "analysis-cache", "applied-date-range", "dqa-engineer-supplement"]);
 const defaultValueFor = (key) => key === "analysis-cache" || key === "applied-date-range" || key === "dqa-engineer-supplement" ? null : [];
+
+const migrateAgentReportFilesToPostgres = async () => {
+  await fs.mkdir(aiReportDir, { recursive: true });
+  const names = (await fs.readdir(aiReportDir)).filter((name) => /^QMS-Agent报告-.+\.md$/i.test(name));
+  if (!names.length) return { migrated: 0, total: 0 };
+  const known = new Set();
+  let offset = 0;
+  while (true) {
+    const page = await listPostgresAgentReports({ limit: 200, offset });
+    if (!page.available) return { migrated: 0, total: names.length };
+    page.reports.forEach((item) => known.add(item.fileName));
+    offset += page.reports.length;
+    if (!page.reports.length || offset >= page.total) break;
+  }
+  let migrated = 0;
+  for (const name of names.filter((item) => !known.has(item))) {
+    const filePath = path.join(aiReportDir, name);
+    let metadata = {};
+    try { metadata = JSON.parse(await fs.readFile(`${filePath}.json`, "utf8")); } catch {}
+    const stat = await fs.stat(filePath);
+    const savedAt = metadata.savedAt || stat.birthtime.toISOString();
+    const updatedAt = metadata.updatedAt || stat.mtime.toISOString();
+    const result = await writePostgresAgentReport({
+      ...metadata,
+      fileName: name,
+      module: metadata.module || "质量分析",
+      content: await fs.readFile(filePath, "utf8"),
+      savedAt,
+      updatedAt,
+    });
+    if (!result.available) break;
+    migrated += 1;
+  }
+  return { migrated, total: names.length };
+};
 // TEMP: 本机权限验证用。上传 GitHub 前必须删除这行临时管理员 IP。
-// Local temporary admin entries remain only in the local worktree.
-const TEMP_LOCAL_ADMIN_IPS = [];
+// TEMP: 本机权限验证用。上传 GitHub 前必须删除这行临时管理员 IP。
+const TEMP_LOCAL_ADMIN_IPS = ["192.168.188.57", "127.0.0.1"];
 
 
 const defaultPermissionConfig = {
@@ -58,8 +102,13 @@ const defaultPermissionConfig = {
     "POST /api/exam-sessions": { public: false, deputy: true, label: "生成知识考试链接" },
     "GET /api/exam-sessions/*": { public: true, deputy: true, label: "读取知识考试" },
     "POST /api/exam-sessions/*/submit": { public: true, deputy: true, label: "提交知识考试" },
+    "GET /api/exam-results": { public: true, deputy: true, label: "读取知识考试结果" },
     "GET /api/me": { public: true, deputy: true, label: "读取当前权限" },
     "GET /api/permissions": { public: true, deputy: true, label: "读取权限配置" },
+    "GET /api/knowledge/*": { public: true, deputy: true, label: "读取知识库" },
+    "POST /api/knowledge/*": { public: false, deputy: true, label: "维护知识库" },
+    "PUT /api/knowledge/*": { public: false, deputy: true, label: "更新知识任务" },
+    "DELETE /api/knowledge/*": { public: false, deputy: true, label: "删除知识文件" },
   },
 };
 
@@ -79,9 +128,22 @@ const mimeTypes = {
   ".ico": "image/x-icon",
 };
 
-const sendJson = (res, status, body) => {
-  res.writeHead(status, { "Content-Type": "application/json; charset=utf-8" });
-  res.end(JSON.stringify(body));
+const sendJson = async (res, status, body) => {
+  const payload = Buffer.from(JSON.stringify(body));
+  const acceptsGzip = /\bgzip\b/i.test(String(res.req?.headers?.["accept-encoding"] || ""));
+  if (acceptsGzip && payload.length >= 1024) {
+    const compressed = await gzipAsync(payload, { level: 6 });
+    res.writeHead(status, {
+      "Content-Type": "application/json; charset=utf-8",
+      "Content-Encoding": "gzip",
+      "Vary": "Accept-Encoding",
+      "Content-Length": compressed.length,
+    });
+    res.end(compressed);
+    return;
+  }
+  res.writeHead(status, { "Content-Type": "application/json; charset=utf-8", "Content-Length": payload.length });
+  res.end(payload);
 };
 
 const defaultAiConfig = { baseUrl: "https://new.ahei.asia/v1", model: "", apiKey: "" };
@@ -162,6 +224,32 @@ const extractAiContent = (result = {}) => {
   // Some compatible gateways wrap the assistant message one level deeper.
   return extractAiText(result?.message);
 };
+// Compatible gateways may return Server-Sent Events when stream=true. Keep
+// the public QMS endpoint JSON-based, but fold streamed chat/responses chunks
+// back into the same shape consumed by extractAiContent(). Non-stream JSON is
+// returned unchanged, so older providers remain compatible.
+const parseAiStream = (text) => {
+  const lines = String(text || "").split(/\r?\n/).filter((line) => /^data:\s*/i.test(line));
+  if (!lines.length) return null;
+  let chatText = "";
+  let responseText = "";
+  lines.forEach((line) => {
+    const payload = line.replace(/^data:\s*/i, "").trim();
+    if (!payload || payload === "[DONE]") return;
+    let item;
+    try { item = JSON.parse(payload); } catch { return; }
+    const delta = extractAiText(item?.choices?.[0]?.delta?.content);
+    if (delta) chatText += delta;
+    const responseDelta = item?.type === "response.output_text.delta"
+      ? extractAiText(item?.delta)
+      : extractAiText(item?.output_text?.delta);
+    if (responseDelta) responseText += responseDelta;
+  });
+  if (!chatText && !responseText) return null;
+  return chatText
+    ? { choices: [{ message: { content: chatText } }] }
+    : { output_text: responseText };
+};
 const requestAi = async (config, pathname, options = {}) => {
   if (!config.apiKey) throw new Error("Please configure the API key first");
   const controller = new AbortController();
@@ -186,7 +274,7 @@ const requestAi = async (config, pathname, options = {}) => {
       }
       throw new Error(`AI上游返回 ${response.status}：${upstreamMessage}`);
     }
-    return body;
+    return options.stream ? (parseAiStream(text) || body) : body;
   } catch (error) {
     if (error?.name === "AbortError") throw new Error(`AI分析超过${Math.round(timeoutMs / 1000)}秒，已停止本次请求；已完成阶段不会丢失`);
     throw error;
@@ -322,11 +410,128 @@ const currentUser = async (req) => {
 
 const routeKey = (req) => {
   const pathname = new URL(req.url, "http://local").pathname;
+  if (pathname.startsWith("/api/knowledge")) return `${req.method} /api/knowledge/*`;
   if (req.method === "GET" && pathname.startsWith("/api/uploads/")) return "GET /api/uploads/*";
   if (req.method === "GET" && /^\/api\/exam-sessions\/[^/]+$/.test(pathname)) return "GET /api/exam-sessions/*";
   if (req.method === "POST" && /^\/api\/exam-sessions\/[^/]+\/submit$/.test(pathname)) return "POST /api/exam-sessions/*/submit";
   if (pathname.startsWith("/api/state/")) return `${req.method} ${pathname}`;
   return `${req.method} ${pathname}`;
+};
+
+const knowledgeService = createKnowledgeService({ filePath: knowledgeStoreFile });
+
+const handleKnowledge = async (req, res) => {
+  const user = await ensureApiAllowed(req, res);
+  if (!user) return;
+  const requestUrl = new URL(req.url, "http://local");
+  const pathname = requestUrl.pathname;
+  const jsonBody = async () => JSON.parse(await readBody(req) || "{}");
+  try {
+    if (pathname === "/api/knowledge/documents" && req.method === "GET") {
+      const documents = await knowledgeService.listDocuments();
+      return sendJson(res, 200, { documents, updatedAt: new Date().toISOString() });
+    }
+    if (pathname === "/api/knowledge/documents" && req.method === "POST") {
+      const result = await knowledgeService.createDocument(await jsonBody());
+      return sendJson(res, result.duplicate ? 200 : 202, result);
+    }
+    if (pathname === "/api/knowledge/jobs" && req.method === "GET") {
+      const jobs = await knowledgeService.listJobs(String(requestUrl.searchParams.get("documentId") || ""));
+      return sendJson(res, 200, { jobs });
+    }
+    if (pathname === "/api/knowledge/issues" && req.method === "GET") {
+      const result = await knowledgeService.listIssues({
+        module: requestUrl.searchParams.get("module") || "",
+        personName: requestUrl.searchParams.get("personName") || "",
+        query: requestUrl.searchParams.get("query") || "",
+        status: requestUrl.searchParams.get("status") || "",
+        limit: requestUrl.searchParams.get("limit"),
+        offset: requestUrl.searchParams.get("offset"),
+      });
+      return sendJson(res, 200, result);
+    }
+    if (pathname === "/api/knowledge/issues" && req.method === "POST") {
+      const payload = await jsonBody();
+      const result = await knowledgeService.syncIssues(payload.issues || []);
+      return sendJson(res, 200, result);
+    }
+    const issueRecordMatch = pathname.match(/^\/api\/knowledge\/issues\/([^/]+)$/);
+    if (issueRecordMatch && req.method === "DELETE") {
+      const deleted = await knowledgeService.deleteIssue(decodeURIComponent(issueRecordMatch[1]));
+      return deleted ? sendJson(res, 200, { deleted: true }) : sendJson(res, 404, { error: "质量问题不存在" });
+    }
+    if (pathname === "/api/knowledge/matches/confirmed" && req.method === "GET") {
+      const result = await knowledgeService.listConfirmedMatches({ module: requestUrl.searchParams.get("module") || "", personName: requestUrl.searchParams.get("personName") || "", limit: requestUrl.searchParams.get("limit") });
+      return sendJson(res, 200, result);
+    }
+    if (pathname === "/api/knowledge/recurrences" && req.method === "GET") {
+      const result = await knowledgeService.listRecurrences({ module: requestUrl.searchParams.get("module") || "", query: requestUrl.searchParams.get("query") || "", state: requestUrl.searchParams.get("state") || "", limit: requestUrl.searchParams.get("limit"), offset: requestUrl.searchParams.get("offset"), compact: requestUrl.searchParams.get("compact") === "true" }, await loadExamSessions());
+      return sendJson(res, 200, result);
+    }
+    const recurrenceActionMatch = pathname.match(/^\/api\/knowledge\/recurrences\/([^/]+)\/action$/);
+    if (recurrenceActionMatch && req.method === "PUT") {
+      const payload = await jsonBody();
+      const action = await knowledgeService.saveRecurrenceAction(decodeURIComponent(recurrenceActionMatch[1]), { ...payload, metadata: { ...(payload.metadata || {}), reviewer: user.name || user.ip || "" } });
+      return sendJson(res, 200, { action });
+    }
+    const issueMatchesMatch = pathname.match(/^\/api\/knowledge\/issues\/([^/]+)\/matches$/);
+    if (issueMatchesMatch && req.method === "GET") {
+      const result = await knowledgeService.listMatches(decodeURIComponent(issueMatchesMatch[1]));
+      return sendJson(res, 200, result);
+    }
+    if (issueMatchesMatch && req.method === "POST") {
+      const result = await knowledgeService.generateMatches(decodeURIComponent(issueMatchesMatch[1]));
+      return sendJson(res, 200, result);
+    }
+    const matchRecordMatch = pathname.match(/^\/api\/knowledge\/matches\/([^/]+)$/);
+    if (matchRecordMatch && req.method === "PUT") {
+      const payload = await jsonBody();
+      const match = await knowledgeService.reviewMatch(decodeURIComponent(matchRecordMatch[1]), { ...payload, reviewer: payload.reviewer || user.name || user.ip || "" });
+      return match ? sendJson(res, 200, { match }) : sendJson(res, 404, { error: "知识匹配记录不存在" });
+    }
+    const jobMatch = pathname.match(/^\/api\/knowledge\/jobs\/([^/]+)$/);
+    if (jobMatch && req.method === "PUT") {
+      const job = await knowledgeService.updateJob(decodeURIComponent(jobMatch[1]), await jsonBody());
+      return job ? sendJson(res, 200, { job }) : sendJson(res, 404, { error: "知识任务不存在" });
+    }
+    const documentMatch = pathname.match(/^\/api\/knowledge\/documents\/([^/]+)$/);
+    if (documentMatch && req.method === "GET") {
+      const document = await knowledgeService.getDocument(decodeURIComponent(documentMatch[1]));
+      return document ? sendJson(res, 200, { document: { ...document, sourceText: undefined } }) : sendJson(res, 404, { error: "知识文件不存在" });
+    }
+    if (documentMatch && req.method === "DELETE") {
+      const deleted = await knowledgeService.deleteDocument(decodeURIComponent(documentMatch[1]));
+      return sendJson(res, 200, { deleted });
+    }
+    const parseMatch = pathname.match(/^\/api\/knowledge\/documents\/([^/]+)\/parse$/);
+    if (parseMatch && req.method === "POST") {
+      const job = await knowledgeService.enqueueParse(decodeURIComponent(parseMatch[1]));
+      return sendJson(res, 202, { job });
+    }
+    const clauseMatch = pathname.match(/^\/api\/knowledge\/documents\/([^/]+)\/clauses$/);
+    if (clauseMatch && req.method === "GET") {
+      const result = await knowledgeService.listClauses(decodeURIComponent(clauseMatch[1]), { limit: requestUrl.searchParams.get("limit"), offset: requestUrl.searchParams.get("offset"), query: requestUrl.searchParams.get("query") });
+      return sendJson(res, 200, result);
+    }
+    const knowledgeMatch = pathname.match(/^\/api\/knowledge\/documents\/([^/]+)\/distillations$/);
+    if (knowledgeMatch && req.method === "GET") {
+      const result = await knowledgeService.listDistilled(decodeURIComponent(knowledgeMatch[1]), { limit: requestUrl.searchParams.get("limit"), offset: requestUrl.searchParams.get("offset") });
+      return sendJson(res, 200, result);
+    }
+    if (knowledgeMatch && req.method === "POST") {
+      const knowledge = await knowledgeService.saveDistillation(decodeURIComponent(knowledgeMatch[1]), await jsonBody());
+      return sendJson(res, 200, { knowledge, total: knowledge.length });
+    }
+    const distillJobMatch = pathname.match(/^\/api\/knowledge\/documents\/([^/]+)\/distillation-jobs$/);
+    if (distillJobMatch && req.method === "POST") {
+      const payload = await jsonBody();
+      const job = await knowledgeService.startDistillation(decodeURIComponent(distillJobMatch[1]), payload.skillId);
+      return sendJson(res, 202, { job });
+    }
+    return sendJson(res, 404, { error: "未知知识库接口" });
+  } catch (error) {
+    return sendJson(res, 400, { error: String(error?.message || error || "知识库操作失败").slice(0, 800) });
+  }
 };
 
 const ensureApiAllowed = async (req, res) => {
@@ -519,9 +724,16 @@ const loadLegacyStateValue = async (key) => {
 const loadStateValue = async (key) => {
   const filePath = safeKeyPath(key);
   if (!filePath) return defaultValueFor(key);
+  const database = await readPostgresState(key);
+  if (database.available && database.found) return database.value;
   try {
     const value = await readJsonFile(filePath);
-    if (value !== null) return value;
+    if (value !== null) {
+      // First read after enabling PostgreSQL migrates the existing JSON cache
+      // without requiring a separate deployment script.
+      if (database.available && !database.found) await writePostgresState(key, value);
+      return value;
+    }
   } catch (error) {
     await backupCorruptFile(filePath, error);
     return defaultValueFor(key);
@@ -535,11 +747,13 @@ const saveStateValue = async (key, value) => {
   if (!filePath) return value;
   const previous = writeQueues.get(key) || Promise.resolve();
   const next = previous.catch(() => {}).then(async () => {
+    const database = await writePostgresState(key, value);
     await fs.mkdir(stateDir, { recursive: true });
     const tempFile = `${filePath}.${process.pid}.${Date.now()}.tmp`;
     await fs.writeFile(tempFile, JSON.stringify(value, null, 2), "utf8");
     await fs.rename(tempFile, filePath);
     await fs.writeFile(path.join(stateDir, "updatedAt.json"), JSON.stringify({ updatedAt: new Date().toISOString(), key }, null, 2), "utf8");
+    if (!database.available) console.warn(`[storage] Saved ${key} to JSON fallback`);
     return value;
   });
   writeQueues.set(key, next);
@@ -579,7 +793,46 @@ const examQuestionMatches = (question, answer) => {
 };
 
 const handleExamSessions = async (req, res) => {
-  const pathname = new URL(req.url, "http://local").pathname;
+  const requestUrl = new URL(req.url, "http://local");
+  const pathname = requestUrl.pathname;
+  if (pathname === "/api/exam-results" && req.method === "GET") {
+    const user = await ensureApiAllowed(req, res);
+    if (!user) return;
+    const roleName = String(requestUrl.searchParams.get("roleName") || "").trim();
+    const recipientName = String(requestUrl.searchParams.get("recipientName") || "").trim();
+    const includePending = requestUrl.searchParams.get("includePending") === "true";
+    const limit = Math.min(1000, Math.max(1, Number(requestUrl.searchParams.get("limit")) || 300));
+    const now = Date.now();
+    const records = (await loadExamSessions())
+      .filter((session) => (!roleName || session.roleName === roleName) && (!recipientName || session.recipientName === recipientName))
+      .map((session) => {
+        const result = session.result || {};
+        const expired = !session.submittedAt && new Date(session.expiresAt || 0).getTime() < now;
+        return {
+          id: session.id,
+          token: session.token,
+          roleName: session.roleName,
+          recipientName: session.recipientName,
+          issueCategories: session.issueCategories || [],
+          knowledgeCandidateKeys: session.knowledgeCandidateKeys || [],
+          knowledgeDocumentIds: session.knowledgeDocumentIds || [],
+          issueIds: session.issueIds || [],
+          reportId: session.reportId || "",
+          createdAt: session.createdAt,
+          expiresAt: session.expiresAt,
+          submittedAt: session.submittedAt || "",
+          status: session.submittedAt ? "completed" : expired ? "expired" : "pending",
+          total: Number(result.totalQuestions ?? session.questions?.length ?? 0),
+          correct: Number(result.correctAnswers ?? 0),
+          score: Number(result.score ?? 0),
+          passed: result.isPassed === true,
+        };
+      })
+      .filter((record) => includePending || record.status === "completed")
+      .sort((left, right) => String(right.submittedAt || right.createdAt || "").localeCompare(String(left.submittedAt || left.createdAt || "")))
+      .slice(0, limit);
+    return sendJson(res, 200, { records, updatedAt: new Date().toISOString() });
+  }
   if (pathname === "/api/exam-sessions" && req.method === "POST") {
     const user = await ensureApiAllowed(req, res);
     if (!user) return;
@@ -596,7 +849,7 @@ const handleExamSessions = async (req, res) => {
     if (!questions.length) return sendJson(res, 400, { error: "没有可关联的考试题目" });
     const now = new Date();
     const expiresAt = new Date(now.getTime() + Math.max(1, Number(payload.validDays) || 14) * 86400000);
-    const session = { id: randomUUID(), token: randomUUID().replaceAll("-", ""), roleName: String(payload.roleName || ""), recipientName: String(payload.recipientName || ""), issueCategories: Array.isArray(payload.issueCategories) ? payload.issueCategories.map(String).slice(0, 20) : [], reportId: String(payload.reportId || ""), createdAt: now.toISOString(), expiresAt: expiresAt.toISOString(), questions, submittedAt: null, result: null };
+    const session = { id: randomUUID(), token: randomUUID().replaceAll("-", ""), roleName: String(payload.roleName || ""), recipientName: String(payload.recipientName || ""), issueCategories: Array.isArray(payload.issueCategories) ? payload.issueCategories.map(String).slice(0, 20) : [], knowledgeCandidateKeys: Array.isArray(payload.knowledgeCandidateKeys) ? [...new Set(payload.knowledgeCandidateKeys.map(String).filter(Boolean))].slice(0, 50) : [], knowledgeDocumentIds: Array.isArray(payload.knowledgeDocumentIds) ? [...new Set(payload.knowledgeDocumentIds.map(String).filter(Boolean))].slice(0, 50) : [], issueIds: Array.isArray(payload.issueIds) ? [...new Set(payload.issueIds.map(String).filter(Boolean))].slice(0, 200) : [], reportId: String(payload.reportId || ""), createdAt: now.toISOString(), expiresAt: expiresAt.toISOString(), questions, submittedAt: null, result: null };
     const sessions = await loadExamSessions();
     sessions.push(session);
     await saveExamSessions(sessions);
@@ -608,7 +861,7 @@ const handleExamSessions = async (req, res) => {
     if (!user) return;
     const session = (await loadExamSessions()).find((item) => item.token === decodeURIComponent(match[1]));
     if (!session || new Date(session.expiresAt).getTime() < Date.now() && !session.submittedAt) return sendJson(res, 404, { error: "答题链接不存在或已失效" });
-    return sendJson(res, 200, { id: session.id, token: session.token, roleName: session.roleName, recipientName: session.recipientName, issueCategories: session.issueCategories, expiresAt: session.expiresAt, isSubmitted: !!session.submittedAt, result: session.result, questions: session.submittedAt ? [] : session.questions.map(examQuestionForClient) });
+    return sendJson(res, 200, { id: session.id, token: session.token, roleName: session.roleName, recipientName: session.recipientName, issueCategories: session.issueCategories, knowledgeCandidateKeys: session.knowledgeCandidateKeys || [], knowledgeDocumentIds: session.knowledgeDocumentIds || [], issueIds: session.issueIds || [], expiresAt: session.expiresAt, isSubmitted: !!session.submittedAt, result: session.result, questions: session.submittedAt ? [] : session.questions.map(examQuestionForClient) });
   }
   const submitMatch = pathname.match(/^\/api\/exam-sessions\/([^/]+)\/submit$/);
   if (submitMatch && req.method === "POST") {
@@ -797,22 +1050,53 @@ const handleAi = async (req, res) => {
     const now = new Date();
     const local = new Date(now.getTime() - now.getTimezoneOffset() * 60000);
     const stamp = local.toISOString().replace(/[-:]/g, "").replace("T", "-").replace(/\.(\d{3})Z$/, "-$1");
-    const fileSegments = [payload.module || "质量分析", payload.role, payload.recipient].filter(Boolean).map((value) => sanitizeSegment(value));
+    const layoutSkillName = ["quality-report-layout-apple", "quality-report-layout-notion"].includes(String(payload.layoutSkillName || "")) ? String(payload.layoutSkillName) : "";
+    const fileSegments = [payload.module || "质量分析", layoutSkillName, payload.role, payload.recipient].filter(Boolean).map((value) => sanitizeSegment(value));
     const fileName = `QMS-Agent报告-${fileSegments.join("-")}-${stamp}.md`;
     await fs.mkdir(aiReportDir, { recursive: true });
-    await fs.writeFile(path.join(aiReportDir, fileName), content, "utf8");
-    return sendJson(res, 200, { ok: true, fileName, savedAt: now.toISOString(), relativePath: `outputs/ai_saved_reports/${fileName}` });
+    const filePath = path.join(aiReportDir, fileName);
+    const metadata = { fileName, module: String(payload.module || "质量分析"), role: String(payload.role || ""), recipient: String(payload.recipient || ""), skillName: String(payload.skillName || ""), layoutSkillName, period: payload.period && typeof payload.period === "object" ? payload.period : {}, savedAt: now.toISOString(), updatedAt: now.toISOString(), relativePath: `outputs/ai_saved_reports/${fileName}` };
+    await fs.writeFile(filePath, content, "utf8");
+    await fs.writeFile(`${filePath}.json`, JSON.stringify(metadata, null, 2), "utf8");
+    const database = await writePostgresAgentReport({ ...metadata, content });
+    return sendJson(res, 200, { ok: true, ...metadata, storage: database.available ? "postgres+file" : "file" });
   }
   if (pathname === "/api/ai/agent-reports" && req.method === "GET") {
     await fs.mkdir(aiReportDir, { recursive: true });
+    const query = new URL(req.url, "http://local").searchParams;
+    const requestedModule = String(query.get("module") || "").trim();
+    const requestedRole = String(query.get("role") || "").trim();
+    const requestedRecipient = String(query.get("recipient") || "").trim();
+    const limit = Math.min(200, Math.max(1, Number(query.get("limit") || 200)));
+    const offset = Math.max(0, Number(query.get("offset") || 0));
+    const database = await listPostgresAgentReports({ module: requestedModule, role: requestedRole, recipient: requestedRecipient, limit, offset });
+    if (database.available) {
+      return sendJson(res, 200, {
+        reports: database.reports.map((item) => ({ ...item, relativePath: `outputs/ai_saved_reports/${item.fileName}` })),
+        total: database.total,
+        limit,
+        offset,
+        storage: "postgres",
+      });
+    }
     const names = await fs.readdir(aiReportDir);
     const reports = [];
     for (const name of names.filter((item) => /^QMS-Agent报告-.+\.md$/i.test(item))) {
-      const stat = await fs.stat(path.join(aiReportDir, name));
-      reports.push({ fileName: name, relativePath: `outputs/ai_saved_reports/${name}`, size: stat.size, updatedAt: stat.mtime.toISOString() });
+      const filePath = path.join(aiReportDir, name);
+      const stat = await fs.stat(filePath);
+      let metadata = {};
+      try { metadata = JSON.parse(await fs.readFile(`${filePath}.json`, "utf8")); } catch {}
+      const layoutSkillName = metadata.layoutSkillName || (name.includes("-quality-report-layout-apple-") ? "quality-report-layout-apple" : name.includes("-quality-report-layout-notion-") ? "quality-report-layout-notion" : "");
+      const fallbackModuleMatch = !requestedModule || name.startsWith(`QMS-Agent报告-${sanitizeSegment(requestedModule)}-`);
+      const fallbackRoleMatch = !requestedRole || name.includes(`-${sanitizeSegment(requestedRole)}-`);
+      const fallbackRecipientMatch = !requestedRecipient || name.includes(`-${sanitizeSegment(requestedRecipient)}-`);
+      if (requestedModule && (metadata.module ? metadata.module !== requestedModule : !fallbackModuleMatch)) continue;
+      if (requestedRole && (metadata.role ? metadata.role !== requestedRole : !fallbackRoleMatch)) continue;
+      if (requestedRecipient && (metadata.recipient ? metadata.recipient !== requestedRecipient : !fallbackRecipientMatch)) continue;
+      reports.push({ ...metadata, fileName: name, layoutSkillName, relativePath: `outputs/ai_saved_reports/${name}`, size: stat.size, updatedAt: metadata.updatedAt || stat.mtime.toISOString() });
     }
     reports.sort((left, right) => String(right.updatedAt).localeCompare(String(left.updatedAt)));
-    return sendJson(res, 200, { reports: reports.slice(0, 200) });
+    return sendJson(res, 200, { reports: reports.slice(offset, offset + limit), total: reports.length, limit, offset, storage: "file" });
   }
   const agentReportMatch = pathname.match(/^\/api\/ai\/agent-reports\/([^/]+)$/);
   if (agentReportMatch) {
@@ -820,13 +1104,26 @@ const handleAi = async (req, res) => {
     if (!/^QMS-Agent报告-.+\.md$/i.test(fileName) || fileName.includes("..")) return sendJson(res, 400, { error: "无效的 Agent 报告文件" });
     const filePath = path.join(aiReportDir, fileName);
     if (req.method === "GET") {
-      try { return sendJson(res, 200, { fileName, content: await fs.readFile(filePath, "utf8") }); }
+      const database = await readPostgresAgentReport(fileName);
+      if (database.available && database.found) {
+        return sendJson(res, 200, { ...database.report, relativePath: `outputs/ai_saved_reports/${fileName}` });
+      }
+      try {
+        const layoutSkillName = fileName.includes("-quality-report-layout-apple-") ? "quality-report-layout-apple" : fileName.includes("-quality-report-layout-notion-") ? "quality-report-layout-notion" : "";
+        let metadata = {};
+        try { metadata = JSON.parse(await fs.readFile(`${filePath}.json`, "utf8")); } catch {}
+        return sendJson(res, 200, { ...metadata, fileName, layoutSkillName: metadata.layoutSkillName || layoutSkillName, content: await fs.readFile(filePath, "utf8") });
+      }
       catch { return sendJson(res, 404, { error: "Agent 报告不存在" }); }
     }
     if (req.method === "DELETE") {
       if (!user.isAdmin) return sendJson(res, 403, { error: "只有主管理员可以删除服务器 Agent 报告" });
-      try { await fs.unlink(filePath); return sendJson(res, 200, { ok: true, fileName }); }
-      catch { return sendJson(res, 404, { error: "Agent 报告不存在" }); }
+      const database = await deletePostgresAgentReport(fileName);
+      let fileDeleted = false;
+      try { await fs.unlink(filePath); fileDeleted = true; } catch {}
+      await fs.unlink(`${filePath}.json`).catch(() => {});
+      if (database.deleted || fileDeleted) return sendJson(res, 200, { ok: true, fileName });
+      return sendJson(res, 404, { error: "Agent 报告不存在" });
     }
   }
   if (pathname === "/api/ai/models" && (req.method === "GET" || req.method === "POST")) {
@@ -862,15 +1159,18 @@ const handleAi = async (req, res) => {
     const requestedMaxTokens = Number(payload.max_tokens);
     const maxTokens = Number.isFinite(requestedMaxTokens) ? Math.min(12000, Math.max(256, Math.round(requestedMaxTokens))) : null;
     const arkPlan = usesArkPlanResponses(config);
-    const requestBody = arkPlan ? { model: config.model, input: messages } : { model: config.model, messages, response_format: payload.response_format };
+    const stream = payload.stream === true;
+    const responsesApi = arkPlan || payload.responses === true;
+    const requestBody = responsesApi ? { model: config.model, input: messages } : { model: config.model, messages, response_format: payload.response_format };
+    if (stream) requestBody.stream = true;
     if (maxTokens) {
-      if (arkPlan) requestBody.max_output_tokens = maxTokens;
+      if (responsesApi) requestBody.max_output_tokens = maxTokens;
       // GPT-5/o-series compatible gateways use max_completion_tokens; legacy models use max_tokens.
       else if (/^(gpt-5|o[1-9]|codex)/i.test(config.model)) requestBody.max_completion_tokens = maxTokens;
       else requestBody.max_tokens = maxTokens;
     }
-    if (!arkPlan && Number.isFinite(Number(payload.temperature))) requestBody.temperature = Number(payload.temperature);
-    const result = await requestAi(config, arkPlan ? "/responses" : "/chat/completions", { method: "POST", body: JSON.stringify(requestBody) });
+    if (!responsesApi && Number.isFinite(Number(payload.temperature))) requestBody.temperature = Number(payload.temperature);
+    const result = await requestAi(config, responsesApi ? "/responses" : "/chat/completions", { method: "POST", body: JSON.stringify(requestBody), stream });
     return sendJson(res, 200, { model: config.model, content: extractAiContent(result), usage: result?.usage || null });
   }
   return sendJson(res, 404, { error: "Unknown AI endpoint" });
@@ -915,8 +1215,9 @@ const server = createServer(async (req, res) => {
   try {
     if (req.url === "/api/me") return await handleMe(req, res);
     if (req.url === "/api/permissions") return await handlePermissions(req, res);
+    if (req.url.startsWith("/api/knowledge")) return await handleKnowledge(req, res);
     if (req.url.startsWith("/api/ai/") || new URL(req.url, "http://local").pathname === "/api/chat") return await handleAi(req, res);
-    if (req.url.startsWith("/api/exam-sessions")) return await handleExamSessions(req, res);
+    if (req.url.startsWith("/api/exam-sessions") || req.url.startsWith("/api/exam-results")) return await handleExamSessions(req, res);
     if (req.url.startsWith("/api/uploads/")) return await handleUploadedFile(req, res);
     if (req.url === "/api/uploads") return await handleUpload(req, res);
     if (req.url.startsWith("/api/")) return await handleApi(req, res);
@@ -930,6 +1231,19 @@ const server = createServer(async (req, res) => {
   }
 });
 
-server.listen(port, host, () => {
-  console.log(`QMS server listening on http://${host}:${port}`);
+const startServer = async () => {
+  const storage = await initPostgres();
+  console.log(`[storage] PostgreSQL ${storage.available ? "enabled" : (storage.configured ? "unavailable; using JSON fallback" : "not configured; using JSON")}`);
+  if (storage.available) {
+    const migration = await migrateAgentReportFilesToPostgres();
+    console.log(`[storage] Agent reports ready in PostgreSQL (${migration.migrated} migrated / ${migration.total} files)`);
+  }
+  await knowledgeService.resume();
+  server.listen(port, host, () => {
+    console.log(`QMS server listening on http://${host}:${port}`);
+  });
+};
+startServer().catch((error) => {
+  console.error("Failed to initialize QMS server", error);
+  server.listen(port, host, () => console.log(`QMS server listening on http://${host}:${port}`));
 });
