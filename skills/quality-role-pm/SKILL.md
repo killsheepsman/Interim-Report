@@ -5,6 +5,10 @@ description: 生成 PM 管理范围质量闭环 Agent 报告。依据研发组�
 
 # PM 管理范围质量闭环报告
 
+## 视觉数据输出
+
+正式报告末尾必须遵循 `skills/quality-analysis-core/references/report-visual-contract.md` 输出 `reportKind: "role"` 的 `<REPORT_VISUAL_SPEC_JSON>`。设置 `subject.scopeType: "manager"`，输出管辖工程师/项目的汇总比较、研发主题 Pareto、下级 TOP 风险和周期趋势；不得把工程师的具体问题写成 PM 个人问题。
+
 ## 1. 角色边界
 
 PM 是研发工程师的直接项目管理者。PM Agent 报告分析 PM 所辖的工程师、项目和产品范围，不写 PM 本人犯错，不把工程师技术缺陷直接归为 PM 个人问题。

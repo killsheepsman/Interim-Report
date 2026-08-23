@@ -48,11 +48,17 @@ const ensureReady = async () => {
         recipient TEXT NOT NULL DEFAULT '',
         skill_name TEXT NOT NULL DEFAULT '',
         layout_skill_name TEXT NOT NULL DEFAULT '',
+        visual_spec JSONB,
+        model_name TEXT NOT NULL DEFAULT '',
+        creator_ip TEXT NOT NULL DEFAULT '',
         period JSONB NOT NULL DEFAULT '{}'::jsonb,
         content TEXT NOT NULL,
         saved_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       );
+      ALTER TABLE qms_agent_reports ADD COLUMN IF NOT EXISTS model_name TEXT NOT NULL DEFAULT '';
+      ALTER TABLE qms_agent_reports ADD COLUMN IF NOT EXISTS creator_ip TEXT NOT NULL DEFAULT '';
+      ALTER TABLE qms_agent_reports ADD COLUMN IF NOT EXISTS visual_spec JSONB;
       CREATE INDEX IF NOT EXISTS qms_agent_reports_lookup_idx
         ON qms_agent_reports (module, role_name, recipient, updated_at DESC);
       CREATE INDEX IF NOT EXISTS qms_agent_reports_updated_idx
@@ -252,6 +258,10 @@ const reportRow = (row = {}) => ({
   recipient: row.recipient,
   skillName: row.skill_name,
   layoutSkillName: row.layout_skill_name,
+  layoutProfileId: row.layout_skill_name,
+  visualSpec: row.visual_spec && typeof row.visual_spec === "object" ? row.visual_spec : null,
+  model: row.model_name,
+  creatorIp: row.creator_ip,
   period: row.period && typeof row.period === "object" ? row.period : {},
   savedAt: row.saved_at instanceof Date ? row.saved_at.toISOString() : String(row.saved_at || ""),
   updatedAt: row.updated_at instanceof Date ? row.updated_at.toISOString() : String(row.updated_at || ""),
@@ -263,14 +273,17 @@ export const writePostgresAgentReport = async (report = {}) => {
     const result = await pool.query(`
       INSERT INTO qms_agent_reports (
         file_name, module, role_name, recipient, skill_name,
-        layout_skill_name, period, content, saved_at, updated_at
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, $10)
+        layout_skill_name, visual_spec, model_name, creator_ip, period, content, saved_at, updated_at
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, $10::jsonb, $11, $12, $13)
       ON CONFLICT (file_name) DO UPDATE SET
         module = EXCLUDED.module,
         role_name = EXCLUDED.role_name,
         recipient = EXCLUDED.recipient,
         skill_name = EXCLUDED.skill_name,
         layout_skill_name = EXCLUDED.layout_skill_name,
+        visual_spec = EXCLUDED.visual_spec,
+        model_name = EXCLUDED.model_name,
+        creator_ip = EXCLUDED.creator_ip,
         period = EXCLUDED.period,
         content = EXCLUDED.content,
         saved_at = EXCLUDED.saved_at,
@@ -283,6 +296,9 @@ export const writePostgresAgentReport = async (report = {}) => {
       String(report.recipient || ""),
       String(report.skillName || ""),
       String(report.layoutSkillName || ""),
+      JSON.stringify(report.visualSpec && typeof report.visualSpec === "object" ? report.visualSpec : null),
+      String(report.model || ""),
+      String(report.creatorIp || ""),
       JSON.stringify(report.period && typeof report.period === "object" ? report.period : {}),
       String(report.content || ""),
       report.savedAt || new Date().toISOString(),
@@ -314,7 +330,7 @@ export const listPostgresAgentReports = async (filters = {}) => {
     const offset = Math.max(0, Number(filters.offset || 0));
     const count = await pool.query(`SELECT COUNT(*)::int AS total FROM qms_agent_reports ${clause}`, values);
     const rows = await pool.query(`
-      SELECT file_name, module, role_name, recipient, skill_name, layout_skill_name, period, saved_at, updated_at,
+      SELECT file_name, module, role_name, recipient, skill_name, layout_skill_name, visual_spec, model_name, creator_ip, period, saved_at, updated_at,
              OCTET_LENGTH(content) AS size
       FROM qms_agent_reports
       ${clause}

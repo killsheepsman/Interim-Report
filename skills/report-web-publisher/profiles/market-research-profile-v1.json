@@ -1,0 +1,11 @@
+{
+  "id": "market-research-profile-v1",
+  "label": "市场研究报告风格",
+  "description": "标题与元数据优先、指标带、章节导航和长文研究阅读区",
+  "renderer": "marketResearch",
+  "version": 1,
+  "riskPalette": { "red": "#B53A36", "orange": "#A66214", "yellow": "#8A6A00", "blue": "#087EA4" },
+  "tablePolicy": "chart-first",
+  "source": "authorized-reference-inspired",
+  "reference": "https://www.marketgrowthreports.com/market-reports/automated-optical-inspection-aoi-equipment-market-108207"
+}

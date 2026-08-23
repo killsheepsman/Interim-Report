@@ -5,6 +5,10 @@ description: 生成交付经理管理范围质量闭环 Agent 报告。依据供
 
 # 交付经理管理范围质量闭环报告
 
+## 视觉数据输出
+
+正式报告末尾必须遵循 `skills/quality-analysis-core/references/report-visual-contract.md` 输出 `reportKind: "role"` 的 `<REPORT_VISUAL_SPEC_JSON>`。设置 `subject.scopeType: "manager"`，输出工坊或机长对比、下级 TOP 风险、异常趋势和改善期限；不得把工坊汇总值当作交付经理个人异常。
+
 ## 1. 角色边界
 
 交付经理是人，是一个或多个工坊的管理责任人，不是工坊名称。报告的选择对象和收件人必须是供应链映射表中的交付经理本人。

@@ -1,26 +1,41 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import { ArrowsClockwise, Brain, FloppyDisk, PaperPlaneTilt, WarningCircle } from "@phosphor-icons/react";
-import { ReportBarChart } from "../charts.jsx";
-import { createExamSession, loadAgentReport, loadAgentReports, loadAgentSkills, loadConfirmedKnowledgeMatches, loadExamResults, loadKnowledgeRecurrences, loadLocalAgentReport, loadLocalAgentReports, requestAiChat, saveAgentDispatch, saveAgentReportFile, saveLocalAgentReport } from "../dataStore.js";
+import { useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
+import { ArrowsClockwise, Brain, DownloadSimple, FloppyDisk, PaperPlaneTilt, WarningCircle } from "@phosphor-icons/react";
+import { createExamSession, loadAgentReport, loadAgentReports, loadAgentSkills, loadConfirmedKnowledgeMatches, loadCurrentUser, loadExamResults, loadKnowledgeRecurrences, loadLocalAgentReport, loadLocalAgentReports, requestAiChat, saveAgentDispatch, saveAgentReportFile, saveLocalAgentReport } from "../dataStore.js";
 import { loadQualityAgentRuns } from "./qualityAgent.js";
+import { renderAgentMarkdown, reportFileName } from "./QualityAgentPage.jsx";
 import { loadImportedAgentReports } from "./agentReportStorage.js";
-import { calloutToneClass, headingClass, isLayoutMarker, metricLine, sectionClass, tableToneClass } from "./reportLayout.js";
+import { calloutToneClass, headingClass, isLayoutMarker, isMachineMetadataLine, metricLine, sectionClass, tableToneClass } from "./reportLayout.js";
+import { DEFAULT_REPORT_PRESENTATION_PROFILE, getReportPresentationProfile, normalizeReportPresentationProfile, REPORT_PRESENTATION_PROFILES, reportPresentationClass } from "./reportPresentationProfiles.js";
+import { extractReportVisualSpec, sanitizeHumanReportContent } from "../reportSanitizer.js";
+import { loadQualityAgentRoleSnapshotRegistry } from "../dataStore.js";
+import { normalizeRoleSnapshotRegistry, pickRoleSnapshot, roleSnapshotMappingSignature, roleSnapshotSourceSignature } from "./roleSnapshotRegistry.js";
 
 const ROLE_CACHE_KEY = "qms-agent-role-report-cache-v2";
 const ROLE_LAYOUT_STORAGE_KEY = "qms-agent-role-report-layout-v1";
 const MAX_ROLE_CACHE_REPORTS = 240;
-const REPORT_LAYOUT_SKILLS = [
-  { id: "quality-report-layout-apple", name: "quality-report-layout-apple", label: "Apple 排版", description: "结论优先、克制色彩和宽松留白", content: "对排名、TOP、趋势、分布和同期对比执行图表替换数据表；图表放回对应章节，行动、责任、证据和期限保留表格。" },
-  { id: "quality-report-layout-notion", name: "quality-report-layout-notion", label: "Notion 排版", description: "知识库式层级、信息块和行动工作区", content: "对排名、TOP、趋势、分布和同期对比执行图表替换数据表；图表放回对应章节，行动、责任、证据和期限保留表格。" },
-];
-const reportLayoutClass = (layoutSkillName) => layoutSkillName === "quality-report-layout-apple"
-  ? "report-layout-apple"
-  : layoutSkillName === "quality-report-layout-notion" ? "report-layout-notion" : "report-layout-none";
-const reportLayoutLabel = (layoutSkillName) => REPORT_LAYOUT_SKILLS.find((item) => item.name === layoutSkillName)?.label || "不使用排版 Skill";
+const ROLE_RECIPIENT_CACHE = new Map();
+const exportRoleReport = ({ role, recipient, content, model, creatorIp, skillName }) => {
+  const fileName = reportFileName({
+    module: "角色报告",
+    skillName,
+    role,
+    recipient,
+    model,
+    creatorIp,
+  }, "md");
+  const blob = new Blob([sanitizeHumanReportContent(content || "")], { type: "text/markdown;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = fileName;
+  link.click();
+  window.setTimeout(() => URL.revokeObjectURL(url), 0);
+};
+const reportLayoutClass = (layoutProfileId) => reportPresentationClass(layoutProfileId);
+const reportLayoutLabel = (layoutProfileId) => getReportPresentationProfile(layoutProfileId)?.label || "研究简报网页风格";
 const initialRoleLayout = () => {
-  if (typeof localStorage === "undefined") return "";
-  const saved = localStorage.getItem(ROLE_LAYOUT_STORAGE_KEY) || "";
-  return REPORT_LAYOUT_SKILLS.some((item) => item.name === saved) ? saved : "";
+  if (typeof localStorage === "undefined") return DEFAULT_REPORT_PRESENTATION_PROFILE;
+  return normalizeReportPresentationProfile(localStorage.getItem(ROLE_LAYOUT_STORAGE_KEY) || "");
 };
 const roleSpecs = {
   组装人员: { chain: "组装人员 → 机长 → 交付经理 → 供应链经理", modules: ["IPQC"], fields: ["送检人"] },
@@ -66,6 +81,7 @@ const sectionHeading = (value) => {
 };
 const rankingHeading = (value) => sectionHeading(value) && /(?:排名|名次|ranking)/i.test(String(value || ""));
 const renderReportLines = (lines) => {
+  lines = sanitizeHumanReportContent(lines || "").split(/\r?\n/);
   const output = [];
   const metricBuffer = [];
   let activeSection = "";
@@ -88,6 +104,7 @@ const renderReportLines = (lines) => {
   for (let index = 0; index < lines.length; index += 1) {
     const raw = lines[index].trim();
     if (isLayoutMarker(raw)) continue;
+    if (isMachineMetadataLine(raw)) continue;
     if (!raw) { flushMetrics(); output.push("<div class=\"agent-report-spacer\"></div>"); continue; }
     if (/^\|/.test(raw) && lines[index + 1] && /^\|/.test(lines[index + 1].trim())) {
       flushMetrics();
@@ -117,7 +134,9 @@ const renderReportLines = (lines) => {
   return output.join("");
 };
 const reportParts = (content, splitForChart = true) => {
-  const lines = String(content || "暂无报告").replace(REPORT_VERSION_MARKER, "").split(/\r?\n/);
+  const lines = sanitizeHumanReportContent(content || "暂无报告")
+    .replace(REPORT_VERSION_MARKER, "")
+    .split(/\r?\n/);
   const cleanLines = [];
   let hasRanking = false;
   let rankingInsertIndex = -1;
@@ -150,12 +169,6 @@ const renderReport = (content) => {
   const parts = reportParts(content);
   return parts.before + parts.after;
 };
-const RoleRankingChart = ({ rows = [], title = "排名", metric = "质量记录", role = "", recipient = "", period = {} }) => {
-  const selected = rows.find((row) => row.selected);
-  const visibleRows = rows.length <= 20 ? rows : [...rows.slice(0, 19), ...(selected && !rows.slice(0, 19).includes(selected) ? [selected] : [])];
-  return <section className="agent-role-ranking-chart"><header><strong>{title}</strong><span>{metric} · 当前对象以红色标识{rows.length > visibleRows.length ? ` · 共 ${rows.length} 条，图表显示重点 ${visibleRows.length} 条` : ""}</span></header><ReportBarChart rows={visibleRows.map((row) => ({ ...row, name: row.displayName || (row.site && row.site !== "多基地" ? `${row.site} · ${row.name}` : row.name), color: row.selected ? "#ef4f4f" : row.site === "深圳" ? "#2f7ee6" : row.site === "杭州" ? "#8b67c7" : "#64748b" }))} height={Math.min(520, Math.max(280, visibleRows.length * 24 + 100))} chartKey={`agent-role-ranking-${role}-${recipient}-${period._periodStart || ""}-${period._periodEnd || ""}`} unit=""/></section>;
-};
-
 const compactRoleCacheEntry = (entry = {}) => {
   const reports = Object.fromEntries(Object.entries(entry.reports || {})
     .slice(-MAX_ROLE_CACHE_REPORTS)
@@ -176,7 +189,8 @@ const writeRoleCache = (role, entry) => {
     localStorage.setItem(ROLE_CACHE_KEY, JSON.stringify(next));
   } catch {}
 };
-const unique = (values) => [...new Set(values.map((value) => String(value || "").trim()).filter((value) => value && !["未填写", "未配置", "待配置"].includes(value)))];
+const nameCollator = new Intl.Collator("zh-Hans-CN-u-co-pinyin", { sensitivity: "base", numeric: true });
+const unique = (values) => [...new Set(values.map((value) => String(value || "").trim()).filter((value) => value && !["未填写", "未配置", "待配置"].includes(value)))].sort((left, right) => nameCollator.compare(left, right));
 const rowValues = (row, fields) => fields.flatMap((field) => String(row?.[field] || "").split(/[、,，;；/\\|]/).map((value) => value.trim()));
 const sourceRows = (files = [], modules = []) => files.filter((file) => modules.includes(file.module) && file.kind !== "IPQC_LEADER_MAP").flatMap((file) => file.rows || []);
 const configFromBrowser = () => {
@@ -199,6 +213,48 @@ const roleValueInPeriod = (value, period = {}) => {
   return key.startsWith(`${year}-`) && (!period._periodStart || key >= period._periodStart) && (!period._periodEnd || key <= period._periodEnd);
 };
 const roleRowInPeriod = (row, period) => roleValueInPeriod(roleDateValue(row), period);
+const periodSpanMonths = (start, end) => {
+  const left = new Date(`${start}T00:00:00`); const right = new Date(`${end}T00:00:00`);
+  if (Number.isNaN(left.getTime()) || Number.isNaN(right.getTime())) return 0;
+  return (right.getFullYear() - left.getFullYear()) * 12 + right.getMonth() - left.getMonth() + 1;
+};
+const isoWeekKey = (dateKey) => {
+  const date = new Date(`${dateKey}T00:00:00Z`); if (Number.isNaN(date.getTime())) return "";
+  const day = date.getUTCDay() || 7; date.setUTCDate(date.getUTCDate() + 4 - day);
+  const yearStart = new Date(Date.UTC(date.getUTCFullYear(), 0, 1));
+  const week = Math.ceil((((date - yearStart) / 86400000) + 1) / 7);
+  return `${date.getUTCFullYear()}-W${String(week).padStart(2, "0")}`;
+};
+const buildRolePeriodTrend = (rows = [], period = {}) => {
+  const start = period._periodStart || period.start || period.start2026 || period.start2025 || "";
+  const end = period._periodEnd || period.end || period.end2026 || period.end2025 || "";
+  const months = periodSpanMonths(start, end); const weeks = start && end ? Math.floor((new Date(`${end}T00:00:00`) - new Date(`${start}T00:00:00`)) / 86400000 / 7) + 1 : 0;
+  const makeTrend = (granularity) => {
+    const groups = new Map();
+    const from = new Date(`${start}T00:00:00Z`); const to = new Date(`${end}T00:00:00Z`);
+    if (Number.isNaN(from.getTime()) || Number.isNaN(to.getTime()) || from > to) return null;
+    if (granularity === "month") {
+      for (let cursor = new Date(Date.UTC(from.getUTCFullYear(), from.getUTCMonth(), 1)); cursor <= to; cursor = new Date(Date.UTC(cursor.getUTCFullYear(), cursor.getUTCMonth() + 1, 1))) {
+        const label = cursor.toISOString().slice(0, 7); groups.set(label, { label, bad: 0, total: 0 });
+      }
+    } else {
+      for (let cursor = new Date(from); cursor <= to; cursor.setUTCDate(cursor.getUTCDate() + 1)) {
+        const label = isoWeekKey(cursor.toISOString().slice(0, 10)); if (label && !groups.has(label)) groups.set(label, { label, bad: 0, total: 0 });
+      }
+    }
+    rows.forEach((row) => {
+      const dateKey = roleDateKey(roleDateValue(row)); if (!dateKey || dateKey < start || dateKey > end) return;
+      const label = granularity === "month" ? dateKey.slice(0, 7) : isoWeekKey(dateKey); if (!label) return;
+      const item = groups.get(label) || { label, bad: 0, total: 0 };
+      item.total += 1;
+      if (String(row["不良内容"] || "").trim() || String(row["不良类型"] || "").trim()) item.bad += 1;
+      groups.set(label, item);
+    });
+    const ordered = [...groups.values()].sort((a, b) => a.label.localeCompare(b.label));
+    return ordered.length >= 2 ? { granularity, rows: ordered.map((item) => ({ ...item, rate: item.total ? Number((item.bad / item.total * 100).toFixed(2)) : 0 })) } : null;
+  };
+  return { month: months >= 2 ? makeTrend("month") : null, week: weeks >= 2 ? makeTrend("week") : null };
+};
 const rolePeriodDefaults = (dateRange = {}, year = "2026") => ({
   year,
   start: dateRange[`start${year}`] || `${year}-01-01`,
@@ -246,8 +302,11 @@ const recipientEvidence = (role, recipient, data, files, dateRange = {}, roleRow
     inspectedRecords: matched.length,
     badRecords: ipqcBadRows.length,
     goodRecords: matched.length - ipqcBadRows.length,
+    issueRecords: ipqcBadRows.length,
+    issueRecordDefinition: "IPQC中不良内容或不良类型任一非空的送检记录，每条只计1条问题记录",
     badRate: matched.length ? Number((ipqcBadRows.length / matched.length * 100).toFixed(2)) : 0,
   } : null;
+  const periodTrend = spec.modules.includes("IPQC") ? buildRolePeriodTrend(matched, dateRange) : null;
   const related = role === "机长" ? (data.ipqc?.leaderAnalysis?.bySite?.["全公司"]?.leaders || []).filter((row) => row.name === recipient)
     : role === "交付经理" || role === "供应链经理" ? (data.ipqc?.leaderAnalysis?.bySite?.["全公司"]?.managers || []).filter((row) => row.name === recipient)
       : role === "TPM" ? (data.dqa?.tpmStages || []).filter((row) => row.name === recipient)
@@ -257,8 +316,14 @@ const recipientEvidence = (role, recipient, data, files, dateRange = {}, roleRow
     const category = String(row["不良类型"] || row["问题类型"] || row["问题分类"] || row["阶段"] || "未分类").trim();
     if (category) categories[category] = (categories[category] || 0) + 1;
   });
+  const directResponsibility = spec.modules.includes("IPQC") ? {
+    workshops: unique(matched.flatMap((row) => rowValues(row, ["交付工坊", "工坊", "供应商"]))),
+    leaders: unique(matched.flatMap((row) => rowValues(row, ["机长", "组长", "班组长"]))),
+    deliveryManagers: unique(matched.flatMap((row) => rowValues(row, ["交付经理", "供应商经理", "经理"]))),
+  } : null;
   const mapping = role === "组装人员" || role === "机长" || role === "交付经理" || role === "供应链经理"
-    ? (config.supplyMappings || []).filter((row) => row.leader === recipient || row.manager === recipient || row.supplierManager === recipient || row.供应链经理 === recipient).slice(0, 30)
+    ? (config.supplyMappings || []).filter((row) => row.leader === recipient || row.manager === recipient || row.supplierManager === recipient || row.供应链经理 === recipient
+      || directResponsibility?.leaders.includes(row.leader) || directResponsibility?.workshops.includes(row.workshop)).slice(0, 30)
     : (config.orgMappings || []).filter((row) => row.pm === recipient || row.tpm === recipient || row.productionDirector === recipient || row.产总 === recipient).slice(0, 30);
   const supplement = files.find((file) => file.subKind === "DQA_ENGINEER_SUPPLEMENT")?.supplement;
   let engineerMetrics = null;
@@ -281,7 +346,8 @@ const recipientEvidence = (role, recipient, data, files, dateRange = {}, roleRow
       },
     };
   }
-  return { role, recipient, modules: spec.modules, matchedRows: matched.length, ipqcMetrics, topCategories: Object.entries(categories).sort((a, b) => b[1] - a[1]).slice(0, 8), related: related.slice(0, 20), mapping, engineerMetrics };
+  const topCategoryStats = Object.entries(categories).sort((a, b) => b[1] - a[1]).slice(0, 8).map(([name, count]) => ({ name, count, share: ipqcBadRows.length ? Number((count / ipqcBadRows.length * 100).toFixed(1)) : null }));
+  return { role, recipient, modules: spec.modules, matchedRows: matched.length, ipqcMetrics, periodTrend, topCategories: topCategoryStats.map((item) => item.name), topCategoryStats, related: related.slice(0, 20), directResponsibility, mapping, engineerMetrics };
 };
 
 const recurrenceEvidenceForRecipient = (role, recipient, recurrences = [], files = [], dateRange = {}) => {
@@ -432,6 +498,42 @@ const buildRoleRanking = (role, recipientNames, selectedRecipient, data, files, 
   return limited.map((row, index) => ({ ...row, rank: sorted.findIndex((item) => item.name === row.name) + 1, selected: row.name === selectedRecipient }));
 };
 
+// The model writes the management narrative.  The deterministic statistics and
+// visual contract are created here so a skipped JSON block can never remove a
+// chart or turn a known count into “待核实”.
+const buildRoleVisualSpec = (role, recipient, evidence = {}, rankingRows = []) => {
+  const stats = Array.isArray(evidence.topCategoryStats) ? evidence.topCategoryStats : [];
+  const total = Number(evidence.ipqcMetrics?.badRecords || 0);
+  let cumulative = 0;
+  const figures = [];
+  if (stats.length) {
+    const values = stats.map((item) => Number(item.count) || 0);
+    const accumulated = values.map((value) => { cumulative += value; return total ? Number((cumulative / total * 100).toFixed(1)) : 0; });
+    figures.push({ id: "direct-category-pareto", sectionId: "三", intent: "pareto", preferredChart: "pareto-column-line", title: "问题类型 Pareto", unit: "不良记录", categories: stats.map((item) => item.name), series: [{ name: "不良记录", values, axis: "left" }, { name: "累计占比", values: accumulated, axis: "right", unit: "%" }], coverage: "complete", tablePolicy: "replace", accessibilitySummary: `TOP问题类型覆盖 ${total} 条本人不良记录。` });
+  }
+  [evidence.periodTrend?.month, evidence.periodTrend?.week].filter(Boolean).forEach((trend) => {
+    const isMonth = trend.granularity === "month";
+    figures.push({ id: `direct-${trend.granularity}-trend`, sectionId: "二", intent: "period-trend", preferredChart: "dual-column-line", title: isMonth ? "月度趋势" : "周度趋势", unit: "记录", categories: trend.rows.map((item) => item.label), series: [{ name: "不良数量", values: trend.rows.map((item) => item.bad), axis: "left" }, { name: "总数量", values: trend.rows.map((item) => item.total), axis: "left" }, { name: "不良率", values: trend.rows.map((item) => item.rate), axis: "right", unit: "%" }], coverage: "complete", tablePolicy: "replace", accessibilitySummary: `${isMonth ? "月度" : "周度"}不良数量、总数量与不良率趋势。` });
+  });
+  if (rankingRows.length) figures.push({ id: "direct-ranking", sectionId: "四", intent: "ranking", preferredChart: "clustered-horizontal-bar", title: "个人风险排名", unit: "不良记录", categories: rankingRows.map((row) => ({ name: row.name, focus: row.selected, site: row.site || "" })), series: [{ name: "不良记录", values: rankingRows.map((row) => Number(row.value) || 0), axis: "left" }], coverage: "complete", tablePolicy: "replace", accessibilitySummary: `${recipient}在当前统计周期内按不良记录进行同口径比较。` });
+  return { version: "1.0", layoutProfile: "research-briefing-v1", reportKind: "role", subject: { role, name: recipient, scopeType: "direct" }, figures, sourceLimitations: [] };
+};
+const escapeRegExp = (value) => String(value || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+const enforceRoleReportFacts = (content = "", evidence = {}) => {
+  let next = String(content || "")
+    .replace(/^\s*#{1,6}\s*章节标题\s*$/gmi, "")
+    .replace(/^\s*-\s*当前排名图表数据：\s*(?:空|暂无排名数据\/待补充)\s*$/gmi, "");
+  const metrics = evidence.ipqcMetrics;
+  if (!metrics) return next;
+  next = next.replace(/(\|\s*问题记录数\s*\|\s*)待核实(\s*\|)/gi, `$1${metrics.issueRecords}$2`);
+  (evidence.topCategoryStats || []).forEach(({ name, count, share }) => {
+    if (!name || !Number.isFinite(Number(share))) return;
+    const pattern = new RegExp(`(\\|\\s*${escapeRegExp(name)}\\s*\\|\\s*${Number(count)}\\s*\\|\\s*)待核实(\\s*\\|)`, "g");
+    next = next.replace(pattern, `$1${share}%$2`);
+  });
+  return next;
+};
+
 const QMDP_QUESTIONS_KEY = "qms-qmdp-question-bank-v1";
 const QMDP_EXAM_SESSIONS_KEY = "qms-qmdp-exam-sessions-v1";
 const QMDP_EXAM_RECORDS_KEY = "qms-qmdp-exam-records-v1";
@@ -548,7 +650,39 @@ const roleReportPeriodLabel = (period = {}) => {
   const end = period._periodEnd || period.end || "";
   return start && end ? `${start}—${end}` : "周期未记录";
 };
-const roleHistoryLabel = (item) => `${item.localOnly ? "本机" : "服务器"} · ${roleReportPeriodLabel(item.period)} · ${roleReportTimeLabel(item.updatedAt || item.savedAt)}`;
+const roleHistoryLabel = (item) => `${item.localOnly ? "本机" : "服务器"} · ${item.fileName || "未命名报告"}${item.updatedAt || item.savedAt ? ` · ${roleReportTimeLabel(item.updatedAt || item.savedAt)}` : ""}`;
+const roleRecipientCacheKey = (role, files = []) => JSON.stringify({
+  role,
+  files: (files || []).map((file) => ({
+    module: file.module,
+    name: file.name,
+    subKind: file.subKind || "",
+    rows: Array.isArray(file.rows) ? file.rows.length : 0,
+    importedAt: file.importedAt || file.updatedAt || file.updated_at || "",
+  })),
+});
+const renderRoleRankingChartMarkup = ({ rows = [], title = "排名", metric = "质量记录", role = "", recipient = "", period = {} }) => {
+  const selected = rows.find((row) => row.selected);
+  const visibleRows = rows.length <= 20 ? rows : [...rows.slice(0, 19), ...(selected && !rows.slice(0, 19).includes(selected) ? [selected] : [])];
+  if (!visibleRows.length) return "";
+  const max = Math.max(...visibleRows.map((row) => Number(row.value) || 0), 1);
+  const bars = visibleRows.map((row) => {
+    const width = Math.max(4, Math.round(((Number(row.value) || 0) / max) * 100));
+    const color = row.selected ? "#ef4f4f" : row.site === "深圳" ? "#2f7ee6" : row.site === "杭州" ? "#8b67c7" : "#64748b";
+    const name = row.displayName || (row.site && row.site !== "多基地" ? `${row.site} · ${row.name}` : row.name);
+    return `<div class="agent-role-ranking-row"><strong>${escapeHtml(String(row.rank || ""))}</strong><span>${escapeHtml(name || "未命名")}</span><div class="agent-role-ranking-bar"><i style="width:${width}%;background:${color}"></i></div><b>${escapeHtml(String(row.value ?? ""))}</b></div>`;
+  }).join("");
+  return `<section class="agent-role-ranking-chart"><header><strong>${escapeHtml(title)}</strong><span>${escapeHtml(metric)} · 当前对象以红色标识${rows.length > visibleRows.length ? ` · 共 ${rows.length} 条，图表显示重点 ${visibleRows.length} 条` : ""}</span></header><div class="agent-role-ranking-shell">${bars}</div></section>`;
+};
+const injectRoleRankingChart = (html = "", chartHtml = "") => {
+  if (!chartHtml) return html;
+  // Publisher mode adds an id before class, so class cannot be the first
+  // attribute. Insert directly below the ranking heading and retain any
+  // explanatory text the model produced below the chart.
+  const pattern = /(<section\b(?=[^>]*\bclass="[^"]*agent-report-section[^"]*")[^>]*>\s*<(?:h4|h5)[^>]*>[^<]*排名[^<]*<\/(?:h4|h5)>)/i;
+  if (pattern.test(html)) return html.replace(pattern, `$1${chartHtml}`);
+  return `${html}${chartHtml}`;
+};
 const buildRoleRowIndex = (rows, fields) => {
   const index = new Map();
   rows.forEach((row) => {
@@ -564,7 +698,7 @@ const buildRoleRowIndex = (rows, fields) => {
 };
 const roleSourceSignature = (role, spec, baselineFiles, recipients, dateRange, sourceRevision = "", skillName = "", skillContent = "") => JSON.stringify({ version: REPORT_PROMPT_VERSION, role, modules: spec.modules, baseline: baselineFiles.map((item) => ({ fileName: item.fileName, updatedAt: item.updatedAt || item.updated_at || "", imported: Boolean(item.imported) })), recipients, period: dateRange, sourceRevision, skillName, skillContent });
 
-export function AgentRoleReportPage({ initialRole = "组装人员", data = {}, files = [], dateRange = {}, onEnsureAgentSources, canGenerate = false, canSaveToServer = false }) {
+export function AgentRoleReportPage({ initialRole = "组装人员", data = {}, files = [], dateRange = {}, onEnsureAgentSources, canGenerate = false, canSaveToServer = false, creatorIp = "" }) {
   const role = initialRole;
   const spec = roleSpecs[role] || roleSpecs.组装人员;
   const roleSkillId = roleSkillIds[role] || "quality-role-assembly-person";
@@ -582,15 +716,24 @@ export function AgentRoleReportPage({ initialRole = "组装人员", data = {}, f
   const [historyState, setHistoryState] = useState({ status: "idle", message: "" });
   const [roleSkill, setRoleSkill] = useState(() => ({ name: roleSkillId, content: fallbackRoleSkill(role) }));
   const [roleSkills, setRoleSkills] = useState([]);
-  const [layoutSkills, setLayoutSkills] = useState(REPORT_LAYOUT_SKILLS);
+  const [layoutSkills] = useState(REPORT_PRESENTATION_PROFILES);
   const [layoutSkillName, setLayoutSkillName] = useState(initialRoleLayout);
-  const [layoutSkillContent, setLayoutSkillContent] = useState(() => REPORT_LAYOUT_SKILLS.find((item) => item.name === initialRoleLayout())?.content || "");
   const [recipient, setRecipient] = useState("");
+  const [recipientSearch, setRecipientSearch] = useState("");
+  const [recipientRenderLimit, setRecipientRenderLimit] = useState(120);
+  const [selectedRecipients, setSelectedRecipients] = useState([]);
+  const [recipientSelectionTouched, setRecipientSelectionTouched] = useState(false);
+  const [lastGeneratedModel, setLastGeneratedModel] = useState("");
+  const [resolvedCreatorIp, setResolvedCreatorIp] = useState("");
   const [state, setState] = useState({ status: "idle", message: "" });
   const [sourceState, setSourceState] = useState({ status: "idle", message: "" });
+  const [roleSnapshotRegistry, setRoleSnapshotRegistry] = useState(null);
   const [generationProgress, setGenerationProgress] = useState({ visible: false, recipientNames: [], completedNames: [], currentName: "", total: 0, phase: "", detail: "" });
   const abortRef = useRef(null);
   const loadedServerRoleKeyRef = useRef("");
+  const deferredRecipientSearch = useDeferredValue(recipientSearch);
+  useEffect(() => { loadCurrentUser().then((user) => setResolvedCreatorIp(String(user?.ip || ""))).catch(() => {}); }, []);
+  useEffect(() => { let active = true; loadQualityAgentRoleSnapshotRegistry().then((value) => { if (active) setRoleSnapshotRegistry(normalizeRoleSnapshotRegistry(value || null)); }).catch(() => {}); return () => { active = false; }; }, [role]);
   useEffect(() => {
     setAgentFiles((current) => {
       const keep = (source) => spec.modules.includes(source.module) || (role === "研发工程师" && source.subKind === "DQA_ENGINEER_SUPPLEMENT");
@@ -614,15 +757,49 @@ export function AgentRoleReportPage({ initialRole = "组装人员", data = {}, f
     && Array.isArray(file.rows)
     && file.rows.length)), [roleFiles, spec.modules]);
   const preparedRows = useMemo(() => (spec.modules.includes("IPQC") ? { IPQC: roleRows } : { RD: roleRows }), [spec.modules, roleRows]);
-  const roleRowIndex = useMemo(() => buildRoleRowIndex(roleRows, spec.fields), [roleRows, spec.fields]);
-  const sourceRecipients = useMemo(() => roleRecipients(role, data, roleFiles, preparedRows, roleRowIndex), [role, data, roleFiles, preparedRows, roleRowIndex]);
+  // Manager pages do not need a recipient index to render the initial shell.
+  // Individual pages also defer this potentially large map until a report is
+  // actually selected; the picker can list names directly from source rows.
+  const hasReportSelection = Boolean(cacheEntry?.reports?.[recipient]) || selectedHistoryKey !== "current";
+  const roleRowIndex = useMemo(() => individualRoles.has(role) && hasReportSelection
+    ? buildRoleRowIndex(roleRows, spec.fields)
+    : null, [role, hasReportSelection, roleRows, spec.fields]);
+  const recipientCacheKey = useMemo(() => roleRecipientCacheKey(role, roleFiles), [role, roleFiles]);
+  const sourceRecipients = useMemo(() => {
+    const cached = ROLE_RECIPIENT_CACHE.get(recipientCacheKey);
+    if (cached) return cached;
+    const value = roleRecipients(role, data, roleFiles, preparedRows, roleRowIndex);
+    ROLE_RECIPIENT_CACHE.set(recipientCacheKey, value);
+    return value;
+  }, [recipientCacheKey, role, data, roleFiles, preparedRows, roleRowIndex]);
   const reportRecipients = useMemo(() => unique([
     ...Object.keys(cacheEntry?.reports || {}),
     ...projectReports.map((item) => item.recipient || reportRecipientFromFile(item.fileName, role)),
     ...localReportRecipients.filter((item) => item.module === `角色报告-${role}`).map((item) => item.recipient),
   ]), [cacheEntry, projectReports, role, historyRevision, localReportRecipients]);
   const recipients = sourceRecipients.length ? sourceRecipients : reportRecipients;
+  const visibleRecipientNames = useMemo(() => {
+    const keyword = deferredRecipientSearch.trim().toLocaleLowerCase();
+    const filtered = keyword
+      ? recipients.filter((name) => String(name).toLocaleLowerCase().includes(keyword))
+      : recipients;
+    return filtered.slice(0, Math.min(filtered.length, recipientRenderLimit));
+  }, [recipients, deferredRecipientSearch, recipientRenderLimit]);
+  // Native select options are kept complete so every person remains directly
+  // selectable; only the checkbox chip grid is windowed for first paint.
+  const recipientSelectNames = recipients;
+  const selectedRecipientSet = useMemo(() => new Set(selectedRecipients), [selectedRecipients]);
+  const generationRecipients = useMemo(() => recipients.filter((name) => selectedRecipientSet.has(name)), [recipients, selectedRecipientSet]);
   const roleDateRange = useMemo(() => ({ ...dateRange, _periodYear: period.year, _periodStart: period.start, _periodEnd: period.end }), [dateRange, period]);
+  const roleSnapshotSource = useMemo(() => roleSnapshotSourceSignature(roleFiles), [roleFiles]);
+  const roleSnapshotMapping = useMemo(() => roleSnapshotMappingSignature(configFromBrowser()), []);
+  const roleRule = roleSnapshotRegistry?.rules?.find((item) => item.role === role);
+  const selectedRoleSnapshot = useMemo(() => roleSnapshotRegistry && recipient ? pickRoleSnapshot(roleSnapshotRegistry, { role, recipient, period: { start: period.start, end: period.end }, sourceSignature: roleSnapshotSource, mappingSignature: roleSnapshotMapping, skillName: roleRule?.selectedSkill || "", layoutProfileId: roleRule?.layoutProfileId || "" }) : null, [roleSnapshotRegistry, role, recipient, period.start, period.end, roleSnapshotSource, roleSnapshotMapping, roleRule?.selectedSkill, roleRule?.layoutProfileId]);
+  const roleSnapshotTrace = roleSnapshotRegistry
+    ? (selectedRoleSnapshot
+      ? { status: "matched", label: "已命中有效角色快照", detail: `${role} · ${roleRule?.selectedSkill || roleSkill.name} · ${roleRule?.layoutProfileId || layoutSkillName}`, meta: `当前人员：${recipient} · 固定数据已就绪` }
+      : { status: "missing", label: recipient ? "未命中有效角色快照" : "等待选择人员", detail: recipient ? "周期、来源版本、映射、Skill 或 Profile 没有完全匹配" : "选择人员后显示快照匹配状态", meta: recipient ? "本次生成将回退到确定性人员证据" : "" })
+    : { status: "loading", label: "正在读取角色快照注册表", detail: "尚未完成角色快照匹配", meta: "" };
   const sourceRevision = useMemo(() => {
     const source = roleFiles.find((file) => file.subKind === "DQA_ENGINEER_SUPPLEMENT");
     return source ? `${source.importedAt || ""}:${source.rowCount || source.rows?.length || 0}` : "";
@@ -631,9 +808,47 @@ export function AgentRoleReportPage({ initialRole = "组装人员", data = {}, f
   const currentCacheContent = typeof cacheEntry?.reports?.[recipient] === "string" ? cacheEntry.reports[recipient] : "";
   const selectedHistoryReport = savedRoleReports.find((item) => item.historyKey === selectedHistoryKey) || null;
   const selectedContent = selectedHistoryKey === "current" ? currentCacheContent : savedRoleContent;
-  const reportLayoutChanged = Boolean(cacheEntry?.reports && Object.keys(cacheEntry.reports).length) && String(cacheEntry.layoutSkillName || "") !== layoutSkillName;
+  const reportLayoutChanged = false;
   const cachedComplete = !reportLayoutChanged && cacheEntry?.sourceSignature === sourceSignature && recipients.length > 0 && recipients.every((name) => cacheEntry.reports?.[name]);
+  const selectedCachedComplete = !reportLayoutChanged && cacheEntry?.sourceSignature === sourceSignature && generationRecipients.length > 0 && generationRecipients.every((name) => cacheEntry.reports?.[name]);
   const activeReportLayoutClass = reportLayoutClass(layoutSkillName);
+  const generationScopeLabel = generationRecipients.length === recipients.length && recipients.length
+    ? "全部人员"
+    : `已选 ${generationRecipients.length}/${recipients.length || 0} 人`;
+
+  // Saving a report succeeds before the next report-library poll. Merge that
+  // authoritative response immediately so the current page, selector and
+  // history list never require a manual browser refresh.
+  const registerSavedRoleReport = (saved = {}, content = "", recipientName = "") => {
+    const entry = {
+      ...saved,
+      module: saved.module || `角色报告-${role}`,
+      role: saved.role || role,
+      recipient: saved.recipient || recipientName,
+      content: String(content || saved.content || ""),
+      visualSpec: saved.visualSpec || extractReportVisualSpec(content || ""),
+      updatedAt: saved.updatedAt || saved.savedAt || new Date().toISOString(),
+      savedAt: saved.savedAt || new Date().toISOString(),
+      localOnly: saved.localOnly === true || !canSaveToServer,
+    };
+    if (!entry.fileName) return;
+    if (entry.localOnly) {
+      const metadata = { ...entry };
+      delete metadata.content;
+      setLocalReportRecipients((current) => [metadata, ...current.filter((item) => item.fileName !== entry.fileName)]);
+    } else {
+      const metadata = { ...entry };
+      delete metadata.content;
+      setProjectReports((current) => [metadata, ...current.filter((item) => item.fileName !== entry.fileName)]);
+    }
+    if (entry.recipient === recipient) {
+      const historyEntry = { ...entry, historyKey: `${entry.localOnly ? "local" : "server"}:${entry.fileName}` };
+      setSavedRoleReports((current) => [historyEntry, ...current.filter((item) => item.historyKey !== historyEntry.historyKey && item.fileName !== entry.fileName)]);
+      setSavedRoleContent(entry.content);
+      setSelectedHistoryKey(historyEntry.historyKey);
+      setHistoryState({ status: "done", message: "已生成并加载最新报告" });
+    }
+  };
 
   const refresh = async () => {
     setState({ status: "running", message: "正在读取 Agent 基线报告…" });
@@ -641,11 +856,12 @@ export function AgentRoleReportPage({ initialRole = "组装人员", data = {}, f
       let next = [];
       let serverReadError = "";
       try {
-        const [value, roleValue] = await Promise.all([
-          loadAgentReports(),
-          loadAgentReports({ module: `角色报告-${role}`, role }),
-        ]);
-        const merged = [...(Array.isArray(value?.reports) ? value.reports : []), ...(Array.isArray(roleValue?.reports) ? roleValue.reports : [])];
+        // Only fetch this role's baseline modules and history. Fetching the
+        // entire report library made every role page slower as reports grew.
+        const moduleRequests = spec.modules.map((module) => loadAgentReports({ module }));
+        const roleRequest = loadAgentReports({ module: `角色报告-${role}`, role });
+        const values = await Promise.all([...moduleRequests, roleRequest]);
+        const merged = values.flatMap((value) => Array.isArray(value?.reports) ? value.reports : []);
         next = [...new Map(merged.map((item) => [item.fileName, item])).values()];
       } catch (error) {
         serverReadError = error?.message || "项目报告库暂不可用";
@@ -685,14 +901,7 @@ export function AgentRoleReportPage({ initialRole = "组装人员", data = {}, f
       const skills = Array.isArray(value?.skills) ? value.skills : [];
       if (!active) return;
       const roleOnly = skills.filter((item) => String(item.name || item.id || "").startsWith("quality-role-"));
-      const loadedLayouts = REPORT_LAYOUT_SKILLS.map((fallback) => {
-        const loaded = skills.find((item) => item.id === fallback.id || item.name === fallback.name);
-        return loaded ? { ...fallback, ...loaded, name: loaded.name || loaded.id || fallback.name, label: fallback.label } : fallback;
-      });
       setRoleSkills(roleOnly);
-      setLayoutSkills(loadedLayouts);
-      const selectedLayout = loadedLayouts.find((item) => item.name === layoutSkillName);
-      setLayoutSkillContent(selectedLayout?.content || "");
       const selected = roleOnly.find((item) => item.id === roleSkillId || item.name === roleSkillId);
       if (selected) setRoleSkill({ name: selected.name || selected.id || roleSkillId, content: selected.content || fallbackRoleSkill(role) });
     }).catch(() => {});
@@ -708,8 +917,18 @@ export function AgentRoleReportPage({ initialRole = "组装人员", data = {}, f
     setSelectedHistoryKey("current");
     setCacheEntry(readCache()[role] || null);
     setRecipient("");
+    setRecipientSearch("");
+    setRecipientRenderLimit(120);
+    setSelectedRecipients([]);
+    setRecipientSelectionTouched(false);
     refresh();
   }, [role]);
+  useEffect(() => {
+    setSelectedRecipients((current) => {
+      const next = recipientSelectionTouched ? current.filter((name) => recipients.includes(name)) : recipients;
+      return next.length === current.length && next.every((name, index) => name === current[index]) ? current : next;
+    });
+  }, [recipients, recipientSelectionTouched]);
   useEffect(() => {
     let active = true;
     loadLocalAgentReports().then((items) => { if (active) setLocalReportRecipients(Array.isArray(items) ? items : []); }).catch(() => { if (active) setLocalReportRecipients([]); });
@@ -724,35 +943,31 @@ export function AgentRoleReportPage({ initialRole = "组装人员", data = {}, f
   }, [dateRange.start2025, dateRange.end2025, dateRange.start2026, dateRange.end2026]);
   useEffect(() => {
     let active = true;
-    setSavedRoleContent("");
-    setSelectedHistoryKey("current");
     if (!recipient) {
       setSavedRoleReports([]);
+      setSavedRoleContent("");
+      setSelectedHistoryKey("current");
       setHistoryState({ status: "idle", message: "" });
       return () => { active = false; };
     }
     setHistoryState({ status: "loading", message: "正在读取历史报告…" });
-    Promise.allSettled([
-      loadLocalAgentReports(),
-      loadAgentReports({ module: `角色报告-${role}`, role, recipient }),
-    ])
-      .then(([localResult, serverResult]) => {
-        if (!active) return;
-        const localItems = localResult.status === "fulfilled" ? localResult.value : [];
-        const value = serverResult.status === "fulfilled" ? serverResult.value : {};
-        const local = (Array.isArray(localItems) ? localItems : [])
-          .filter((item) => item.module === `角色报告-${role}` && item.recipient === recipient)
-          .map((item) => ({ ...item, localOnly: true, historyKey: `local:${item.fileName}` }));
-        const server = (Array.isArray(value?.reports) ? value.reports : []).map((item) => ({ ...item, localOnly: false, historyKey: `server:${item.fileName}` }));
-        const merged = [...local, ...server].sort((left, right) => String(right.updatedAt || right.savedAt || "").localeCompare(String(left.updatedAt || left.savedAt || "")));
-        setSavedRoleReports(merged);
-        if (!currentCacheContent && merged.length) setSelectedHistoryKey(merged[0].historyKey);
-        const serverFailed = serverResult.status === "rejected";
-        setHistoryState({ status: "done", message: merged.length ? `共 ${merged.length} 份历史报告${serverFailed ? "（服务器历史暂不可用）" : ""}` : "暂无历史报告" });
-      })
-      .catch((error) => { if (active) setHistoryState({ status: "error", message: `历史报告读取失败：${error.message}` }); });
+    // refresh() and the local-index effect already loaded the report indexes.
+    // Filter those arrays in memory instead of hitting the server and IndexedDB
+    // on every person selection.
+    const local = localReportRecipients
+      .filter((item) => item.module === `角色报告-${role}` && item.recipient === recipient)
+      .map((item) => ({ ...item, localOnly: true, historyKey: `local:${item.fileName}` }));
+    const server = projectReports
+      .filter((item) => item.module === `角色报告-${role}` && item.role === role && item.recipient === recipient)
+      .map((item) => ({ ...item, localOnly: false, historyKey: `server:${item.fileName}` }));
+    const merged = [...local, ...server]
+      .sort((left, right) => String(right.updatedAt || right.savedAt || "").localeCompare(String(left.updatedAt || left.savedAt || "")));
+    setSavedRoleReports(merged);
+    const selectedStillExists = selectedHistoryKey !== "current" && merged.some((item) => item.historyKey === selectedHistoryKey);
+    if (!currentCacheContent && merged.length && !selectedStillExists) setSelectedHistoryKey(merged[0].historyKey);
+    setHistoryState({ status: "done", message: merged.length ? `共 ${merged.length} 份历史报告` : "暂无历史报告" });
     return () => { active = false; };
-  }, [role, recipient, historyRevision]);
+  }, [role, recipient, historyRevision, projectReports, localReportRecipients, currentCacheContent, selectedHistoryKey]);
   useEffect(() => {
     if (selectedHistoryKey === "current") {
       loadedServerRoleKeyRef.current = "";
@@ -761,32 +976,55 @@ export function AgentRoleReportPage({ initialRole = "组装人员", data = {}, f
     }
     const selected = savedRoleReports.find((item) => item.historyKey === selectedHistoryKey);
     if (!selected) return;
-    if (REPORT_LAYOUT_SKILLS.some((item) => item.name === selected.layoutSkillName)) {
-      const layout = layoutSkills.find((item) => item.name === selected.layoutSkillName);
-      setLayoutSkillName(selected.layoutSkillName);
-      setLayoutSkillContent(layout?.content || "");
-    }
     if (selected.content) {
       loadedServerRoleKeyRef.current = "";
       setSavedRoleContent(selected.content);
+      setHistoryState({ status: "done", message: `已加载 ${roleReportTimeLabel(selected.updatedAt)}` });
       return;
     }
     const key = `${role}:${recipient}:${selected.fileName}:${selected.updatedAt || ""}`;
     if (loadedServerRoleKeyRef.current === key) return;
     loadedServerRoleKeyRef.current = key;
-    let active = true;
     setHistoryState((current) => ({ ...current, status: "loading", message: "正在加载所选历史报告…" }));
     (selected.localOnly ? loadLocalAgentReport(selected.fileName) : loadAgentReport(selected.fileName))
       .then((value) => {
-        if (!active) return;
-        setSavedRoleContent(value?.content || "");
-        setHistoryState((current) => ({ ...current, status: "done", message: `已加载 ${roleReportTimeLabel(selected.updatedAt)}` }));
+        const content = String(value?.content || "");
+        if (!content.trim()) {
+          setSavedRoleContent("");
+          setHistoryState({ status: "error", message: "历史报告内容为空，可能是服务器报告文件不完整" });
+          return;
+        }
+        setSavedRoleContent(content);
+        setHistoryState({ status: "done", message: `已加载 ${roleReportTimeLabel(selected.updatedAt)}` });
       })
-      .catch((error) => { if (active) setHistoryState({ status: "error", message: `历史报告加载失败：${error.message}` }); });
-    return () => { active = false; };
+      .catch((error) => {
+        setSavedRoleContent("");
+        setHistoryState({ status: "error", message: `历史报告加载失败：${error.message}` });
+      });
   }, [selectedHistoryKey, savedRoleReports, role, recipient]);
 
+  const toggleGenerationRecipient = (name) => {
+    setRecipientSelectionTouched(true);
+    setSelectedRecipients((current) => current.includes(name)
+      ? current.filter((item) => item !== name)
+      : [...current, name]);
+  };
+  const selectAllGenerationRecipients = () => {
+    setRecipientSelectionTouched(true);
+    setSelectedRecipients(recipients);
+  };
+  const clearGenerationRecipients = () => {
+    setRecipientSelectionTouched(true);
+    setSelectedRecipients([]);
+  };
+  const selectCurrentGenerationRecipient = () => {
+    if (!recipient) return;
+    setRecipientSelectionTouched(true);
+    setSelectedRecipients([recipient]);
+  };
+
   const generateAll = async () => {
+    const targetRecipients = generationRecipients;
     if (sourceState.status === "loading") return;
     if (!canGenerate) {
       setState({ status: "error", message: "当前账号没有“生成全部角色报告”权限，请联系主管理员" });
@@ -795,7 +1033,7 @@ export function AgentRoleReportPage({ initialRole = "组装人员", data = {}, f
     if (!period.start || !period.end || period.start > period.end) { setState({ status: "error", message: "请选择有效的统计年份和时间段" }); return; }
     if (!hasCompleteBaseline(baseline.files, spec.modules)) { setState({ status: "error", message: `请先在对应模块 Agent 中生成、保存或导入报告：${spec.modules.filter((module) => !baseline.files.some((item) => baselineMatchesModule(item, module))).join("、")}` }); return; }
     if (!sourceReady && onEnsureAgentSources) {
-      setGenerationProgress({ visible: true, recipientNames: [...recipients], completedNames: Object.keys(cacheEntry?.reports || {}), currentName: "", total: recipients.length, phase: "数据准备", detail: "正在加载本次生成所需的原始数据" });
+      setGenerationProgress({ visible: true, recipientNames: [...targetRecipients], completedNames: Object.keys(cacheEntry?.reports || {}).filter((name) => targetRecipients.includes(name)), currentName: "", total: targetRecipients.length, phase: "数据准备", detail: "正在加载本次生成所需的原始数据" });
       setSourceState({ status: "loading", message: "正在加载本次生成所需的原始数据" });
       setState({ status: "running", message: "首次生成需要解析角色数据，当前页面不会自动加载" });
       try {
@@ -815,7 +1053,7 @@ export function AgentRoleReportPage({ initialRole = "组装人员", data = {}, f
           if (!previous || nextRows >= previousRows) byKey.set(key, source);
         });
         setAgentFiles([...byKey.values()]);
-        setGenerationProgress((current) => ({ ...current, visible: true, recipientNames: [...recipients], currentName: "", total: recipients.length, phase: "数据准备", detail: "原始数据已加载，请再次点击生成报告" }));
+        setGenerationProgress((current) => ({ ...current, visible: true, recipientNames: [...targetRecipients], currentName: "", total: targetRecipients.length, phase: "数据准备", detail: "原始数据已加载，请再次点击生成报告" }));
         setSourceState({ status: "ready", message: "角色数据已加载，请再次点击生成" });
         setState({ status: "done", message: "角色原始数据已加载，确认后再次点击生成报告" });
       } catch (loadError) {
@@ -825,16 +1063,21 @@ export function AgentRoleReportPage({ initialRole = "组装人员", data = {}, f
       }
       return;
     }
+    if (!targetRecipients.length) { setState({ status: "error", message: "请先勾选需要生成报告的人员" }); return; }
     if (!recipients.length) { setState({ status: "error", message: "没有找到可用的人员名单，请先检查原始数据或映射表" }); return; }
-    if (reportLayoutChanged && !window.confirm(`报告排版已切换为“${reportLayoutLabel(layoutSkillName)}”，需要重新生成才能把排版规则写入全部角色报告。是否继续？`)) return;
-    if (!reportLayoutChanged && cachedComplete && !window.confirm("该角色的人员报告已经全部生成并缓存，是否继续重新生成？")) return;
+    if (!reportLayoutChanged && selectedCachedComplete && !window.confirm(`当前勾选的 ${targetRecipients.length} 人报告已经生成并缓存，是否继续重新生成？`)) return;
     const controller = new AbortController();
     abortRef.current = controller;
-    const restart = cachedComplete || reportLayoutChanged;
-    const reports = restart ? {} : (cacheEntry?.sourceSignature === sourceSignature ? { ...(cacheEntry.reports || {}) } : {});
-    setGenerationProgress({ visible: true, recipientNames: [...recipients], completedNames: Object.keys(reports), currentName: "", total: recipients.length, phase: "准备生成", detail: `正在检查 ${role} 报告基线` });
-    setState({ status: "running", message: `正在批量生成 ${role} 报告（${Object.keys(reports).length}/${recipients.length}）…` });
+    const reports = cacheEntry?.sourceSignature === sourceSignature ? { ...(cacheEntry.reports || {}) } : {};
+    if (selectedCachedComplete) targetRecipients.forEach((name) => { delete reports[name]; });
+    const completedTargetNames = Object.keys(reports).filter((name) => targetRecipients.includes(name));
+    setGenerationProgress({ visible: true, recipientNames: [...targetRecipients], completedNames: completedTargetNames, currentName: "", total: targetRecipients.length, phase: "准备生成", detail: `正在检查 ${role} 报告基线` });
+    setState({ status: "running", message: `正在批量生成 ${role} 报告（${completedTargetNames.length}/${targetRecipients.length}）…` });
     try {
+      // Build the per-person row index only after the user starts generation;
+      // this keeps initial navigation and name selection responsive while
+      // retaining O(1) evidence lookup during a batch.
+      const generationRoleRowIndex = roleRowIndex || (individualRoles.has(role) ? buildRoleRowIndex(roleRows, spec.fields) : null);
       let autoSaved = 0;
       let autoSaveError = "";
       let previousExamByRecipient = new Map();
@@ -875,16 +1118,21 @@ export function AgentRoleReportPage({ initialRole = "组装人员", data = {}, f
         return `\n===== ${module} Agent =====\n${baseline.contents[item?.fileName] || ""}`;
       }).join("\n").slice(0, 80000);
       setGenerationProgress((current) => ({ ...current, phase: "准备生成", detail: `已整理 ${spec.modules.join("、")} Agent 基线，准备逐人生成` }));
-      for (let index = 0; index < recipients.length; index += 1) {
+      for (let index = 0; index < targetRecipients.length; index += 1) {
         if (controller.signal.aborted) throw new DOMException("aborted", "AbortError");
-        const name = recipients[index];
+        const name = targetRecipients[index];
         if (reports[name]) {
-          setGenerationProgress((current) => ({ ...current, visible: true, completedNames: [...new Set([...(current.completedNames || []), name])], currentName: "", phase: "读取缓存", detail: `已跳过 ${name}，完成 ${index + 1}/${recipients.length} 份` }));
-          setState({ status: "running", message: `正在使用缓存 ${role} 报告（${index + 1}/${recipients.length}）…` });
+          setGenerationProgress((current) => ({ ...current, visible: true, completedNames: [...new Set([...(current.completedNames || []), name])], currentName: "", phase: "读取缓存", detail: `已跳过 ${name}，完成 ${index + 1}/${targetRecipients.length} 份` }));
+          setState({ status: "running", message: `正在使用缓存 ${role} 报告（${index + 1}/${targetRecipients.length}）…` });
           continue;
         }
-        setGenerationProgress((current) => ({ ...current, visible: true, currentName: name, phase: "生成报告", detail: `正在调用大模型生成 ${name} 的报告（${index + 1}/${recipients.length}）` }));
-        const evidence = { ...recipientEvidence(role, name, data, roleFiles, roleDateRange, roleRowIndex), recurrence: recurrenceEvidenceForRecipient(role, name, recurrenceRows, roleFiles, roleDateRange) };
+        setGenerationProgress((current) => ({ ...current, visible: true, currentName: name, phase: "生成报告", detail: `正在调用大模型生成 ${name} 的报告（${index + 1}/${targetRecipients.length}）` }));
+        const deterministicRoleSnapshot = pickRoleSnapshot(roleSnapshotRegistry, { role, recipient: name, period: { start: period.start, end: period.end }, sourceSignature: roleSnapshotSource, mappingSignature: roleSnapshotMapping, skillName: roleRule?.selectedSkill || "", layoutProfileId: roleRule?.layoutProfileId || "" });
+        const evidence = { ...recipientEvidence(role, name, data, roleFiles, roleDateRange, generationRoleRowIndex), ...(deterministicRoleSnapshot ? { roleSnapshot: deterministicRoleSnapshot } : {}), recurrence: recurrenceEvidenceForRecipient(role, name, recurrenceRows, roleFiles, roleDateRange) };
+        const personRankingRows = nonRankingRoles.has(role)
+          ? []
+          : buildRoleRanking(role, recipients, name, data, roleFiles, roleDateRange, generationRoleRowIndex, roleRows);
+        const deterministicVisualSpec = buildRoleVisualSpec(role, name, evidence, personRankingRows);
         const previousExamResult = previousExamByRecipient.get(name) || null;
         const ipqcCountingInstruction = role === "组装人员"
           ? "IPQC口径必须严格执行：matchedRows和ipqcMetrics.inspectedRecords均为送检记录数；不良内容或不良类型至少一项非空才计1条不良；两项同时为空计为合格，不得写成数据缺失、未分类或异常。报告必须分别写明送检记录、不良记录、合格记录和不良率。"
@@ -893,24 +1141,27 @@ export function AgentRoleReportPage({ initialRole = "组装人员", data = {}, f
           ? "这是当事人报告，必须具体列出本人问题、问题类型、数量、证据和改善动作。"
           : "这是管理者报告，不要写管理者本人犯了什么问题，也不要虚构个人问题；只展示其管理范围、下属质量汇总、TOP责任单元、管理风险、需要向上级汇报的事项和管理动作。";
         const result = await requestAiChat([
-          { role: "system", content: `你是质量分析 Agent 的角色闭环报告生成器。只能使用输入的固定 Agent报告和人员证据，不得新增数字，不得用上级数据冒充本人。${managerInstruction}${ipqcCountingInstruction}报告必须包含：结果指标、过程暴露、根因证据/待核实、责任链汇报、改善措施、30/60/90天待办、验证指标和关闭条件。输出结构化 Markdown，使用一级/二级标题、表格和清晰列表；排名章节只输出章节标题，不要生成排名数据表，系统会在该标题下插入统一排名图表。必须严格执行角色 Skill，不得违反其中的角色边界、数据口径和禁止事项。复发判断只能引用人员证据摘要中 recurrence 的系统确定性结果，文字相似不得直接写成复发；考试通过不能单独证明问题关闭；只有观察期结束且有验证证据、期间无再次发生，才可写措施有效；管理者只能汇总下属复发情况，不得写成管理者个人问题。组装人员和研发工程师的上次考试结果仅用于判断复发风险和本次改善重点，不得篡改成绩；不要自行输出“上次知识考试结果”或“本次知识考试”章节，系统将在正文后按服务器记录确定性追加。${layoutSkillName ? "必须同时严格执行排版 Skill：对排名、TOP、趋势、分布、结构和同期对比使用图表替换数据表；输出清晰章节标题和图表就绪 Markdown 数据表，图表必须位于所属章节；行动、责任、证据、期限和关闭条件继续使用表格；同一数据不得同时输出图表和重复表格。" : ""}\n\n角色 Skill：\n${roleSkill.content}\n\n排版 Skill：${layoutSkillName || "不使用"}\n${layoutSkillContent || ""}` },
-          { role: "user", content: `角色：${role}\n角色 Skill 名称：${roleSkill.name}\n排版 Skill 名称：${layoutSkillName || "不使用"}\n责任链：${spec.chain}\n统计年份：${roleDateRange._periodYear}\n统计周期：${roleDateRange._periodStart}—${roleDateRange._periodEnd}\n当前人员：${name}\n本人员工证据摘要（包含确定性复发闭环）：${JSON.stringify(evidence)}\n上次知识考试结果（只可引用，不得重算）：${JSON.stringify(previousExamResult)}\n排名图表数据（只可引用，不得重算）：${JSON.stringify(rankingRows)}\n基线 Agent 报告：${baselineText}\n${managerInstruction}\n${ipqcCountingInstruction}\n请只输出该人员的 Markdown 报告；没有证据的部分写“待核实”，不得把下属问题写成管理者个人问题。` },
+          { role: "system", content: `你是质量分析 Agent 的角色闭环报告生成器。只能使用输入的固定 Agent报告和人员证据，不得新增数字，不得用上级数据冒充本人。${managerInstruction}${ipqcCountingInstruction}报告必须包含：结果指标、过程暴露、根因证据/待核实、责任链汇报、改善措施、30/60/90天待办、验证指标和关闭条件。输出结构化 Markdown，使用一级/二级标题、表格和清晰列表；排名章节只输出章节标题，系统会在该标题下插入统一排名图表。禁止输出“章节标题”、模板占位词或空白排名结论。已提供的确定性统计（送检、不良、合格、不良率、问题类型数量与占比、责任链）必须原样引用；仅缺失的字段才写“待核实”。趋势不得截断：跨月半年周期必须完整列出每个自然月（例如 2026-01 至 2026-06），跨周周期必须列出统计起止日期之间的全部连续周，包含数量为 0 的周期；不能只展示最近两周或有异常的周。责任链姓名只能取人员证据中的 directResponsibility 或 mapping，不得把当前人员姓名推断为其交付经理。问题类型占比必须以本人不良记录为分母，并显示百分号。必须严格执行角色 Skill，不得违反其中的角色边界、数据口径和禁止事项。复发判断只能引用人员证据摘要中 recurrence 的系统确定性结果，文字相似不得直接写成复发；考试通过不能单独证明问题关闭；只有观察期结束且有验证证据、期间无再次发生，才可写措施有效；管理者只能汇总下属复发情况，不得写成管理者个人问题。组装人员和研发工程师的上次考试结果仅用于判断复发风险和本次改善重点，不得篡改成绩；不要自行输出“上次知识考试结果”或“本次知识考试”章节，系统将在正文后按服务器记录确定性追加。不要输出 REPORT_VISUAL_SPEC_JSON，系统会使用固定统计生成视觉契约。\n\n角色 Skill：\n${roleSkill.content}\n\n当前网页呈现风格 Profile：${layoutSkillName}` },
+          { role: "user", content: `角色：${role}\n角色 Skill 名称：${roleSkill.name}\n网页呈现风格 Profile：${layoutSkillName}\n责任链：${spec.chain}\n统计年份：${roleDateRange._periodYear}\n统计周期：${roleDateRange._periodStart}—${roleDateRange._periodEnd}\n当前人员：${name}\n本人员工证据摘要（包含确定性复发闭环）：${JSON.stringify(evidence)}\n上次知识考试结果（只可引用，不得重算）：${JSON.stringify(previousExamResult)}\n排名图表数据（只可引用，不得重算）：${JSON.stringify(personRankingRows)}\n基线 Agent 报告：${baselineText}\n${managerInstruction}\n${ipqcCountingInstruction}\n请只输出该人员的 Markdown 报告；没有证据的部分写“待核实”，不得把下属问题写成管理者个人问题。` },
         ], { max_tokens: 3000, agent: true, operation: "agent-role-report-generate", signal: controller.signal });
-        let reportContent = result.content || "暂无报告";
+        const reportModel = String(result.model || "");
+        if (reportModel) setLastGeneratedModel(reportModel);
+        let reportContent = enforceRoleReportFacts(sanitizeHumanReportContent(result.content || "暂无报告"), evidence);
         if (individualRoles.has(role)) {
           const confirmedMatches = confirmedKnowledgeByRecipient == null ? null : (confirmedKnowledgeByRecipient.get(name) || []);
           const exam = await createAgentExamLink(role, name, evidence, confirmedMatches);
           reportContent += previousExamResultMarkdown(previousExamResult);
           reportContent += exam.markdown;
         }
-        reportContent = `${reportContent.trim()}\n\n${REPORT_VERSION_MARKER}`;
+        reportContent = `${reportContent.trim()}\n\n<REPORT_VISUAL_SPEC_JSON>${JSON.stringify(deterministicVisualSpec)}</REPORT_VISUAL_SPEC_JSON>\n\n${REPORT_VERSION_MARKER}`;
         reports[name] = reportContent;
-        setGenerationProgress((current) => ({ ...current, visible: true, currentName: name, phase: "保存报告", detail: `正在保存 ${name} 的报告（${index + 1}/${recipients.length}）` }));
+        setGenerationProgress((current) => ({ ...current, visible: true, currentName: name, phase: "保存报告", detail: `正在保存 ${name} 的报告（${index + 1}/${targetRecipients.length}）` }));
         let savedOk = false;
         try {
           const saved = canSaveToServer
-            ? await saveAgentReportFile({ module: `角色报告-${role}`, role, recipient: name, skillName: roleSkill.name, layoutSkillName, period: roleDateRange, content: reportContent })
-            : await saveLocalAgentReport({ module: `角色报告-${role}`, role, recipient: name, skillName: roleSkill.name, layoutSkillName, period: roleDateRange, content: reportContent });
+            ? await saveAgentReportFile({ module: `角色报告-${role}`, role, recipient: name, skillName: roleSkill.name, layoutProfileId: layoutSkillName, period: roleDateRange, model: reportModel, creatorIp: creatorIp || resolvedCreatorIp, content: reportContent, visualSpec: deterministicVisualSpec })
+            : await saveLocalAgentReport({ module: `角色报告-${role}`, role, recipient: name, skillName: roleSkill.name, layoutProfileId: layoutSkillName, layoutSkillName, period: roleDateRange, model: reportModel, creatorIp: creatorIp || resolvedCreatorIp, content: reportContent, visualSpec: deterministicVisualSpec });
+          registerSavedRoleReport(saved, reportContent, name);
           autoSaved += 1;
           savedOk = true;
           autoSaveError = saved.relativePath || saved.fileName || autoSaveError;
@@ -922,17 +1173,17 @@ export function AgentRoleReportPage({ initialRole = "组装人员", data = {}, f
         setCacheEntry(compactRoleCacheEntry({ role, sourceSignature, generatedAt: new Date().toISOString(), layoutSkillName, reports }));
         // Persist in batches. Serializing the complete report map for every person makes
         // large role lists quadratic and blocks the main thread.
-        if (index % 10 === 9 || index === recipients.length - 1) {
+        if (index % 10 === 9 || index === targetRecipients.length - 1) {
           writeRoleCache(role, { role, sourceSignature, generatedAt: new Date().toISOString(), layoutSkillName, reports });
         }
-        setGenerationProgress((current) => ({ ...current, visible: true, completedNames: [...new Set([...(current.completedNames || []), name])], currentName: "", phase: "保存缓存", detail: `已完成 ${index + 1}/${recipients.length} 份报告` }));
-        setState({ status: "running", message: `正在批量生成 ${role} 报告（${index + 1}/${recipients.length}）…` });
+        setGenerationProgress((current) => ({ ...current, visible: true, completedNames: [...new Set([...(current.completedNames || []), name])], currentName: "", phase: "保存缓存", detail: `已完成 ${index + 1}/${targetRecipients.length} 份报告` }));
+        setState({ status: "running", message: `正在批量生成 ${role} 报告（${index + 1}/${targetRecipients.length}）…` });
       }
       setCacheEntry(compactRoleCacheEntry({ role, sourceSignature, generatedAt: new Date().toISOString(), layoutSkillName, reports }));
       writeRoleCache(role, { role, sourceSignature, generatedAt: new Date().toISOString(), layoutSkillName, reports });
-      setGenerationProgress({ visible: true, recipientNames: [...recipients], completedNames: recipients, currentName: "", total: recipients.length, phase: "已完成", detail: `已生成并保存 ${recipients.length} 份 ${role} 报告` });
+      setGenerationProgress({ visible: true, recipientNames: [...targetRecipients], completedNames: targetRecipients, currentName: "", total: targetRecipients.length, phase: "已完成", detail: `已生成并保存 ${targetRecipients.length} 份 ${role} 报告` });
       setHistoryRevision((current) => current + 1);
-      setState({ status: "done", message: autoSaved === recipients.length ? `已生成、自动保存并缓存 ${recipients.length} 份 ${role} 报告 · ${autoSaveError}` : `已生成并缓存 ${recipients.length} 份 ${role} 报告；项目自动保存 ${autoSaved}/${recipients.length}，${autoSaveError || "其余报告保留在本地缓存"}` });
+      setState({ status: "done", message: autoSaved === targetRecipients.length ? `已生成、自动保存并缓存 ${targetRecipients.length} 份 ${role} 报告 · ${autoSaveError}` : `已生成并缓存 ${targetRecipients.length} 份 ${role} 报告；项目自动保存 ${autoSaved}/${targetRecipients.length}，${autoSaveError || "其余报告保留在本地缓存"}` });
     } catch (error) {
       setGenerationProgress((current) => ({ ...current, visible: true, phase: error?.name === "AbortError" || controller.signal.aborted ? "已停止" : "生成失败", detail: error?.name === "AbortError" || controller.signal.aborted ? "已保留已完成报告，可继续生成" : (error.message || String(error)) }));
       setState({ status: "error", message: error?.name === "AbortError" || controller.signal.aborted ? "已停止批量生成，已完成报告已缓存，可继续生成" : `批量生成失败：${error.message}` });
@@ -940,13 +1191,26 @@ export function AgentRoleReportPage({ initialRole = "组装人员", data = {}, f
   };
 
   const stop = () => abortRef.current?.abort();
+  const download = () => {
+    if (!selectedContent || !recipient) return;
+    exportRoleReport({
+      role,
+      recipient,
+      content: selectedContent,
+      visualSpec: selectedVisualSpec,
+      skillName: selectedHistoryReport?.skillName || roleSkill.name,
+      model: selectedHistoryReport?.model || lastGeneratedModel,
+      creatorIp: selectedHistoryReport?.creatorIp || creatorIp || resolvedCreatorIp,
+    });
+  };
   const save = async () => {
     if (!selectedContent || !recipient) return;
     setState({ status: "running", message: "正在保存角色报告…" });
     try {
       const result = canSaveToServer
-        ? await saveAgentReportFile({ module: `角色报告-${role}`, role, recipient, skillName: roleSkill.name, layoutSkillName, period: roleDateRange, content: selectedContent })
-        : await saveLocalAgentReport({ module: `角色报告-${role}`, role, recipient, skillName: roleSkill.name, layoutSkillName, period: roleDateRange, content: selectedContent });
+        ? await saveAgentReportFile({ module: `角色报告-${role}`, role, recipient, skillName: roleSkill.name, layoutProfileId: layoutSkillName, period: roleDateRange, model: selectedHistoryReport?.model || lastGeneratedModel, creatorIp: creatorIp || resolvedCreatorIp, content: selectedContent, visualSpec: selectedVisualSpec })
+        : await saveLocalAgentReport({ module: `角色报告-${role}`, role, recipient, skillName: roleSkill.name, layoutProfileId: layoutSkillName, layoutSkillName, period: roleDateRange, model: selectedHistoryReport?.model || lastGeneratedModel, creatorIp: creatorIp || resolvedCreatorIp, content: selectedContent, visualSpec: selectedVisualSpec });
+      registerSavedRoleReport(result, selectedContent, recipient);
       setState({ status: "done", message: canSaveToServer ? `已保存到服务器：${result.relativePath || result.fileName}` : `已保存到本机：${result.fileName}` });
       setHistoryRevision((current) => current + 1);
       await refresh();
@@ -957,25 +1221,33 @@ export function AgentRoleReportPage({ initialRole = "组装人员", data = {}, f
     if (!selectedContent || !recipient) { setState({ status: "error", message: "请先生成并选择人员报告" }); return; }
     setState({ status: "running", message: "正在创建角色发送任务…" });
     try {
-      const report = await saveAgentReportFile({ module: `角色报告-${role}`, role, recipient, skillName: roleSkill.name, layoutSkillName, period: roleDateRange, content: selectedContent });
-      const task = await saveAgentDispatch({ feature: "qualityAgent", agentTitle: "质量分析 Agent", module: `角色报告-${role}`, role, recipient, skillName: roleSkill.name, layoutSkillName, reportFileName: report.fileName, reportPath: report.relativePath, period: roleDateRange });
+      const report = await saveAgentReportFile({ module: `角色报告-${role}`, role, recipient, skillName: roleSkill.name, layoutProfileId: layoutSkillName, period: roleDateRange, model: selectedHistoryReport?.model || lastGeneratedModel, creatorIp: creatorIp || resolvedCreatorIp, content: selectedContent, visualSpec: selectedVisualSpec });
+      const task = await saveAgentDispatch({ feature: "qualityAgent", agentTitle: "质量分析 Agent", module: `角色报告-${role}`, role, recipient, skillName: roleSkill.name, layoutProfileId: layoutSkillName, layoutSkillName, reportFileName: report.fileName, reportPath: report.relativePath, period: roleDateRange });
       setHistoryRevision((current) => current + 1);
       setState({ status: "done", message: `已创建待发送任务：${task.relativePath || task.fileName}` });
     } catch (error) { setState({ status: "error", message: `创建发送任务失败：${error.message}` }); }
   };
   const displayedPeriod = selectedHistoryKey === "current" || !selectedHistoryReport?.period ? roleDateRange : { ...roleDateRange, ...selectedHistoryReport.period };
-  const rankingRows = useMemo(() => nonRankingRoles.has(role) ? [] : buildRoleRanking(role, recipients, recipient, data, roleFiles, displayedPeriod, roleRowIndex, roleRows), [role, recipients, recipient, data, roleFiles, displayedPeriod, roleRowIndex, roleRows]);
+  const rankingRows = useMemo(() => !selectedContent || nonRankingRoles.has(role) ? [] : buildRoleRanking(role, recipients, recipient, data, roleFiles, displayedPeriod, roleRowIndex, roleRows), [selectedContent, role, recipients, recipient, data, roleFiles, displayedPeriod, roleRowIndex, roleRows]);
   const rankingTitle = individualRoles.has(role) ? "个人问题排名" : "管理范围排名";
   const rankingMetric = individualRoles.has(role) ? "本人质量记录" : "管理范围异常";
-  const reportContentParts = selectedContent ? reportParts(selectedContent, !nonRankingRoles.has(role)) : { before: "", after: "", hasRanking: false };
+  const selectedVisualSpec = selectedHistoryReport?.visualSpec || extractReportVisualSpec(selectedContent || "");
+  const hasContractRanking = Array.isArray(selectedVisualSpec?.figures)
+    ? selectedVisualSpec.figures.some((figure) => /ranking|排名/i.test(`${figure.intent || ""} ${figure.preferredChart || ""} ${figure.title || ""}`))
+    : false;
+  const reportContentParts = selectedContent
+    ? { before: renderAgentMarkdown(selectedContent, { chartFirst: true, publisher: true, profileId: layoutSkillName, module: "角色报告-" + role, visualSpec: selectedVisualSpec }), after: "", hasRanking: false }
+    : { before: "", after: "", hasRanking: false };
+  const rankedReportHtml = selectedContent
+    && !hasContractRanking
+    ? injectRoleRankingChart(reportContentParts.before, renderRoleRankingChartMarkup({ rows: rankingRows, title: rankingTitle, metric: rankingMetric, role, recipient, period: displayedPeriod }))
+    : reportContentParts.before;
   const selectRoleSkill = (name) => {
     const selected = roleSkills.find((item) => (item.name || item.id) === name);
     if (selected) setRoleSkill({ name: selected.name || selected.id, content: selected.content || fallbackRoleSkill(role) });
   };
   const selectLayoutSkill = (name) => {
-    const selected = layoutSkills.find((item) => item.name === name);
-    setLayoutSkillName(name);
-    setLayoutSkillContent(selected?.content || "");
+    setLayoutSkillName(normalizeReportPresentationProfile(name));
   };
   const completedNameSet = new Set(generationProgress.completedNames || []);
   const progressRecipientNames = generationProgress.recipientNames?.length
@@ -987,17 +1259,43 @@ export function AgentRoleReportPage({ initialRole = "组装人员", data = {}, f
   return <div className="qmdp-page quality-agent-page">
     <div className="quality-agent-hero"><div><span className="qmdp-eyebrow">QUALITY ANALYSIS AGENT / ROLE REPORT</span><h2>Agent角色报告 · {role}</h2><p>按责任链批量生成并缓存人员报告，选择人员查看本人问题、上级汇报、改善行动和闭环待办。</p></div><Brain size={42} weight="duotone" /></div>
     <section className="qmdp-card quality-agent-controls">
-      <label>角色链路<span className="quality-agent-inline-value">{spec.chain}</span></label><label>角色 Skill<select value={roleSkill.name} onChange={(event) => selectRoleSkill(event.target.value)} disabled={!roleSkills.length}><option value={roleSkill.name}>{roleSkill.name}</option>{roleSkills.filter((item) => (item.name || item.id) !== roleSkill.name).map((item) => <option key={item.id || item.name} value={item.name || item.id}>{item.name || item.id}</option>)}</select></label><label>报告排版 Skill<select value={layoutSkillName} onChange={(event) => selectLayoutSkill(event.target.value)}><option value="">不使用排版 Skill</option>{layoutSkills.map((item) => <option key={item.name} value={item.name}>{item.label}</option>)}</select><small>{layoutSkillName ? `${layoutSkillName} · 当前报告立即预览；重新生成时同步优化内容结构` : "保持角色 Skill 的原始报告结构"}</small></label>
+      <label>角色链路<span className="quality-agent-inline-value">{spec.chain}</span></label><label>角色 Skill<select value={roleSkill.name} onChange={(event) => selectRoleSkill(event.target.value)} disabled={!roleSkills.length}><option value={roleSkill.name}>{roleSkill.name}</option>{roleSkills.filter((item) => (item.name || item.id) !== roleSkill.name).map((item) => <option key={item.id || item.name} value={item.name || item.id}>{item.name || item.id}</option>)}</select></label><label>网页呈现风格<select value={layoutSkillName} onChange={(event) => selectLayoutSkill(event.target.value)}>{layoutSkills.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}</select><small>{reportLayoutLabel(layoutSkillName)} · 切换后立即重绘当前、历史报告，不重新调用大模型</small></label>
       <label className="quality-agent-period-year">统计年份<select value={period.year} onChange={(event) => setPeriod(rolePeriodDefaults(dateRange, event.target.value))}><option value="2026">2026</option><option value="2025">2025</option></select></label><label>开始日期<input type="date" value={period.start} onChange={(event) => setPeriod((current) => ({ ...current, start: event.target.value }))}/></label><label>结束日期<input type="date" value={period.end} onChange={(event) => setPeriod((current) => ({ ...current, end: event.target.value }))}/></label>
-      <label>人员<select value={recipient} onChange={(event) => setRecipient(event.target.value)}><option value="">请选择人员</option>{recipients.map((name) => <option key={name}>{name}</option>)}</select></label><label>历史报告<select value={selectedHistoryKey} onChange={(event) => setSelectedHistoryKey(event.target.value)} disabled={!recipient}><option value="current" disabled={!currentCacheContent}>当前缓存{currentCacheContent ? ` · ${roleReportTimeLabel(cacheEntry?.generatedAt)}` : "（暂无）"}</option>{savedRoleReports.map((item) => <option key={item.historyKey} value={item.historyKey}>{roleHistoryLabel(item)}</option>)}</select><small>{historyState.message || "选择人员后读取历史版本"}</small></label>
+      <label>人员<select value={recipient} onChange={(event) => setRecipient(event.target.value)}><option value="">请选择人员</option>{recipientSelectNames.map((name) => <option key={name}>{name}</option>)}</select></label><label>历史报告<select value={selectedHistoryKey} onChange={(event) => setSelectedHistoryKey(event.target.value)} disabled={!recipient}><option value="current" disabled={!currentCacheContent}>当前缓存{currentCacheContent ? ` · ${roleReportTimeLabel(cacheEntry?.generatedAt)}` : "（暂无）"}</option>{savedRoleReports.map((item) => <option key={item.historyKey} value={item.historyKey}>{roleHistoryLabel(item)}</option>)}</select><small>{historyState.message || "选择人员后读取历史版本"}</small></label>
       {period.start > period.end && <span className="quality-agent-period-invalid">日期范围无效</span>}
-      <span>基线：{spec.modules.join(" + ")} · 排版：{reportLayoutLabel(layoutSkillName)} · 缓存：{reportLayoutChanged ? "需按新排版重新生成" : cachedComplete ? "已完成" : `${Object.keys(cacheEntry?.reports || {}).length}/${recipients.length}`}{sourceState.message ? ` · ${sourceState.message}` : ""}</span>
+      <div className="quality-agent-recipient-picker">
+        <div className="quality-agent-recipient-picker-head">
+          <div><strong>生成范围</strong><span>只有勾选的人会生成或重算角色报告 · {generationScopeLabel}</span></div>
+          <div className="quality-agent-recipient-picker-actions">
+            <button type="button" className="qmdp-secondary-btn" onClick={selectAllGenerationRecipients} disabled={!recipients.length}>全选</button>
+            <button type="button" className="qmdp-secondary-btn" onClick={clearGenerationRecipients} disabled={!selectedRecipients.length}>清空</button>
+            <button type="button" className="qmdp-secondary-btn" onClick={selectCurrentGenerationRecipient} disabled={!recipient}>只选当前人</button>
+          </div>
+        </div>
+        <div className="quality-agent-recipient-picker-search">
+          <input value={recipientSearch} onChange={(event) => setRecipientSearch(event.target.value)} placeholder="输入姓名搜索后选择" aria-label="搜索生成对象" />
+          <small>共 {recipients.length} 人 · 当前显示 {visibleRecipientNames.length} 人 · 已选 {selectedRecipients.length} 人</small>
+          {visibleRecipientNames.length < recipients.length && <button type="button" className="qmdp-secondary-btn" onClick={() => setRecipientRenderLimit(recipients.length)}>显示全部</button>}
+        </div>
+        <div className="quality-agent-recipient-chip-grid" onScroll={(event) => {
+          const target = event.currentTarget;
+          if (target.scrollTop + target.clientHeight >= target.scrollHeight - 36 && visibleRecipientNames.length < recipients.length) {
+            setRecipientRenderLimit((current) => Math.min(recipients.length, current + 120));
+          }
+        }}>
+          {visibleRecipientNames.map((name) => <label key={name} className={`quality-agent-recipient-chip${selectedRecipientSet.has(name) ? " active" : ""}`}><input type="checkbox" checked={selectedRecipientSet.has(name)} onChange={() => toggleGenerationRecipient(name)}/><span>{name}</span></label>)}
+          {!recipients.length && <span className="quality-agent-recipient-empty">当前角色还没有可选择的人员</span>}
+          {recipients.length > visibleRecipientNames.length && <span className="quality-agent-recipient-empty">已限制首屏显示数量，请输入姓名搜索其余人员</span>}
+        </div>
+      </div>
+      <span>基线：{spec.modules.join(" + ")} · 网页风格：{reportLayoutLabel(layoutSkillName)} · 缓存：{cachedComplete ? "全量已完成" : `${Object.keys(cacheEntry?.reports || {}).length}/${recipients.length}`} · 当前范围：{generationScopeLabel}{sourceState.message ? ` · ${sourceState.message}` : ""}</span>
+      <div className={`quality-agent-snapshot-trace ${roleSnapshotTrace.status}`}><b>{roleSnapshotTrace.label}</b><span>{roleSnapshotTrace.detail}</span><small>{roleSnapshotTrace.meta}</small></div>
       <button className="qmdp-secondary-btn" onClick={refresh} disabled={state.status === "running"}><ArrowsClockwise size={15}/>刷新基线</button>
-      {state.status === "running" && abortRef.current ? <button className="qmdp-danger-btn" onClick={stop}><WarningCircle size={15}/>停止批量生成</button> : <button className="qmdp-primary-btn" onClick={generateAll} disabled={!canGenerate || sourceState.status === "loading"} title={!canGenerate ? "仅主管理员可以生成全部角色报告" : sourceState.status === "loading" ? "正在加载角色数据" : "生成全部角色报告"}><Brain size={16}/>{reportLayoutChanged ? "应用排版并重新生成" : cachedComplete ? "重新生成全部报告" : "生成全部角色报告"}</button>}
+      {state.status === "running" && abortRef.current ? <button className="qmdp-danger-btn" onClick={stop}><WarningCircle size={15}/>停止批量生成</button> : <button className="qmdp-primary-btn" onClick={generateAll} disabled={!canGenerate || sourceState.status === "loading" || !generationRecipients.length} title={!canGenerate ? "仅主管理员可以生成全部角色报告" : sourceState.status === "loading" ? "正在加载角色数据" : !generationRecipients.length ? "请先勾选人员" : "只生成当前勾选的人员"}><Brain size={16}/>{reportLayoutChanged ? "应用排版并重新生成" : selectedCachedComplete ? `重新生成已选 ${generationRecipients.length} 人报告` : generationRecipients.length === recipients.length ? "生成全部角色报告" : `生成已选 ${generationRecipients.length} 人报告`}</button>}
     </section>
     {generationProgress.visible && <div className={`agent-generation-progress agent-generation-grid-progress ${state.status === "error" ? "error" : progressTotal > 0 && progressDone >= progressTotal ? "done" : ""}`} role="status" aria-live="polite"><div className="agent-generation-progress-head"><strong>{generationProgress.phase || "正在生成"}</strong><b>{progressDone}/{progressTotal}</b></div><div className="agent-generation-progress-cells" role="img" aria-label={`已完成 ${progressDone} 份，共 ${progressTotal} 份`}>{progressRecipientNames.map((name) => <i key={name} className={`${completedNameSet.has(name) ? "is-complete" : ""} ${generationProgress.currentName === name ? "is-current" : ""}`} title={`${name} · ${completedNameSet.has(name) ? "已完成" : generationProgress.currentName === name ? "正在生成" : "待生成"}`} />)}</div><small className="agent-generation-progress-detail">{generationProgress.detail}</small></div>}
     <section className="qmdp-card quality-agent-base-preview"><header><strong>角色报告基线</strong><span>{baseline.files.map((item) => `${item.module || spec.modules.find((module) => baselineMatchesModule(item, module))} · ${item.imported ? "外部导入" : item.fileName.startsWith("本地缓存-") ? "本地缓存" : "项目报告库"}`).join("、") || "尚未找到对应 Agent 报告"}</span></header><p>供应链角色只使用 IPQC Agent；研发角色同时使用 OQC、DQA、QMS Agent。个人证据不足时报告必须标记“待核实”。外部导入报告仅作为角色报告基线使用，不会覆盖项目报告库。</p></section>
-    {selectedContent && <section className={`qmdp-card quality-agent-report quality-agent-role-report ${activeReportLayoutClass}`}><header><strong>{role} · {recipient}</strong><span>{selectedHistoryKey === "current" ? `当前缓存 · ${reportLayoutLabel(layoutSkillName)}` : `${roleHistoryLabel(selectedHistoryReport || {})} · ${reportLayoutLabel(layoutSkillName)}`}</span><div><button className="qmdp-primary-btn" onClick={save}><FloppyDisk size={15}/>保存报告</button>{canSaveToServer && <button className="qmdp-primary-btn" onClick={dispatch}><PaperPlaneTilt size={15}/>创建发送任务</button>}</div></header><div className={`quality-agent-report-content ${activeReportLayoutClass}`}><div dangerouslySetInnerHTML={{ __html: reportContentParts.before }}/>{rankingRows.length > 0 && <RoleRankingChart rows={rankingRows} title={rankingTitle} metric={rankingMetric} role={role} recipient={recipient} period={displayedPeriod}/>}<div dangerouslySetInnerHTML={{ __html: reportContentParts.after }}/></div></section>}
+    {selectedContent && <section className={`qmdp-card quality-agent-report quality-agent-role-report ${activeReportLayoutClass}`}><header><strong>{role} · {recipient}</strong><span>{selectedHistoryKey === "current" ? `当前缓存 · ${reportLayoutLabel(layoutSkillName)}` : `${roleHistoryLabel(selectedHistoryReport || {})} · ${reportLayoutLabel(layoutSkillName)}`}</span><div><button className="qmdp-secondary-btn" onClick={download}><DownloadSimple size={15}/>导出报告</button><button className="qmdp-primary-btn" onClick={save}><FloppyDisk size={15}/>保存报告</button>{canSaveToServer && <button className="qmdp-primary-btn" onClick={dispatch}><PaperPlaneTilt size={15}/>创建发送任务</button>}</div></header><div className={`quality-agent-report-content ${activeReportLayoutClass}`}><div dangerouslySetInnerHTML={{ __html: rankedReportHtml }}/></div></section>}
     {!selectedContent && <section className="qmdp-card quality-agent-report"><header><strong>请选择人员查看报告</strong><span>{cachedComplete ? "缓存已完成" : "请先生成全部角色报告"}</span></header></section>}
     {state.message && <div className={`quality-agent-save-state ${state.status}`}><WarningCircle size={16}/>{state.message}</div>}
   </div>;

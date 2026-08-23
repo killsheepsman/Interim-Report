@@ -1,0 +1,15 @@
+{
+  "id": "research-briefing-v1",
+  "label": "研究简报网页风格",
+  "description": "结论优先、章节内图表、证据注释与宽松阅读节奏",
+  "renderer": "researchBriefing",
+  "version": 1,
+  "riskPalette": {
+    "red": "#B53A36",
+    "orange": "#A66214",
+    "yellow": "#8A6A00",
+    "blue": "#087EA4"
+  },
+  "tablePolicy": "chart-first",
+  "source": "original"
+}

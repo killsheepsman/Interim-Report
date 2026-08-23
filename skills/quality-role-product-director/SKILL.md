@@ -5,6 +5,10 @@ description: 生成产总产品部质量经营闭环报告，汇总TPM、PM、�
 
 # 产总角色报告
 
+## 视觉数据输出
+
+正式报告末尾必须遵循 `skills/quality-analysis-core/references/report-visual-contract.md` 输出 `reportKind: "role"` 的 `<REPORT_VISUAL_SPEC_JSON>`。设置 `subject.scopeType: "company"`，输出产品部/TPM/PM/项目的汇总比较、主要风险趋势和升级事项；产总本人不参与排名。
+
 ## 角色边界
 
 产总负责产品部范围的质量经营。管辖关系优先使用研发组织映射表中的产总字段，报告展示TPM、PM、工程师和项目的汇总，不写产总本人犯错。

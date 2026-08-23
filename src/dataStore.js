@@ -1,3 +1,5 @@
+import { extractReportVisualSpec, sanitizeHumanReportContent } from "./reportSanitizer.js";
+
 const DB_NAME = "qms-quality-analytics";
 const DB_VERSION = 1;
 const STORE_NAME = "app-state";
@@ -9,11 +11,38 @@ const REMOTE_APPLIED_DATE_RANGE_KEY = "applied-date-range";
 const DQA_ENGINEER_SUPPLEMENT_KEY = "dqa-engineer-supplement";
 const PROJECT_NAME_MAPPING_KEY = "project-name-mapping";
 const OQC_EQUIPMENT_RULE_CACHE_KEY = "oqc-equipment-rule-cache";
+const QUALITY_AGENT_RUNS_KEY = "quality-agent-runs";
+const QUALITY_AGENT_SNAPSHOT_REGISTRY_KEY = "quality-agent-snapshot-registry";
+const QUALITY_AGENT_ROLE_SNAPSHOT_REGISTRY_KEY = "quality-agent-role-snapshot-registry";
 const LOCAL_AI_CONFIG_KEY = "qms-ai-config-local-v1";
 const LOCAL_AGENT_REPORTS_KEY = "qms-local-agent-reports-v1";
 const LOCAL_AGENT_REPORTS_INDEX_KEY = "qms-local-agent-reports-index-v2";
 const LOCAL_AGENT_REPORT_CONTENT_PREFIX = "qms-local-agent-report-content-v2:";
 const LOCAL_AI_REPORTS_KEY = "qms-local-ai-reports-v1";
+
+const reportFileSegment = (value, fallback = "unknown") => String(value || fallback)
+  .replace(/[<>:"/\\|?*\u0000-\u001f]/g, "_")
+  .replace(/\s+/g, " ")
+  .trim()
+  .slice(0, 100) || fallback;
+
+const localAgentReportFileName = (report, stamp) => [
+  "质量分析 Agent",
+  reportFileSegment(report.module, "quality"),
+  report.skillName ? reportFileSegment(report.skillName) : "",
+  report.role ? reportFileSegment(report.role) : "",
+  report.recipient ? reportFileSegment(report.recipient) : "",
+  `model-${reportFileSegment(report.model, "unknown")}`,
+  `ip-${reportFileSegment(report.creatorIp, "unknown")}`,
+  stamp,
+].filter(Boolean).join("-") + ".md";
+
+const localReportVisualSpecFromContent = (content = "") => extractReportVisualSpec(content) || null;
+const localAgentReportEnvelope = (report = {}) => ({
+  ...report,
+  content: sanitizeHumanReportContent(report.content || ""),
+  visualSpec: report.visualSpec && typeof report.visualSpec === "object" ? report.visualSpec : localReportVisualSpecFromContent(report.content || ""),
+});
 
 const defaultLocalAiConfig = { baseUrl: "https://new.ahei.asia/v1", model: "", apiKey: "" };
 const readLocalAiConfig = () => {
@@ -88,7 +117,8 @@ const requestSharedState = async (key, options = {}) => {
   const base = sharedApiBase();
   if (!base) return null;
   try {
-    const response = await fetch(`${base}/state/${key}`, {
+    const query = options.query ? `?${new URLSearchParams(options.query).toString()}` : "";
+    const response = await fetch(`${base}/state/${key}${query}`, {
       headers: { "Content-Type": "application/json", ...(options.headers || {}) },
       ...options,
     });
@@ -360,6 +390,40 @@ export const loadOqcEquipmentRuleCache = async () => {
     : { ready: false, results: {} };
 };
 
+export const loadQualityAgentRunsFromServer = async () => {
+  const payload = await requestSharedState(QUALITY_AGENT_RUNS_KEY, { method: "GET", cache: "no-store" });
+  const value = payload?.value;
+  return value && typeof value === "object" && !Array.isArray(value) ? value : {};
+};
+
+export const saveQualityAgentRunsToServer = async (runs) => {
+  const value = runs && typeof runs === "object" && !Array.isArray(runs) ? runs : {};
+  const saved = await saveRemoteState(QUALITY_AGENT_RUNS_KEY, value);
+  return saved && typeof saved === "object" && !Array.isArray(saved) ? saved : null;
+};
+
+export const loadQualityAgentSnapshotRegistry = async ({ indexOnly = false } = {}) => {
+  const payload = await requestSharedState(QUALITY_AGENT_SNAPSHOT_REGISTRY_KEY, { method: "GET", cache: "no-store", query: indexOnly ? { view: "index" } : undefined });
+  const value = payload?.value;
+  return value && typeof value === "object" && !Array.isArray(value) ? value : null;
+};
+
+export const saveQualityAgentSnapshotRegistry = async (registry) => {
+  const value = registry && typeof registry === "object" && !Array.isArray(registry) ? registry : {};
+  const saved = await saveRemoteState(QUALITY_AGENT_SNAPSHOT_REGISTRY_KEY, value);
+  return saved && typeof saved === "object" && !Array.isArray(saved) ? saved : null;
+};
+export const loadQualityAgentRoleSnapshotRegistry = async ({ indexOnly = false } = {}) => {
+  const payload = await requestSharedState(QUALITY_AGENT_ROLE_SNAPSHOT_REGISTRY_KEY, { method: "GET", cache: "no-store", query: indexOnly ? { view: "index" } : undefined });
+  const value = payload?.value;
+  return value && typeof value === "object" && !Array.isArray(value) ? value : null;
+};
+export const saveQualityAgentRoleSnapshotRegistry = async (registry) => {
+  const value = registry && typeof registry === "object" && !Array.isArray(registry) ? registry : {};
+  const saved = await saveRemoteState(QUALITY_AGENT_ROLE_SNAPSHOT_REGISTRY_KEY, value);
+  return saved && typeof saved === "object" && !Array.isArray(saved) ? saved : null;
+};
+
 export const saveCachedAnalysis = async (cache) => {
   await saveAnalysisCacheLocal(cache);
   const remoteSaved = await saveRemoteState(REMOTE_ANALYSIS_CACHE_KEY, cache);
@@ -456,7 +520,14 @@ const aiApiJson = async (path, options = {}) => {
   if (!base) throw new Error("当前页面未连接QMS后端，请通过项目服务地址打开");
   let response;
   try { response = await fetch(`${base}${path}`, { headers: { "Content-Type": "application/json", ...(options.headers || {}) }, ...options }); }
-  catch { throw new Error("无法连接本机QMS后端，请先启动或重启项目服务"); }
+  catch (requestError) {
+    if (options.signal?.aborted || requestError?.name === "AbortError") {
+      const abortError = new Error("已停止本次请求");
+      abortError.name = "AbortError";
+      throw abortError;
+    }
+    throw new Error("无法连接本机QMS后端，请先启动或重启项目服务");
+  }
   const payload = await response.json().catch(() => ({}));
   if (response.status === 404) throw new Error("当前QMS后端版本过旧，请重启项目服务后再试");
   if (!response.ok) throw new Error(payload?.error || `AI接口请求失败（${response.status}）`);
@@ -502,8 +573,19 @@ export const loadAgentReports = async (filters = {}) => {
   const query = new URLSearchParams(Object.entries(filters).filter(([, value]) => value !== undefined && value !== null && String(value).trim()).map(([key, value]) => [key, String(value)]));
   return await aiApiJson(`/ai/agent-reports${query.size ? `?${query.toString()}` : ""}`, { method: "GET", cache: "no-store" });
 };
-export const loadAgentReport = async (fileName) => await aiApiJson(`/ai/agent-reports/${encodeURIComponent(fileName)}`, { method: "GET", cache: "no-store" });
-export const saveAgentReportFile = async (report) => await aiApiJson("/ai/agent-reports", { method: "POST", body: JSON.stringify({ ...report, feature: "qualityAgent" }) });
+export const loadAgentReport = async (fileName) => {
+  const controller = typeof AbortController === "function" ? new AbortController() : null;
+  const timer = controller ? setTimeout(() => controller.abort(), 15000) : null;
+  try {
+    return await aiApiJson(`/ai/agent-reports/${encodeURIComponent(fileName)}`, { method: "GET", cache: "no-store", ...(controller ? { signal: controller.signal } : {}) });
+  } catch (error) {
+    if (error?.name === "AbortError" || /已停止本次请求/.test(String(error?.message || ""))) throw new Error("读取历史报告超时，请检查项目服务或 PostgreSQL 连接");
+    throw error;
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+};
+export const saveAgentReportFile = async (report) => aiApiJson("/ai/agent-reports", { method: "POST", body: JSON.stringify({ ...report, content: sanitizeHumanReportContent(report.content || ""), visualSpec: report.visualSpec && typeof report.visualSpec === "object" ? report.visualSpec : extractReportVisualSpec(report.content || ""), feature: "qualityAgent" }) });
 export const deleteAgentReport = async (fileName) => await aiApiJson(`/ai/agent-reports/${encodeURIComponent(fileName)}`, { method: "DELETE" });
 
 export const loadLocalAgentReports = async () => {
@@ -526,20 +608,30 @@ export const loadLocalAgentReport = async (fileName) => {
 export const saveLocalAgentReport = async (report = {}) => {
   const now = new Date();
   const stamp = now.toISOString().replace(/[:.]/g, "-");
-  const safe = String(report.module || "AI分析").replace(/[\\/:*?"<>|]/g, "-");
-  const fileName = report.fileName || `本地-Agent报告-${safe}-${stamp}.md`;
-  const item = { ...report, fileName, localOnly: true, updatedAt: now.toISOString(), savedAt: now.toISOString() };
+  const content = sanitizeHumanReportContent(report.content || "");
+  const reportFileName = report.fileName || localAgentReportFileName(report, stamp);
+  const item = {
+    ...report,
+    content,
+    visualSpec: report.visualSpec && typeof report.visualSpec === "object" ? report.visualSpec : localReportVisualSpecFromContent(report.content || ""),
+    model: String(report.model || ""),
+    creatorIp: String(report.creatorIp || ""),
+    fileName: reportFileName,
+    localOnly: true,
+    updatedAt: now.toISOString(),
+    savedAt: now.toISOString(),
+  };
   try {
     await ensureLocalAgentReportStore();
-    const reports = [item, ...readLocalAgentReportIndex().filter((entry) => entry.fileName !== fileName)].slice(0, 300);
+    const reports = [item, ...readLocalAgentReportIndex().filter((entry) => entry.fileName !== reportFileName)].slice(0, 300);
     const metadata = reports.map(({ content, ...entry }) => ({ ...entry, localOnly: true }));
     await transaction("readwrite", (store) => {
-      store.put(item, `${LOCAL_AGENT_REPORT_CONTENT_PREFIX}${fileName}`);
+      store.put(item, `${LOCAL_AGENT_REPORT_CONTENT_PREFIX}${reportFileName}`);
       return store.put(metadata, LOCAL_AGENT_REPORTS_INDEX_KEY);
     });
     writeLocalAgentReportIndex(metadata);
   } catch {
-    const reports = [item, ...readLegacyLocalAgentReports().filter((entry) => entry.fileName !== fileName)];
+    const reports = [item, ...readLegacyLocalAgentReports().filter((entry) => entry.fileName !== reportFileName)];
     try { localStorage.setItem(LOCAL_AGENT_REPORTS_KEY, JSON.stringify(reports.slice(0, 30))); } catch {}
   }
   return item;
@@ -563,7 +655,8 @@ export const saveLocalAiReport = (report = {}) => {
   const now = new Date();
   const stamp = now.toISOString().replace(/[:.]/g, "-");
   const safe = String(report.module || "AI分析").replace(/[\\/:*?"<>|]/g, "-");
-  const item = { ...report, fileName: report.fileName || `本地-AI分析-${safe}-${stamp}.json`, localOnly: true, savedAt: now.toISOString() };
+  const skill = report.skillName ? `-${reportFileSegment(report.skillName)}` : "";
+  const item = { ...report, fileName: report.fileName || `本地-AI分析-${safe}${skill}-${stamp}.json`, localOnly: true, savedAt: now.toISOString() };
   writeLocalAiReports([item, ...readLocalAiReports().filter((entry) => entry.fileName !== item.fileName)]);
   return item;
 };

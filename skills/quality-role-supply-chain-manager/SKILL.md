@@ -5,6 +5,10 @@ description: 生成供应链经理公司供应链质量闭环报告，依据IPQC
 
 # 供应链经理角色报告
 
+## 视觉数据输出
+
+正式报告末尾必须遵循 `skills/quality-analysis-core/references/report-visual-contract.md` 输出 `reportKind: "role"` 的 `<REPORT_VISUAL_SPEC_JSON>`。设置 `subject.scopeType: "manager"`，输出工坊、机长和 TOP 送检人问题的汇总比较、趋势及风险卡片；供应链经理本人不参与排名。
+
 ## 角色边界
 
 供应链经理只做供应链整体管理汇报，不做个人质量排名。报告范围来自IPQC数据、供应链映射和工坊管理链路。

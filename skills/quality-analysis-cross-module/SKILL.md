@@ -5,6 +5,10 @@ description: 生成 DQA、IQC、IPQC、OQC、QMS 跨模块质量链分析，使�
 
 # 跨模块质量链分析
 
+## 视觉数据输出
+
+正式报告末尾必须遵循 `skills/quality-analysis-core/references/report-visual-contract.md` 输出 `reportKind: "cross-module"` 的 `<REPORT_VISUAL_SPEC_JSON>`。跨模块图表只使用可追溯连接：质量链阶段流向、共同机制 Pareto、模块可信度矩阵和端到端风险主题；弱连接只能展示为待验证假设，不得画成已证实因果链。
+
 先执行 `quality-analysis-core`，再分别遵守参与模块的专项 Skill。
 
 ## 证据连接规则

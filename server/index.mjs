@@ -32,9 +32,13 @@ const host = process.env.HOST || "0.0.0.0";
 const trustProxy = process.env.TRUST_PROXY === "true";
 const maxBodyBytes = Number(process.env.MAX_BODY_MB || 1024) * 1024 * 1024;
 const OQC_EQUIPMENT_RULE_CACHE_KEY = "oqc-equipment-rule-cache";
+const QUALITY_AGENT_RUNS_KEY = "quality-agent-runs";
+const QUALITY_SNAPSHOT_REGISTRY_KEY = "quality-agent-snapshot-registry";
+const QUALITY_ROLE_SNAPSHOT_REGISTRY_KEY = "quality-agent-role-snapshot-registry";
 const oqcRuleDimensionKeys = ["client", "customerProductCategory", "series", "businessCategory", "productForm", "detailCategory", "process"];
-const allowedKeys = new Set(["imported-sources", "analysis-cache", "applied-date-range", "dqa-engineer-supplement", "project-name-mapping", OQC_EQUIPMENT_RULE_CACHE_KEY]);
-const defaultValueFor = (key) => key === "analysis-cache" || key === "applied-date-range" || key === "dqa-engineer-supplement" ? null : key === "project-name-mapping" ? { rules: {}, mappings: [] } : key === OQC_EQUIPMENT_RULE_CACHE_KEY ? { ready: false, results: {} } : [];
+const allowedKeys = new Set(["imported-sources", "analysis-cache", "applied-date-range", "dqa-engineer-supplement", "project-name-mapping", OQC_EQUIPMENT_RULE_CACHE_KEY, QUALITY_AGENT_RUNS_KEY, QUALITY_SNAPSHOT_REGISTRY_KEY, QUALITY_ROLE_SNAPSHOT_REGISTRY_KEY]);
+const defaultSnapshotRegistry = () => ({ schemaVersion: "quality-agent-snapshot-registry-v1", updatedAt: new Date().toISOString(), selectedRuleId: "iqc", rules: [], history: [] });
+const defaultValueFor = (key) => key === "analysis-cache" || key === "applied-date-range" || key === "dqa-engineer-supplement" ? null : key === "project-name-mapping" ? { rules: {}, mappings: [] } : key === OQC_EQUIPMENT_RULE_CACHE_KEY ? { ready: false, results: {} } : key === QUALITY_AGENT_RUNS_KEY ? {} : key === QUALITY_SNAPSHOT_REGISTRY_KEY ? defaultSnapshotRegistry() : key === QUALITY_ROLE_SNAPSHOT_REGISTRY_KEY ? { schemaVersion: "quality-agent-role-snapshot-v1", updatedAt: new Date().toISOString(), history: [] } : [];
 
 const migrateAgentReportFilesToPostgres = async () => {
   await fs.mkdir(aiReportDir, { recursive: true });
@@ -121,6 +125,12 @@ defaultPermissionConfig.apis["PUT /api/state/project-name-mapping"] = { public: 
 defaultPermissionConfig.apis["GET /api/state/project-name-mapping"] = { public: true, deputy: true, label: "项目名称映射" };
 
 defaultPermissionConfig.apis["GET /api/state/oqc-equipment-rule-cache"] = { public: true, deputy: true, label: "OQC equipment rule cache" };
+defaultPermissionConfig.apis["GET /api/state/quality-agent-runs"] = { public: true, deputy: true, label: "Quality Agent run history" };
+defaultPermissionConfig.apis["PUT /api/state/quality-agent-runs"] = { public: false, deputy: false, label: "Save Quality Agent run history" };
+defaultPermissionConfig.apis["GET /api/state/quality-agent-snapshot-registry"] = { public: true, deputy: true, label: "后台快照注册表" };
+defaultPermissionConfig.apis["PUT /api/state/quality-agent-snapshot-registry"] = { public: false, deputy: true, label: "保存后台快照注册表" };
+defaultPermissionConfig.apis["GET /api/state/quality-agent-role-snapshot-registry"] = { public: true, deputy: true, label: "角色快照注册表" };
+defaultPermissionConfig.apis["PUT /api/state/quality-agent-role-snapshot-registry"] = { public: false, deputy: true, label: "保存角色快照注册表" };
 
 const mimeTypes = {
   ".html": "text/html; charset=utf-8",
@@ -259,14 +269,22 @@ const parseAiStream = (text) => {
 };
 const requestAi = async (config, pathname, options = {}) => {
   if (!config.apiKey) throw new Error("Please configure the API key first");
+  const { signal: callerSignal, ...requestOptions } = options;
   const controller = new AbortController();
   const timeoutMs = Number(process.env.AI_TIMEOUT_MS || 300000);
-  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  let timedOut = false;
+  const abortFromCaller = () => controller.abort(callerSignal?.reason);
+  if (callerSignal?.aborted) abortFromCaller();
+  else callerSignal?.addEventListener("abort", abortFromCaller, { once: true });
+  const timeout = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, timeoutMs);
   try {
-    const requestHeaders = { Authorization: `Bearer ${config.apiKey}`, ...(options.body ? { "Content-Type": "application/json" } : {}), ...(options.headers || {}) };
+    const requestHeaders = { Authorization: `Bearer ${config.apiKey}`, ...(requestOptions.body ? { "Content-Type": "application/json" } : {}), ...(requestOptions.headers || {}) };
     Object.keys(requestHeaders).forEach((key) => requestHeaders[key] == null && delete requestHeaders[key]);
     const response = await fetch(`${config.baseUrl}${pathname}`, {
-      ...options,
+      ...requestOptions,
       signal: controller.signal,
       headers: requestHeaders,
     });
@@ -281,12 +299,18 @@ const requestAi = async (config, pathname, options = {}) => {
       }
       throw new Error(`AI上游返回 ${response.status}：${upstreamMessage}`);
     }
-    return options.stream ? (parseAiStream(text) || body) : body;
+    return requestOptions.stream ? (parseAiStream(text) || body) : body;
   } catch (error) {
+    if (controller.signal.aborted && callerSignal?.aborted && !timedOut) {
+      const abortError = new Error("客户端已停止本次 AI 分析");
+      abortError.name = "AbortError";
+      throw abortError;
+    }
     if (error?.name === "AbortError") throw new Error(`AI分析超过${Math.round(timeoutMs / 1000)}秒，已停止本次请求；已完成阶段不会丢失`);
     throw error;
   } finally {
     clearTimeout(timeout);
+    callerSignal?.removeEventListener("abort", abortFromCaller);
   }
 };
 
@@ -591,6 +615,17 @@ const sanitizeSegment = (value) => String(value || "UNKNOWN")
   .replace(/\s+/g, " ")
   .trim()
   .slice(0, 180) || "UNKNOWN";
+
+const sanitizeHumanReportContent = (content = "") => String(content || "")
+  .replace(/质量总监(?:综合)?判断/g, "质量复盘摘要")
+  .replace(/^\s*#{1,6}\s*质量复盘摘要\s*$/gmi, "# 质量复盘摘要")
+  .replace(/^\s*#{1,6}\s*(?:REPORT_VISUAL_SPEC_JSON|ACTION_LEDGER_JSON)\s*$/gmi, "")
+  .replace(/<REPORT_VISUAL_SPEC_JSON>[\s\S]*?(?:<\/REPORT_VISUAL_SPEC_JSON>|$)|<ACTION_LEDGER_JSON>[\s\S]*?(?:<\/ACTION_LEDGER_JSON>|$)/gi, "")
+  .replace(/^\s*(?:[-*]|\d+[.)])?\s*证据(?:编号)?\s*[:：][^\n\r]*[SMOCX]-[A-Z0-9]+-\d{3}[^\n\r]*$/gmi, "")
+  .replace(/\s*[（(]?\s*证据(?:编号)?\s*[:：][^)）\n\r]*[SMOCX]-[A-Z0-9]+-\d{3}[^)）\n\r]*[)）]?/g, "")
+  .replace(/[ \t]+$/gm, "")
+  .replace(/\n{3,}/g, "\n\n")
+  .trim();
 
 const splitBuffer = (buffer, delimiter) => {
   const parts = [];
@@ -965,6 +1000,14 @@ const handleApi = async (req, res) => {
 
   if (req.method === "GET") {
     const value = await loadStateValue(key);
+    const view = new URL(req.url, "http://local").searchParams.get("view");
+    if (view === "index" && value && typeof value === "object") {
+      const index = { ...value, history: Array.isArray(value.history) ? value.history.map((entry) => {
+        const { snapshot, ...meta } = entry || {};
+        return { ...meta, summary: entry?.summary || {}, peopleCount: Array.isArray(snapshot?.people) ? snapshot.people.length : Number(snapshot?.peopleCount || 0) };
+      }) : [] };
+      return sendJson(res, 200, { key, value: index });
+    }
     return sendJson(res, 200, { key, value: value ?? defaultValueFor(key) });
   }
 
@@ -1062,8 +1105,9 @@ const handleAi = async (req, res) => {
     const local = new Date(now.getTime() - now.getTimezoneOffset() * 60000);
     const stamp = local.toISOString().replace(/[-:]/g, "").replace("T", "-").replace(/\.(\d{3})Z$/, "-$1");
     const moduleName = sanitizeSegment(payload.module || (hasReportPackage ? "全部报告包" : "AI分析"));
-    const fileName = `QMS-AI分析-${moduleName}-${stamp}.json`;
-    const savedPayload = { ...payload, content: hasSingleReport ? payload.content.trim() : payload.content, savedAt: now.toISOString() };
+    const skillName = String(payload.skillName || payload.selectedSkill || "").trim();
+    const fileName = "QMS-AI分析-" + moduleName + (skillName ? "-" + sanitizeSegment(skillName) : "") + "-" + stamp + ".json";
+    const savedPayload = { ...payload, content: hasSingleReport ? sanitizeHumanReportContent(payload.content.trim()) : payload.content, savedAt: now.toISOString() };
     await fs.mkdir(aiReportDir, { recursive: true });
     await fs.writeFile(path.join(aiReportDir, fileName), JSON.stringify(savedPayload, null, 2), "utf8");
     return sendJson(res, 200, { ok: true, fileName, savedAt: savedPayload.savedAt, relativePath: `outputs/ai_saved_reports/${fileName}` });
@@ -1115,21 +1159,30 @@ const handleAi = async (req, res) => {
   if (pathname === "/api/ai/agent-reports" && req.method === "POST") {
     if (!user.isAdmin) return sendJson(res, 403, { error: "只有主管理员可以保存 Agent 报告到服务器" });
     const payload = await getPayload();
-    const content = String(payload.content || "");
+    const content = sanitizeHumanReportContent(payload.content || "");
     if (!content.trim()) return sendJson(res, 400, { error: "Agent报告内容为空，无法保存" });
     const now = new Date();
     const local = new Date(now.getTime() - now.getTimezoneOffset() * 60000);
     const stamp = local.toISOString().replace(/[-:]/g, "").replace("T", "-").replace(/\.(\d{3})Z$/, "-$1");
-    const layoutSkillName = ["quality-report-layout-apple", "quality-report-layout-notion"].includes(String(payload.layoutSkillName || "")) ? String(payload.layoutSkillName) : "";
-    const fileSegments = [payload.module || "质量分析", layoutSkillName, payload.role, payload.recipient].filter(Boolean).map((value) => sanitizeSegment(value));
+    const layoutProfileId = String(payload.layoutProfileId || payload.layoutSkillName || "research-briefing-v1").trim();
+    const safeLayoutProfileId = /^[a-z0-9][a-z0-9-]{0,80}$/i.test(layoutProfileId) ? layoutProfileId : "research-briefing-v1";
+    const fileSegments = [payload.module || "质量分析", String(payload.skillName || "").trim(), safeLayoutProfileId, payload.role, payload.recipient].filter(Boolean).map((value) => sanitizeSegment(value));
     const fileName = `QMS-Agent报告-${fileSegments.join("-")}-${stamp}.md`;
+    {
+    const originalFileName = fileName;
+    const modelName = String(payload.model || "").trim();
+    const creatorIp = String(user.ip || "").trim();
+    const finalFileName = `${originalFileName.slice(0, -3)}-model-${sanitizeSegment(modelName || "unknown")}-ip-${sanitizeSegment(creatorIp || "unknown")}.md`;
     await fs.mkdir(aiReportDir, { recursive: true });
-    const filePath = path.join(aiReportDir, fileName);
-    const metadata = { fileName, module: String(payload.module || "质量分析"), role: String(payload.role || ""), recipient: String(payload.recipient || ""), skillName: String(payload.skillName || ""), layoutSkillName, period: payload.period && typeof payload.period === "object" ? payload.period : {}, savedAt: now.toISOString(), updatedAt: now.toISOString(), relativePath: `outputs/ai_saved_reports/${fileName}` };
+    const filePath = path.join(aiReportDir, finalFileName);
+    const metadata = { fileName: finalFileName, module: String(payload.module || "质量分析"), role: String(payload.role || ""), recipient: String(payload.recipient || ""), skillName: String(payload.skillName || ""), layoutProfileId: safeLayoutProfileId, layoutSkillName: safeLayoutProfileId, period: payload.period && typeof payload.period === "object" ? payload.period : {}, visualSpec: payload.visualSpec && typeof payload.visualSpec === "object" ? payload.visualSpec : null, savedAt: now.toISOString(), updatedAt: now.toISOString(), relativePath: `outputs/ai_saved_reports/${finalFileName}` };
+    metadata.model = modelName;
+    metadata.creatorIp = creatorIp;
     await fs.writeFile(filePath, content, "utf8");
     await fs.writeFile(`${filePath}.json`, JSON.stringify(metadata, null, 2), "utf8");
     const database = await writePostgresAgentReport({ ...metadata, content });
     return sendJson(res, 200, { ok: true, ...metadata, storage: database.available ? "postgres+file" : "file" });
+    }
   }
   if (pathname === "/api/ai/agent-reports" && req.method === "GET") {
     await fs.mkdir(aiReportDir, { recursive: true });
@@ -1156,14 +1209,14 @@ const handleAi = async (req, res) => {
       const stat = await fs.stat(filePath);
       let metadata = {};
       try { metadata = JSON.parse(await fs.readFile(`${filePath}.json`, "utf8")); } catch {}
-      const layoutSkillName = metadata.layoutSkillName || (name.includes("-quality-report-layout-apple-") ? "quality-report-layout-apple" : name.includes("-quality-report-layout-notion-") ? "quality-report-layout-notion" : "");
+      const layoutProfileId = metadata.layoutProfileId || metadata.layoutSkillName || (name.match(/-(research-briefing-v1)-/)?.[1] || "research-briefing-v1");
       const fallbackModuleMatch = !requestedModule || name.startsWith(`QMS-Agent报告-${sanitizeSegment(requestedModule)}-`);
       const fallbackRoleMatch = !requestedRole || name.includes(`-${sanitizeSegment(requestedRole)}-`);
       const fallbackRecipientMatch = !requestedRecipient || name.includes(`-${sanitizeSegment(requestedRecipient)}-`);
       if (requestedModule && (metadata.module ? metadata.module !== requestedModule : !fallbackModuleMatch)) continue;
       if (requestedRole && (metadata.role ? metadata.role !== requestedRole : !fallbackRoleMatch)) continue;
       if (requestedRecipient && (metadata.recipient ? metadata.recipient !== requestedRecipient : !fallbackRecipientMatch)) continue;
-      reports.push({ ...metadata, fileName: name, layoutSkillName, relativePath: `outputs/ai_saved_reports/${name}`, size: stat.size, updatedAt: metadata.updatedAt || stat.mtime.toISOString() });
+      reports.push({ ...metadata, fileName: name, layoutProfileId, layoutSkillName: layoutProfileId, relativePath: `outputs/ai_saved_reports/${name}`, size: stat.size, updatedAt: metadata.updatedAt || stat.mtime.toISOString() });
     }
     reports.sort((left, right) => String(right.updatedAt).localeCompare(String(left.updatedAt)));
     return sendJson(res, 200, { reports: reports.slice(offset, offset + limit), total: reports.length, limit, offset, storage: "file" });
@@ -1174,17 +1227,23 @@ const handleAi = async (req, res) => {
     if (!/^QMS-Agent报告-.+\.md$/i.test(fileName) || fileName.includes("..")) return sendJson(res, 400, { error: "无效的 Agent 报告文件" });
     const filePath = path.join(aiReportDir, fileName);
     if (req.method === "GET") {
+      // The report is always written to the project report directory when it
+      // is saved. Read that file first so a slow/unavailable PostgreSQL pool
+      // cannot leave history-report requests hanging indefinitely. PostgreSQL
+      // remains the fallback for reports that were stored before file export
+      // was enabled.
+      try {
+        const layoutProfileId = fileName.match(/-(research-briefing-v1)-/)?.[1] || "research-briefing-v1";
+        let metadata = {};
+        try { metadata = JSON.parse(await fs.readFile(`${filePath}.json`, "utf8")); } catch {}
+        const content = await fs.readFile(filePath, "utf8");
+        return sendJson(res, 200, { ...metadata, fileName, layoutProfileId: metadata.layoutProfileId || metadata.layoutSkillName || layoutProfileId, layoutSkillName: metadata.layoutProfileId || metadata.layoutSkillName || layoutProfileId, content });
+      } catch {}
       const database = await readPostgresAgentReport(fileName);
       if (database.available && database.found) {
         return sendJson(res, 200, { ...database.report, relativePath: `outputs/ai_saved_reports/${fileName}` });
       }
-      try {
-        const layoutSkillName = fileName.includes("-quality-report-layout-apple-") ? "quality-report-layout-apple" : fileName.includes("-quality-report-layout-notion-") ? "quality-report-layout-notion" : "";
-        let metadata = {};
-        try { metadata = JSON.parse(await fs.readFile(`${filePath}.json`, "utf8")); } catch {}
-        return sendJson(res, 200, { ...metadata, fileName, layoutSkillName: metadata.layoutSkillName || layoutSkillName, content: await fs.readFile(filePath, "utf8") });
-      }
-      catch { return sendJson(res, 404, { error: "Agent 报告不存在" }); }
+      return sendJson(res, 404, { error: "Agent 报告不存在" });
     }
     if (req.method === "DELETE") {
       if (!user.isAdmin) return sendJson(res, 403, { error: "只有主管理员可以删除服务器 Agent 报告" });
@@ -1240,7 +1299,19 @@ const handleAi = async (req, res) => {
       else requestBody.max_tokens = maxTokens;
     }
     if (!responsesApi && Number.isFinite(Number(payload.temperature))) requestBody.temperature = Number(payload.temperature);
-    const result = await requestAi(config, responsesApi ? "/responses" : "/chat/completions", { method: "POST", body: JSON.stringify(requestBody), stream });
+    const clientController = new AbortController();
+    const abortForDisconnect = () => {
+      if (!res.writableEnded && !clientController.signal.aborted) clientController.abort();
+    };
+    req.once("aborted", abortForDisconnect);
+    res.once("close", abortForDisconnect);
+    let result;
+    try {
+      result = await requestAi(config, responsesApi ? "/responses" : "/chat/completions", { method: "POST", body: JSON.stringify(requestBody), stream, signal: clientController.signal });
+    } finally {
+      req.removeListener("aborted", abortForDisconnect);
+      res.removeListener("close", abortForDisconnect);
+    }
     return sendJson(res, 200, { model: config.model, content: extractAiContent(result), usage: result?.usage || null });
   }
   return sendJson(res, 404, { error: "Unknown AI endpoint" });
@@ -1294,6 +1365,7 @@ const server = createServer(async (req, res) => {
     return await serveStatic(req, res);
   } catch (error) {
     console.error(error);
+    if (error?.name === "AbortError" || res.destroyed || res.writableEnded) return;
     if (req.url.startsWith("/api/ai/")) {
       return sendJson(res, 502, { error: String(error?.message || "AI接口调用失败").slice(0, 1000) });
     }

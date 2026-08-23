@@ -5,6 +5,10 @@ description: 生成 DQA 研发质量分析 Agent 报告，按公司、产品部�
 
 # DQA 研发质量分析
 
+## 视觉数据输出
+
+平台会按固定统计快照生成图表契约；本 Skill 只输出人读版的事实、结论和行动，不重复输出 `<REPORT_VISUAL_SPEC_JSON>`。DQA 优先呈现研发问题、ECN、非 BOM 加工件和设计评审的同期比较、问题 Pareto、产品部/TPM 对比、研发主题交叉热力图；将待验证根因保留为风险卡片而非虚构图表。
+
 先执行 `quality-analysis-core`，再应用本模块规则。
 
 ## 数据与口径

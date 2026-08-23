@@ -1,0 +1,4 @@
+interface:
+  display_name: "IPQC 决策闭环"
+  short_description: "用第一性原理和证据闸门生成IPQC管理决策报告"
+  default_prompt: "使用IPQC决策闭环Skill生成或升级IPQC报告，保留原口径，输出事实-风险-验证-责任-关闭闭环。"

@@ -5,6 +5,10 @@ description: 生成研发工程师个人质量闭环 Agent 报告。综合 DQA �
 
 # 研发工程师角色质量闭环报告
 
+## 视觉数据输出
+
+正式报告末尾必须遵循 `skills/quality-analysis-core/references/report-visual-contract.md` 输出 `reportKind: "role"` 的 `<REPORT_VISUAL_SPEC_JSON>`。设置 `subject.scopeType: "direct"`，输出本人的研发问题、ECN、非 BOM 加工件、评审参与和评审意见图表、本人排名及匹配考试主题；本人排名项必须标记 `focus: true`。
+
 ## 1. 角色边界
 
 只分析当前研发工程师的直接质量证据。报告要回答：本人设计、变更和评审输出在哪个环节产生风险，风险是否流出，证据是什么，以及如何防止复发。

@@ -25,13 +25,23 @@ export const metricLine = (line = "") => {
   const label = matched[1].replace(/[*`]/g, "").trim();
   const value = matched[2].replace(/[*`]/g, "").trim();
   if (!label || !value || value.length > 90) return null;
+  // Evidence confidence is already shown by the audit badge. Do not promote
+  // repeated per-card "证据等级：A" lines into duplicate KPI cards.
+  if (/(证据等级|数据可信度|可信度)/i.test(label)) return null;
   // Only promote short factual fields to KPI cards. Long conclusions stay as
   // paragraphs so the renderer never changes the model's meaning.
   if (!/(数量|总数|记录|良率|不良率|密度|占比|等级|可信度|周期|更新时间|范围|批次|风险|指标|数量|rate|count|score|period)/i.test(label)) return null;
   return { label, value };
 };
 
-export const isLayoutMarker = (line = "") => /^<!--\s*qms-layout:/i.test(String(line || "").trim());
+// Internal prompt metadata must never appear in the reader-facing report.
+// The model may echo the fixed-snapshot key list as prose or inline code.
+export const isMachineMetadataLine = (line = "") => {
+  const text = String(line || "").trim();
+  return /(当前快照.*(?:指标键|metrics)|可用指标键|固定快照.*(?:指标键|metrics)|metricKey\s*只能|内部字段|machine[-\s]?readable)/i.test(text);
+};
+
+export const isLayoutMarker = (line = "") => /^(?:<!--\s*qms-layout:|<REPORT_VISUAL_SPEC_JSON>|<\/REPORT_VISUAL_SPEC_JSON>)/i.test(String(line || "").trim());
 
 export const tableToneClass = (sectionTitle = "") => `agent-report-table-wrap tone-${sectionTone(sectionTitle)}`;
 export const calloutToneClass = (value = "") => `agent-report-callout tone-${sectionTone(value)}`;

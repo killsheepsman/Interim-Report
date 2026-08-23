@@ -1,0 +1,4 @@
+interface:
+  display_name: "IQC质量分析 - Musk"
+  short_description: "用第一性原理和证据闸门生成IQC管理决策闭环报告"
+  default_prompt: "Use $quality-analysis-iqc-musk to turn the fixed IQC snapshot into a management decision and evidence-gated closure report."

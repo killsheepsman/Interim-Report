@@ -5,6 +5,10 @@ description: 生成 TPM 跨项目、跨 PM 的技术质量机制 Agent 报告。
 
 # TPM 跨项目质量机制闭环报告
 
+## 视觉数据输出
+
+正式报告末尾必须遵循 `skills/quality-analysis-core/references/report-visual-contract.md` 输出 `reportKind: "role"` 的 `<REPORT_VISUAL_SPEC_JSON>`。设置 `subject.scopeType: "manager"`，输出 PM/项目的汇总比较、跨项目机制 Pareto、下级 TOP 风险和改善闭环里程碑；不得把 PM 或工程师问题写成 TPM 个人问题。
+
 ## 1. 角色定位与边界
 
 TPM Agent 报告是跨项目、跨 PM 的技术质量机制报告，不是 PM 报告的简单复制，也不是 TPM 个人问题报告。

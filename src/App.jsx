@@ -8,13 +8,17 @@ import {
   UploadSimple, User, Warning, WarningCircle, X,
 } from "@phosphor-icons/react";
 import { analyzeImported, buildDqaEngineerSupplementSource, buildOqcRuleDimensionDispersions, downloadJson, normalizeIpqcLeaderMapRows, normalizeIpqcWorkshop, parseDqaEngineerSupplementFiles, parseFiles, parseOqcProjectNameByRules } from "./dataEngine.js";
-import { clearDqaEngineerSupplement as clearDqaEngineerSupplementState, createExamSession, createKnowledgeDocument, createSourcesSignature, deleteKnowledgeDocument, downloadSourceFiles, generateKnowledgeMatches, loadAgentSkills, loadAiConfig, loadAiModels, loadAppliedDateRange, loadCachedAnalysis, loadCurrentUser, loadDefaultAnalysis, loadDefaultAnnotations, loadDefaultQmsSources, loadDefaultSources, loadDistilledKnowledge, loadDqaEngineerSupplement, loadExamResults, loadExamSession, loadImportedSources, loadKnowledgeClauses, loadKnowledgeDocuments, loadKnowledgeIssues, loadKnowledgeMatches, loadKnowledgeRecurrences, loadPermissionConfig, loadProjectNameMapping, mergeImportedSources, reparseKnowledgeDocument, requestAiChat, reviewKnowledgeMatch, saveAiConfig, saveAiReport, saveKnowledgeDistillation, saveKnowledgeRecurrenceAction, saveLocalAiReport, saveAppliedDateRange, saveCachedAnalysis, saveDqaEngineerSupplement, saveImportedSources, savePermissionConfig, saveProjectNameMapping, sourceRowCount, startKnowledgeDistillation, submitExamSession, summarizeSources, syncKnowledgeIssues, testAiConfig, updateKnowledgeJob, uploadSourceFiles } from "./dataStore.js";
+import { clearDqaEngineerSupplement as clearDqaEngineerSupplementState, createExamSession, createKnowledgeDocument, createSourcesSignature, deleteKnowledgeDocument, downloadSourceFiles, generateKnowledgeMatches, loadAgentSkills, loadAiConfig, loadAiModels, loadAppliedDateRange, loadCachedAnalysis, loadCurrentUser, loadDefaultAnalysis, loadDefaultAnnotations, loadDefaultQmsSources, loadDefaultSources, loadDistilledKnowledge, loadDqaEngineerSupplement, loadExamResults, loadExamSession, loadImportedSources, loadKnowledgeClauses, loadKnowledgeDocuments, loadKnowledgeIssues, loadKnowledgeMatches, loadKnowledgeRecurrences, loadPermissionConfig, loadProjectNameMapping, loadQualityAgentRoleSnapshotRegistry, loadQualityAgentSnapshotRegistry, mergeImportedSources, reparseKnowledgeDocument, requestAiChat, reviewKnowledgeMatch, saveAiConfig, saveAiReport, saveKnowledgeDistillation, saveKnowledgeRecurrenceAction, saveLocalAiReport, saveAppliedDateRange, saveCachedAnalysis, saveDqaEngineerSupplement, saveImportedSources, savePermissionConfig, saveProjectNameMapping, saveQualityAgentRoleSnapshotRegistry, saveQualityAgentSnapshotRegistry, sourceRowCount, startKnowledgeDistillation, submitExamSession, summarizeSources, syncKnowledgeIssues, testAiConfig, updateKnowledgeJob, uploadSourceFiles } from "./dataStore.js";
 import { loadOqcEquipmentRuleCache } from "./dataStore.js";
 import { sampleData } from "./sampleData.js";
 import { BarCompare, Donut, EquipmentQuantityDistributionPareto, HorizontalRank, MachinedTpmCompareChart, Pareto, QmsDivisionCombo, QmsScoreCompare, QmsTpmRank, QmsTrendCombo, QuantityRateCombo, ReportBarChart, ReportStatusDonut, ScoreMonthlyCombo, ScoreYearCompare, StackedStage, WorkshopCategoryHeatmap, YearStackedCompare } from "./charts.jsx";
 import { QualityAgentPage } from "./agent/QualityAgentPage.jsx";
 import { AgentRoleReportPage } from "./agent/AgentRoleReportPage.jsx";
 import { AgentExamStatsPage } from "./agent/AgentExamStatsPage.jsx";
+import { sanitizeHumanReportContent } from "./reportSanitizer.js";
+import { buildQualityAgentSnapshot } from "./agent/qualitySnapshot.js";
+import { buildSnapshotPeriods, createDefaultQualitySnapshotRegistry, getQualitySnapshotRulePreview, mergeQualitySnapshotHistory, moduleAnalysisSkillOptions, normalizeQualitySnapshotRegistry, qualitySnapshotPresentationOptions, updateQualitySnapshotRule } from "./agent/snapshotRegistry.js";
+import { buildRoleSnapshots, createDefaultRoleSnapshotRegistry, mergeRoleSnapshotRegistry, normalizeRoleSnapshotRegistry, roleSnapshotMappingSignature, roleSnapshotRule, roleSnapshotSourceSignature, updateRoleSnapshotRule } from "./agent/roleSnapshotRegistry.js";
 import * as XLSX from "xlsx";
 import "./qmdp.css";
 
@@ -74,6 +78,8 @@ const defaultApiPermissions = {
   "DELETE /api/knowledge/*": { public: false, deputy: true, label: "删除知识文件" },
 };
 defaultApiPermissions["GET /api/state/oqc-equipment-rule-cache"] = { public: true, deputy: true, label: "OQC equipment rule cache" };
+defaultApiPermissions["GET /api/state/quality-agent-runs"] = { public: true, deputy: true, label: "Quality Agent run history" };
+defaultApiPermissions["PUT /api/state/quality-agent-runs"] = { public: false, deputy: false, label: "Save Quality Agent run history" };
 const normalizePermissionMembers = (items = []) => {
   const byIp = new Map();
   (Array.isArray(items) ? items : []).forEach((item) => {
@@ -710,7 +716,7 @@ const qmdpMenuGroups = [
   { label: "质量分析 Agent", icon: Brain, children: ["IQC Agent", "IPQC Agent", "OQC Agent", "DQA Agent", "QMS Agent"] },
   { label: "Agent角色报告", icon: ChartBar, children: ["组装人员 Agent报告", "机长 Agent报告", "交付经理 Agent报告", "供应链经理 Agent报告", "研发工程师 Agent报告", "PM Agent报告", "TPM Agent报告", "产总 Agent报告"] },
   { label: "Agent工具", icon: Brain, children: ["Agent考试统计"] },
-  { label: "系统管理", icon: GearSix, children: ["研发组织映射", "供应链映射", "项目名称映射", "员工信息", "评分权重", "企业微信", "操作日志"] },
+  { label: "系统管理", icon: GearSix, children: ["研发组织映射", "供应链映射", "项目名称映射", "后台快照", "员工信息", "评分权重", "企业微信", "操作日志"] },
 ];
 const menuPermissionDefinitions = [
   ...qmdpMenuGroups.map((group) => ({ key: group.label, children: group.children })),
@@ -1195,9 +1201,7 @@ const splitImportedReportSections = (content = "") => {
   if (current.lines.some((item) => item.trim()) || !sections.length) sections.push(current);
   return sections;
 };
-const sanitizeAiReportContent = (content = "") => String(content || "")
-  .replace(/质量总监(?:综合)?判断/g, "质量复盘摘要")
-  .replace(/^\s*#{1,6}\s*质量复盘摘要\s*$/gmi, "# 质量复盘摘要");
+const sanitizeAiReportContent = (content = "") => sanitizeHumanReportContent(content);
 const renderReportInline = (value = "") => {
   const parts = String(value).split(/(\*\*[^*]+\*\*)/g).filter(Boolean);
   return parts.map((part, index) => part.startsWith("**") && part.endsWith("**")
@@ -3097,6 +3101,11 @@ const examAnswerCorrect = (question, answer) => {
 };
 
 const examTokenFromUrl = () => typeof window === "undefined" ? "" : new URLSearchParams(window.location.search).get("examToken") || "";
+const qualityAgentMenuFromUrl = () => {
+  if (typeof window === "undefined") return "";
+  const module = String(new URLSearchParams(window.location.search).get("qualityAgent") || "").toUpperCase();
+  return ["IQC", "IPQC", "OQC", "DQA", "QMS"].includes(module) ? `${module} Agent` : "";
+};
 
 const normalizeExamResultRecord = (item = {}) => {
   const submittedAt = item.submittedAt || "";
@@ -3983,7 +3992,400 @@ function QualityReportsPage({ active, data, files, dateRange, onRoleChange }) {
 }
 
 const defaultQmdpSystemConfig = { orgMappings: [{ productDept: "产品部", productionDirector: "待配置", tpm: "待配置", pm: "待配置", active: true }], supplyMappings: [], employees: [], weights: { ecn: 20, issue: 20, severity: 20, review: 15, nonBom: 15, open: 10 }, wecom: { corpId: "", agentId: "", secret: "" }, logs: [] };
-function SystemManagementPage({ active, data, auth }) {
+function BackgroundSnapshotPage({ data = {}, files = [], dateRange = {}, auth, onEnsureAgentSources }) {
+  // Accept the explicit flags and the server role so a delayed/legacy auth payload
+  // cannot leave the administrator's generate controls permanently inert.
+  const editable = auth?.isAdmin === true || auth?.isDeputy === true || auth?.role === "admin" || auth?.role === "deputy";
+  const [registry, setRegistry] = useState(() => createDefaultQualitySnapshotRegistry());
+  const [selected, setSelected] = useState([]);
+  const [status, setStatus] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [running, setRunning] = useState(false);
+  const [roleRegistry, setRoleRegistry] = useState(() => createDefaultRoleSnapshotRegistry());
+  const [roleSelected, setRoleSelected] = useState(["assembly-person", "machine-leader", "delivery-manager", "supply-chain-manager", "rd-engineer", "pm", "tpm", "product-director"]);
+  const [roleRunning, setRoleRunning] = useState(false);
+  const [roleStatus, setRoleStatus] = useState("");
+  const [snapshotTask, setSnapshotTask] = useState(null);
+  const snapshotCancelRef = useRef(false);
+  const [snapshotFilter, setSnapshotFilter] = useState({ kind: "全部", period: "全部", keyword: "", active: "全部" });
+  const [roleSnapshotFilter, setRoleSnapshotFilter] = useState({ period: "全部", keyword: "", active: "全部", role: "全部" });
+  const [snapshotKeywordInput, setSnapshotKeywordInput] = useState("");
+  const [roleSnapshotKeywordInput, setRoleSnapshotKeywordInput] = useState("");
+  const [snapshotDetail, setSnapshotDetail] = useState(null);
+  const [snapshotCompare, setSnapshotCompare] = useState(null);
+  const [selectedSnapshotHistory, setSelectedSnapshotHistory] = useState([]);
+  const [selectedRoleHistory, setSelectedRoleHistory] = useState([]);
+  const [skillOptions, setSkillOptions] = useState([]);
+  const presentationOptions = useMemo(() => qualitySnapshotPresentationOptions, []);
+  useEffect(() => {
+    let active = true;
+    loadQualityAgentSnapshotRegistry({ indexOnly: true }).then((value) => {
+      if (!active) return;
+      const next = normalizeQualitySnapshotRegistry(value || createDefaultQualitySnapshotRegistry());
+      setRegistry(next);
+      setSelected(next.rules.filter((rule) => rule.enabled).map((rule) => rule.id));
+    }).catch(() => { if (active) setStatus("快照注册表读取失败，当前使用默认规则"); }).finally(() => { if (active) setLoading(false); });
+    return () => { active = false; };
+  }, []);
+  useEffect(() => {
+    let active = true;
+    loadQualityAgentRoleSnapshotRegistry({ indexOnly: true }).then((value) => { if (active) setRoleRegistry(normalizeRoleSnapshotRegistry(value || createDefaultRoleSnapshotRegistry())); }).catch(() => {});
+    return () => { active = false; };
+  }, []);
+  useEffect(() => {
+    let active = true;
+    loadAgentSkills().then((value) => {
+      if (!active) return;
+      setSkillOptions((Array.isArray(value?.skills) ? value.skills : []).map((item) => ({ id: String(item.name || item.id || ""), label: String(item.label || item.title || item.name || item.id || "") })).filter((item) => /^quality-(analysis|role)-/i.test(item.id)));
+    }).catch(() => {
+      if (active) setSkillOptions([]);
+    });
+    return () => { active = false; };
+  }, []);
+  const saveRegistry = async (next) => {
+    const normalized = normalizeQualitySnapshotRegistry(next);
+    setRegistry(normalized);
+    try { await saveQualityAgentSnapshotRegistry(normalized); } catch (error) { setStatus("服务器保存失败：" + (error?.message || "请检查服务")); }
+  };
+  const skillOptionsByRule = (rule) => {
+    const moduleKey = String(rule?.module || "").toLowerCase();
+    const expectedPrefix = `quality-analysis-${moduleKey}`;
+    const matches = skillOptions.filter((item) => {
+      const id = String(item.id || item.name || "");
+      return id === expectedPrefix || id.startsWith(expectedPrefix + "-");
+    });
+    if (matches.length) return matches;
+    return [{ id: rule.selectedSkill || rule.defaultSkill, label: rule.selectedSkill || rule.defaultSkill }];
+  };
+  const roleSkillOptionsByRule = (rule) => {
+    const prefix = `quality-role-${rule.id}`;
+    const matches = skillOptions.filter((item) => item.id === prefix || item.id.startsWith(`${prefix}-`));
+    return matches.length ? matches : [{ id: rule.selectedSkill || rule.defaultSkill, label: rule.selectedSkill || rule.defaultSkill }];
+  };
+  const updateRoleRule = async (ruleId, patch) => {
+    const next = updateRoleSnapshotRule(roleRegistry, ruleId, patch);
+    setRoleRegistry(next);
+    try { await saveQualityAgentRoleSnapshotRegistry(next); setRoleStatus("角色快照规则已保存"); } catch (error) { setRoleStatus(`角色快照规则保存失败：${error?.message || error}`); }
+  };
+  const updateRule = async (ruleId, patch) => {
+    const next = updateQualitySnapshotRule(registry, ruleId, patch);
+    await saveRegistry(next);
+    if (Object.prototype.hasOwnProperty.call(patch, "enabled")) {
+      setSelected((current) => patch.enabled
+        ? [...new Set([...current, ruleId])]
+        : current.filter((id) => id !== ruleId));
+    }
+    setStatus("快照规则已更新");
+  };
+  const updateMaintenance = async (patch) => { const next = { ...registry, updatedAt: new Date().toISOString(), maintenance: { ...(registry.maintenance || {}), ...patch } }; await saveRegistry(next); setStatus("快照自动维护策略已保存"); };
+  const updateRoleMaintenance = async (patch) => { const next = { ...roleRegistry, updatedAt: new Date().toISOString(), maintenance: { ...(roleRegistry.maintenance || {}), ...patch } }; setRoleRegistry(next); await saveQualityAgentRoleSnapshotRegistry(next); setRoleStatus("角色快照自动维护策略已保存"); };
+  const maintainHistory = (next) => {
+    const retention = Math.max(1, Number(next.maintenance?.retention || 3));
+    if (next.maintenance?.autoArchive === false) return next;
+    const grouped = new Map();
+    [...next.history].sort((a, b) => String(b.generatedAt).localeCompare(String(a.generatedAt))).forEach((entry) => {
+      const key = `${entry.ruleId}::${entry.dateRange?.granularity || "range"}::${entry.dateRange?.periodKey || ""}`;
+      const list = grouped.get(key) || []; list.push(entry); grouped.set(key, list);
+    });
+    const keep = new Set(); grouped.forEach((list) => list.slice(0, retention).forEach((entry) => keep.add(entry.id)));
+    return { ...next, history: next.history.map((entry) => keep.has(entry.id) ? entry : { ...entry, active: false, status: "archived" }) };
+  };
+  const maintainRoleHistory = (next) => {
+    const retention = Math.max(1, Number(next.maintenance?.retention || 3));
+    if (next.maintenance?.autoArchive === false) return next;
+    const grouped = new Map();
+    [...next.history].sort((a, b) => String(b.generatedAt).localeCompare(String(a.generatedAt))).forEach((entry) => {
+      const key = `${entry.role}::${entry.granularity || entry.period?.granularity || "range"}::${entry.period?.periodKey || `${entry.period?.start || ""}_${entry.period?.end || ""}`}`;
+      const list = grouped.get(key) || []; list.push(entry); grouped.set(key, list);
+    });
+    const keep = new Set(); grouped.forEach((list) => list.slice(0, retention).forEach((entry) => keep.add(entry.key)));
+    return { ...next, history: next.history.map((entry) => keep.has(entry.key) ? entry : { ...entry, active: false, status: "archived" }) };
+  };
+  const filteredModuleHistory = useMemo(() => registry.history.filter((entry) => {
+    const key = `${entry.module} ${entry.moduleLabel} ${entry.skillName} ${entry.layoutProfileId}`.toLowerCase();
+    return (snapshotFilter.kind === "全部" || entry.module === snapshotFilter.kind) && (!snapshotFilter.keyword || key.includes(snapshotFilter.keyword.toLowerCase())) && (snapshotFilter.period === "全部" || snapshotFilter.period === "全部周期" || (snapshotFilter.period === "总周期" ? entry.dateRange?.granularity === "range" : entry.dateRange?.granularity === snapshotFilter.period)) && (snapshotFilter.active === "全部" || (snapshotFilter.active === "有效" ? entry.active !== false : entry.active === false));
+  }), [registry.history, snapshotFilter]);
+  const filteredRoleHistory = useMemo(() => roleRegistry.history.filter((entry) => {
+    const key = `${entry.role} ${entry.skillName} ${entry.layoutProfileId}`.toLowerCase();
+    return (!roleSnapshotFilter.keyword || key.includes(roleSnapshotFilter.keyword.toLowerCase())) && ((roleSnapshotFilter.period === "全部") || (roleSnapshotFilter.period === "全部周期") || (roleSnapshotFilter.period === "总周期" ? entry.period?.granularity === "range" : entry.period?.granularity === roleSnapshotFilter.period)) && (roleSnapshotFilter.role === "全部" || entry.role === roleSnapshotFilter.role) && (roleSnapshotFilter.active === "全部" || (roleSnapshotFilter.active === "有效" ? entry.active !== false : entry.active === false));
+  }), [roleRegistry.history, roleSnapshotFilter]);
+  const rolePeriodOptions = ["全部", "总周期", "month", "week"];
+  const filteredModuleIds = useMemo(() => filteredModuleHistory.map((entry) => entry.id), [filteredModuleHistory]);
+  const filteredRoleIds = useMemo(() => filteredRoleHistory.map((entry) => entry.key), [filteredRoleHistory]);
+  const allVisibleModulesSelected = filteredModuleIds.length > 0 && filteredModuleIds.every((id) => selectedSnapshotHistory.includes(id));
+  const allVisibleRolesSelected = filteredRoleIds.length > 0 && filteredRoleIds.every((id) => selectedRoleHistory.includes(id));
+  const moduleCompareEntries = useMemo(() => selectedSnapshotHistory.length === 2 ? selectedSnapshotHistory.map((id) => registry.history.find((entry) => entry.id === id)).filter(Boolean) : [], [selectedSnapshotHistory, registry.history]);
+  const roleCompareEntries = useMemo(() => selectedRoleHistory.length === 2 ? selectedRoleHistory.map((id) => roleRegistry.history.find((entry) => entry.key === id)).filter(Boolean) : [], [selectedRoleHistory, roleRegistry.history]);
+  const isModuleHistorical = (entry) => registry.history.some((candidate) => candidate.id !== entry.id && candidate.ruleId === entry.ruleId && candidate.active !== false && new Date(candidate.generatedAt).getTime() > new Date(entry.generatedAt).getTime());
+  const isRoleHistorical = (entry) => roleRegistry.history.some((candidate) => candidate.key !== entry.key && candidate.role === entry.role && candidate.active !== false && new Date(candidate.generatedAt).getTime() > new Date(entry.generatedAt).getTime());
+  const toggleVisibleModuleHistory = () => setSelectedSnapshotHistory((current) => allVisibleModulesSelected ? current.filter((id) => !filteredModuleIds.includes(id)) : [...new Set([...current, ...filteredModuleIds])]);
+  const toggleVisibleRoleHistory = () => setSelectedRoleHistory((current) => allVisibleRolesSelected ? current.filter((id) => !filteredRoleIds.includes(id)) : [...new Set([...current, ...filteredRoleIds])]);
+  const bulkModuleHistory = async (active) => { const ids = new Set(selectedSnapshotHistory); const next = { ...registry, updatedAt: new Date().toISOString(), history: registry.history.map((entry) => ids.has(entry.id) ? { ...entry, active } : entry) }; setRegistry(next); setSelectedSnapshotHistory([]); await saveQualityAgentSnapshotRegistry(next); setStatus(active ? "已启用选中模块快照" : "已停用选中模块快照"); };
+  const bulkRoleHistory = async (active) => { const ids = new Set(selectedRoleHistory); const next = { ...roleRegistry, updatedAt: new Date().toISOString(), history: roleRegistry.history.map((entry) => ids.has(entry.key) ? { ...entry, active } : entry) }; setRoleRegistry(next); setSelectedRoleHistory([]); await saveQualityAgentRoleSnapshotRegistry(next); setRoleStatus(active ? "已启用选中角色快照" : "已停用选中角色快照"); };
+  const deleteModuleHistory = async () => { if (!selectedSnapshotHistory.length || !window.confirm(`确认删除选中的 ${selectedSnapshotHistory.length} 个模块快照吗？删除后不可恢复。`)) return; const ids = new Set(selectedSnapshotHistory); const next = { ...registry, updatedAt: new Date().toISOString(), history: registry.history.filter((entry) => !ids.has(entry.id)) }; setRegistry(next); setSelectedSnapshotHistory([]); await saveQualityAgentSnapshotRegistry(next); setStatus("已删除选中模块快照"); };
+  const deleteRoleHistory = async () => { if (!selectedRoleHistory.length || !window.confirm(`确认删除选中的 ${selectedRoleHistory.length} 个角色快照吗？删除后不可恢复。`)) return; const ids = new Set(selectedRoleHistory); const next = { ...roleRegistry, updatedAt: new Date().toISOString(), history: roleRegistry.history.filter((entry) => !ids.has(entry.key)) }; setRoleRegistry(next); setSelectedRoleHistory([]); await saveQualityAgentRoleSnapshotRegistry(next); setRoleStatus("已删除选中角色快照"); };
+  const updateSnapshotNote = async (kind, key, note) => {
+    if (!editable) return;
+    if (kind === "module") {
+      const next = { ...registry, updatedAt: new Date().toISOString(), history: registry.history.map((entry) => entry.id === key ? { ...entry, note } : entry) };
+      setRegistry(next); await saveQualityAgentSnapshotRegistry(next); setSnapshotDetail((current) => current ? { ...current, note } : current); setStatus("模块快照备注已保存");
+    } else {
+      const next = { ...roleRegistry, updatedAt: new Date().toISOString(), history: roleRegistry.history.map((entry) => entry.key === key ? { ...entry, note } : entry) };
+      setRoleRegistry(next); await saveQualityAgentRoleSnapshotRegistry(next); setSnapshotDetail((current) => current ? { ...current, note } : current); setRoleStatus("角色快照备注已保存");
+    }
+  };
+  const run = async (selectedOverride = selected, retryItems = null) => {
+    if (!editable || running) return;
+    const rules = registry.rules.filter((rule) => selectedOverride.includes(rule.id));
+    if (!rules.length) return setStatus("请先勾选要生成的规则");
+    setRunning(true); snapshotCancelRef.current = false;
+    const batchId = `module-batch-${Date.now()}`; const taskId = batchId; const taskStartedAt = new Date().toISOString();
+    try {
+      const modules = [...new Set(rules.flatMap((rule) => rule.sourceModules || [rule.module]))];
+      const periodsForTask = buildSnapshotPeriods(dateRange);
+      const taskTotal = rules.length * periodsForTask.length;
+      let taskDone = 0; const failedItems = [];
+      setSnapshotTask({ kind: "模块", total: taskTotal, done: 0, current: "正在加载原始数据", failed: 0 });
+      const hydrated = onEnsureAgentSources ? await onEnsureAgentSources(modules, (progress) => { setStatus(progress?.label || "正在加载原始数据"); setSnapshotTask((current) => current ? { ...current, current: progress?.label || "正在加载原始数据" } : current); }) : files;
+      let next = registry;
+      setSnapshotTask((current) => ({ ...current, current: "准备生成周期快照" }));
+      for (const rule of rules) {
+        if (snapshotCancelRef.current) break;
+        setStatus("正在生成 " + rule.label);
+        const moduleFiles = (hydrated || files).filter((source) => (rule.sourceModules || [rule.module]).includes(source.module));
+        const periods = periodsForTask;
+        for (const snapshotPeriod of periods) {
+          if (snapshotCancelRef.current) break;
+          if (retryItems && !retryItems.some((item) => item.ruleId === rule.id && item.periodKey === snapshotPeriod.periodKey)) { taskDone += 1; continue; }
+          setSnapshotTask((current) => ({ ...current, done: taskDone, current: `${rule.label} · ${snapshotPeriod.granularity === "range" ? "总周期" : snapshotPeriod.periodKey}` }));
+          try { const snapshot = buildQualityAgentSnapshot({ data, files: moduleFiles, dateRange: snapshotPeriod, module: rule.module }); next = mergeQualitySnapshotHistory(next, { rule, snapshot, sourceSignature: createSourcesSignature(moduleFiles), dateRange: snapshotPeriod, generatedBy: auth?.ip || auth?.name || "管理员", batchId, skillName: rule.selectedSkill || rule.defaultSkill, layoutProfileId: rule.layoutProfileId }); } catch (error) { failedItems.push({ ruleId: rule.id, module: rule.module, periodKey: snapshotPeriod.periodKey, error: error?.message || String(error) }); }
+          taskDone += 1; setSnapshotTask((current) => ({ ...current, done: taskDone, failed: failedItems.length }));
+        }
+      }
+      next = maintainHistory(next);
+      const task = { id: taskId, batchId, kind: "模块", startedAt: taskStartedAt, finishedAt: new Date().toISOString(), status: snapshotCancelRef.current ? "cancelled" : failedItems.length ? "failed" : "completed", total: taskTotal, done: taskDone, failed: failedItems.length, failedItems, rules: rules.map((rule) => rule.module), period: { start2025: dateRange.start2025 || "", end2025: dateRange.end2025 || "", start2026: dateRange.start2026 || "", end2026: dateRange.end2026 || "" } };
+      next = { ...next, maintenance: { ...(next.maintenance || {}), taskHistory: [task, ...(next.maintenance?.taskHistory || [])].slice(0, 50) } };
+      await saveRegistry(next);
+      setStatus(snapshotCancelRef.current ? `已取消，已保存 ${taskDone} 个快照` : "已完成 " + taskDone + " 个后台快照，Agent 将优先读取命中数据");
+    } catch (error) { setStatus("快照生成失败：" + (error?.message || error)); }
+    finally { setRunning(false); setSnapshotTask(null); }
+  };
+  const runRoleSnapshots = async (roleSelectedOverride = roleSelected, retryItems = null) => {
+    if (!editable || roleRunning) return;
+      const rules = roleSelectedOverride.map((id) => roleSnapshotRule(id)).filter((rule) => roleRegistry.rules.find((item) => item.id === rule.id)?.enabled !== false);
+    setRoleRunning(true); snapshotCancelRef.current = false;
+    try {
+      const modules = [...new Set(rules.flatMap((rule) => rule.modules))];
+       const batchId = `role-batch-${Date.now()}`; const taskId = batchId; const taskStartedAt = new Date().toISOString();
+      const rolePeriod = { start: dateRange.start || dateRange.start2026 || dateRange.start2025 || "", end: dateRange.end || dateRange.end2026 || dateRange.end2025 || "" };
+      const rolePeriods = [{ ...rolePeriod, granularity: "range", periodKey: "range" }, ...buildSnapshotPeriods({ start2026: rolePeriod.start, end2026: rolePeriod.end }).filter((item) => item.granularity !== "range").map((item) => ({ start: item.start2026 || item.start2025, end: item.end2026 || item.end2025, granularity: item.granularity, periodKey: item.periodKey }))];
+      const roleTaskTotal = rules.length * rolePeriods.length; let roleTaskDone = 0; const failedItems = [];
+      setSnapshotTask({ kind: "角色", total: roleTaskTotal, done: 0, current: "正在加载角色数据", failed: 0 });
+      const hydrated = onEnsureAgentSources ? await onEnsureAgentSources(modules, (progress) => { setRoleStatus(progress?.label || "正在加载角色快照数据"); setSnapshotTask((current) => current ? { ...current, current: progress?.label || "正在加载角色快照数据" } : current); }) : files;
+      let next = roleRegistry;
+      setSnapshotTask((current) => ({ ...current, current: "准备生成角色周期快照" }));
+      const config = safeParse(localStorage.getItem(qmdpSystemKey), {});
+      const mappingSignature = roleSnapshotMappingSignature(config);
+      for (const rule of rules) {
+        if (snapshotCancelRef.current) break;
+        setRoleStatus(`正在生成 ${rule.role} 个人快照`);
+        const roleConfig = next.rules.find((item) => item.id === rule.id) || {};
+        const sourceFiles = hydrated || files;
+        const sourceSignature = roleSnapshotSourceSignature(sourceFiles);
+        for (const currentPeriod of rolePeriods) {
+          if (snapshotCancelRef.current) break;
+          if (retryItems && !retryItems.some((item) => item.ruleId === rule.id && item.periodKey === currentPeriod.periodKey)) { roleTaskDone += 1; continue; }
+          setSnapshotTask((current) => ({ ...current, done: roleTaskDone, current: `${rule.role} · ${currentPeriod.granularity === "range" ? "总周期" : currentPeriod.periodKey}` }));
+          const existing = next.history.find((entry) => entry.role === rule.role && entry.period?.start === currentPeriod.start && entry.period?.end === currentPeriod.end && entry.granularity === currentPeriod.granularity && entry.sourceSignature === sourceSignature && entry.mappingSignature === mappingSignature && entry.skillName === roleConfig.selectedSkill && entry.layoutProfileId === roleConfig.layoutProfileId);
+          if (existing) continue;
+           try { const payload = buildRoleSnapshots({ role: rule.role, files: sourceFiles, dateRange: currentPeriod, mappings: config }); next = mergeRoleSnapshotRegistry(next, { role: rule.role, ruleId: rule.id, period: currentPeriod, granularity: currentPeriod.granularity, sourceSignature: payload.sourceSignature, mappingSignature, snapshot: payload, batchId, skillName: roleConfig.selectedSkill, layoutProfileId: roleConfig.layoutProfileId }); } catch (error) { failedItems.push({ ruleId: rule.id, role: rule.role, periodKey: currentPeriod.periodKey, error: error?.message || String(error) }); }
+          roleTaskDone += 1; setSnapshotTask((current) => ({ ...current, done: roleTaskDone }));
+        }
+      }
+      setRoleRegistry(next);
+      next = maintainRoleHistory(next);
+      setRoleRegistry(next);
+       const task = { id: taskId, batchId, kind: "角色", startedAt: taskStartedAt, finishedAt: new Date().toISOString(), status: snapshotCancelRef.current ? "cancelled" : failedItems.length ? "failed" : "completed", total: roleTaskTotal, done: roleTaskDone, failed: failedItems.length, failedItems, rules: rules.map((rule) => rule.role), period: { start: rolePeriod.start, end: rolePeriod.end } };
+      next = { ...next, maintenance: { ...(next.maintenance || {}), taskHistory: [task, ...(next.maintenance?.taskHistory || [])].slice(0, 50) } };
+      await saveQualityAgentRoleSnapshotRegistry(next);
+      setRoleStatus(snapshotCancelRef.current ? `已取消，已保存 ${roleTaskDone} 个角色周期快照` : `已完成 ${roleTaskDone} 个角色周期快照，共 ${next.history.reduce((sum, entry) => sum + (entry.snapshot?.people?.length || 0), 0)} 人次`);
+    } catch (error) { setRoleStatus(`角色快照生成失败：${error?.message || error}`); }
+    finally { setRoleRunning(false); setSnapshotTask(null); }
+  };
+  const cancelSnapshotTask = () => { snapshotCancelRef.current = true; setStatus("正在取消快照任务，已完成内容会保留"); setRoleStatus("正在取消角色快照任务，已完成内容会保留"); };
+  const retrySnapshotTask = (task) => {
+    if (!editable || running || roleRunning || !task?.rules?.length) return;
+    if (task.kind === "模块") {
+      const ids = registry.rules.filter((rule) => task.rules.includes(rule.module)).map((rule) => rule.id);
+      setSelected(ids); setStatus("已载入失败/未完成模块任务，正在重试缺失周期"); run(ids, task.failedItems || null);
+    } else {
+      const ids = roleRegistry.rules.filter((rule) => task.rules.includes(rule.role)).map((rule) => rule.id);
+      setRoleSelected(ids); setRoleStatus("已载入失败/未完成角色任务，正在重试缺失周期"); runRoleSnapshots(ids, task.failedItems || null);
+    }
+  };
+  const startModuleSnapshot = () => {
+    if (!editable) return setStatus("当前账号没有生成快照权限，请使用管理员或副管理员账号");
+    if (loading) return setStatus("快照注册表仍在读取，请稍候");
+    const ids = selected.length ? selected : registry.rules.filter((rule) => rule.enabled !== false).map((rule) => rule.id);
+    setStatus("已点击生成快照，正在准备数据…");
+    run(ids);
+  };
+  const startRoleSnapshot = () => {
+    if (!editable) return setRoleStatus("当前账号没有生成角色快照权限，请使用管理员或副管理员账号");
+    if (roleRunning) return;
+    const ids = roleSelected.length ? roleSelected : roleRegistry.rules.filter((rule) => rule.enabled !== false).map((rule) => rule.id);
+    setRoleStatus("已点击生成角色快照，正在准备数据…");
+    runRoleSnapshots(ids);
+  };
+  return (
+    <div className="qmdp-page qmdp-background-snapshot">
+      <QmdpPageHeader
+        icon={Database}
+        eyebrow="系统管理 / Administration"
+        title="后台快照"
+        description={editable ? "选择规则后生成固定数据快照，减少 Agent 页面临时计算。" : "当前账号仅可查看后台快照状态。"}
+      />
+      <Panel className="snapshot-rules-panel" title="快照规则" subtitle="规则可视化：模块、数据范围、固定指标、分析 Skill 和展示 profile。">
+        <div className="qmdp-snapshot-toolbar">
+          <span>{loading ? "正在读取注册表…" : "规则注册表已加载"} · 最近更新：{registry.updatedAt ? formatSyncDateTime(registry.updatedAt) : "暂无"}</span>
+          <button type="button" className={`qmdp-primary-btn snapshot-generate-btn ${running ? "snapshot-running" : ""}`} disabled={running} onClick={startModuleSnapshot}>
+            <ArrowsClockwise size={15} className={running ? "spin" : ""}/>
+            {running ? "正在生成…" : "生成快照"}
+          </button>
+          {snapshotTask?.kind === "模块" && <div className="qmdp-snapshot-task-progress snapshot-task-inline"><div><strong>模块快照任务</strong><span>{snapshotTask.done}/{snapshotTask.total}</span></div><i><b style={{ width: `${snapshotTask.total ? snapshotTask.done / snapshotTask.total * 100 : 0}%` }}/></i><small>{snapshotTask.current}</small><button className="qmdp-danger-btn" onClick={cancelSnapshotTask}>停止任务</button></div>}
+        </div>
+        <div className="qmdp-snapshot-layout">
+          <div className="qmdp-snapshot-rules">
+            {registry.rules.map((rule) => {
+              const preview = getQualitySnapshotRulePreview(rule);
+              const historyCount = registry.history.filter((entry) => entry.ruleId === rule.id).length;
+              return (
+                <article className={`qmdp-snapshot-rule ${selected.includes(rule.id) ? "selected" : ""}`} key={rule.id}>
+                  <input
+                    type="checkbox"
+                    checked={selected.includes(rule.id)}
+                    disabled={!editable || running}
+                    onChange={() => setSelected((current) => current.includes(rule.id) ? current.filter((id) => id !== rule.id) : [...current, rule.id])}
+                  />
+                  <span>
+                    <strong>{rule.label}</strong>
+                    <small>{rule.description}</small>
+                    <em>{preview.focus.join(" · ")}</em>
+                    <small>Skill：{rule.selectedSkill || rule.defaultSkill} · Profile：{rule.layoutProfileId} · 历史：{historyCount} 条</small>
+                    <div className="qmdp-form-grid qmdp-snapshot-rule-fields">
+                      <label>
+                        <span>启用</span>
+                        <select
+                          value={rule.enabled ? "启用" : "停用"}
+                          disabled={!editable || running}
+                          onChange={(event) => updateRule(rule.id, { enabled: event.target.value === "启用" })}
+                        >
+                          <option value="启用">启用</option>
+                          <option value="停用">停用</option>
+                        </select>
+                      </label>
+                      <label>
+                        <span>分析 Skill</span>
+                        <select
+                          value={rule.selectedSkill || rule.defaultSkill}
+                          disabled={!editable || running}
+                          onChange={(event) => updateRule(rule.id, { selectedSkill: event.target.value })}
+                        >
+                          {skillOptionsByRule(rule).map((item) => <option key={item.id} value={item.id}>{item.label || item.id}</option>)}
+                        </select>
+                      </label>
+                      <label>
+                        <span>展示 Profile</span>
+                        <select
+                          value={rule.layoutProfileId}
+                          disabled={!editable || running}
+                          onChange={(event) => updateRule(rule.id, { layoutProfileId: event.target.value })}
+                        >
+                          {presentationOptions.map((profile) => <option key={profile.id} value={profile.id}>{profile.label}</option>)}
+                        </select>
+                      </label>
+                    </div>
+                  </span>
+                </article>
+              );
+            })}
+          </div>
+          <div className="qmdp-snapshot-preview">
+            {selected.length
+              ? registry.rules.filter((rule) => selected.includes(rule.id)).map((rule) => (
+                <section key={rule.id}>
+                  <strong>{rule.label}</strong>
+                  <p>{rule.description}</p>
+                  <small>模块：{(rule.sourceModules || []).join("、")} · 数据类型：{(rule.sourceKinds || []).join("、")}</small>
+                  <small>生成重点：{(rule.focus || []).join("、")}</small>
+                  <small>当前 Skill：{rule.selectedSkill || rule.defaultSkill} · 当前 Profile：{rule.layoutProfileId}</small>
+                </section>
+              ))
+              : <div className="qmdp-empty compact">勾选左侧规则后查看预览。</div>}
+          </div>
+        </div>
+        {status && <div className="qmdp-note"><Database size={15}/>{status}</div>}
+      </Panel>
+      <Panel className="snapshot-history-panel" title="快照历史" subtitle="按模块、日期范围、来源版本和 Skill 版本保存。">
+        <div className="qmdp-snapshot-task-history"><strong>任务历史</strong>{(registry.maintenance?.taskHistory || []).slice(0, 8).map((task) => <div key={task.id}><span>{task.kind} · {new Date(task.startedAt).toLocaleString("zh-CN")}</span><b className={task.status === "completed" ? "done" : "cancelled"}>{task.status === "completed" ? "已完成" : task.status === "failed" ? "有失败" : "已取消"}</b><small>{task.done}/{task.total} 个周期 · 失败 {task.failed || 0} · {task.rules?.join("、")}{task.batchId ? ` · ${task.batchId.replace(/^module-batch-/, "批次 ")}` : ""}</small>{task.status !== "completed" && <button className="snapshot-view-btn" disabled={!editable || running || roleRunning} onClick={() => retrySnapshotTask(task)}>重试失败项</button>}</div>)}{!(registry.maintenance?.taskHistory || []).length && <small>暂无任务记录</small>}</div>
+        <div className="qmdp-snapshot-maintenance"><strong>自动维护</strong><label><input type="checkbox" checked={registry.maintenance?.enabled !== false} onChange={(event) => updateMaintenance({ enabled: event.target.checked })}/>启用</label><label><input type="checkbox" checked={registry.maintenance?.autoArchive !== false} onChange={(event) => updateMaintenance({ autoArchive: event.target.checked })}/>自动归档旧版本</label><label>每个周期保留<select value={registry.maintenance?.retention || 3} onChange={(event) => updateMaintenance({ retention: Number(event.target.value) })}>{[1,2,3,5,10].map((value) => <option key={value} value={value}>{value} 个</option>)}</select></label><small>相同来源、Skill、Profile 且数据未变化时会复用已有快照。</small></div>
+        <div className="qmdp-snapshot-library-toolbar"><label className="qmdp-snapshot-select-all"><input type="checkbox" checked={allVisibleModulesSelected} onChange={toggleVisibleModuleHistory} disabled={!filteredModuleIds.length}/><span>{allVisibleModulesSelected ? "取消全选当前结果" : "全选当前结果"}</span></label><div className="qmdp-snapshot-search"><input value={snapshotKeywordInput} onChange={(event) => setSnapshotKeywordInput(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") setSnapshotFilter((current) => ({ ...current, keyword: snapshotKeywordInput.trim() })); }} placeholder="搜索模块 / Skill / Profile"/><button className="qmdp-secondary-btn" onClick={() => setSnapshotFilter((current) => ({ ...current, keyword: snapshotKeywordInput.trim() }))}>搜索</button>{snapshotKeywordInput && <button className="qmdp-text-btn" onClick={() => { setSnapshotKeywordInput(""); setSnapshotFilter((current) => ({ ...current, keyword: "" })); }}>清空</button>}</div><select value={snapshotFilter.active} onChange={(event) => setSnapshotFilter((current) => ({ ...current, active: event.target.value }))}><option>全部</option><option>有效</option><option>停用</option></select><span>匹配 {filteredModuleHistory.length} 条 · 已选 {selectedSnapshotHistory.length} 条</span><button className="qmdp-secondary-btn" disabled={!editable || selectedSnapshotHistory.length !== 2} onClick={() => setSnapshotCompare(moduleCompareEntries)}>对比两个版本</button><button className="qmdp-secondary-btn" disabled={!editable || !selectedSnapshotHistory.length} onClick={() => bulkModuleHistory(true)}>启用选中</button><button className="qmdp-secondary-btn" disabled={!editable || !selectedSnapshotHistory.length} onClick={() => bulkModuleHistory(false)}>停用选中</button><button className="qmdp-danger-btn" disabled={!editable || !selectedSnapshotHistory.length} onClick={deleteModuleHistory}>删除选中</button></div>
+        {registry.history.length ? (
+          <div className="qmdp-admin-table">
+            <div className="qmdp-admin-row head">
+              <span></span>
+               <span>模块</span>
+               <span>周期</span>
+               <span>批次</span>
+               <span>生成时间</span>
+              <span>Skill</span>
+              <span>来源行数</span>
+              <span>证据数</span>
+              <span>状态</span>
+            </div>
+            {filteredModuleHistory.slice(0, 60).map((entry) => (
+                <div className={`qmdp-admin-row ${selectedSnapshotHistory.includes(entry.id) ? "snapshot-row-selected" : ""}`} key={entry.id} onDoubleClick={() => setSnapshotDetail({ kind: "module", key: entry.id, title: `${entry.moduleLabel || entry.module} 快照`, entry })}>
+                <span><input type="checkbox" checked={selectedSnapshotHistory.includes(entry.id)} onChange={() => setSelectedSnapshotHistory((current) => current.includes(entry.id) ? current.filter((id) => id !== entry.id) : [...current, entry.id])}/></span>
+                 <span>{entry.moduleLabel || entry.module}</span>
+                 <span>{entry.dateRange?.granularity === "range" ? "总周期" : (entry.dateRange?.periodKey || entry.dateRange?.granularity || "周期")}</span>
+                 <span>{entry.batchId ? entry.batchId.replace(/^module-batch-/, "批次 ") : "历史"}</span>
+                 <span>{formatSyncDateTime(entry.generatedAt)}</span>
+                <span>{entry.skillName}<button className="snapshot-view-btn" onClick={() => setSnapshotDetail({ kind: "module", key: entry.id, title: `${entry.moduleLabel || entry.module} 快照`, entry })}>查看</button></span>
+                <span>{entry.summary?.sourceRows ?? "-"}</span>
+                <span>{entry.summary?.evidenceCount ?? "-"}</span>
+                <span><b className={`snapshot-status ${entry.active === false ? "inactive" : isModuleHistorical(entry) ? "historical" : "active"}`}>{entry.active === false ? "停用" : isModuleHistorical(entry) ? "旧版本" : "有效"}</b>{selectedSnapshotHistory.includes(entry.id) && <b className="snapshot-selected-badge">已选中</b>}</span>
+              </div>
+            ))}
+          </div>
+        ) : <div className="qmdp-empty compact">尚未生成后台快照。</div>}
+      </Panel>
+      <Panel className="snapshot-role-panel" title="角色快照" subtitle="先生成供应链组装人员和研发工程师个人快照，后续按责任链汇总到上级角色。">
+        <div className="qmdp-snapshot-period-filter"><select value={roleSnapshotFilter.period} onChange={(event) => setRoleSnapshotFilter((current) => ({ ...current, period: event.target.value }))}><option value="全部">全部周期</option><option value="总周期">总周期</option><option value="month">月度</option><option value="week">周度</option></select><span>角色快照按角色和周期筛选，批次内快照统一生成。</span></div>
+        <div className="qmdp-snapshot-task-history"><strong>任务历史</strong>{(roleRegistry.maintenance?.taskHistory || []).slice(0, 8).map((task) => <div key={task.id}><span>{task.kind} · {new Date(task.startedAt).toLocaleString("zh-CN")}</span><b className={task.status === "completed" ? "done" : "cancelled"}>{task.status === "completed" ? "已完成" : task.status === "failed" ? "有失败" : "已取消"}</b><small>{task.done}/{task.total} · 失败 {task.failed || 0} · {task.rules?.join("、")}</small>{task.status !== "completed" && <button className="snapshot-view-btn" disabled={!editable || running || roleRunning} onClick={() => retrySnapshotTask(task)}>重试失败项</button>}</div>)}{!(roleRegistry.maintenance?.taskHistory || []).length && <small>暂无任务记录</small>}</div>
+        <div className="qmdp-snapshot-maintenance"><strong>自动维护</strong><label><input type="checkbox" checked={roleRegistry.maintenance?.enabled !== false} onChange={(event) => updateRoleMaintenance({ enabled: event.target.checked })}/>启用</label><label><input type="checkbox" checked={roleRegistry.maintenance?.autoArchive !== false} onChange={(event) => updateRoleMaintenance({ autoArchive: event.target.checked })}/>自动归档旧版本</label><label>每个周期保留<select value={roleRegistry.maintenance?.retention || 3} onChange={(event) => updateRoleMaintenance({ retention: Number(event.target.value) })}>{[1,2,3,5,10].map((value) => <option key={value} value={value}>{value} 个</option>)}</select></label><small>相同角色、周期、来源、Skill 和 Profile 的快照会复用。</small></div>
+        <div className="qmdp-snapshot-toolbar"><span>{roleStatus || `已保存角色快照：${roleRegistry.history.length} 条`}</span><button type="button" className={`qmdp-primary-btn snapshot-generate-btn ${roleRunning ? "snapshot-running" : ""}`} disabled={roleRunning} onClick={startRoleSnapshot}><ArrowsClockwise size={15} className={roleRunning ? "spin" : ""}/>{roleRunning ? "正在生成…" : "生成快照"}</button>{snapshotTask?.kind === "角色" && <div className="qmdp-snapshot-task-progress snapshot-task-inline"><div><strong>角色快照任务</strong><span>{snapshotTask.done}/{snapshotTask.total}</span></div><i><b style={{ width: `${snapshotTask.total ? snapshotTask.done / snapshotTask.total * 100 : 0}%` }}/></i><small>{snapshotTask.current}</small><button className="qmdp-danger-btn" onClick={cancelSnapshotTask}>停止任务</button></div>}</div>
+        <div className="qmdp-role-snapshot-options">
+          {roleRegistry.rules.map((rule) => <article className={`qmdp-role-snapshot-card ${roleSelected.includes(rule.id) ? "selected" : ""}`} key={rule.id}>
+            <div className="qmdp-role-snapshot-card-head"><label><input type="checkbox" checked={roleSelected.includes(rule.id)} disabled={!editable || roleRunning} onChange={() => setRoleSelected((current) => current.includes(rule.id) ? current.filter((id) => id !== rule.id) : [...current, rule.id])}/><strong>{rule.role}</strong></label><small>{rule.id}</small></div>
+            <p>{roleSnapshotRule(rule.id).chain}</p>
+            <div className="qmdp-role-snapshot-meta">Skill：{rule.selectedSkill} · Profile：{rule.layoutProfileId} · 历史：{roleRegistry.history.filter((entry) => entry.ruleId === rule.id || entry.role === rule.role).length} 条</div>
+            <div className="qmdp-role-snapshot-fields">
+              <label><span>启用</span><select value={rule.enabled ? "启用" : "停用"} disabled={!editable || roleRunning} onChange={(event) => updateRoleRule(rule.id, { enabled: event.target.value === "启用" })}><option value="启用">启用</option><option value="停用">停用</option></select></label>
+              <label><span>分析 Skill</span><select value={rule.selectedSkill} disabled={!editable || roleRunning} onChange={(event) => updateRoleRule(rule.id, { selectedSkill: event.target.value })}>{roleSkillOptionsByRule(rule).map((item) => <option key={item.id} value={item.id}>{item.label || item.id}</option>)}</select></label>
+              <label><span>展示 Profile</span><select value={rule.layoutProfileId} disabled={!editable || roleRunning} onChange={(event) => updateRoleRule(rule.id, { layoutProfileId: event.target.value })}>{presentationOptions.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}</select></label>
+            </div>
+          </article>)}
+        </div>
+        <div className="qmdp-snapshot-library-toolbar"><label className="qmdp-snapshot-select-all"><input type="checkbox" checked={allVisibleRolesSelected} onChange={toggleVisibleRoleHistory} disabled={!filteredRoleIds.length}/><span>{allVisibleRolesSelected ? "取消全选当前结果" : "全选当前结果"}</span></label><div className="qmdp-snapshot-search"><input value={roleSnapshotKeywordInput} onChange={(event) => setRoleSnapshotKeywordInput(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") setRoleSnapshotFilter((current) => ({ ...current, keyword: roleSnapshotKeywordInput.trim() })); }} placeholder="搜索角色 / Skill / Profile"/><button className="qmdp-secondary-btn" onClick={() => setRoleSnapshotFilter((current) => ({ ...current, keyword: roleSnapshotKeywordInput.trim() }))}>搜索</button>{roleSnapshotKeywordInput && <button className="qmdp-text-btn" onClick={() => { setRoleSnapshotKeywordInput(""); setRoleSnapshotFilter((current) => ({ ...current, keyword: "" })); }}>清空</button>}</div><select value={roleSnapshotFilter.role} onChange={(event) => setRoleSnapshotFilter((current) => ({ ...current, role: event.target.value }))}><option>全部</option>{roleRegistry.rules.map((rule) => <option key={rule.role}>{rule.role}</option>)}</select><select value={roleSnapshotFilter.active} onChange={(event) => setRoleSnapshotFilter((current) => ({ ...current, active: event.target.value }))}><option>全部</option><option>有效</option><option>停用</option></select><span>匹配 {filteredRoleHistory.length} 条 · 已选 {selectedRoleHistory.length} 条</span><button className="qmdp-secondary-btn" disabled={!editable || selectedRoleHistory.length !== 2} onClick={() => setSnapshotCompare(roleCompareEntries)}>对比两个版本</button><button className="qmdp-secondary-btn" disabled={!editable || !selectedRoleHistory.length} onClick={() => bulkRoleHistory(true)}>启用选中</button><button className="qmdp-secondary-btn" disabled={!editable || !selectedRoleHistory.length} onClick={() => bulkRoleHistory(false)}>停用选中</button><button className="qmdp-danger-btn" disabled={!editable || !selectedRoleHistory.length} onClick={deleteRoleHistory}>删除选中</button></div>
+        {roleRegistry.history.length ? <div className="qmdp-admin-table"><div className="qmdp-admin-row head"><span></span><span>角色</span><span>周期</span><span>人数</span><span>Skill/Profile</span><span>状态</span></div>{filteredRoleHistory.slice(0, 40).map((entry) => <div className={`qmdp-admin-row ${selectedRoleHistory.includes(entry.key) ? "snapshot-row-selected" : ""}`} key={entry.key}><span><input type="checkbox" checked={selectedRoleHistory.includes(entry.key)} onChange={() => setSelectedRoleHistory((current) => current.includes(entry.key) ? current.filter((id) => id !== entry.key) : [...current, entry.key])}/></span><span>{entry.role}</span><span>{entry.period?.granularity === "range" ? "总周期" : (entry.period?.periodKey || entry.period?.granularity || "周期")}</span><span>{entry.peopleCount ?? entry.snapshot?.people?.length ?? 0}</span><span>{entry.skillName || "-"} / {entry.layoutProfileId || "-"}<button className="snapshot-view-btn" onClick={() => setSnapshotDetail({ kind: "role", key: entry.key, title: `${entry.role} 快照`, entry })}>查看</button></span><span><b className={`snapshot-status ${entry.active === false ? "inactive" : "active"}`}>{entry.active === false ? "停用" : "有效"}</b>{entry.batchId && <small> · {entry.batchId.replace(/^role-batch-/, "批次 ")}</small>}{selectedRoleHistory.includes(entry.key) && <b className="snapshot-selected-badge">已选中</b>}</span></div>)}</div> : <div className="qmdp-empty compact">尚未生成个人角色快照。</div>}
+      {snapshotDetail && <div className="snapshot-detail-backdrop" onClick={() => setSnapshotDetail(null)}><section className="snapshot-detail-card" onClick={(event) => event.stopPropagation()}><header><div><small>快照详情</small><h3>{snapshotDetail.title}</h3></div><button className="qmdp-text-btn" onClick={() => setSnapshotDetail(null)}>关闭</button></header><div className="snapshot-detail-grid"><span>生成时间<strong>{formatSyncDateTime(snapshotDetail.entry.generatedAt)}</strong></span><span>来源版本<strong>{snapshotDetail.entry.sourceSignature ? "已记录" : "未记录"}</strong></span><span>Skill<strong>{snapshotDetail.entry.skillName || "-"}</strong></span><span>Profile<strong>{snapshotDetail.entry.layoutProfileId || "-"}</strong></span><span>状态<strong>{snapshotDetail.entry.active === false ? "停用" : "有效"}</strong></span><span>数据量<strong>{snapshotDetail.kind === "role" ? `${snapshotDetail.entry.snapshot?.people?.length || 0} 人` : `${snapshotDetail.entry.summary?.sourceRows || 0} 行`}</strong></span></div><label className="snapshot-note-field"><span>管理员备注</span><textarea defaultValue={snapshotDetail.entry.note || ""} placeholder="记录本次快照用途、口径或替换原因" onBlur={(event) => updateSnapshotNote(snapshotDetail.kind, snapshotDetail.key, event.target.value)}/></label></section></div>}
+      {snapshotCompare?.length === 2 && <div className="snapshot-detail-backdrop" onClick={() => setSnapshotCompare(null)}><section className="snapshot-detail-card snapshot-compare-card" onClick={(event) => event.stopPropagation()}><header><div><small>版本对比</small><h3>{snapshotCompare[0].moduleLabel || snapshotCompare[0].role || "快照"}</h3></div><button className="qmdp-text-btn" onClick={() => setSnapshotCompare(null)}>关闭</button></header><div className="snapshot-compare-grid">{snapshotCompare.map((entry) => <article key={entry.id || entry.key}><strong>{entry.active === false ? "停用" : "有效"}</strong><small>{new Date(entry.generatedAt).toLocaleString("zh-CN")}</small><p>周期：{entry.dateRange?.start2025 || entry.period?.start || ""}—{entry.dateRange?.end2026 || entry.period?.end || ""}</p><p>Skill：{entry.skillName || "-"}</p><p>Profile：{entry.layoutProfileId || "-"}</p><p>数据量：{entry.summary?.sourceRows ?? entry.snapshot?.people?.length ?? 0}</p><p>来源：{entry.sourceSignature ? "来源版本已记录" : "未记录"}</p></article>)}</div><p className="snapshot-compare-note">单月报告只能使用周期精确匹配的月度快照；半年快照不会被用于单月报告。</p></section></div>}
+      </Panel>
+    </div>
+  );
+}
+
+function SystemManagementPage({ active, data, auth, files = [], dateRange = {}, onEnsureAgentSources }) {
   const [tab, setTab] = useState(active);
   const [config, setConfig] = useState(() => ({ ...defaultQmdpSystemConfig, ...safeParse(localStorage.getItem(qmdpSystemKey), {}) }));
   const [projectMapping, setProjectMapping] = useState({ rules: {}, mappings: [] });
@@ -4136,17 +4538,17 @@ function SystemManagementPage({ active, data, auth }) {
     </>;
   };
   const importActions = (kind, section) => <div style={{ display: "flex", gap: 8, alignItems: "center" }}><button className="qmdp-secondary-btn" disabled={!editable || importingKind === kind} onClick={() => openMappingImport(kind)}><UploadSimple size={15}/>{importingKind === kind ? "解析中…" : "导入 Excel"}</button><span style={{ color: "#8190a2", fontSize: 10 }}>{config.importMeta?.[kind]?.name ? `最近导入：${config.importMeta[kind].name}（${config.importMeta[kind].count} 条）` : `支持 ${kind === "org" ? "产品部 / 产总 / TPM / PM" : "厂区 / 工坊 / 交付经理 / 机长"} 表头`}</span></div>;
-  const content = tab === "研发组织映射" ? <><Panel title="研发组织映射维护" subtitle="产品部、产总、TPM、PM 的责任关系" action={importActions("org", "orgMappings")}>{renderMapping()}<button className="qmdp-secondary-btn" disabled={!editable} onClick={() => addRow("orgMappings", { productDept: "新产品部", productionDirector: "", tpm: "", pm: "", active: true })}><Plus size={15}/>新增映射</button></Panel></> : tab === "供应链映射" ? <><Panel title="供应商/供应链人员映射" subtitle="厂区、工坊、交付经理与机长" action={importActions("supply", "supplyMappings")}>{renderSupply()}<button className="qmdp-secondary-btn" disabled={!editable} onClick={() => addRow("supplyMappings", { site: "深圳", workshop: "", manager: "", leader: "", active: true })}><Plus size={15}/>新增映射</button></Panel></> : tab === "项目名称映射" ? renderProjectNameMapping() : tab === "员工信息" ? <><Panel title="员工信息 / 企业微信 userid">{renderEmployees()}<button className="qmdp-secondary-btn" disabled={!editable} onClick={() => addRow("employees", { id: "", name: "", dept: "", role: "", wecom: "" })}><Plus size={15}/>新增员工</button></Panel></> : tab === "评分权重" ? <Panel title="质量风险评分权重" subtitle="权重总和应为 100"><div className="qmdp-weight-grid">{[["ecn", "ECN个人占比"], ["issue", "研发问题数量"], ["severity", "高严重度问题"], ["review", "设计评审问题占比"], ["nonBom", "非BOM加工件比例"], ["open", "未关闭问题数量"]].map(([key, label]) => <label key={key}><span>{label}</span><input type="number" min="0" max="100" value={config.weights?.[key] ?? 0} disabled={!editable} onChange={(event) => setConfig((current) => ({ ...current, weights: { ...current.weights, [key]: Number(event.target.value) } }))}/></label>)}</div><div className="qmdp-weight-total">当前权重合计：<strong>{Object.values(config.weights || {}).reduce((sum, value) => sum + Number(value || 0), 0)}%</strong><button className="qmdp-primary-btn" disabled={!editable} onClick={() => saveMessage("质量评分权重已保存")}>保存权重</button></div></Panel> : tab === "企业微信" ? <Panel title="企业微信应用配置" subtitle="用于报告发送，密钥只保存在本机状态"><div className="qmdp-form-grid">{[["corpId", "CorpId"], ["agentId", "AgentId"], ["secret", "Secret"]].map(([key, label]) => <label key={key}><span>{label}</span><input type={key === "secret" ? "password" : "text"} value={config.wecom?.[key] || ""} disabled={!editable} onChange={(event) => setConfig((current) => ({ ...current, wecom: { ...current.wecom, [key]: event.target.value } }))}/></label>)}</div><button className="qmdp-primary-btn" disabled={!editable} onClick={() => saveMessage("企业微信配置已保存")}>保存配置</button></Panel> : <Panel title="操作日志" subtitle="记录映射、权重与发送配置的变更"><div className="qmdp-log-list">{(config.logs || []).map((item) => <div key={item.id}><span>{formatSyncDateTime(item.at)}</span><strong>{item.message}</strong></div>)}{!(config.logs || []).length && <div className="qmdp-empty compact">暂无操作日志。</div>}</div></Panel>;
+  const content = tab === "后台快照" ? <BackgroundSnapshotPage data={data} files={files} dateRange={dateRange} auth={auth} onEnsureAgentSources={onEnsureAgentSources}/> : tab === "研发组织映射" ? <><Panel title="研发组织映射维护" subtitle="产品部、产总、TPM、PM 的责任关系" action={importActions("org", "orgMappings")}>{renderMapping()}<button className="qmdp-secondary-btn" disabled={!editable} onClick={() => addRow("orgMappings", { productDept: "新产品部", productionDirector: "", tpm: "", pm: "", active: true })}><Plus size={15}/>新增映射</button></Panel></> : tab === "供应链映射" ? <><Panel title="供应商/供应链人员映射" subtitle="厂区、工坊、交付经理与机长" action={importActions("supply", "supplyMappings")}>{renderSupply()}<button className="qmdp-secondary-btn" disabled={!editable} onClick={() => addRow("supplyMappings", { site: "深圳", workshop: "", manager: "", leader: "", active: true })}><Plus size={15}/>新增映射</button></Panel></> : tab === "项目名称映射" ? renderProjectNameMapping() : tab === "员工信息" ? <><Panel title="员工信息 / 企业微信 userid">{renderEmployees()}<button className="qmdp-secondary-btn" disabled={!editable} onClick={() => addRow("employees", { id: "", name: "", dept: "", role: "", wecom: "" })}><Plus size={15}/>新增员工</button></Panel></> : tab === "评分权重" ? <Panel title="质量风险评分权重" subtitle="权重总和应为 100"><div className="qmdp-weight-grid">{[["ecn", "ECN个人占比"], ["issue", "研发问题数量"], ["severity", "高严重度问题"], ["review", "设计评审问题占比"], ["nonBom", "非BOM加工件比例"], ["open", "未关闭问题数量"]].map(([key, label]) => <label key={key}><span>{label}</span><input type="number" min="0" max="100" value={config.weights?.[key] ?? 0} disabled={!editable} onChange={(event) => setConfig((current) => ({ ...current, weights: { ...current.weights, [key]: Number(event.target.value) } }))}/></label>)}</div><div className="qmdp-weight-total">当前权重合计：<strong>{Object.values(config.weights || {}).reduce((sum, value) => sum + Number(value || 0), 0)}%</strong><button className="qmdp-primary-btn" disabled={!editable} onClick={() => saveMessage("质量评分权重已保存")}>保存权重</button></div></Panel> : tab === "企业微信" ? <Panel title="企业微信应用配置" subtitle="用于报告发送，密钥只保存在本机状态"><div className="qmdp-form-grid">{[["corpId", "CorpId"], ["agentId", "AgentId"], ["secret", "Secret"]].map(([key, label]) => <label key={key}><span>{label}</span><input type={key === "secret" ? "password" : "text"} value={config.wecom?.[key] || ""} disabled={!editable} onChange={(event) => setConfig((current) => ({ ...current, wecom: { ...current.wecom, [key]: event.target.value } }))}/></label>)}</div><button className="qmdp-primary-btn" disabled={!editable} onClick={() => saveMessage("企业微信配置已保存")}>保存配置</button></Panel> : <Panel title="操作日志" subtitle="记录映射、权重与发送配置的变更"><div className="qmdp-log-list">{(config.logs || []).map((item) => <div key={item.id}><span>{formatSyncDateTime(item.at)}</span><strong>{item.message}</strong></div>)}{!(config.logs || []).length && <div className="qmdp-empty compact">暂无操作日志。</div>}</div></Panel>;
   return <div className="qmdp-page"><input ref={mappingInputRef} type="file" accept=".xlsx,.xls,.xlsm" hidden onChange={(event) => importMapping(event, mappingInputRef.current?.getAttribute("data-kind") || "supply")}/><QmdpPageHeader icon={GearSix} eyebrow="系统管理 / Administration" title={tab} description={editable ? "副管理员和主管理员可维护映射、权重与发送配置。" : "当前账号仅可查看系统配置。"} action={status && <span className="qmdp-inline-status"><CheckCircle size={15}/>{status}</span>}/><div className="qmdp-admin-tabs">{qmdpMenuGroups.find((group) => group.label === "系统管理").children.map((item) => <button key={item} className={tab === item ? "active" : ""} onClick={() => setTab(item)}>{item}</button>)}</div>{content}<div className="qmdp-note"><Database size={15}/>系统管理数据与现有数据导入、IPQC过程管控、研发质量分析相互隔离。</div></div>;
 }
 
 function ExecutiveDashboard({ data, files, dqaEngineerSupplement, onImport, onDeleteSource, onSourcesChanged, onImportDqaEngineerSupplement, onClearDqaEngineerSupplement, onDeleteDqaEngineerSupplementFile, onEnsureAgentSources, onClearAgentSources, view, onViewChange, dateRange, teamDefaultRange, lastServerSavedAt, serverSyncStatus, onDateRange, onRefreshDate, dateRefreshStatus, refreshProgress, fontSize, onFontSize, analysisKey, labelControlsVisible, onToggleLabelControls, uiTheme, onThemeChange, sidebarCollapsed, onToggleSidebar, auth, permissions, onPermissionsChanged }) {
-  const [active, setActive] = useState(() => examTokenFromUrl() ? "知识考试" : "总览");
+  const [active, setActive] = useState(() => examTokenFromUrl() ? "知识考试" : qualityAgentMenuFromUrl() || "总览");
   const [sidebarWidth, setSidebarWidth] = useState(() => clampSidebarWidth(localStorage.getItem("qms-sidebar-width") || sidebarWidthLimits.default));
   const moduleView = ["IQC", "IPQC", "OQC", "DQA", "QMS"].includes(active) ? active : null;
   const qmdpKnowledgeView = ["知识库", "题库管理", "知识考试"].includes(active);
   const qmdpReportView = ["IPQC操作报告", "机长报告", "交付经理报告", "供应链经理报告", "研发工程师报告", "PM报告", "TPM报告", "产总报告", "董事长报告", "报告任务中心"].includes(active);
-  const qmdpSystemView = ["研发组织映射", "供应链映射", "项目名称映射", "员工信息", "评分权重", "企业微信", "操作日志"].includes(active);
+  const qmdpSystemView = ["研发组织映射", "供应链映射", "项目名称映射", "后台快照", "员工信息", "评分权重", "企业微信", "操作日志"].includes(active);
   const qualityAgentView = qualityAgentMenuItems.includes(active);
   const agentRoleReportView = agentRoleMenuItems.includes(active);
   const agentExamStatsView = agentUtilityMenuItems.includes(active);
@@ -4179,7 +4581,7 @@ function ExecutiveDashboard({ data, files, dqaEngineerSupplement, onImport, onDe
         <div className="top-actions"><ServerSyncBadge value={serverSyncStatus}/><Switcher view={view} onChange={onViewChange} canWorkspace={allowWorkspace} />{allowAnnotationEdit && <AnnotationEditButton defaultModule={moduleView || "\u603b\u89c8"} />}{allowAnnotationView && <AnnotationViewButton />}{allowExport && <ExportReportButton />}<button className={`label-controls-toggle ${labelControlsVisible ? "active" : ""}`} onClick={onToggleLabelControls}>{labelControlsVisible ? "隐藏数值设置" : "显示数值设置"}</button>{allowImport && <button className="import-btn" onClick={() => onImport(null)}><UploadSimple size={17} />导入数据</button>}</div>
       </header>
       {!qmdpView && <DateRangeFilter value={dateRange} teamDefaultRange={teamDefaultRange} lastServerSavedAt={lastServerSavedAt} onChange={onDateRange} onRefresh={onRefreshDate} refreshStatus={dateRefreshStatus} refreshProgress={refreshProgress} canRefresh={allowTemporaryRefresh} fontSize={fontSize} onFontSize={onFontSize}/>}
-      {active === "权限设置" && auth?.isAdmin ? <PermissionSettingsPage auth={auth} permissions={permissions} onPermissionsChanged={onPermissionsChanged}/> : qmdpKnowledgeView ? <KnowledgeManagementPage active={active} qualitySources={agentFiles} onEnsureAgentSources={onEnsureAgentSources}/> : qmdpReportView ? <QualityReportsPage active={active} data={data} files={files} dateRange={dateRange} onRoleChange={setActive}/> : qualityAgentView && canUseFeature(auth, permissions, "qualityAgent") ? <QualityAgentPage key={active} data={data} files={files} dateRange={dateRange} module={qualityAgentMenuModules[active]} onEnsureAgentSources={onEnsureAgentSources} canStart={canUseFeature(auth, permissions, "qualityAgentStart")} canSaveToServer={auth?.isAdmin === true}/> : agentRoleReportView && canUseFeature(auth, permissions, "qualityAgent") ? <AgentRoleReportPage key={active} initialRole={agentRoleMenuRoles[active]} data={data} files={agentFiles} dateRange={dateRange} onEnsureAgentSources={onEnsureAgentSources} canGenerate={canUseFeature(auth, permissions, "agentRoleReportGenerate")} canSaveToServer={auth?.isAdmin === true}/> : agentExamStatsView && canUseFeature(auth, permissions, "qualityAgent") ? <AgentExamStatsPage/> : qmdpSystemView ? <SystemManagementPage active={active} data={data} auth={auth}/> : active === "AI接口" && canUseFeature(auth, permissions, "aiInterface") ? <AiInterfacePage canSaveToServer={auth?.isAdmin === true}/> : active === "数据导入" && allowImport ? <DataSourcePage files={files} onImportModule={onImport} onDelete={onDeleteSource} onSourcesChanged={onSourcesChanged} dqaEngineerSupplement={dqaEngineerSupplement} onImportDqaEngineerSupplement={onImportDqaEngineerSupplement} onClearDqaEngineerSupplement={onClearDqaEngineerSupplement} onDeleteDqaEngineerSupplementFile={onDeleteDqaEngineerSupplementFile}/> : active === "AI分析" && canUseFeature(auth, permissions, "aiAnalysis") ? <AiAnalysisPage data={data} dateRange={dateRange} analysisKey={analysisKey} canSaveToServer={auth?.isAdmin === true}/> : moduleView ? <ModuleDetail key={`${moduleView}-${analysisKey}`} module={moduleView} data={data} files={files} /> : <>
+      {active === "权限设置" && auth?.isAdmin ? <PermissionSettingsPage auth={auth} permissions={permissions} onPermissionsChanged={onPermissionsChanged}/> : qmdpKnowledgeView ? <KnowledgeManagementPage active={active} qualitySources={agentFiles} onEnsureAgentSources={onEnsureAgentSources}/> : qmdpReportView ? <QualityReportsPage active={active} data={data} files={files} dateRange={dateRange} onRoleChange={setActive}/> : qualityAgentView && canUseFeature(auth, permissions, "qualityAgent") ? <QualityAgentPage key={active} data={data} files={files} dateRange={dateRange} module={qualityAgentMenuModules[active]} onEnsureAgentSources={onEnsureAgentSources} canStart={canUseFeature(auth, permissions, "qualityAgentStart")} canSaveToServer={auth?.isAdmin === true}/> : agentRoleReportView && canUseFeature(auth, permissions, "qualityAgent") ? <AgentRoleReportPage key={active} initialRole={agentRoleMenuRoles[active]} data={data} files={agentFiles} dateRange={dateRange} onEnsureAgentSources={onEnsureAgentSources} canGenerate={canUseFeature(auth, permissions, "agentRoleReportGenerate")} canSaveToServer={auth?.isAdmin === true}/> : agentExamStatsView && canUseFeature(auth, permissions, "qualityAgent") ? <AgentExamStatsPage/> : qmdpSystemView ? <SystemManagementPage active={active} data={data} auth={auth} files={agentFiles} dateRange={dateRange} onEnsureAgentSources={onEnsureAgentSources}/> : active === "AI接口" && canUseFeature(auth, permissions, "aiInterface") ? <AiInterfacePage canSaveToServer={auth?.isAdmin === true}/> : active === "数据导入" && allowImport ? <DataSourcePage files={files} onImportModule={onImport} onDelete={onDeleteSource} onSourcesChanged={onSourcesChanged} dqaEngineerSupplement={dqaEngineerSupplement} onImportDqaEngineerSupplement={onImportDqaEngineerSupplement} onClearDqaEngineerSupplement={onClearDqaEngineerSupplement} onDeleteDqaEngineerSupplementFile={onDeleteDqaEngineerSupplementFile}/> : active === "AI分析" && canUseFeature(auth, permissions, "aiAnalysis") ? <AiAnalysisPage data={data} dateRange={dateRange} analysisKey={analysisKey} canSaveToServer={auth?.isAdmin === true}/> : moduleView ? <ModuleDetail key={`${moduleView}-${analysisKey}`} module={moduleView} data={data} files={files} /> : <>
         <OverviewKpiCards data={data}/>
         <div className="dashboard-grid">
           <MainSupplierOverview data={data}/>

@@ -5,6 +5,10 @@ description: 生成机长管理范围质量闭环 Agent 报告。依据供应链
 
 # 机长管理范围质量闭环报告
 
+## 视觉数据输出
+
+正式报告末尾必须遵循 `skills/quality-analysis-core/references/report-visual-contract.md` 输出 `reportKind: "role"` 的 `<REPORT_VISUAL_SPEC_JSON>`。设置 `subject.scopeType: "manager"`，输出机长范围的组装人员排名、问题类型 Pareto、趋势和 TOP 风险；不得将下属具体问题改写为机长个人问题。
+
 ## 1. 角色边界
 
 机长是组装人员的直接管理者。机长 Agent 报告分析所辖组装人员和工坊的质量状态、人员对比、TOP 问题和管理动作，不写机长本人犯错。

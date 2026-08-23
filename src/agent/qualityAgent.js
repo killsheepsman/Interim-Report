@@ -1,4 +1,5 @@
 const AGENT_STORAGE_KEY = "qms-quality-agent-runs-v1";
+const WORKFLOW_VERSION = "quality-agent-v2";
 
 export const QUALITY_AGENT_STAGES = [
   { id: "audit", label: "Agent数据审计", local: true, maxTokens: 900 },
@@ -35,11 +36,14 @@ const compactStoredRun = (run = {}) => {
     content: String(stage?.content || "").slice(0, MAX_STORED_STAGE_CHARS),
   }]));
   return {
-    workflowVersion: run.workflowVersion || "quality-agent-v1",
+    workflowVersion: run.workflowVersion || WORKFLOW_VERSION,
     module: run.module,
     skillName: run.skillName,
     skillSignature: run.skillSignature,
-    layoutSkillName: run.layoutSkillName || "",
+    // Kept alongside the legacy fields so cached reports from older versions
+    // remain readable. A presentation profile never changes analysis output.
+    layoutProfileId: run.layoutProfileId || run.layoutSkillName || "research-briefing-v1",
+    layoutSkillName: run.layoutSkillName || run.layoutProfileId || "research-briefing-v1",
     layoutSkillSignature: run.layoutSkillSignature || "",
     snapshotHash: run.snapshotHash,
     status: run.status,
@@ -314,6 +318,34 @@ const validateEvidenceReferences = (content, snapshot, stage) => {
   return { status: "pass", references, invalid: [], message: `已核验${references.length}个证据编号` };
 };
 
+export const validateQualityAgentStageGate = ({ stage, record, snapshot, content }) => {
+  const evidenceValidation = validateEvidenceReferences(content, snapshot, stage);
+  const issues = [];
+  if (stage === "analysis") {
+    const conclusions = [...new Set(String(content || "").match(new RegExp(`K-${snapshot.module}-\\d{3}`, "g")) || [])];
+    if (evidenceValidation.status !== "pass") issues.push(evidenceValidation.message);
+    if (!conclusions.length) issues.push("二八分析缺少 K-模块-序号 结论编号");
+    return { blocked: issues.length > 0, message: issues.join("；"), evidenceValidation, conclusions };
+  }
+  if (stage === "actions") {
+    const analysis = record?.stages?.analysis;
+    if (analysis?.status !== "done") issues.push("二八分析未完成");
+    if (analysis?.evidenceValidation?.status !== "pass") issues.push("二八分析证据未通过校验");
+    if (record?.actionLedger?.status !== "ready") issues.push(record?.actionLedger?.message || "行动台账不可复查");
+    if (evidenceValidation.status !== "pass") issues.push(evidenceValidation.message);
+    return { blocked: issues.length > 0, message: issues.join("；"), evidenceValidation };
+  }
+  if (stage === "report") {
+    const analysis = record?.stages?.analysis;
+    const actions = record?.stages?.actions;
+    if (analysis?.status !== "done" || analysis?.evidenceValidation?.status !== "pass") issues.push("二八分析证据门禁未通过");
+    if (actions?.status !== "done" || record?.actionLedger?.status !== "ready") issues.push("责任与改善行动门禁未通过");
+    if (evidenceValidation.status !== "pass") issues.push(evidenceValidation.message);
+    return { blocked: issues.length > 0, message: issues.join("；"), evidenceValidation };
+  }
+  return { blocked: false, message: "", evidenceValidation };
+};
+
 const actionMetricValue = (value) => {
   const parsed = Number(value && typeof value === "object" && "value" in value ? value.value : value);
   return Number.isFinite(parsed) ? parsed : null;
@@ -324,6 +356,22 @@ const actionDate = (value) => {
 };
 const targetReached = (value, target, direction) => value !== null && target !== null && (direction === "gte" ? value >= target : value <= target);
 const reopenReached = (value, threshold, direction) => value !== null && threshold !== null && (direction === "gte" ? value < threshold : value > threshold);
+const retryableAiError = (error) => /\b(?:429|502|503|504)\b|too many requests|rate limit|网关超时|gateway timeout|timed? ?out|service unavailable|bad gateway/i.test(String(error?.message || error || ""));
+const retryDelayMs = (error) => /\b429\b|too many requests|rate limit/i.test(String(error?.message || error || "")) ? 300000 : 1200;
+const waitForRetry = (delay, signal) => new Promise((resolve, reject) => {
+  const timer = setTimeout(resolve, delay);
+  if (!signal) return;
+  signal.addEventListener("abort", () => {
+    clearTimeout(timer);
+    reject(new DOMException("Aborted", "AbortError"));
+  }, { once: true });
+});
+const throwIfAborted = (signal) => {
+  if (!signal?.aborted) return;
+  const error = new Error("已停止本次 Agent 分析");
+  error.name = "AbortError";
+  throw error;
+};
 const extractActionLedger = (content, snapshot, previousLedger) => {
   const pattern = /<ACTION_LEDGER_JSON>\s*([\s\S]*?)\s*<\/ACTION_LEDGER_JSON>/i;
   const matched = String(content || "").match(pattern);
@@ -403,50 +451,42 @@ export const closeQualityAgentAction = (run, actionId, closureEvidence) => {
   return { ...run, actionLedger: { ...run.actionLedger, lastReviewedAt: now(), actions } };
 };
 
-const stagePrompt = ({ stage, snapshot, outputs, skillName, skillContent, layoutSkillName, layoutSkillContent, retry = false }) => {
+const stagePrompt = ({ stage, snapshot, outputs, skillName, skillContent, retry = false }) => {
   const completedOutputs = Object.fromEntries(Object.entries(outputs || {})
     .filter(([, value]) => value?.status === "done" && value.content)
     .map(([id, value]) => [id, { content: String(value.content).slice(0, stage === "report" ? (retry ? 9000 : 14000) : (retry ? 6000 : 9000)) }]));
   const isAnalysis = stage === "analysis";
   const dataText = isAnalysis ? analysisSeed(snapshot, retry) : snapshotText(snapshot, retry);
   const skillText = String(skillContent || "").slice(0, isAnalysis ? (retry ? 2800 : 5500) : (retry ? 7000 : 12000));
-  const layoutRule = stage === "report" && layoutSkillName
-    ? `\n报告排版 Skill：${layoutSkillName}\n排版规则：\n${String(layoutSkillContent || "").slice(0, retry ? 2400 : 5000)}\n排版 Skill 只能重组表达，不能改变数字、证据、结论、责任和行动。`
-    : stage === "report" ? "\n报告排版 Skill：未选择。保持清晰的结构化 Markdown，不额外套用 Apple 或 Notion 规则。" : "";
-  const common = `模块技能：${skillName || "quality-analysis-core"}\n核心与模块规则：\n${skillText}\n模块：${snapshot.module}\n模块专项规则：${snapshot.definitions?.moduleRule || "按固定快照分析"}\n模块分析作业要求：${modulePlaybooks[snapshot.module] || "按固定快照中的组织、指标和证据分析"}\n模块责任链：${moduleResponsibilityChains[snapshot.module] || "按输入中的有效组织映射分层"}\n证据卡规则：事实必须引用 evidenceCatalog 的 S/M/O/C/X 编号；合理推断和待验证假设不得伪装成事实，必须写验证方法、验证角色和期限。\n目标角色：${snapshot.target?.role || "公司级"}\n目标收件人：${snapshot.target?.recipient || "待指定"}\n周期：${JSON.stringify(snapshot.period)}\n${isAnalysis ? "首次分析数据摘要" : "固定数据摘要"}（由本地统计引擎生成，不要重新计算）：\n${dataText}\n已完成Agent阶段摘要（仅引用，不重复计算）：\n${JSON.stringify(completedOutputs)}${layoutRule}`;
+  const common = `模块技能：${skillName || "quality-analysis-core"}\n核心与模块规则：\n${skillText}\n模块：${snapshot.module}\n模块专项规则：${snapshot.definitions?.moduleRule || "按固定快照分析"}\n模块分析作业要求：${modulePlaybooks[snapshot.module] || "按固定快照中的组织、指标和证据分析"}\n模块责任链：${moduleResponsibilityChains[snapshot.module] || "按输入中的有效组织映射分层"}\n证据卡规则：事实必须引用 evidenceCatalog 的 S/M/O/C/X 编号；合理推断和待验证假设不得伪装成事实，必须写验证方法、验证角色和期限。\n目标角色：${snapshot.target?.role || "公司级"}\n目标收件人：${snapshot.target?.recipient || "待指定"}\n周期：${JSON.stringify(snapshot.period)}\n${isAnalysis ? "首次分析数据摘要" : "固定数据摘要"}（由本地统计引擎生成，不要重新计算）：\n${dataText}\n已完成Agent阶段摘要（仅引用，不重复计算）：\n${JSON.stringify(completedOutputs)}`;
   if (stage === "analysis") return `${common}\n请完成 Agent结果与二八分析：直接引用固定数据摘要中的 localPareto，区分结果指标和问题暴露量，解释TOP组织、TOP机制及其交叉主题。不得根据截断数组重新排序、重算占比或改变名次；localPareto没有事件时明确写“无法形成Pareto”。Pareto表示问题贡献集中度，不等同于绩效排名。形成3—5张证据卡，每张包含：结论ID（K-${snapshot.module}-三位序号）、证据等级、证据编号、事实、合理推断/待验证假设、验证方法、验证角色、验证期限。输出结构化 Markdown。`;
   if (stage === "actions") return `${common}\n请完成 Agent责任与改善行动：沿用前序K结论ID和证据编号，严格按上述模块责任链拆解责任，给出风险等级、根因证据、30/60/90天行动、责任对象、完成期限、验证指标和关闭条件。没有人员字段或映射证据时不得用上级字段替代，必须写待核实。正文之后必须追加一个且仅一个 <ACTION_LEDGER_JSON>{"actions":[...]}</ACTION_LEDGER_JSON> 数据块；每项包含 id（A-${snapshot.module}-三位序号）、conclusionId、riskLevel、phase、action、mechanism、owner、collaborators、dueDate、reviewDate、deliverable、evidenceLocation、evidenceIds、metricKey、target、direction（lte或gte）、reopenThreshold、closeCriteria、fallback。metricKey只能从固定快照 metrics 的真实键中选择，无法对应时留空；不要把培训、会议或提醒单独作为永久措施。`;
-  return `${common}\n请完成 Agent正式复盘报告：汇总审计、结果、过程、根因、责任和行动，保留K结论ID、证据等级和S/M/O/C/X证据编号，输出管理层可直接审核的报告。所有数字必须来自固定快照或前序Agent结果，禁止添加未经证据支持的数字。`;
+  return `${common}\n请完成 Agent正式复盘报告：汇总审计、结果、过程、根因、责任和行动，输出管理层可直接审核的报告。正文保留K结论ID和证据等级，但不要逐条展示 S/M/O/C/X 证据编号，不要出现“证据编号：...”列表，不要写“REPORT_VISUAL_SPEC_JSON”标题；若需要机器图表契约，只能在全文最后直接追加标签数据块供系统读取。把“过程断点与根因证据”写成“数据表现→过程判断→具体动作→验证口径”，少用“推断/假设”字样；无法证实的内容改写为“待现场核验项”，并同时给出验证动作、责任人和期限。所有数字必须来自固定快照或前序Agent结果，禁止添加未经证据支持的数字。`;
 };
 
-export const runQualityAgent = async ({ snapshot, skillName, skillContent, layoutSkillName = "", layoutSkillContent = "", existing, requestChat, signal, onUpdate = () => {} } = {}) => {
+export const runQualityAgent = async ({ snapshot, skillName, skillContent, layoutProfileId = "research-briefing-v1", existing, requestChat, signal, onUpdate = () => {} } = {}) => {
   if (!snapshot) throw new Error("缺少质量分析 Agent 数据快照");
+  throwIfAborted(signal);
   const currentSnapshotHash = snapshotKey(snapshot);
   const currentSkillSignature = textSignature(`${skillName || ""}::${String(skillContent || "")}`);
-  const currentLayoutSkillSignature = textSignature(`${layoutSkillName || ""}::${String(layoutSkillContent || "")}`);
   const legacySnapshotHash = currentSnapshotHash.slice(0, 80);
   const sameSnapshot = existing?.snapshotHash === currentSnapshotHash || existing?.snapshotHash === legacySnapshotHash;
   const previousActionLedger = existing?.actionLedger;
-  const canReuseAnalysis = sameSnapshot && existing?.workflowVersion === "quality-agent-v1" && existing?.skillName === skillName && existing?.skillSignature === currentSkillSignature;
-  const layoutChanged = canReuseAnalysis && (String(existing?.layoutSkillName || "") !== String(layoutSkillName || "") || existing?.layoutSkillSignature !== currentLayoutSkillSignature);
+  const canReuseAnalysis = sameSnapshot && existing?.workflowVersion === WORKFLOW_VERSION && existing?.skillName === skillName && existing?.skillSignature === currentSkillSignature;
   let record = canReuseAnalysis
     ? { ...existing, stages: { ...(existing.stages || {}) } }
-    : { workflowVersion: "quality-agent-v1", snapshotHash: currentSnapshotHash, module: snapshot.module, skillName, skillSignature: currentSkillSignature, snapshot, startedAt: now(), stages: {} };
-  if (layoutChanged && record.stages?.report?.status === "done") {
-    const { report: _oldReport, ...completedStages } = record.stages;
-    record.stages = completedStages;
-    record.content = "";
-    record.completedAt = "";
-  }
+    : { workflowVersion: WORKFLOW_VERSION, snapshotHash: currentSnapshotHash, module: snapshot.module, skillName, skillSignature: currentSkillSignature, snapshot, startedAt: now(), stages: {} };
   record.snapshot = snapshot;
   record.snapshotHash = currentSnapshotHash;
   record.skillSignature = currentSkillSignature;
-  record.layoutSkillName = layoutSkillName || "";
-  record.layoutSkillSignature = currentLayoutSkillSignature;
+  record.layoutProfileId = layoutProfileId || "research-briefing-v1";
+  record.layoutSkillName = record.layoutProfileId;
+  record.layoutSkillSignature = "";
   record.status = "running";
   record.progress = record.progress || { percent: 0, phase: "准备分析", detail: "正在准备固定数据快照" };
   onUpdate(record);
   for (const [stageIndex, stage] of QUALITY_AGENT_STAGES.entries()) {
+    throwIfAborted(signal);
     if (record.stages?.[stage.id]?.status === "done" && record.stages[stage.id].content) continue;
     record.currentStage = stage.id;
     record.progress = { percent: Math.round((stageIndex / QUALITY_AGENT_STAGES.length) * 100), phase: stage.label, detail: `正在执行：${stage.label}` };
@@ -454,6 +494,7 @@ export const runQualityAgent = async ({ snapshot, skillName, skillContent, layou
     onUpdate(record);
     try {
       let content;
+      let requestTrace = {};
       if (stage.local) {
         const auditResult = buildAgentAuditResult(snapshot);
         content = JSON.stringify(auditResult, null, 2);
@@ -462,24 +503,35 @@ export const runQualityAgent = async ({ snapshot, skillName, skillContent, layou
           throw new Error(`数据审计为D级，已阻止在线分析：${auditResult.blockers.join("；")}`);
         }
       } else {
-        const requestStage = async (retry = false, stream = false, responses = false) => (await requestChat([
-          { role: "system", content: systemPrompt },
-          { role: "user", content: stagePrompt({ stage: stage.id, snapshot, outputs: record.stages, skillName, skillContent, layoutSkillName, layoutSkillContent, retry }) },
-        ], { max_tokens: retry ? Math.min(stage.maxTokens, 1600) : stage.maxTokens, agent: true, stream, responses, signal })).content;
+        const requestStage = async (retry = false, stream = false, responses = false) => {
+          throwIfAborted(signal);
+          const prompt = stagePrompt({ stage: stage.id, snapshot, outputs: record.stages, skillName, skillContent, retry });
+          const response = await requestChat([
+            { role: "system", content: systemPrompt },
+            { role: "user", content: prompt },
+          ], { max_tokens: retry ? Math.min(stage.maxTokens, 1600) : stage.maxTokens, agent: true, stream, responses, signal });
+          if (response?.model) record.model = String(response.model);
+          requestTrace = { promptFingerprint: textSignature(`${systemPrompt}\n${prompt}`), retry, stream, responses, usage: response?.usage || null };
+          return response.content;
+        };
         try {
           content = await requestStage(false);
         } catch (firstError) {
-          const upstreamTimeout = /504|网关超时|gateway timeout|timed? ?out/i.test(String(firstError?.message || ""));
+          const upstreamTimeout = retryableAiError(firstError);
           if (!upstreamTimeout || signal?.aborted) throw firstError;
-          record.stages = { ...record.stages, [stage.id]: { ...record.stages[stage.id], retrying: true, retryReason: "上游网关超时，已压缩请求重试" } };
+          const firstDelay = retryDelayMs(firstError);
+          record.stages = { ...record.stages, [stage.id]: { ...record.stages[stage.id], retrying: true, retryReason: `上游暂不可用，${Math.round(firstDelay / 1000)} 秒后压缩请求重试` } };
           onUpdate(record);
+          await waitForRetry(firstDelay, signal);
           try {
             content = await requestStage(true);
           } catch (secondError) {
-            const secondTimeout = /504|网关超时|gateway timeout|timed? ?out/i.test(String(secondError?.message || ""));
+            const secondTimeout = retryableAiError(secondError);
             if (!secondTimeout || signal?.aborted) throw secondError;
-            record.stages = { ...record.stages, [stage.id]: { ...record.stages[stage.id], retrying: true, retryReason: "普通请求仍超时，改用流式输出重试" } };
+            const secondDelay = retryDelayMs(secondError);
+            record.stages = { ...record.stages, [stage.id]: { ...record.stages[stage.id], retrying: true, retryReason: `上游仍不可用，${Math.round(secondDelay / 1000)} 秒后改用流式输出重试` } };
             onUpdate(record);
+            await waitForRetry(secondDelay, signal);
             try {
               content = await requestStage(true, true, true);
             } catch (thirdError) {
@@ -497,14 +549,23 @@ export const runQualityAgent = async ({ snapshot, skillName, skillContent, layou
         content = extracted.content;
         record.actionLedger = extracted.ledger;
       }
-      const evidenceValidation = validateEvidenceReferences(content, snapshot, stage.id);
+      const gate = validateQualityAgentStageGate({ stage: stage.id, record, snapshot, content });
+      const evidenceValidation = gate.evidenceValidation;
+      if (gate.blocked) {
+        record.status = "error";
+        record.error = `${stage.label}门禁未通过：${gate.message}`;
+        record.stages = { ...record.stages, [stage.id]: { ...record.stages[stage.id], status: "error", label: stage.label, content: String(content).trim(), completedAt: now(), evidenceValidation, gate, trace: { snapshotFingerprint: textSignature(currentSnapshotHash), skillFingerprint: currentSkillSignature, outputFingerprint: textSignature(content), ...requestTrace } } };
+        record.progress = { ...record.progress, phase: `${stage.label}门禁未通过`, detail: record.error };
+        onUpdate(record);
+        return record;
+      }
       if (stage.id === "report") {
         const restrictions = [];
         if (evidenceValidation.status === "warning") restrictions.push(`证据引用完整性待复核：${evidenceValidation.message}。本报告在补齐并核验本地证据编号前，不得把相关推断作为已证实事实发布。`);
         if (record.actionLedger?.status !== "ready") restrictions.push(`行动台账不可自动复查：${record.actionLedger?.message || "尚未生成结构化行动台账"}。需补齐责任、指标、阈值、复查日期和重开条件。`);
         if (restrictions.length) content = `${String(content).trim()}\n\n## 发布限制\n\n${restrictions.map((item) => `- ${item}`).join("\n")}`;
       }
-      record.stages = { ...record.stages, [stage.id]: { status: "done", label: stage.label, content: String(content).trim(), completedAt: now(), evidenceValidation } };
+      record.stages = { ...record.stages, [stage.id]: { status: "done", label: stage.label, content: String(content).trim(), completedAt: now(), evidenceValidation, gate, trace: { snapshotFingerprint: textSignature(currentSnapshotHash), skillFingerprint: currentSkillSignature, outputFingerprint: textSignature(content), ...requestTrace } } };
       record.progress = { percent: Math.round(((stageIndex + 1) / QUALITY_AGENT_STAGES.length) * 100), phase: stage.label, detail: `${stage.label}已完成，准备进入下一阶段` };
       onUpdate(record);
     } catch (error) {
