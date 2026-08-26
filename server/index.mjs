@@ -1,9 +1,13 @@
 import { createServer } from "node:http";
 import { createReadStream, promises as fs } from "node:fs";
+import { spawn } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { randomUUID } from "node:crypto";
-import { buildOqcRuleDimensionChartCache } from "../src/dataEngine.js";
+import { createHash, randomUUID } from "node:crypto";
+import { buildDqaAgentRawMetrics, buildDqaEngineerSupplementSource, buildOqcRuleDimensionChartCache, parseFiles } from "../src/dataEngine.js";
+import { buildQualityAgentSnapshot } from "../src/agent/qualitySnapshot.js";
+import { attachDqaAgentRawMetrics, buildRoleSnapshots, mergeRoleSnapshotRegistry, normalizeRoleSnapshotRegistry, roleSnapshotMappingSignature, roleSnapshotRule, roleSnapshotSourceSignature } from "../src/agent/roleSnapshotRegistry.js";
+import { buildSnapshotPeriods, mergeQualitySnapshotHistory, normalizeQualitySnapshotRegistry } from "../src/agent/snapshotRegistry.js";
 import { gzip } from "node:zlib";
 import { promisify } from "node:util";
 import { deletePostgresAgentReport, initPostgres, listPostgresAgentReports, readPostgresAgentReport, readPostgresState, writePostgresAgentReport, writePostgresState } from "./postgresStore.mjs";
@@ -27,6 +31,7 @@ const adminIpsFile = path.join(dataDir, "admin-ips.json");
 const permissionFile = path.join(dataDir, "permission-config.json");
 const examSessionsFile = path.join(dataDir, "exam-sessions.json");
 const knowledgeStoreFile = path.join(dataDir, "knowledge-store.json");
+const snapshotJobsFile = path.join(dataDir, "quality-snapshot-jobs.json");
 const port = Number(process.env.PORT || 4173);
 const host = process.env.HOST || "0.0.0.0";
 const trustProxy = process.env.TRUST_PROXY === "true";
@@ -35,10 +40,43 @@ const OQC_EQUIPMENT_RULE_CACHE_KEY = "oqc-equipment-rule-cache";
 const QUALITY_AGENT_RUNS_KEY = "quality-agent-runs";
 const QUALITY_SNAPSHOT_REGISTRY_KEY = "quality-agent-snapshot-registry";
 const QUALITY_ROLE_SNAPSHOT_REGISTRY_KEY = "quality-agent-role-snapshot-registry";
+const REPORT_QUALITY_RULES_KEY = "quality-agent-report-quality-rules";
 const oqcRuleDimensionKeys = ["client", "customerProductCategory", "series", "businessCategory", "productForm", "detailCategory", "process"];
-const allowedKeys = new Set(["imported-sources", "analysis-cache", "applied-date-range", "dqa-engineer-supplement", "project-name-mapping", OQC_EQUIPMENT_RULE_CACHE_KEY, QUALITY_AGENT_RUNS_KEY, QUALITY_SNAPSHOT_REGISTRY_KEY, QUALITY_ROLE_SNAPSHOT_REGISTRY_KEY]);
+const allowedKeys = new Set(["imported-sources", "analysis-cache", "applied-date-range", "dqa-engineer-supplement", "dqa-agent-raw", "project-name-mapping", OQC_EQUIPMENT_RULE_CACHE_KEY, QUALITY_AGENT_RUNS_KEY, QUALITY_SNAPSHOT_REGISTRY_KEY, QUALITY_ROLE_SNAPSHOT_REGISTRY_KEY, REPORT_QUALITY_RULES_KEY]);
 const defaultSnapshotRegistry = () => ({ schemaVersion: "quality-agent-snapshot-registry-v1", updatedAt: new Date().toISOString(), selectedRuleId: "iqc", rules: [], history: [] });
-const defaultValueFor = (key) => key === "analysis-cache" || key === "applied-date-range" || key === "dqa-engineer-supplement" ? null : key === "project-name-mapping" ? { rules: {}, mappings: [] } : key === OQC_EQUIPMENT_RULE_CACHE_KEY ? { ready: false, results: {} } : key === QUALITY_AGENT_RUNS_KEY ? {} : key === QUALITY_SNAPSHOT_REGISTRY_KEY ? defaultSnapshotRegistry() : key === QUALITY_ROLE_SNAPSHOT_REGISTRY_KEY ? { schemaVersion: "quality-agent-role-snapshot-v1", updatedAt: new Date().toISOString(), history: [] } : [];
+// Snapshot keys historically contain complete source and mapping signatures.
+// Never send those keys to a list page: a few hundred entries can otherwise
+// make the browser parse several MB before it can render the snapshot screen.
+const roleSnapshotEntryId = (entry = {}) => entry.id || `role-${createHash("sha256").update(String(entry.key || `${entry.role}|${entry.generatedAt}|${entry.period?.start}|${entry.period?.end}`)).digest("hex").slice(0, 16)}`;
+const withRoleSnapshotIds = (value = {}) => ({ ...value, history: Array.isArray(value.history) ? value.history.map((entry) => ({ ...entry, id: roleSnapshotEntryId(entry) })) : [] });
+const defaultValueFor = (key) => key === REPORT_QUALITY_RULES_KEY ? { version: 1, rules: [{ id: "period", label: "统计周期一致", group: "数据一致性", severity: "block", enabled: true }, { id: "source", label: "数字来自固定快照", group: "数据一致性", severity: "warn", enabled: true }, { id: "trend", label: "趋势覆盖完整周期", group: "图表要求", severity: "warn", enabled: true }, { id: "chart", label: "多维对比使用图表", group: "图表要求", severity: "warn", enabled: true }, { id: "closure", label: "包含改善、验证和关闭条件", group: "质量闭环", severity: "block", enabled: true }, { id: "machine", label: "清理内部机器标记", group: "内容清理", severity: "block", enabled: true }] } : key === "analysis-cache" || key === "applied-date-range" || key === "dqa-engineer-supplement" || key === "dqa-agent-raw" ? null : key === "project-name-mapping" ? { rules: {}, mappings: [] } : key === OQC_EQUIPMENT_RULE_CACHE_KEY ? { ready: false, results: {} } : key === QUALITY_AGENT_RUNS_KEY ? {} : key === QUALITY_SNAPSHOT_REGISTRY_KEY ? defaultSnapshotRegistry() : key === QUALITY_ROLE_SNAPSHOT_REGISTRY_KEY ? { schemaVersion: "quality-agent-role-snapshot-v1", updatedAt: new Date().toISOString(), history: [] } : [];
+
+const stateList = (value) => Array.isArray(value)
+  ? value
+  : (value && typeof value === "object" ? Object.keys(value).sort((left, right) => Number(left) - Number(right)).map((key) => value[key]) : []);
+const rehydrateSnapshotSources = async (sourceIndex, modules = [], onProgress = null) => {
+  const wanted = stateList(sourceIndex).filter((source) => source && modules.includes(source.module));
+  const hydrated = [];
+  for (let index = 0; index < wanted.length; index += 1) {
+    const source = wanted[index];
+    if (onProgress) await onProgress({ index, total: wanted.length, source });
+    if (Array.isArray(source.rows) && source.rows.length) {
+      hydrated.push(source);
+      continue;
+    }
+    const moduleName = String(source.module || "");
+    const fileName = String(source.name || "");
+    const filePath = path.resolve(uploadDir, moduleName, fileName);
+    const permittedRoot = path.resolve(uploadDir, moduleName) + path.sep;
+    if (!filePath.startsWith(permittedRoot)) throw new Error(`快照来源文件路径无效：${fileName}`);
+    let bytes;
+    try { bytes = await fs.readFile(filePath); } catch { throw new Error(`服务器缺少快照来源文件：${moduleName}/${fileName}`); }
+    const [parsed] = await parseFiles([{ name: fileName, size: Number(source.size || bytes.length), arrayBuffer: async () => bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) }]);
+    if (!parsed?.rows?.length) throw new Error(`快照来源文件未解析出有效记录：${moduleName}/${fileName}`);
+    hydrated.push({ ...source, ...parsed, module: source.module || parsed.module, kind: source.kind || parsed.kind, subKind: source.subKind || parsed.subKind, projectName: source.projectName || parsed.projectName, importedAt: source.importedAt || parsed.importedAt, serverFile: source.serverFile, rowCount: Number(source.rowCount || parsed.rows.length) });
+  }
+  return hydrated;
+};
 
 const migrateAgentReportFilesToPostgres = async () => {
   await fs.mkdir(aiReportDir, { recursive: true });
@@ -100,6 +138,7 @@ const defaultPermissionConfig = {
     "POST /api/uploads": { public: false, deputy: true, label: "上传原始Excel" },
     "PUT /api/state/imported-sources": { public: false, deputy: true, label: "保存数据源清单" },
     "PUT /api/state/analysis-cache": { public: false, deputy: true, label: "保存分析结果" },
+    "PATCH /api/state/analysis-cache": { public: false, deputy: true, label: "增量更新分析结果" },
     "PUT /api/state/applied-date-range": { public: false, deputy: true, label: "保存默认日期" },
     "PUT /api/permissions": { public: false, deputy: false, label: "保存权限设置" },
     "GET /api/state/analysis-cache": { public: true, deputy: true, label: "读取分析结果" },
@@ -121,16 +160,24 @@ const defaultPermissionConfig = {
 
 defaultPermissionConfig.apis["PUT /api/state/dqa-engineer-supplement"] = { public: false, deputy: true, label: "研发· ECN/非BOM/评审" };
 defaultPermissionConfig.apis["GET /api/state/dqa-engineer-supplement"] = { public: true, deputy: true, label: "研发· ECN/非BOM/评审" };
+defaultPermissionConfig.apis["PUT /api/state/dqa-agent-raw"] = { public: false, deputy: true, label: "研发·ECN/非BOM Agent原始明细" };
+defaultPermissionConfig.apis["GET /api/state/dqa-agent-raw"] = { public: true, deputy: true, label: "研发·ECN/非BOM Agent原始明细" };
 defaultPermissionConfig.apis["PUT /api/state/project-name-mapping"] = { public: false, deputy: true, label: "项目名称映射" };
 defaultPermissionConfig.apis["GET /api/state/project-name-mapping"] = { public: true, deputy: true, label: "项目名称映射" };
 
 defaultPermissionConfig.apis["GET /api/state/oqc-equipment-rule-cache"] = { public: true, deputy: true, label: "OQC equipment rule cache" };
 defaultPermissionConfig.apis["GET /api/state/quality-agent-runs"] = { public: true, deputy: true, label: "Quality Agent run history" };
 defaultPermissionConfig.apis["PUT /api/state/quality-agent-runs"] = { public: false, deputy: false, label: "Save Quality Agent run history" };
+defaultPermissionConfig.apis["GET /api/snapshot-jobs"] = { public: true, deputy: true, label: "快照任务列表" };
+defaultPermissionConfig.apis["GET /api/snapshot-jobs/*"] = { public: true, deputy: true, label: "快照任务详情" };
+defaultPermissionConfig.apis["POST /api/snapshot-jobs"] = { public: false, deputy: true, label: "创建快照任务" };
+defaultPermissionConfig.apis["POST /api/snapshot-storage/open"] = { public: false, deputy: true, label: "打开快照目录" };
 defaultPermissionConfig.apis["GET /api/state/quality-agent-snapshot-registry"] = { public: true, deputy: true, label: "后台快照注册表" };
 defaultPermissionConfig.apis["PUT /api/state/quality-agent-snapshot-registry"] = { public: false, deputy: true, label: "保存后台快照注册表" };
 defaultPermissionConfig.apis["GET /api/state/quality-agent-role-snapshot-registry"] = { public: true, deputy: true, label: "角色快照注册表" };
 defaultPermissionConfig.apis["PUT /api/state/quality-agent-role-snapshot-registry"] = { public: false, deputy: true, label: "保存角色快照注册表" };
+defaultPermissionConfig.apis["GET /api/state/quality-agent-report-quality-rules"] = { public: true, deputy: true, label: "报告质量校验规则" };
+defaultPermissionConfig.apis["PUT /api/state/quality-agent-report-quality-rules"] = { public: false, deputy: true, label: "保存报告质量校验规则" };
 
 const mimeTypes = {
   ".html": "text/html; charset=utf-8",
@@ -293,6 +340,7 @@ const requestAi = async (config, pathname, options = {}) => {
     try { body = text ? JSON.parse(text) : {}; } catch { body = { error: { message: text.slice(0, 500) || "Invalid AI response" } }; }
     if (!response.ok) {
       if (response.status === 504) throw new Error("AI上游网关超时（504）：请使用更快的模型或缩短当前阶段请求；已完成阶段不会丢失");
+      if (response.status === 524) throw new Error("AI上游网关超时（524）：模型在网关等待时间内未返回。系统将使用精简上下文重试；已完成报告不会丢失。");
       const upstreamMessage = body?.error?.message || body?.message || text.slice(0, 500) || "No error detail returned";
       if (response.status === 404 && /model.+not supported|no available channel/i.test(upstreamMessage)) {
         throw new Error(`当前 API 密钥/分组不支持模型 ${config.model}，请在“AI接口”重新读取模型并选择可用模型；当前请求通道：${pathname}`);
@@ -442,6 +490,9 @@ const currentUser = async (req) => {
 const routeKey = (req) => {
   const pathname = new URL(req.url, "http://local").pathname;
   if (pathname.startsWith("/api/knowledge")) return `${req.method} /api/knowledge/*`;
+  if (pathname === "/api/snapshot-jobs") return `${req.method} /api/snapshot-jobs`;
+  if (/^\/api\/snapshot-jobs\/[^/]+$/.test(pathname)) return `${req.method} /api/snapshot-jobs/*`;
+  if (pathname === "/api/snapshot-storage/open") return `${req.method} /api/snapshot-storage/open`;
   if (req.method === "GET" && pathname.startsWith("/api/uploads/")) return "GET /api/uploads/*";
   if (req.method === "GET" && /^\/api\/exam-sessions\/[^/]+$/.test(pathname)) return "GET /api/exam-sessions/*";
   if (req.method === "POST" && /^\/api\/exam-sessions\/[^/]+\/submit$/.test(pathname)) return "POST /api/exam-sessions/*/submit";
@@ -562,6 +613,64 @@ const handleKnowledge = async (req, res) => {
     return sendJson(res, 404, { error: "未知知识库接口" });
   } catch (error) {
     return sendJson(res, 400, { error: String(error?.message || error || "知识库操作失败").slice(0, 800) });
+  }
+};
+
+const handleSnapshotJobs = async (req, res) => {
+  const user = await ensureApiAllowed(req, res);
+  if (!user) return;
+  const requestUrl = new URL(req.url, "http://local");
+  const pathname = requestUrl.pathname;
+  const jsonBody = async () => JSON.parse(await readBody(req) || "{}");
+  try {
+    if (pathname === "/api/snapshot-jobs" && req.method === "GET") {
+      const jobs = await loadSnapshotJobs();
+      return sendJson(res, 200, { jobs, updatedAt: new Date().toISOString() });
+    }
+    if (pathname === "/api/snapshot-jobs" && req.method === "POST") {
+      const payload = await jsonBody();
+      const job = await enqueueSnapshotJob(payload, user.ip || user.name || "");
+      return sendJson(res, 202, { job });
+    }
+    const match = pathname.match(/^\/api\/snapshot-jobs\/([^/]+)$/);
+    if (match && req.method === "GET") {
+      const jobs = await loadSnapshotJobs();
+      const job = jobs.find((item) => item.id === decodeURIComponent(match[1]));
+      return job ? sendJson(res, 200, { job }) : sendJson(res, 404, { error: "快照任务不存在" });
+    }
+    if (match && req.method === "PATCH") {
+      const patch = await jsonBody();
+      const jobs = await loadSnapshotJobs();
+      const index = jobs.findIndex((item) => item.id === decodeURIComponent(match[1]));
+      if (index < 0) return sendJson(res, 404, { error: "快照任务不存在" });
+      const next = { ...jobs[index], ...patch, updatedAt: new Date().toISOString() };
+      jobs[index] = next;
+      await saveSnapshotJobs(jobs);
+      return sendJson(res, 200, { job: next });
+    }
+    if (match && req.method === "DELETE") {
+      const jobs = (await loadSnapshotJobs()).filter((item) => item.id !== decodeURIComponent(match[1]));
+      await saveSnapshotJobs(jobs);
+      return sendJson(res, 200, { deleted: true });
+    }
+    return sendJson(res, 405, { error: "Method not allowed" });
+  } catch (error) {
+    return sendJson(res, 400, { error: String(error?.message || error || "快照任务操作失败").slice(0, 800) });
+  }
+};
+
+const handleSnapshotStorage = async (req, res) => {
+  const user = await ensureApiAllowed(req, res);
+  if (!user) return;
+  if (req.method !== "POST") return sendJson(res, 405, { error: "Method not allowed" });
+  try {
+    await fs.mkdir(stateDir, { recursive: true });
+    const command = process.platform === "win32" ? "explorer.exe" : "xdg-open";
+    const child = spawn(command, [stateDir], { detached: true, stdio: "ignore" });
+    child.unref();
+    return sendJson(res, 200, { opened: true, path: stateDir });
+  } catch (error) {
+    return sendJson(res, 500, { error: `无法打开快照目录：${error?.message || error}` });
   }
 };
 
@@ -865,6 +974,330 @@ const saveStateValue = async (key, value) => {
   return saved;
 };
 
+const stableHash = (value) => {
+  let hash = 2166136261;
+  for (const char of String(value || "")) {
+    hash ^= char.codePointAt(0) || 0;
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(36);
+};
+
+const createSourcesSignature = (sources = []) => {
+  const payload = sources.map((source) => ({
+    module: source.module || "",
+    name: String(source.name || "").trim().toLowerCase(),
+    size: Number(source.size || 0),
+    kind: source.kind || "",
+    subKind: source.subKind || "",
+    projectName: source.projectName || "",
+    importedAt: source.importedAt || "",
+    rowCount: Array.isArray(source?.rows) ? source.rows.length : Number(source?.rowCount || 0),
+    sheets: Array.isArray(source.sheets) ? source.sheets : [],
+  })).sort((a, b) => `${a.module}::${a.name}::${a.kind}`.localeCompare(`${b.module}::${b.name}::${b.kind}`));
+  return `sources-v1:${stableHash(JSON.stringify(payload))}`;
+};
+
+const snapshotJobs = new Map();
+let snapshotWorkerRunning = false;
+// Progress updates arrive from the worker and HTTP requests at the same time.
+// Keep the whole read/merge/write transaction serial so Windows never sees two
+// temporary files trying to replace the task index concurrently.
+let snapshotJobWriteQueue = Promise.resolve();
+
+const loadSnapshotJobs = async () => {
+  try {
+    const value = JSON.parse(await fs.readFile(snapshotJobsFile, "utf8"));
+    return Array.isArray(value) ? value : [];
+  } catch (error) {
+    if (error.code === "ENOENT") return [];
+    throw error;
+  }
+};
+
+const saveSnapshotJobs = async (jobs) => {
+  await fs.mkdir(dataDir, { recursive: true });
+  const tempFile = `${snapshotJobsFile}.${process.pid}.${Date.now()}.${randomUUID()}.tmp`;
+  try {
+    await fs.writeFile(tempFile, JSON.stringify(jobs.slice(0, 100), null, 2), "utf8");
+    let lastError = null;
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      try {
+        await fs.rename(tempFile, snapshotJobsFile);
+        return;
+      } catch (error) {
+        lastError = error;
+        if (!["EPERM", "EBUSY", "EACCES"].includes(error?.code) || attempt === 4) throw error;
+        await new Promise((resolve) => setTimeout(resolve, 80 * (attempt + 1)));
+      }
+    }
+    throw lastError;
+  } finally {
+    await fs.unlink(tempFile).catch(() => {});
+  }
+};
+
+const upsertSnapshotJob = async (job) => {
+  const write = snapshotJobWriteQueue.catch(() => {}).then(async () => {
+    snapshotJobs.set(job.id, job);
+    const jobs = await loadSnapshotJobs();
+    const next = [job, ...jobs.filter((item) => item.id !== job.id)].slice(0, 100);
+    await saveSnapshotJobs(next);
+    return job;
+  });
+  snapshotJobWriteQueue = write;
+  return await write;
+};
+
+const updateSnapshotJob = async (id, patch) => {
+  const current = snapshotJobs.get(id) || (await loadSnapshotJobs()).find((item) => item.id === id);
+  if (!current) return null;
+  return await upsertSnapshotJob({ ...current, ...patch, updatedAt: new Date().toISOString() });
+};
+
+const compactQualityHistory = (registry) => {
+  const current = normalizeQualitySnapshotRegistry(registry);
+  const keep = new Set();
+  const grouped = new Map();
+  [...current.history].sort((left, right) => String(right.generatedAt || "").localeCompare(String(left.generatedAt || ""))).forEach((entry) => {
+    const key = `${entry.ruleId}::${entry.dateRange?.granularity || "range"}::${entry.dateRange?.periodKey || ""}`;
+    const list = grouped.get(key) || [];
+    list.push(entry);
+    grouped.set(key, list);
+  });
+  grouped.forEach((list) => list.slice(0, Math.max(1, Number(current.maintenance?.retention || 3))).forEach((entry) => keep.add(entry.id)));
+  return { ...current, history: current.history.map((entry) => keep.has(entry.id) ? entry : { ...entry, active: false, status: "archived" }) };
+};
+
+const compactRoleHistory = (registry) => {
+  const current = normalizeRoleSnapshotRegistry(registry);
+  const keep = new Set();
+  const grouped = new Map();
+  [...current.history].sort((left, right) => String(right.generatedAt || "").localeCompare(String(left.generatedAt || ""))).forEach((entry) => {
+    const key = `${entry.role}::${entry.granularity || entry.period?.granularity || "range"}::${entry.period?.periodKey || `${entry.period?.start || ""}_${entry.period?.end || ""}`}`;
+    const list = grouped.get(key) || [];
+    list.push(entry);
+    grouped.set(key, list);
+  });
+  grouped.forEach((list) => list.slice(0, Math.max(1, Number(current.maintenance?.retention || 3))).forEach((entry) => keep.add(entry.id)));
+  return { ...current, history: current.history.map((entry) => keep.has(entry.id) ? entry : { ...entry, active: false, status: "archived" }) };
+};
+
+const appendTaskHistory = async (key, task) => {
+  const current = key === QUALITY_ROLE_SNAPSHOT_REGISTRY_KEY
+    ? normalizeRoleSnapshotRegistry(await loadStateValue(key))
+    : normalizeQualitySnapshotRegistry(await loadStateValue(key));
+  const next = {
+    ...current,
+    maintenance: {
+      ...(current.maintenance || {}),
+      taskHistory: [task, ...((current.maintenance?.taskHistory) || [])].slice(0, 50),
+    },
+  };
+  await saveStateValue(key, next);
+};
+
+const processSnapshotJob = async (jobId) => {
+  const jobs = await loadSnapshotJobs();
+  const job = jobs.find((item) => item.id === jobId);
+  if (!job || !["queued", "running"].includes(job.status)) return;
+  await updateSnapshotJob(jobId, { status: "running", progress: 1, message: "正在准备数据", startedAt: job.startedAt || new Date().toISOString() });
+  try {
+    if (job.kind === "module") {
+      const [analysisCache, importedSources, registryValue] = await Promise.all([loadStateValue("analysis-cache"), loadStateValue("imported-sources"), loadStateValue(QUALITY_SNAPSHOT_REGISTRY_KEY)]);
+      const registry = normalizeQualitySnapshotRegistry(registryValue || createDefaultQualitySnapshotRegistry());
+      const data = analysisCache?.data || analysisCache || {};
+      const files = stateList(importedSources);
+      const selectedRuleIds = Array.isArray(job.payload?.ruleIds) && job.payload.ruleIds.length ? new Set(job.payload.ruleIds) : null;
+      const rules = registry.rules.filter((rule) => rule.enabled !== false && (!selectedRuleIds || selectedRuleIds.has(rule.id)));
+      const periods = buildSnapshotPeriods(job.payload?.dateRange || {});
+      const retryItems = Array.isArray(job.payload?.retryItems) ? job.payload.retryItems : null;
+      const total = rules.length * periods.length;
+      let done = 0;
+      let next = registry;
+      const failedItems = [];
+      const skippedItems = [];
+      for (const rule of rules) {
+        const latestRuleJob = (await loadSnapshotJobs()).find((item) => item.id === jobId);
+        if (latestRuleJob?.status === "cancelled") {
+          await appendTaskHistory(QUALITY_SNAPSHOT_REGISTRY_KEY, { id: jobId, batchId: latestRuleJob.batchId || `module-batch-${jobId}`, kind: "模块", startedAt: latestRuleJob.startedAt || new Date().toISOString(), finishedAt: new Date().toISOString(), status: "cancelled", total: latestRuleJob.total || 0, done: latestRuleJob.done || 0, failed: latestRuleJob.failed || 0, failedItems: [], rules: Array.isArray(latestRuleJob.payload?.ruleIds) ? latestRuleJob.payload.ruleIds : [], period: latestRuleJob.payload?.dateRange || {} });
+          await updateSnapshotJob(jobId, { status: "cancelled", message: "任务已取消", finishedAt: new Date().toISOString() });
+          return;
+        }
+        const moduleFiles = files.filter((source) => (rule.sourceModules || [rule.module]).includes(source.module));
+        for (const period of periods) {
+          const latestPeriodJob = (await loadSnapshotJobs()).find((item) => item.id === jobId);
+          if (latestPeriodJob?.status === "cancelled") {
+            await appendTaskHistory(QUALITY_SNAPSHOT_REGISTRY_KEY, { id: jobId, batchId: latestPeriodJob.batchId || `module-batch-${jobId}`, kind: "模块", startedAt: latestPeriodJob.startedAt || new Date().toISOString(), finishedAt: new Date().toISOString(), status: "cancelled", total: latestPeriodJob.total || 0, done: latestPeriodJob.done || 0, failed: latestPeriodJob.failed || 0, failedItems: [], rules: Array.isArray(latestPeriodJob.payload?.ruleIds) ? latestPeriodJob.payload.ruleIds : [], period: latestPeriodJob.payload?.dateRange || {} });
+            await updateSnapshotJob(jobId, { status: "cancelled", message: "任务已取消", finishedAt: new Date().toISOString() });
+            return;
+          }
+          if (retryItems && !retryItems.some((item) => item.ruleId === rule.id && item.periodKey === period.periodKey)) {
+            done += 1;
+            continue;
+          }
+          try {
+            const snapshot = buildQualityAgentSnapshot({ data, files: moduleFiles, dateRange: period, module: rule.module });
+            next = mergeQualitySnapshotHistory(next, { rule, snapshot, sourceSignature: createSourcesSignature(moduleFiles), dateRange: period, generatedBy: job.creator || "服务器", batchId: job.batchId || `module-batch-${job.id}`, skillName: rule.selectedSkill || rule.defaultSkill, layoutProfileId: rule.layoutProfileId });
+          } catch (error) {
+            failedItems.push({ ruleId: rule.id, module: rule.module, periodKey: period.periodKey, error: String(error?.message || error || "快照失败").slice(0, 800) });
+          }
+          done += 1;
+          await updateSnapshotJob(jobId, { progress: Math.round(done / Math.max(total, 1) * 100), done, total, failed: failedItems.length, failedItems, message: `${rule.module} · ${period.granularity === "range" ? "总周期" : period.periodKey}` });
+          await new Promise((resolve) => setTimeout(resolve, 0));
+        }
+        next = compactQualityHistory(next);
+        await saveStateValue(QUALITY_SNAPSHOT_REGISTRY_KEY, next);
+      }
+      next = compactQualityHistory(next);
+      await saveStateValue(QUALITY_SNAPSHOT_REGISTRY_KEY, next);
+      const finishedAt = new Date().toISOString();
+      const task = { id: jobId, batchId: job.batchId || `module-batch-${jobId}`, kind: "模块", startedAt: job.startedAt || finishedAt, finishedAt, status: failedItems.length ? "failed" : "completed", total, done, failed: failedItems.length, failedItems, rules: rules.map((rule) => rule.module), period: job.payload?.dateRange || {} };
+      await appendTaskHistory(QUALITY_SNAPSHOT_REGISTRY_KEY, task);
+      await updateSnapshotJob(jobId, { status: failedItems.length ? "failed" : "completed", progress: 100, failed: failedItems.length, failedItems, message: failedItems.length ? "模块快照部分失败" : "模块快照已完成", finishedAt });
+      return;
+    }
+    if (job.kind === "role") {
+      const [importedSources, projectNameMapping, registryValue, engineerSupplement, dqaAgentRaw] = await Promise.all([loadStateValue("imported-sources"), loadStateValue("project-name-mapping"), loadStateValue(QUALITY_ROLE_SNAPSHOT_REGISTRY_KEY), loadStateValue("dqa-engineer-supplement"), loadStateValue("dqa-agent-raw")]);
+      // Organisation mappings are supplied by the administrator when the job is
+      // created. Keep the old project-name mapping only as a compatibility base.
+      const mappings = job.payload?.mappings && typeof job.payload.mappings === "object" ? job.payload.mappings : (projectNameMapping || {});
+      const registry = normalizeRoleSnapshotRegistry(registryValue || createDefaultRoleSnapshotRegistry());
+      const sourceIndex = stateList(importedSources);
+      const selectedRuleIds = Array.isArray(job.payload?.ruleIds) && job.payload.ruleIds.length ? new Set(job.payload.ruleIds) : null;
+      const rules = registry.rules.filter((rule) => rule.enabled !== false && (!selectedRuleIds || selectedRuleIds.has(rule.id)));
+      const roleRuleModules = (rule) => roleSnapshotRule(rule.role).modules || [];
+      const neededModules = [...new Set(rules.flatMap(roleRuleModules))];
+      const rolePeriod = { start: job.payload?.dateRange?.start || job.payload?.dateRange?.start2026 || job.payload?.dateRange?.start2025 || "", end: job.payload?.dateRange?.end || job.payload?.dateRange?.end2026 || job.payload?.dateRange?.end2025 || "" };
+      const periods = [{ ...rolePeriod, granularity: "range", periodKey: "range" }, ...buildSnapshotPeriods({ start2026: rolePeriod.start, end2026: rolePeriod.end }).filter((item) => item.granularity !== "range").map((item) => ({ start: item.start2026 || item.start2025, end: item.end2026 || item.end2025, granularity: item.granularity, periodKey: item.periodKey }))];
+      const total = rules.length * periods.length;
+      await updateSnapshotJob(jobId, { progress: 2, done: 0, total, message: "正在筛选角色原始数据" });
+      // Role metrics use the dedicated dqa-agent-raw store for ECN/non-BOM.
+      // Parsing the legacy 200k-row DQA_ECN workbooks again blocks Node's event
+      // loop for minutes and does not add any personal evidence.
+      const snapshotSourceIndex = sourceIndex.filter((source) => !(source.module === "DQA" && ["DQA_ECN", "DQA_MACHINED_PARTS"].includes(source.subKind || source.kind)));
+      const files = await rehydrateSnapshotSources(snapshotSourceIndex, neededModules, async ({ index, total: fileTotal, source }) => {
+        await updateSnapshotJob(jobId, { progress: 3, done: 0, total, message: `正在解析原始数据 ${index + 1}/${fileTotal} · ${source.name || source.module}` });
+      });
+      const supplementSource = buildDqaEngineerSupplementSource(engineerSupplement, { start2026: rolePeriod.start, end2026: rolePeriod.end });
+      if (supplementSource) files.push(supplementSource);
+      if (!files.length) throw new Error("服务器未找到角色快照所需的原始数据文件，请先在质量数据中完成数据导入");
+      const retryItems = Array.isArray(job.payload?.retryItems) ? job.payload.retryItems : null;
+      let done = 0;
+      let next = registry;
+      const failedItems = [];
+      const skippedItems = [];
+      const mappingSignature = roleSnapshotMappingSignature(mappings || {});
+      for (const rule of rules) {
+        const latestRuleJob = (await loadSnapshotJobs()).find((item) => item.id === jobId);
+        if (latestRuleJob?.status === "cancelled") {
+          await appendTaskHistory(QUALITY_ROLE_SNAPSHOT_REGISTRY_KEY, { id: jobId, batchId: latestRuleJob.batchId || `role-batch-${jobId}`, kind: "角色", startedAt: latestRuleJob.startedAt || new Date().toISOString(), finishedAt: new Date().toISOString(), status: "cancelled", total: latestRuleJob.total || 0, done: latestRuleJob.done || 0, failed: latestRuleJob.failed || 0, failedItems: [], rules: Array.isArray(latestRuleJob.payload?.ruleIds) ? latestRuleJob.payload.ruleIds : [], period: latestRuleJob.payload?.dateRange || {} });
+          await updateSnapshotJob(jobId, { status: "cancelled", message: "任务已取消", finishedAt: new Date().toISOString() });
+          return;
+        }
+        const ruleModules = roleRuleModules(rule);
+        const sourceFiles = files.filter((source) => ruleModules.includes(source.module));
+        if (!sourceFiles.length) {
+          failedItems.push({ ruleId: rule.id, role: rule.role, periodKey: "all", error: `缺少 ${ruleModules.join("、")} 原始数据，未生成空快照` });
+          done += periods.length;
+          continue;
+        }
+        const sourceSignature = roleSnapshotSourceSignature(sourceFiles, dqaAgentRaw);
+        for (const period of periods) {
+          const latestPeriodJob = (await loadSnapshotJobs()).find((item) => item.id === jobId);
+          if (latestPeriodJob?.status === "cancelled") {
+            await appendTaskHistory(QUALITY_ROLE_SNAPSHOT_REGISTRY_KEY, { id: jobId, batchId: latestPeriodJob.batchId || `role-batch-${jobId}`, kind: "角色", startedAt: latestPeriodJob.startedAt || new Date().toISOString(), finishedAt: new Date().toISOString(), status: "cancelled", total: latestPeriodJob.total || 0, done: latestPeriodJob.done || 0, failed: latestPeriodJob.failed || 0, failedItems: [], rules: Array.isArray(latestPeriodJob.payload?.ruleIds) ? latestPeriodJob.payload.ruleIds : [], period: latestPeriodJob.payload?.dateRange || {} });
+            await updateSnapshotJob(jobId, { status: "cancelled", message: "任务已取消", finishedAt: new Date().toISOString() });
+            return;
+          }
+          if (retryItems && !retryItems.some((item) => item.ruleId === rule.id && item.periodKey === period.periodKey)) {
+            done += 1;
+            continue;
+          }
+          try {
+            let payload = buildRoleSnapshots({ role: rule.role, files: sourceFiles, dateRange: period, mappings, agentRaw: dqaAgentRaw });
+            if (["研发工程师", "PM", "TPM", "产总"].includes(rule.role)) {
+              payload = attachDqaAgentRawMetrics(payload, dqaAgentRaw ? buildDqaAgentRawMetrics(dqaAgentRaw, period) : {}, mappings, engineerSupplement?.reviewRecords || []);
+            }
+            if (!payload.people.length) {
+              skippedItems.push({ ruleId: rule.id, role: rule.role, periodKey: period.periodKey, message: "当前周期无角色活动，已跳过空快照" });
+              done += 1;
+              await updateSnapshotJob(jobId, { progress: Math.round(done / Math.max(total, 1) * 100), done, total, failed: failedItems.length, failedItems, skipped: skippedItems.length, skippedItems, message: `${rule.role} · ${period.periodKey} 无活动，已跳过` });
+              continue;
+            }
+            next = mergeRoleSnapshotRegistry(next, { role: rule.role, ruleId: rule.id, period, granularity: period.granularity, sourceSignature: payload.sourceSignature || sourceSignature, mappingSignature, snapshot: payload, batchId: job.batchId || `role-batch-${job.id}`, skillName: rule.selectedSkill || rule.defaultSkill, layoutProfileId: rule.layoutProfileId });
+          } catch (error) {
+            failedItems.push({ ruleId: rule.id, role: rule.role, periodKey: period.periodKey, error: String(error?.message || error || "快照失败").slice(0, 800) });
+          }
+          done += 1;
+          await updateSnapshotJob(jobId, { progress: Math.round(done / Math.max(total, 1) * 100), done, total, failed: failedItems.length, failedItems, message: `${rule.role} · ${period.granularity === "range" ? "总周期" : period.periodKey}` });
+          await new Promise((resolve) => setTimeout(resolve, 0));
+        }
+        next = compactRoleHistory(next);
+        await saveStateValue(QUALITY_ROLE_SNAPSHOT_REGISTRY_KEY, next);
+      }
+      next = compactRoleHistory(next);
+      await saveStateValue(QUALITY_ROLE_SNAPSHOT_REGISTRY_KEY, next);
+      const finishedAt = new Date().toISOString();
+      const task = { id: jobId, batchId: job.batchId || `role-batch-${jobId}`, kind: "角色", startedAt: job.startedAt || finishedAt, finishedAt, status: failedItems.length ? "failed" : "completed", total, done, failed: failedItems.length, failedItems, skipped: skippedItems.length, skippedItems, rules: rules.map((rule) => rule.role), period: { start: rolePeriod.start, end: rolePeriod.end } };
+      await appendTaskHistory(QUALITY_ROLE_SNAPSHOT_REGISTRY_KEY, task);
+      await updateSnapshotJob(jobId, { status: failedItems.length ? "failed" : "completed", progress: 100, failed: failedItems.length, failedItems, skipped: skippedItems.length, skippedItems, message: failedItems.length ? "角色快照部分失败" : skippedItems.length ? `角色快照已完成，跳过 ${skippedItems.length} 个无活动周期` : "角色快照已完成", finishedAt });
+      return;
+    }
+    throw new Error("未知快照任务类型");
+  } catch (error) {
+    const finishedAt = new Date().toISOString();
+    const current = (await loadSnapshotJobs()).find((item) => item.id === jobId);
+    const task = current ? { id: jobId, batchId: current.batchId || `${current.kind}-batch-${jobId}`, kind: current.kind === "role" ? "角色" : "模块", startedAt: current.startedAt || finishedAt, finishedAt, status: "failed", total: current.total || 0, done: current.done || 0, failed: 1, failedItems: [{ error: String(error?.message || error || "快照任务失败").slice(0, 800) }], rules: Array.isArray(current.payload?.ruleIds) ? current.payload.ruleIds : [], period: current.payload?.dateRange || {} } : null;
+    if (task) {
+      await appendTaskHistory(current.kind === "role" ? QUALITY_ROLE_SNAPSHOT_REGISTRY_KEY : QUALITY_SNAPSHOT_REGISTRY_KEY, task);
+    }
+    await updateSnapshotJob(jobId, { status: "failed", progress: 0, message: String(error?.message || error || "快照任务失败").slice(0, 800), errorMessage: String(error?.message || error || "快照任务失败").slice(0, 1200), finishedAt });
+  }
+};
+
+const runSnapshotWorker = async () => {
+  if (snapshotWorkerRunning) return;
+  snapshotWorkerRunning = true;
+  try {
+    while (true) {
+      const jobs = await loadSnapshotJobs();
+      const next = jobs.find((item) => ["queued", "running"].includes(item.status));
+      if (!next) break;
+      await processSnapshotJob(next.id);
+    }
+  } finally {
+    snapshotWorkerRunning = false;
+  }
+};
+
+const enqueueSnapshotJob = async (payload = {}, creator = "") => {
+  if (["module", "role"].includes(String(payload.kind || "module")) && (!Array.isArray(payload.ruleIds) || !payload.ruleIds.length)) {
+    throw new Error("请先选择要生成的快照规则");
+  }
+  const job = {
+    id: randomUUID(),
+    kind: String(payload.kind || "module"),
+    creator: String(creator || payload.creator || ""),
+    batchId: String(payload.batchId || `${String(payload.kind || "module")}-batch-${Date.now()}`),
+    payload,
+    status: "queued",
+    progress: 0,
+    done: 0,
+    total: 0,
+    message: "等待执行",
+    errorMessage: "",
+    createdAt: new Date().toISOString(),
+    startedAt: null,
+    finishedAt: null,
+    updatedAt: new Date().toISOString(),
+  };
+  snapshotJobs.set(job.id, job);
+  await upsertSnapshotJob(job);
+  runSnapshotWorker().catch((error) => console.error("[snapshot-jobs] worker failed", error));
+  return job;
+};
+
 const loadExamSessions = async () => {
   const value = await readJsonFile(examSessionsFile);
   return Array.isArray(value) ? value : [];
@@ -999,16 +1432,76 @@ const handleApi = async (req, res) => {
   if (!user) return;
 
   if (req.method === "GET") {
-    const value = await loadStateValue(key);
-    const view = new URL(req.url, "http://local").searchParams.get("view");
+    const storedValue = await loadStateValue(key);
+    const value = key === QUALITY_ROLE_SNAPSHOT_REGISTRY_KEY ? withRoleSnapshotIds(storedValue || {}) : storedValue;
+    const requestUrl = new URL(req.url, "http://local");
+    const view = requestUrl.searchParams.get("view");
+    if (view === "entry" && value && typeof value === "object") {
+      const requestedId = requestUrl.searchParams.get("id") || "";
+      const requestedKey = requestUrl.searchParams.get("key") || "";
+      const entry = Array.isArray(value.history)
+        ? value.history.find((item) => requestedId ? item?.id === requestedId : item?.key === requestedKey)
+        : null;
+      return sendJson(res, 200, { key, value: entry ? { ...value, history: [entry] } : { ...value, history: [] } });
+    }
+    if (view === "role-period" && key === QUALITY_ROLE_SNAPSHOT_REGISTRY_KEY && value && typeof value === "object") {
+      const role = requestUrl.searchParams.get("role") || "";
+      const start = requestUrl.searchParams.get("start") || "";
+      const end = requestUrl.searchParams.get("end") || "";
+      const skillName = requestUrl.searchParams.get("skillName") || "";
+      const layoutProfileId = requestUrl.searchParams.get("layoutProfileId") || "";
+      const entry = (Array.isArray(value.history) ? value.history : [])
+        .filter((item) => item?.active !== false && item?.role === role && item?.period?.start === start && item?.period?.end === end)
+        .filter((item) => !skillName || item?.skillName === skillName)
+        .filter((item) => !layoutProfileId || item?.layoutProfileId === layoutProfileId)
+        .sort((left, right) => String(right?.generatedAt || "").localeCompare(String(left?.generatedAt || "")))[0];
+      return sendJson(res, 200, { key, value: entry ? { ...value, history: [entry] } : { ...value, history: [] } });
+    }
     if (view === "index" && value && typeof value === "object") {
       const index = { ...value, history: Array.isArray(value.history) ? value.history.map((entry) => {
-        const { snapshot, ...meta } = entry || {};
-        return { ...meta, summary: entry?.summary || {}, peopleCount: Array.isArray(snapshot?.people) ? snapshot.people.length : Number(snapshot?.peopleCount || 0) };
+        const { snapshot, key: _key, sourceSignature: _sourceSignature, mappingSignature: _mappingSignature, sourceSummary: _sourceSummary, ...meta } = entry || {};
+        // Person names are lightweight lookup metadata used by the role report
+        // picker. Keep them in the index while omitting all per-person metrics
+        // and source rows from first-page responses.
+        const recipients = Array.isArray(snapshot?.people) ? snapshot.people.map((item) => String(item?.recipient || "").trim()).filter(Boolean) : [];
+        return { ...meta, summary: entry?.summary || {}, peopleCount: recipients.length || Number(snapshot?.peopleCount || 0), recipients };
       }) : [] };
       return sendJson(res, 200, { key, value: index });
     }
     return sendJson(res, 200, { key, value: value ?? defaultValueFor(key) });
+  }
+
+  if (req.method === "PATCH" && key === "analysis-cache") {
+    const payload = JSON.parse(await readBody(req) || "{}");
+    const moduleKey = String(payload.module || "").toLowerCase();
+    if (!["iqc", "ipqc", "oqc", "dqa", "qms"].includes(moduleKey)) return sendJson(res, 400, { error: "Invalid analysis module" });
+    const current = await loadStateValue(key) || {};
+    const currentData = current.data && typeof current.data === "object" ? current.data : {};
+    const modulePatch = payload.moduleData && typeof payload.moduleData === "object" ? payload.moduleData : {};
+    const currentKpis = Array.isArray(currentData.kpis) ? currentData.kpis : [];
+    const kpi = payload.kpi && typeof payload.kpi === "object" ? payload.kpi : null;
+    const nextKpis = kpi
+      ? currentKpis.some((item) => item?.key === moduleKey)
+        ? currentKpis.map((item) => item?.key === moduleKey ? kpi : item)
+        : [...currentKpis, kpi]
+      : currentKpis;
+    const next = {
+      ...current,
+      version: payload.version || current.version,
+      savedAt: payload.savedAt || new Date().toISOString(),
+      dateRange: payload.dateRange || current.dateRange || {},
+      sourceSignature: payload.sourceSignature || current.sourceSignature || "",
+      files: Array.isArray(payload.files) ? payload.files : current.files || [],
+      data: {
+        ...currentData,
+        [moduleKey]: { ...(currentData[moduleKey] || {}), ...modulePatch },
+        kpis: nextKpis,
+        updatedAt: payload.updatedAt || currentData.updatedAt,
+        period: payload.period || currentData.period,
+      },
+    };
+    await saveStateValue(key, next);
+    return sendJson(res, 200, { key, value: { savedAt: next.savedAt, sourceSignature: next.sourceSignature, module: moduleKey } });
   }
 
   if (req.method === "PUT") {
@@ -1175,7 +1668,7 @@ const handleAi = async (req, res) => {
     const finalFileName = `${originalFileName.slice(0, -3)}-model-${sanitizeSegment(modelName || "unknown")}-ip-${sanitizeSegment(creatorIp || "unknown")}.md`;
     await fs.mkdir(aiReportDir, { recursive: true });
     const filePath = path.join(aiReportDir, finalFileName);
-    const metadata = { fileName: finalFileName, module: String(payload.module || "质量分析"), role: String(payload.role || ""), recipient: String(payload.recipient || ""), skillName: String(payload.skillName || ""), layoutProfileId: safeLayoutProfileId, layoutSkillName: safeLayoutProfileId, period: payload.period && typeof payload.period === "object" ? payload.period : {}, visualSpec: payload.visualSpec && typeof payload.visualSpec === "object" ? payload.visualSpec : null, savedAt: now.toISOString(), updatedAt: now.toISOString(), relativePath: `outputs/ai_saved_reports/${finalFileName}` };
+    const metadata = { fileName: finalFileName, module: String(payload.module || "质量分析"), role: String(payload.role || ""), recipient: String(payload.recipient || ""), skillName: String(payload.skillName || ""), layoutProfileId: safeLayoutProfileId, layoutSkillName: safeLayoutProfileId, storageScope: "server", period: payload.period && typeof payload.period === "object" ? payload.period : {}, visualSpec: payload.visualSpec && typeof payload.visualSpec === "object" ? payload.visualSpec : null, savedAt: now.toISOString(), updatedAt: now.toISOString(), relativePath: `outputs/ai_saved_reports/${finalFileName}` };
     metadata.model = modelName;
     metadata.creatorIp = creatorIp;
     await fs.writeFile(filePath, content, "utf8");
@@ -1357,6 +1850,8 @@ const server = createServer(async (req, res) => {
     if (req.url === "/api/me") return await handleMe(req, res);
     if (req.url === "/api/permissions") return await handlePermissions(req, res);
     if (req.url.startsWith("/api/knowledge")) return await handleKnowledge(req, res);
+    if (req.url.startsWith("/api/snapshot-jobs")) return await handleSnapshotJobs(req, res);
+    if (req.url === "/api/snapshot-storage/open") return await handleSnapshotStorage(req, res);
     if (req.url.startsWith("/api/ai/") || new URL(req.url, "http://local").pathname === "/api/chat") return await handleAi(req, res);
     if (req.url.startsWith("/api/exam-sessions") || req.url.startsWith("/api/exam-results")) return await handleExamSessions(req, res);
     if (req.url.startsWith("/api/uploads/")) return await handleUploadedFile(req, res);

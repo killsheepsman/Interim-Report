@@ -317,6 +317,20 @@ const validateEvidenceReferences = (content, snapshot, stage) => {
   if (invalid.length) return { status: "warning", references, invalid, message: `引用了不存在的证据编号：${invalid.join("、")}` };
   return { status: "pass", references, invalid: [], message: `已核验${references.length}个证据编号` };
 };
+// Action design does not need the complete raw snapshot again. Re-sending it
+// made DQA's second model call unnecessarily large and prone to gateway timeouts.
+const actionSeed = (snapshot, retry = false) => {
+  const data = snapshot?.data || {};
+  return JSON.stringify({
+    module: snapshot?.module,
+    period: snapshot?.period,
+    metrics: data.metrics || {},
+    localPareto: compactValue(data.localPareto, 2, retry ? 4 : 8),
+    evidenceCatalog: compactValue(compactEvidenceCatalog(data.evidenceCatalog, retry ? 8 : 14), 2, retry ? 8 : 14),
+    organization: compactValue(data.organization, 1, retry ? 3 : 5),
+    scope: data.scope || null,
+  }).slice(0, retry ? 6000 : 10000);
+};
 
 export const validateQualityAgentStageGate = ({ stage, record, snapshot, content }) => {
   const evidenceValidation = validateEvidenceReferences(content, snapshot, stage);
@@ -454,13 +468,14 @@ export const closeQualityAgentAction = (run, actionId, closureEvidence) => {
 const stagePrompt = ({ stage, snapshot, outputs, skillName, skillContent, retry = false }) => {
   const completedOutputs = Object.fromEntries(Object.entries(outputs || {})
     .filter(([, value]) => value?.status === "done" && value.content)
-    .map(([id, value]) => [id, { content: String(value.content).slice(0, stage === "report" ? (retry ? 9000 : 14000) : (retry ? 6000 : 9000)) }]));
+    .map(([id, value]) => [id, { content: String(value.content).slice(0, stage === "report" ? (retry ? 9000 : 14000) : stage === "actions" ? (retry ? 3600 : 5500) : (retry ? 6000 : 9000)) }]));
   const isAnalysis = stage === "analysis";
-  const dataText = isAnalysis ? analysisSeed(snapshot, retry) : snapshotText(snapshot, retry);
-  const skillText = String(skillContent || "").slice(0, isAnalysis ? (retry ? 2800 : 5500) : (retry ? 7000 : 12000));
+  const isActions = stage === "actions";
+  const dataText = isAnalysis ? analysisSeed(snapshot, retry) : (isActions ? actionSeed(snapshot, retry) : snapshotText(snapshot, retry));
+  const skillText = String(skillContent || "").slice(0, isAnalysis ? (retry ? 2800 : 5500) : isActions ? (retry ? 1800 : 3600) : (retry ? 7000 : 12000));
   const common = `模块技能：${skillName || "quality-analysis-core"}\n核心与模块规则：\n${skillText}\n模块：${snapshot.module}\n模块专项规则：${snapshot.definitions?.moduleRule || "按固定快照分析"}\n模块分析作业要求：${modulePlaybooks[snapshot.module] || "按固定快照中的组织、指标和证据分析"}\n模块责任链：${moduleResponsibilityChains[snapshot.module] || "按输入中的有效组织映射分层"}\n证据卡规则：事实必须引用 evidenceCatalog 的 S/M/O/C/X 编号；合理推断和待验证假设不得伪装成事实，必须写验证方法、验证角色和期限。\n目标角色：${snapshot.target?.role || "公司级"}\n目标收件人：${snapshot.target?.recipient || "待指定"}\n周期：${JSON.stringify(snapshot.period)}\n${isAnalysis ? "首次分析数据摘要" : "固定数据摘要"}（由本地统计引擎生成，不要重新计算）：\n${dataText}\n已完成Agent阶段摘要（仅引用，不重复计算）：\n${JSON.stringify(completedOutputs)}`;
   if (stage === "analysis") return `${common}\n请完成 Agent结果与二八分析：直接引用固定数据摘要中的 localPareto，区分结果指标和问题暴露量，解释TOP组织、TOP机制及其交叉主题。不得根据截断数组重新排序、重算占比或改变名次；localPareto没有事件时明确写“无法形成Pareto”。Pareto表示问题贡献集中度，不等同于绩效排名。形成3—5张证据卡，每张包含：结论ID（K-${snapshot.module}-三位序号）、证据等级、证据编号、事实、合理推断/待验证假设、验证方法、验证角色、验证期限。输出结构化 Markdown。`;
-  if (stage === "actions") return `${common}\n请完成 Agent责任与改善行动：沿用前序K结论ID和证据编号，严格按上述模块责任链拆解责任，给出风险等级、根因证据、30/60/90天行动、责任对象、完成期限、验证指标和关闭条件。没有人员字段或映射证据时不得用上级字段替代，必须写待核实。正文之后必须追加一个且仅一个 <ACTION_LEDGER_JSON>{"actions":[...]}</ACTION_LEDGER_JSON> 数据块；每项包含 id（A-${snapshot.module}-三位序号）、conclusionId、riskLevel、phase、action、mechanism、owner、collaborators、dueDate、reviewDate、deliverable、evidenceLocation、evidenceIds、metricKey、target、direction（lte或gte）、reopenThreshold、closeCriteria、fallback。metricKey只能从固定快照 metrics 的真实键中选择，无法对应时留空；不要把培训、会议或提醒单独作为永久措施。`;
+  if (stage === "actions") return `${common}\n请完成 Agent责任与改善行动。这里只做行动设计，不要重述第一阶段的数据和分析。沿用前序 K 结论ID和证据编号，严格按上述模块责任链拆解责任，最多输出6项最关键行动；每项必须有风险等级、根因证据、30/60/90天动作、责任对象、完成期限、验证指标和关闭条件。没有人员字段或映射证据时不得用上级字段替代，必须写待核实。正文保持精炼，随后必须追加一个且仅一个 <ACTION_LEDGER_JSON>{"actions":[...]}</ACTION_LEDGER_JSON> 数据块；每项包含 id（A-${snapshot.module}-三位序号）、conclusionId、riskLevel、phase、action、mechanism、owner、collaborators、dueDate、reviewDate、deliverable、evidenceLocation、evidenceIds、metricKey、target、direction（lte或gte）、reopenThreshold、closeCriteria、fallback。metricKey只能从固定快照 metrics 的真实键中选择，无法对应时留空；不要把培训、会议或提醒单独作为永久措施。`;
   return `${common}\n请完成 Agent正式复盘报告：汇总审计、结果、过程、根因、责任和行动，输出管理层可直接审核的报告。正文保留K结论ID和证据等级，但不要逐条展示 S/M/O/C/X 证据编号，不要出现“证据编号：...”列表，不要写“REPORT_VISUAL_SPEC_JSON”标题；若需要机器图表契约，只能在全文最后直接追加标签数据块供系统读取。把“过程断点与根因证据”写成“数据表现→过程判断→具体动作→验证口径”，少用“推断/假设”字样；无法证实的内容改写为“待现场核验项”，并同时给出验证动作、责任人和期限。所有数字必须来自固定快照或前序Agent结果，禁止添加未经证据支持的数字。`;
 };
 

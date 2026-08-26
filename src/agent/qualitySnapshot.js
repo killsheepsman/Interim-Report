@@ -30,7 +30,7 @@ const buildMappingAudit = (data, module) => {
     return { dimension: "机长→工坊→交付经理", total, mapped, unmapped: number(summary.unmappedCount), rate: total ? Number((mapped / total * 100).toFixed(1)) : null };
   }
   const candidates = module === "DQA"
-    ? (data?.dqa?.tpmStages || []).map((row) => [row.name, row.division])
+    ? (Array.isArray(data?.dqa?.tpmStages) ? data.dqa.tpmStages : []).map((row) => [row.name, row.division])
     : module === "OQC"
       ? (data?.oqc?.shipmentDetail?.tpmRows || data?.oqc?.tpm || []).map((row) => [row.name, row.division])
       : module === "QMS"
@@ -268,7 +268,7 @@ const buildRoleEvidence = (data = {}, files = []) => {
   const researchRows = sourceRows(files, ["OQC", "DQA", "QMS"]);
   const leaders = data.ipqc?.leaderAnalysis?.bySite?.["全公司"]?.leaders || [];
   const managers = data.ipqc?.leaderAnalysis?.bySite?.["全公司"]?.managers || [];
-  const tpms = data.dqa?.tpmStages || data.oqc?.tpm || [];
+  const tpms = Array.isArray(data.dqa?.tpmStages) ? data.dqa.tpmStages : (Array.isArray(data.oqc?.tpm) ? data.oqc.tpm : []);
   return {
     supplyChain: {
       operators: aggregatePeople(ipqcRows, ["送检人"]),
@@ -301,8 +301,10 @@ const moduleRules = {
 
 const dqaSnapshot = (data = {}, target = {}, files = []) => {
   const dqa = data.dqa || {};
-  const allDivisions = dqa.divisions || [];
-  const allTpmStages = dqa.tpmStages || [];
+  // Historical imports and partially refreshed caches may omit these lists or
+  // retain an object-shaped value. A snapshot must stay readable in either case.
+  const allDivisions = Array.isArray(dqa.divisions) ? dqa.divisions : [];
+  const allTpmStages = Array.isArray(dqa.tpmStages) ? dqa.tpmStages : [];
   const role = clean(target.role) || "公司级";
   const recipient = clean(target.recipient);
   const isScoped = role !== "公司级" && Boolean(recipient);
@@ -340,11 +342,11 @@ const dqaSnapshot = (data = {}, target = {}, files = []) => {
       })),
     },
     evidence: {
-      categories: (dqa.categories || []).slice(0, 12),
-      disciplines: dqa.yearCompare?.disciplineValues?.slice(0, 12) || [],
-      ecnReasons: dqa.ecn?.reasonValues?.slice(0, 12) || [],
-      ecnByDivision: (dqa.ecn?.divisions || []).slice(0, 12),
-      nonBomByDivision: (parts.nonBom?.divisions || []).slice(0, 12),
+      categories: Array.isArray(dqa.categories) ? dqa.categories.slice(0, 12) : [],
+      disciplines: Array.isArray(dqa.yearCompare?.disciplineValues) ? dqa.yearCompare.disciplineValues.slice(0, 12) : [],
+      ecnReasons: Array.isArray(dqa.ecn?.reasonValues) ? dqa.ecn.reasonValues.slice(0, 12) : [],
+      ecnByDivision: Array.isArray(dqa.ecn?.divisions) ? dqa.ecn.divisions.slice(0, 12) : [],
+      nonBomByDivision: Array.isArray(parts.nonBom?.divisions) ? parts.nonBom.divisions.slice(0, 12) : [],
     },
     roleEvidence: buildRoleEvidence(data, files).research,
     scope: {

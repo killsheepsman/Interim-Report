@@ -594,16 +594,18 @@ const supplementPerson = (value) => {
 };
 const supplementDate = (value) => {
   const raw = supplementText(value).trim();
+  const embedded = raw.match(/(\d{4})\s*[年\/-](\d{1,2})\s*[月\/-](\d{1,2})/u);
+  if (embedded) return `${embedded[1]}-${String(embedded[2]).padStart(2, "0")}-${String(embedded[3]).padStart(2, "0")}`;
   const dateOnly = raw.match(/^(\d{4})[\/-](\d{1,2})[\/-](\d{1,2})$/);
   if (dateOnly) return `${dateOnly[1]}-${String(dateOnly[2]).padStart(2, "0")}-${String(dateOnly[3]).padStart(2, "0")}`;
   const parsed = businessDate(value);
   return parsed ? parsed.toISOString().slice(0, 10) : "";
 };
 const supplementSplitPeople = (value) => supplementText(value)
-  .replace(/^(?:\u53c2\u4e0e|\u7f3a\u5e2d|\u8bf7\u5047)\s*[：:]?/u, "")
-  .split(/[\s,，、;；]+/)
+  .replace(/^(?:\u53c2\u4e0e|\u8bc4\u5ba1\u4eba\u5458?|\u4e0e\u4f1a\u4eba\u5458?)\s*[：:]?/u, "")
+  .split(/[\n\r,，、;；\s]+/)
   .map(supplementPerson)
-  .filter(Boolean);
+  .filter((name) => name && !/^(?:\u65e0|XXX|x+|\u7f3a\u5e2d|\u8bf7\u5047|\u8bf7\u5047\u4eba\u5458|\u8bb0\u5f55\u4eba|\u4f1a\u8bae\u65f6间|\u4f1a\u8bae\u5730\u70b9)$/iu.test(name) && !/XXX|\u4f1a\u8bae\u65f6\u95f4|\u4f1a\u8bae\u5730\u70b9/u.test(name));
 const supplementRowsFromWorkbook = (workbook) => workbook.SheetNames.flatMap((sheetName) => {
   const matrix = sheetMatrix(workbook.Sheets[sheetName]);
   const headerIndex = matrix.findIndex((row) => row.some((cell) => ["ECN\u7f16\u53f7", "\u7533\u8bf7\u4eba", "\u8bc4\u5ba1\u6210\u5458", "\u63d0\u51fa\u4eba"].includes(supplementText(cell))));
@@ -612,11 +614,12 @@ const supplementRowsFromWorkbook = (workbook) => workbook.SheetNames.flatMap((sh
   return matrix.slice(headerIndex + 1).filter((row) => row.some((cell) => supplementText(cell))).map((values) => Object.fromEntries(headers.map((header, index) => [header, values[index]]).filter(([header]) => header)));
 });
 const supplementReviewDate = (matrix) => {
-  for (const row of matrix.slice(0, 8)) {
-    for (const cell of row) {
-      const match = supplementText(cell).match(/\u66f4\u65b0\u65e5\u671f\s*[：:]\s*(.+)$/u);
+  for (const row of matrix.slice(0, 14)) {
+    for (let index = 0; index < row.length; index += 1) {
+      const cell = supplementText(row[index]);
+      const match = cell.match(/\u66f4\u65b0\u65e5\u671f\s*[：:]?\s*(.*)$/u);
       if (match) {
-        const date = supplementDate(match[1]);
+        const date = supplementDate(match[1]) || supplementDate(row[index + 1]);
         if (date) return date;
       }
     }
@@ -626,13 +629,19 @@ const supplementReviewDate = (matrix) => {
 const supplementReviewRecord = (workbook, fileName) => workbook.SheetNames.map((sheetName) => {
   const matrix = sheetMatrix(workbook.Sheets[sheetName]);
   const date = supplementReviewDate(matrix);
-  const memberRow = matrix.find((row) => supplementText(row[0]) === "\u8bc4\u5ba1\u6210\u5458");
-  const memberCell = supplementText(memberRow?.find((cell) => /\u53c2\u4e0e|\u7f3a\u5e2d|\u8bf7\u5047/u.test(supplementText(cell))) || memberRow?.[2]);
-  const members = supplementSplitPeople(memberCell.split(/\n?\u7f3a\u5e2d|\n?\u8bf7\u5047/u)[0]);
-  const headerIndex = matrix.findIndex((row) => row.some((cell) => supplementText(cell) === "\u63d0\u51fa\u4eba"));
-  const proposerIndex = headerIndex >= 0 ? matrix[headerIndex].findIndex((cell) => supplementText(cell) === "\u63d0\u51fa\u4eba") : -1;
-  const proposers = proposerIndex >= 0 ? matrix.slice(headerIndex + 1).filter((row) => /^\d+$/.test(supplementText(row[0]))).flatMap((row) => supplementSplitPeople(row[proposerIndex])) : [];
-  const projectName = matrix.find((row) => supplementText(row[0]) === "\u9879\u76ee\u540d\u79f0")?.find((cell) => supplementText(cell) && supplementText(cell) !== "\u9879\u76ee\u540d\u79f0") || sheetName;
+  const personLabels = ["\u8bc4\u5ba1\u6210\u5458", "\u8bc4\u5ba1\u4eba\u5458", "\u8bc4\u5ba1\u4eba", "\u4e0e\u4f1a\u4eba\u5458"];
+  const memberRows = matrix.filter((row) => row.some((cell) => personLabels.some((label) => supplementText(cell).startsWith(label))));
+  const members = memberRows.flatMap((row) => {
+    const index = row.findIndex((cell) => personLabels.some((label) => supplementText(cell).startsWith(label)));
+    const inline = supplementText(row[index]).replace(/^(?:\u8bc4\u5ba1\u6210\u5458|\u8bc4\u5ba1\u4eba\u5458|\u8bc4\u5ba1\u4eba|\u4e0e\u4f1a\u4eba\u5458)\s*[：:]?/u, "");
+    return supplementSplitPeople([inline, ...row.slice(index + 1)].join(" ").split(/\u7f3a\u5e2d|\u8bf7\u5047|\u8bf7\u5047\u4eba\u5458|\u8acb\u5047\u4eba\u54e1/u)[0]);
+  });
+  const headerIndex = matrix.findIndex((row) => row.some((cell) => supplementText(cell).replace(/[：:]$/, "") === "\u63d0\u51fa\u4eba"));
+  const proposerIndex = headerIndex >= 0 ? matrix[headerIndex].findIndex((cell) => supplementText(cell).replace(/[：:]$/, "") === "\u63d0\u51fa\u4eba") : -1;
+  const proposers = proposerIndex >= 0 ? matrix.slice(headerIndex + 1).flatMap((row) => supplementSplitPeople(row[proposerIndex])).filter(Boolean) : [];
+  const projectRow = matrix.find((row) => row.some((cell) => supplementText(cell).replace(/[：:]$/, "") === "\u9879\u76ee\u540d\u79f0"));
+  const projectIndex = projectRow?.findIndex((cell) => supplementText(cell).replace(/[：:]$/, "") === "\u9879\u76ee\u540d\u79f0") ?? -1;
+  const projectName = projectIndex >= 0 ? projectRow.slice(projectIndex + 1).find((cell) => supplementText(cell)) : "";
   return { fileName, sheetName, projectName: supplementText(projectName), updateDate: date, members: [...new Set(members)], proposers };
 }).filter((record) => record.updateDate || record.members.length || record.proposers.length);
 
@@ -674,6 +683,88 @@ export async function parseDqaEngineerSupplementFiles(files = []) {
   return result;
 }
 
+// 独立的研发 Agent 原始明细：不参与质量数据-DQA 的既有导入与统计。
+const DQA_AGENT_RAW_KIND = "DQA_AGENT_RAW";
+const agentPerson = (value) => {
+  const source = supplementPerson(value).normalize("NFKC").trim()
+    .replace(/[（(][^)）]*[）)]/g, "")
+    .replace(/[\s\u00a0]/g, "")
+    .replace(/(?:等人|等)$/u, "");
+  return /^[\u4e00-\u9fff·]{2,6}$/u.test(source) ? source : "";
+};
+const agentMaterialCode = (value) => supplementText(value).trim();
+const agentRecordId = (sourceId, index) => `${sourceId}:${index}`;
+export async function parseDqaAgentRawFiles(files = []) {
+  const result = { version: 1, kind: DQA_AGENT_RAW_KIND, updatedAt: new Date().toISOString(), files: [], ecnRecords: [], nonBomRecords: [], projectMappings: [] };
+  for (const file of files) {
+    const buffer = await file.arrayBuffer();
+    const sourceId = `agent-raw:${supplementText(file.name)}:${supplementContentFingerprint(new Uint8Array(buffer))}`;
+    const sourceMeta = { sourceId, sourceName: supplementText(file.name) };
+    const workbook = XLSX.read(buffer, xlsxReadOptions);
+    const records = supplementRowsFromWorkbook(workbook);
+    const lowerName = supplementText(file.name).toLowerCase();
+    if (lowerName.includes("ecn") || records.some((row) => row["ECN编号"] != null || row["创建人"] != null)) {
+      records.forEach((row, index) => {
+        const materialCode = agentMaterialCode(row["物料代码"]);
+        result.ecnRecords.push({ ...sourceMeta, recordId: agentRecordId(sourceId, index), engineer: agentPerson(row["创建人"]), pm: agentPerson(row["PM审核人"]), date: supplementDate(row["申请日期"]), ecnNo: supplementText(row["ECN编号"]), projectName: supplementText(row["项目名称"]), reason: supplementText(row["变更原因"]), materialCode, bomTotal: number(row["BOM物料总款数"]), bomMachinedTotal: number(row["BOM(加工件)"]), isMachined: materialCode.startsWith("35") });
+      });
+      result.files.push({ ...sourceMeta, name: file.name, kind: "ECN_AGENT_RAW", rowCount: records.length, sheets: workbook.SheetNames, importedAt: result.updatedAt });
+    } else if (lowerName.includes("非bom") || lowerName.includes("nonbom") || records.some((row) => row["申请人"] != null && row["物料代码"] != null)) {
+      records.forEach((row, index) => {
+        const materialCode = agentMaterialCode(row["物料代码"]);
+        result.nonBomRecords.push({ ...sourceMeta, recordId: agentRecordId(sourceId, index), engineer: agentPerson(row["申请人"]), date: supplementDate(row["创建时间"] || row["需求日期"]), costObject: supplementText(row["成本对象"]), materialCode, quantity: number(row["申请数量"]), reason: supplementText(row["申请原因"]), productDept: supplementText(row["产品部"]), isMachined: materialCode.startsWith("35") });
+      });
+      result.files.push({ ...sourceMeta, name: file.name, kind: "NON_BOM_AGENT_RAW", rowCount: records.length, sheets: workbook.SheetNames, importedAt: result.updatedAt });
+    } else {
+      records.forEach((row, index) => result.projectMappings.push({ ...sourceMeta, recordId: agentRecordId(sourceId, index), costObject: supplementText(row["成本对象"]), projectName: supplementText(row["项目名称"]), applicant: agentPerson(row["申请人"]), productDept: supplementText(row["产品部"]), pm: agentPerson(row["PM"]), tpm: agentPerson(row["TPM"]) }));
+      result.files.push({ ...sourceMeta, name: file.name, kind: "PROJECT_MAPPING", rowCount: records.length, sheets: workbook.SheetNames, importedAt: result.updatedAt });
+    }
+  }
+  return result;
+}
+
+const agentRawInRange = (value, range = {}) => {
+  const date = supplementDate(value);
+  const start = range.start || range.start2026 || "0000-01-01";
+  const end = range.end || range.end2026 || "9999-12-31";
+  return Boolean(date) && date >= start && date <= end;
+};
+const agentRawKey = (value) => supplementText(value).trim();
+const agentRawGroup = (records, getter) => {
+  const map = new Map();
+  records.forEach((record) => { const key = getter(record); if (!key) return; const values = map.get(key) || []; values.push(record); map.set(key, values); });
+  return map;
+};
+// 每条 ECN 明细均为分子；项目 BOM 分母按项目去重，以同项目首次非零值为准。
+export const buildDqaAgentRawMetrics = (raw = {}, range = {}) => {
+  const ecnRecords = (raw.ecnRecords || []).filter((row) => agentRawInRange(row.date, range));
+  const nonBomRecords = (raw.nonBomRecords || []).filter((row) => agentRawInRange(row.date, range));
+  const mappings = raw.projectMappings || [];
+  const mappingByCostObject = new Map(mappings.filter((row) => row.costObject).map((row) => [row.costObject, row]));
+  const bomByProject = new Map();
+  ecnRecords.forEach((row) => {
+    const project = agentRawKey(row.projectName);
+    if (!project) return;
+    const current = bomByProject.get(project) || { bomTotal: 0, bomMachinedTotal: 0 };
+    bomByProject.set(project, { bomTotal: current.bomTotal || Number(row.bomTotal || 0), bomMachinedTotal: current.bomMachinedTotal || Number(row.bomMachinedTotal || 0) });
+  });
+  const withOwnership = [
+    ...ecnRecords.map((row) => ({ ...row, source: "ECN", engineer: agentPerson(row.engineer), pm: agentPerson(row.pm), tpm: "", project: agentRawKey(row.projectName) })),
+    ...nonBomRecords.map((row) => { const mapping = mappingByCostObject.get(row.costObject) || {}; return { ...row, source: "非BOM", engineer: agentPerson(row.engineer), project: mapping.projectName || row.costObject, pm: agentPerson(mapping.pm), tpm: agentPerson(mapping.tpm) }; }),
+  ];
+  const byEngineer = agentRawGroup(withOwnership, (row) => row.engineer);
+  const metricsFor = (records) => {
+    const ecn = records.filter((row) => row.source === "ECN"); const nonBom = records.filter((row) => row.source === "非BOM");
+    const projects = [...new Set(ecn.map((row) => row.project).filter(Boolean))];
+    const bomDenominator = projects.reduce((sum, project) => sum + Number(bomByProject.get(project)?.bomTotal || 0), 0);
+    const machinedBomDenominator = projects.reduce((sum, project) => sum + Number(bomByProject.get(project)?.bomMachinedTotal || 0), 0);
+    const ecnMachined = ecn.filter((row) => row.isMachined).length;
+    const reasonMap = agentRawGroup(ecn, (row) => row.reason || "未填写原因");
+    return { ecnCount: ecn.length, nonBomCount: nonBom.length, projectCount: projects.length, ecnMachinedCount: ecnMachined, ecnStandardCount: ecn.length - ecnMachined, nonBomMachinedCount: nonBom.filter((row) => row.isMachined).length, nonBomStandardCount: nonBom.filter((row) => !row.isMachined).length, bomDenominator, machinedBomDenominator, ecnRate: bomDenominator ? ecn.length / bomDenominator : null, machinedEcnRate: machinedBomDenominator ? ecnMachined / machinedBomDenominator : null, ecnReasons: [...reasonMap.entries()].map(([name, items]) => ({ name, count: items.length })).sort((left, right) => right.count - left.count) };
+  };
+  return { range: { start: range.start || range.start2026 || "", end: range.end || range.end2026 || "" }, sourceRows: { ecn: ecnRecords.length, nonBom: nonBomRecords.length, projectsWithBom: bomByProject.size }, overall: metricsFor(withOwnership), byEngineer: Object.fromEntries([...byEngineer.entries()].map(([name, rows]) => [name, metricsFor(rows)])), projectBom: Object.fromEntries(bomByProject), records: withOwnership };
+};
+
 const dateInRange = (date, range = {}) => {
   const value = supplementText(date);
   if (!value) return true;
@@ -684,11 +775,11 @@ const dateInRange = (date, range = {}) => {
 export const buildDqaEngineerSupplementSource = (supplement, dateRange = {}) => {
   if (!supplement?.kind) return null;
   const rows = [];
-  (supplement.ecnRecords || []).filter((record) => dateInRange(record.date, dateRange)).forEach((record) => rows.push({ __engineer: record.engineer, "\u7814\u53d1\u5de5\u7a0b\u5e08": record.engineer, "\u95ee\u9898\u7c7b\u578b": record.reason || record.changeType || "ECN", "\u95ee\u9898\u6765\u6e90": "ECN", "\u7269\u6599\u4ee3\u7801": record.materialCode, "\u52a0\u5de5\u4ef6": record.isMachined ? 1 : 0 }));
-  (supplement.nonBomRecords || []).filter((record) => dateInRange(record.date, dateRange)).forEach((record) => rows.push({ __engineer: record.engineer, "\u7814\u53d1\u5de5\u7a0b\u5e08": record.engineer, "\u95ee\u9898\u7c7b\u578b": record.reason || "\u975eBOM", "\u95ee\u9898\u6765\u6e90": "\u975eBOM", "\u7269\u6599\u4ee3\u7801": record.materialCode, "\u52a0\u5de5\u4ef6": record.isMachined ? 1 : 0 }));
-  (supplement.reviewRecords || []).filter((record) => dateInRange(record.updateDate, dateRange)).forEach((record) => {
-    [...new Set(record.members || [])].forEach((engineer) => rows.push({ __engineer: engineer, "\u7814\u53d1\u5de5\u7a0b\u5e08": engineer, "\u95ee\u9898\u7c7b\u578b": "\u8bc4\u5ba1\u53c2\u4e0e", "\u95ee\u9898\u6765\u6e90": "\u8bc4\u5ba1" }));
-    (record.proposers || []).forEach((engineer) => rows.push({ __engineer: engineer, "\u7814\u53d1\u5de5\u7a0b\u5e08": engineer, "\u95ee\u9898\u7c7b\u578b": "\u8bc4\u5ba1\u610f\u89c1", "\u95ee\u9898\u6765\u6e90": "\u8bc4\u5ba1" }));
+  (supplement.ecnRecords || []).filter((record) => dateInRange(record.date, dateRange)).forEach((record) => rows.push({ __roleActivity: true, __engineer: record.engineer, "\u7814\u53d1\u5de5\u7a0b\u5e08": record.engineer, "\u65e5\u671f": record.date, "\u95ee\u9898\u7c7b\u578b": record.reason || record.changeType || "ECN", "\u95ee\u9898\u6765\u6e90": "ECN", "\u7269\u6599\u4ee3\u7801": record.materialCode, "\u52a0\u5de5\u4ef6": record.isMachined ? 1 : 0 }));
+  (supplement.nonBomRecords || []).filter((record) => dateInRange(record.date, dateRange)).forEach((record) => rows.push({ __roleActivity: true, __engineer: record.engineer, "\u7814\u53d1\u5de5\u7a0b\u5e08": record.engineer, "\u65e5\u671f": record.date, "\u95ee\u9898\u7c7b\u578b": record.reason || "\u975eBOM", "\u95ee\u9898\u6765\u6e90": "\u975eBOM", "\u7269\u6599\u4ee3\u7801": record.materialCode, "\u52a0\u5de5\u4ef6": record.isMachined ? 1 : 0 }));
+  (supplement.reviewRecords || []).filter((record) => record.updateDate && dateInRange(record.updateDate, dateRange)).forEach((record) => {
+    [...new Set(record.members || [])].forEach((engineer) => rows.push({ __roleActivity: true, __engineer: engineer, "\u7814\u53d1\u5de5\u7a0b\u5e08": engineer, "\u65e5\u671f": record.updateDate, "\u95ee\u9898\u7c7b\u578b": "\u8bc4\u5ba1\u53c2\u4e0e", "\u95ee\u9898\u6765\u6e90": "\u8bc4\u5ba1" }));
+    (record.proposers || []).forEach((engineer) => rows.push({ __roleActivity: true, __engineer: engineer, "\u7814\u53d1\u5de5\u7a0b\u5e08": engineer, "\u65e5\u671f": record.updateDate, "\u95ee\u9898\u7c7b\u578b": "\u8bc4\u5ba1\u610f\u89c1", "\u95ee\u9898\u6765\u6e90": "\u8bc4\u5ba1" }));
   });
   return { module: "DQA", name: "\u7814\u53d1\u00b7 ECN/\u975eBOM/\u8bc4\u5ba1", kind: "STANDARD", subKind: DQA_ENGINEER_SUPPLEMENT_KIND, rows, rowCount: rows.length, importedAt: supplement.updatedAt, supplement };
 };

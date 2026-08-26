@@ -1,7 +1,8 @@
-const profileModules = import.meta.glob("../../skills/report-web-publisher/profiles/*.json", {
-  eager: true,
-  import: "default",
-});
+// Vite provides import.meta.glob in the browser build; the Node server only
+// needs the fallback profile and must not evaluate the Vite-only helper.
+const profileModules = typeof import.meta.glob === "function"
+  ? import.meta.glob("../../skills/report-web-publisher/profiles/*.json", { eager: true, import: "default" })
+  : {};
 
 const fallbackProfile = {
   id: "research-briefing-v1",

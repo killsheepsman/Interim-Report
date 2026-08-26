@@ -9,6 +9,7 @@ const ANALYSIS_CACHE_KEY = "analysis-cache-v1";
 const REMOTE_ANALYSIS_CACHE_KEY = "analysis-cache";
 const REMOTE_APPLIED_DATE_RANGE_KEY = "applied-date-range";
 const DQA_ENGINEER_SUPPLEMENT_KEY = "dqa-engineer-supplement";
+const DQA_AGENT_RAW_KEY = "dqa-agent-raw";
 const PROJECT_NAME_MAPPING_KEY = "project-name-mapping";
 const OQC_EQUIPMENT_RULE_CACHE_KEY = "oqc-equipment-rule-cache";
 const QUALITY_AGENT_RUNS_KEY = "quality-agent-runs";
@@ -351,11 +352,25 @@ const fetchJsonGzip = async (url) => {
 };
 
 export const saveImportedSources = async (sources) => {
-  await saveImportedSourcesLocal(sources);
   const remoteSources = summarizeSources(sources);
+  // The web/server runtime can rehydrate rows from uploaded Excel files. Keep
+  // only the lightweight index in IndexedDB so deleting one source does not
+  // clone every imported row on the browser main thread.
+  await saveImportedSourcesLocal(sharedApiBase() ? remoteSources : sources);
   const remoteSaved = await saveRemoteState(REMOTE_SOURCES_KEY, remoteSources);
   if (!sharedApiBase()) return remoteSources;
   return Array.isArray(remoteSaved) ? remoteSaved : null;
+};
+
+export const patchCachedAnalysis = async (patch = {}) => {
+  const response = await requestSharedApi(`/state/${REMOTE_ANALYSIS_CACHE_KEY}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(patch),
+  });
+  if (!response) return null;
+  const payload = await response.json();
+  return payload?.value || null;
 };
 
 export const downloadSourceFiles = async (sources = []) => {
@@ -402,8 +417,9 @@ export const saveQualityAgentRunsToServer = async (runs) => {
   return saved && typeof saved === "object" && !Array.isArray(saved) ? saved : null;
 };
 
-export const loadQualityAgentSnapshotRegistry = async ({ indexOnly = false } = {}) => {
-  const payload = await requestSharedState(QUALITY_AGENT_SNAPSHOT_REGISTRY_KEY, { method: "GET", cache: "no-store", query: indexOnly ? { view: "index" } : undefined });
+export const loadQualityAgentSnapshotRegistry = async ({ indexOnly = false, entryId = "" } = {}) => {
+  const query = entryId ? { view: "entry", id: entryId } : (indexOnly ? { view: "index" } : undefined);
+  const payload = await requestSharedState(QUALITY_AGENT_SNAPSHOT_REGISTRY_KEY, { method: "GET", cache: "no-store", query });
   const value = payload?.value;
   return value && typeof value === "object" && !Array.isArray(value) ? value : null;
 };
@@ -413,8 +429,11 @@ export const saveQualityAgentSnapshotRegistry = async (registry) => {
   const saved = await saveRemoteState(QUALITY_AGENT_SNAPSHOT_REGISTRY_KEY, value);
   return saved && typeof saved === "object" && !Array.isArray(saved) ? saved : null;
 };
-export const loadQualityAgentRoleSnapshotRegistry = async ({ indexOnly = false } = {}) => {
-  const payload = await requestSharedState(QUALITY_AGENT_ROLE_SNAPSHOT_REGISTRY_KEY, { method: "GET", cache: "no-store", query: indexOnly ? { view: "index" } : undefined });
+export const loadQualityAgentRoleSnapshotRegistry = async ({ indexOnly = false, entryKey = "", entryId = "", role = "", period = {}, skillName = "", layoutProfileId = "" } = {}) => {
+  const query = entryId ? { view: "entry", id: entryId } : entryKey ? { view: "entry", key: entryKey }
+    : role && period?.start && period?.end ? { view: "role-period", role, start: period.start, end: period.end, skillName, layoutProfileId }
+      : (indexOnly ? { view: "index" } : undefined);
+  const payload = await requestSharedState(QUALITY_AGENT_ROLE_SNAPSHOT_REGISTRY_KEY, { method: "GET", cache: "no-store", query });
   const value = payload?.value;
   return value && typeof value === "object" && !Array.isArray(value) ? value : null;
 };
@@ -422,6 +441,41 @@ export const saveQualityAgentRoleSnapshotRegistry = async (registry) => {
   const value = registry && typeof registry === "object" && !Array.isArray(registry) ? registry : {};
   const saved = await saveRemoteState(QUALITY_AGENT_ROLE_SNAPSHOT_REGISTRY_KEY, value);
   return saved && typeof saved === "object" && !Array.isArray(saved) ? saved : null;
+};
+export const loadReportQualityRules = async () => {
+  const payload = await requestSharedState("quality-agent-report-quality-rules", { method: "GET", cache: "no-store" });
+  return payload?.value || null;
+};
+export const saveReportQualityRules = async (value) => saveRemoteState("quality-agent-report-quality-rules", value);
+
+export const listSnapshotJobs = async () => {
+  const response = await requestSharedApi("/snapshot-jobs", { method: "GET", cache: "no-store" });
+  if (!response) return { jobs: [] };
+  return await response.json();
+};
+
+export const createSnapshotJob = async (payload) => {
+  const response = await requestSharedApi("/snapshot-jobs", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload || {}) });
+  if (!response) throw new Error("无法创建快照任务");
+  return await response.json();
+};
+
+export const loadSnapshotJob = async (jobId) => {
+  const response = await requestSharedApi(`/snapshot-jobs/${encodeURIComponent(jobId)}`, { method: "GET", cache: "no-store" });
+  if (!response) return null;
+  return await response.json();
+};
+
+export const updateSnapshotJob = async (jobId, patch = {}) => {
+  const response = await requestSharedApi(`/snapshot-jobs/${encodeURIComponent(jobId)}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(patch || {}) });
+  if (!response) return null;
+  return await response.json();
+};
+
+export const openSnapshotStorage = async (kind) => {
+  const response = await requestSharedApi("/snapshot-storage/open", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ kind }) });
+  if (!response) throw new Error("无法打开快照目录，请确认本机服务正在运行");
+  return await response.json();
 };
 
 export const saveCachedAnalysis = async (cache) => {
@@ -585,6 +639,13 @@ export const loadAgentReport = async (fileName) => {
     if (timer) clearTimeout(timer);
   }
 };
+
+export const loadDqaAgentRaw = async () => {
+  const remote = await loadRemoteState(DQA_AGENT_RAW_KEY);
+  return remote && typeof remote === "object" ? remote : null;
+};
+export const saveDqaAgentRaw = async (value) => saveRemoteState(DQA_AGENT_RAW_KEY, value);
+export const clearDqaAgentRaw = async () => saveRemoteState(DQA_AGENT_RAW_KEY, null);
 export const saveAgentReportFile = async (report) => aiApiJson("/ai/agent-reports", { method: "POST", body: JSON.stringify({ ...report, content: sanitizeHumanReportContent(report.content || ""), visualSpec: report.visualSpec && typeof report.visualSpec === "object" ? report.visualSpec : extractReportVisualSpec(report.content || ""), feature: "qualityAgent" }) });
 export const deleteAgentReport = async (fileName) => await aiApiJson(`/ai/agent-reports/${encodeURIComponent(fileName)}`, { method: "DELETE" });
 
@@ -618,13 +679,14 @@ export const saveLocalAgentReport = async (report = {}) => {
     creatorIp: String(report.creatorIp || ""),
     fileName: reportFileName,
     localOnly: true,
+    storageScope: "local",
     updatedAt: now.toISOString(),
     savedAt: now.toISOString(),
   };
   try {
     await ensureLocalAgentReportStore();
     const reports = [item, ...readLocalAgentReportIndex().filter((entry) => entry.fileName !== reportFileName)].slice(0, 300);
-    const metadata = reports.map(({ content, ...entry }) => ({ ...entry, localOnly: true }));
+    const metadata = reports.map(({ content, ...entry }) => ({ ...entry, localOnly: true, storageScope: "local" }));
     await transaction("readwrite", (store) => {
       store.put(item, `${LOCAL_AGENT_REPORT_CONTENT_PREFIX}${reportFileName}`);
       return store.put(metadata, LOCAL_AGENT_REPORTS_INDEX_KEY);

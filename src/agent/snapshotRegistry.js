@@ -48,14 +48,35 @@ export const buildSnapshotPeriods = (dateRange = {}) => {
   const periods = [{ ...normalizeDateRange(dateRange), granularity: "range", periodKey: "range" }];
   [["2025", dateRange.start2025, dateRange.end2025], ["2026", dateRange.start2026, dateRange.end2026]].forEach(([year, start, end]) => {
     if (!start || !end) return;
-    splitYearPeriods(start, end, "month").forEach((item) => periods.push({ start2025: year === "2025" ? item.start : "", end2025: year === "2025" ? item.end : "", start2026: year === "2026" ? item.start : "", end2026: year === "2026" ? item.end : "", granularity: item.granularity, periodKey: item.periodKey }));
-    splitYearPeriods(start, end, "week").forEach((item) => periods.push({ start2025: year === "2025" ? item.start : "", end2025: year === "2025" ? item.end : "", start2026: year === "2026" ? item.start : "", end2026: year === "2026" ? item.end : "", granularity: item.granularity, periodKey: item.periodKey }));
+    const trendStart = year + "-01-01";
+    splitYearPeriods(trendStart, end, "month").forEach((item) => periods.push({ start2025: year === "2025" ? item.start : "", end2025: year === "2025" ? item.end : "", start2026: year === "2026" ? item.start : "", end2026: year === "2026" ? item.end : "", granularity: item.granularity, periodKey: item.periodKey }));
+    splitYearPeriods(trendStart, end, "week").forEach((item) => periods.push({ start2025: year === "2025" ? item.start : "", end2025: year === "2025" ? item.end : "", start2026: year === "2026" ? item.start : "", end2026: year === "2026" ? item.end : "", granularity: item.granularity, periodKey: item.periodKey }));
   });
   return periods;
 };
 const normalizeLayoutProfileId = (value) => normalizeReportPresentationProfile(String(value || DEFAULT_REPORT_PRESENTATION_PROFILE));
 const normalizeSkillName = (value, module) => String(value || "").trim() || DEFAULT_SKILL_BY_MODULE[module] || `quality-analysis-${String(module || "dqa").toLowerCase()}`;
 const normalizeJson = (value) => value && typeof value === "object" && !Array.isArray(value) ? value : {};
+const normalizePeriodSignature = (dateRange = {}) => {
+  const normalized = normalizeDateRange(dateRange);
+  return {
+    start2025: normalized.start2025,
+    end2025: normalized.end2025,
+    start2026: normalized.start2026,
+    end2026: normalized.end2026,
+    granularity: normalized.granularity || "range",
+    periodKey: normalized.periodKey || "range",
+  };
+};
+const samePeriodSignature = (left = {}, right = {}, strict = false) => {
+  const a = normalizePeriodSignature(left);
+  const b = normalizePeriodSignature(right);
+  return a.start2025 === b.start2025
+    && a.end2025 === b.end2025
+    && a.start2026 === b.start2026
+    && a.end2026 === b.end2026
+    && (!strict || (a.granularity === b.granularity && a.periodKey === b.periodKey));
+};
 
 const normalizeRule = (rule = {}, fallback = {}) => {
   const module = String(rule.module || fallback.module || "DQA");
@@ -114,7 +135,13 @@ export const normalizeQualitySnapshotRegistry = (value) => {
     if (rulesByModule.has(module)) rulesByModule.set(module, normalizeRule(rule, rulesByModule.get(module)));
   });
   const rules = QUALITY_SNAPSHOT_MODULES.map((module) => rulesByModule.get(module) || normalizeRule(RULE_LIBRARY[module], {}));
-  const history = [...new Map((Array.isArray(source.history) ? source.history : []).map((entry) => {
+  // Older builds accidentally stored the complete registry under `history`.
+  // Recover its nested entries so completed department snapshot tasks remain visible.
+  const legacyNestedHistory = normalizeJson(source.history).history;
+  const rawHistory = Array.isArray(source.history)
+    ? source.history
+    : (Array.isArray(legacyNestedHistory) ? legacyNestedHistory : []);
+  const history = [...new Map(rawHistory.map((entry) => {
     const normalized = normalizeHistoryEntry(entry);
     return [normalized.id, normalized];
   })).values()]
@@ -202,12 +229,35 @@ export const mergeQualitySnapshotHistory = (registry = {}, entry = {}) => {
   const history = [normalizedEntry, ...normalizedRegistry.history.filter((item) => item.id !== normalizedEntry.id)]
     .sort((left, right) => String(right.generatedAt || "").localeCompare(String(left.generatedAt || "")))
     .slice(0, 240);
-  return { ...normalizedRegistry, selectedRuleId: normalizedRegistry.rules.some((rule) => rule.id === normalizedRegistry.selectedRuleId) ? normalizedRegistry.selectedRuleId : (normalizedRegistry.rules.find((rule) => rule.enabled)?.id || normalizedRegistry.rules[0]?.id || "iqc"), updatedAt: nowIso(), history };
+  const maintained = maintainQualitySnapshotHistory({
+    ...normalizedRegistry,
+    selectedRuleId: normalizedRegistry.rules.some((rule) => rule.id === normalizedRegistry.selectedRuleId)
+      ? normalizedRegistry.selectedRuleId
+      : (normalizedRegistry.rules.find((rule) => rule.enabled)?.id || normalizedRegistry.rules[0]?.id || "iqc"),
+    updatedAt: nowIso(),
+    history,
+  });
+  return { ...maintained, updatedAt: nowIso() };
+};
+
+export const maintainQualitySnapshotHistory = (registry = {}) => {
+  const current = normalizeQualitySnapshotRegistry(registry);
+  if (current.maintenance?.enabled === false || current.maintenance?.autoArchive === false) return current;
+  const retention = Math.max(1, Number(current.maintenance?.retention || 3));
+  const groups = new Map();
+  [...current.history].sort((a, b) => String(b.generatedAt).localeCompare(String(a.generatedAt))).forEach((entry) => {
+    const key = `${entry.module}|${entry.skillName}|${entry.layoutProfileId}|${entry.dateRange?.granularity}|${entry.dateRange?.periodKey}`;
+    const list = groups.get(key) || []; list.push(entry); groups.set(key, list);
+  });
+  const keep = new Set(); groups.forEach((list) => list.slice(0, retention).forEach((entry) => keep.add(entry.id)));
+  return { ...current, history: current.history.map((entry) => keep.has(entry.id) ? { ...entry, active: true, status: "ready" } : { ...entry, active: false, status: "archived" }) };
 };
 
 export const pickLatestQualitySnapshot = (registry = {}, query = {}) => {
   const normalizedRegistry = normalizeQualitySnapshotRegistry(registry);
-  const range = normalizeDateRange(query.dateRange || {});
+  const queryRange = query.dateRange || {};
+  const range = normalizeDateRange(queryRange);
+  const strictPeriodMatch = Object.prototype.hasOwnProperty.call(queryRange, "granularity") || Object.prototype.hasOwnProperty.call(queryRange, "periodKey");
   const candidates = normalizedRegistry.history.filter((entry) => {
     if (entry.active === false) return false;
     if (query.module && entry.module !== query.module) return false;
@@ -215,10 +265,9 @@ export const pickLatestQualitySnapshot = (registry = {}, query = {}) => {
     if (query.skillName && entry.skillName !== query.skillName) return false;
     if (query.layoutProfileId && entry.layoutProfileId !== normalizeLayoutProfileId(query.layoutProfileId)) return false;
     if (query.sourceSignature && entry.sourceSignature !== query.sourceSignature) return false;
-    if (range.start2025 && entry.dateRange.start2025 !== range.start2025) return false;
-    if (range.end2025 && entry.dateRange.end2025 !== range.end2025) return false;
-    if (range.start2026 && entry.dateRange.start2026 !== range.start2026) return false;
-    if (range.end2026 && entry.dateRange.end2026 !== range.end2026) return false;
+    if (range.start2025 || range.end2025 || range.start2026 || range.end2026 || strictPeriodMatch) {
+      if (!samePeriodSignature(entry.dateRange, range, strictPeriodMatch)) return false;
+    }
     return true;
   });
   if (candidates[0]) return candidates[0];
