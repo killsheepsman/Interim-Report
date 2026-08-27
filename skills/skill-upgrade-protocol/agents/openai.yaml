@@ -1,4 +1,4 @@
 interface:
-  display_name: "Skill升级协议"
-  short_description: "按真实报告、数据口径和验收标准升级质量分析Skill"
-  default_prompt: "使用Skill升级协议审查并升级指定质量分析Skill"
+  display_name: "Skill鍗囩骇鍗忚"
+  short_description: "渚濇嵁鐪熷疄鎶ュ憡銆佸浐瀹氭暟鎹拰楠屾敹鏍囧噯鑷姩鍗囩骇璐ㄩ噺鍒嗘瀽Skill"
+  default_prompt: "浣跨敤 $skill-upgrade-protocol 妫�鏌ャ�佸洖璺戝苟鍗囩骇鎸囧畾鐨勮川閲忓垎鏋怱kill"

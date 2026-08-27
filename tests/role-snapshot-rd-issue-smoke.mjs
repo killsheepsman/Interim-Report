@@ -23,6 +23,14 @@ assert.equal(chen.rdQualityIssues.count, 29, "研发问题只按责任人和问�
 assert.equal(chen.rdQualityIssues.categories.reduce((sum, item) => sum + item.count, 0), 29);
 assert.equal(chen.rdQualityIssues.examples[0].date, "2026-03-17", "Excel中国午夜日期不能偏移到前一天");
 assert.equal(chen.metrics.bad, 29, "ECN等角色活动不能计入质量问题");
-assert.equal(chen.metrics.total, 30, "角色总活动仍可包含独立的ECN活动");
+assert.equal(chen.metrics.total, 29, "研发质量总数只能使用研发问题，不能混入工程活动");
+assert.equal(chen.metrics.badRate, null, "没有设计输出总量分母时不得生成研发不良率");
+assert.equal(chen.metrics.rateAvailable, false);
+assert.equal(chen.metricContract, "rd-quality-only-v1");
+assert.equal(chen.trend.month.rows.reduce((sum, row) => sum + row.count, 0), 29);
+assert.ok(chen.trend.month.rows.every((row) => !("rate" in row)), "研发趋势不得生成伪不良率");
+assert.deepEqual(chen.rdQualityIssues.periodTrend.month.rows.map((row) => [row.label, row.count]), [
+  ["2026-01", 0], ["2026-02", 0], ["2026-03", 27], ["2026-04", 0], ["2026-05", 0], ["2026-06", 2],
+], "月度趋势必须连续且只统计研发问题");
 
 console.log("role snapshot R&D issue smoke test passed");

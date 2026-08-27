@@ -1,0 +1,4 @@
+interface:
+  display_name: "研发工程师决策闭环"
+  short_description: "第一性原理识别研发质量瓶颈并形成工程门禁"
+  default_prompt: "使用研发工程师决策闭环 Skill，基于固定快照输出主导失效机制、最少工程动作和可验证关闭条件。"

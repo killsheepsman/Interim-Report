@@ -759,8 +759,12 @@ export const buildDqaAgentRawMetrics = (raw = {}, range = {}) => {
     const bomDenominator = projects.reduce((sum, project) => sum + Number(bomByProject.get(project)?.bomTotal || 0), 0);
     const machinedBomDenominator = projects.reduce((sum, project) => sum + Number(bomByProject.get(project)?.bomMachinedTotal || 0), 0);
     const ecnMachined = ecn.filter((row) => row.isMachined).length;
+    const ecnStandard = ecn.length - ecnMachined;
+    const standardBomDenominator = Math.max(0, bomDenominator - machinedBomDenominator);
+    const machinedEcnRate = machinedBomDenominator ? ecnMachined / machinedBomDenominator : null;
+    const standardEcnRate = standardBomDenominator ? ecnStandard / standardBomDenominator : null;
     const reasonMap = agentRawGroup(ecn, (row) => row.reason || "未填写原因");
-    return { ecnCount: ecn.length, nonBomCount: nonBom.length, projectCount: projects.length, ecnMachinedCount: ecnMachined, ecnStandardCount: ecn.length - ecnMachined, nonBomMachinedCount: nonBom.filter((row) => row.isMachined).length, nonBomStandardCount: nonBom.filter((row) => !row.isMachined).length, bomDenominator, machinedBomDenominator, ecnRate: bomDenominator ? ecn.length / bomDenominator : null, machinedEcnRate: machinedBomDenominator ? ecnMachined / machinedBomDenominator : null, ecnReasons: [...reasonMap.entries()].map(([name, items]) => ({ name, count: items.length })).sort((left, right) => right.count - left.count) };
+    return { ecnCount: ecn.length, nonBomCount: nonBom.length, projectCount: projects.length, ecnMachinedCount: ecnMachined, ecnStandardCount: ecnStandard, nonBomMachinedCount: nonBom.filter((row) => row.isMachined).length, nonBomStandardCount: nonBom.filter((row) => !row.isMachined).length, bomDenominator, machinedBomDenominator, standardBomDenominator, ecnRate: bomDenominator ? ecn.length / bomDenominator : null, machinedEcnRate, standardEcnRate, machinedToStandardEcnRateRatio: machinedEcnRate != null && standardEcnRate ? machinedEcnRate / standardEcnRate : null, ecnReasons: [...reasonMap.entries()].map(([name, items]) => ({ name, count: items.length })).sort((left, right) => right.count - left.count) };
   };
   return { range: { start: range.start || range.start2026 || "", end: range.end || range.end2026 || "" }, sourceRows: { ecn: ecnRecords.length, nonBom: nonBomRecords.length, projectsWithBom: bomByProject.size }, overall: metricsFor(withOwnership), byEngineer: Object.fromEntries([...byEngineer.entries()].map(([name, rows]) => [name, metricsFor(rows)])), projectBom: Object.fromEntries(bomByProject), records: withOwnership };
 };

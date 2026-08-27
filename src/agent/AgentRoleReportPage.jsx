@@ -11,6 +11,7 @@ import { extractReportVisualSpec, sanitizeHumanReportContent } from "../reportSa
 import { loadQualityAgentRoleSnapshotRegistry } from "../dataStore.js";
 import { normalizeRoleSnapshotRegistry, pickRoleSnapshot } from "./roleSnapshotRegistry.js";
 import { DEFAULT_REPORT_QUALITY_RULES, reportQualityAdvice, validateReportQuality } from "./reportQualityRules.js";
+import { addIsoDays, enforceRdEngineerReportFacts } from "./rdEngineerReportContract.js";
 
 const ROLE_CACHE_KEY = "qms-agent-role-report-cache-v2";
 const ROLE_LAYOUT_STORAGE_KEY = "qms-agent-role-report-layout-v1";
@@ -114,12 +115,21 @@ const roleBaselineBrief = (baseline, modules, retry = false) => modules.map((mod
   return `\n===== ${module} Agent 基线摘要 =====\n${compactRoleBaselineContent(baseline.contents[item?.fileName] || "", retry ? 2200 : 4200)}`;
 }).join("\n");
 const reviewContributionMarkdown = (evidence = {}, content = "") => {
-  const metrics = { ...(evidence.engineerMetrics || {}), ...(evidence.roleSnapshot?.dqaAgentMetrics || {}) };
+  const metrics = evidence.roleSnapshot?.dqaAgentMetrics || evidence.engineerMetrics || {};
   const participation = Number(metrics.reviewParticipation || 0);
   const suggestions = Number(metrics.reviewSuggestions || 0);
   if (!participation && !suggestions) return "";
-  if (/设计评审正向贡献/.test(String(content))) return "";
+  if (/^#{1,6}\s*(?:[一二三四五六七八九十\d.、\s-]*)?(?:正向贡献|设计评审(?:正向)?贡献)/m.test(String(content))) return "";
   return `\n\n## 设计评审正向贡献\n\n| 指标 | 本周期数据 | 口径 |\n| --- | ---: | --- |\n| 参与评审 | ${participation} 次 | 每份评审表中本人作为评审成员计 1 次 |\n| 有效改善项 | ${suggestions} 条 | 本人作为提出人，每行计 1 条 |\n\n该部分是前置评审参与和改善贡献，不计入研发问题、ECN、非BOM数量、风险排名或质量风险分。\n`;
+};
+const withDerivedEcnMetrics = (value = {}) => {
+  const number = (item) => item !== null && item !== undefined && item !== "" && Number.isFinite(Number(item)) ? Number(item) : null;
+  const totalBom = number(value.bomDenominator); const machinedBom = number(value.machinedBomDenominator ?? value.machinedDenominator?.ecn);
+  const totalCount = number(value.ecnCount ?? value.ecn); const machinedCount = number(value.ecnMachinedCount ?? value.ecnMachined); const standardCount = number(value.ecnStandardCount ?? value.ecnStandard) ?? (totalCount != null && machinedCount != null ? Math.max(0, totalCount - machinedCount) : null);
+  const standardBom = number(value.standardBomDenominator) ?? (totalBom != null && machinedBom != null ? Math.max(0, totalBom - machinedBom) : null);
+  const machinedRate = number(value.machinedEcnRate) ?? (machinedBom ? (machinedCount || 0) / machinedBom : null);
+  const standardRate = number(value.standardEcnRate) ?? (standardBom ? (standardCount || 0) / standardBom : null);
+  return { ...value, standardBomDenominator: standardBom, machinedEcnRate: machinedRate, standardEcnRate: standardRate, machinedToStandardEcnRateRatio: number(value.machinedToStandardEcnRateRatio) ?? (machinedRate != null && standardRate ? machinedRate / standardRate : null) };
 };
 
 const escapeHtml = (value) => String(value || "").replace(/[&<>\"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#39;" }[char]));
@@ -416,7 +426,7 @@ const recipientEvidence = (role, recipient, data, files, dateRange = {}, roleRow
       : role === "TPM" ? (data.dqa?.tpmStages || []).filter((row) => row.name === recipient)
         : role === "PM" ? (data.qms?.risks || []).filter((row) => row.pm === recipient).slice(0, 20) : [];
   const categories = {};
-  (spec.modules.includes("IPQC") ? ipqcBadRows : matched).forEach((row) => {
+  (spec.modules.includes("IPQC") ? ipqcBadRows : role === "研发工程师" ? matched.filter((row) => String(row["问题描述"] || "").trim()) : matched).forEach((row) => {
     const category = String(row["不良类型"] || row["问题类型"] || row["问题分类"] || row["阶段"] || "未分类").trim();
     if (category) categories[category] = (categories[category] || 0) + 1;
   });
@@ -460,18 +470,24 @@ const recipientEvidence = (role, recipient, data, files, dateRange = {}, roleRow
       ...(engineerMetrics || {}),
       ecn: metrics.ecnCount,
       ecnMachined: metrics.ecnMachinedCount,
+      ecnStandard: metrics.ecnStandardCount,
       ecnByReason: metrics.ecnReasons || [],
       nonBom: metrics.nonBomCount,
       nonBomMachined: metrics.nonBomMachinedCount,
       nonBomStandard: metrics.nonBomStandardCount,
       projectCount: metrics.projectCount,
+      bomDenominator: metrics.bomDenominator,
+      machinedBomDenominator: metrics.machinedBomDenominator,
       ecnRate: metrics.ecnRate,
       machinedEcnRate: metrics.machinedEcnRate,
+      standardEcnRate: metrics.standardEcnRate,
+      machinedToStandardEcnRateRatio: metrics.machinedToStandardEcnRateRatio,
+      standardBomDenominator: metrics.standardBomDenominator,
       machinedDenominator: { ecn: metrics.machinedBomDenominator ?? null, nonBom: null },
     };
   }
   const topCategoryStats = Object.entries(categories).sort((a, b) => b[1] - a[1]).slice(0, 8).map(([name, count]) => ({ name, count, share: ipqcBadRows.length ? Number((count / ipqcBadRows.length * 100).toFixed(1)) : null }));
-  return { role, recipient, modules: spec.modules, matchedRows: matched.length, ipqcMetrics, periodTrend, topCategories: topCategoryStats.map((item) => item.name), topCategoryStats, related: related.slice(0, 20), directResponsibility, mapping, rdQualityIssues, engineerMetrics };
+  return { role, recipient, modules: spec.modules, matchedRows: role === "研发工程师" ? rdQualityIssues.count : matched.length, ipqcMetrics, periodTrend, topCategories: topCategoryStats.map((item) => item.name), topCategoryStats, related: related.slice(0, 20), directResponsibility, mapping, rdQualityIssues, engineerMetrics };
 };
 
 const recurrenceEvidenceForRecipient = (role, recipient, recurrences = [], files = [], dateRange = {}) => {
@@ -530,7 +546,7 @@ const recurrenceEvidenceForRecipient = (role, recipient, recurrences = [], files
 
 const individualRoles = new Set(["组装人员", "研发工程师"]);
 const nonRankingRoles = new Set(["供应链经理", "产总"]);
-const REPORT_PROMPT_VERSION = "role-report-v7-recurrence-evidence";
+const REPORT_PROMPT_VERSION = "role-report-v8-rd-quality-contract";
 const REPORT_VERSION_MARKER = `<!-- qms-agent-role-version:${REPORT_PROMPT_VERSION} -->`;
 const reportNumber = (value) => Number.isFinite(Number(value)) ? Number(value) : 0;
 const siteFromValue = (value) => {
@@ -593,17 +609,12 @@ const buildRoleRanking = (role, recipientNames, selectedRecipient, data, files, 
     rows = grouped.size ? [...grouped.values()].map((row) => ({ name: row.name, site: inferRankingSite(row.rows, files, ["IPQC"], ["交付经理", "供应商经理"], row.name), value: row.value, detail: `管理工坊异常 ${row.value} 项` })) : aggregateByName(ipqc.managers || [], (row) => row.y2026Bad ?? row.issues).map((row) => ({ ...row, detail: `管理工坊异常 ${row.value} 项` }));
   } else {
     const source = preparedRows || sourceRows(files, spec.modules);
-    const supplement = files.find((file) => file.subKind === "DQA_ENGINEER_SUPPLEMENT")?.supplement;
     rows = recipientNames.map((name) => {
       const matched = (roleRowIndex?.get(name)?.rows || source.filter((row) => rowValues(row, spec.fields).includes(name))).filter((row) => roleRowInPeriod(row, dateRange));
       const categories = new Set(matched.map((row) => String(row["不良类型"] || row["问题类型"] || row["问题分类"] || "").trim()).filter(Boolean));
-      if (role === "研发工程师" && supplement) {
-        const inRange = (value) => roleValueInPeriod(value, dateRange);
-        const ecn = (supplement.ecnRecords || []).filter((row) => row.engineer === name && inRange(row.date));
-        const nonBom = (supplement.nonBomRecords || []).filter((row) => row.engineer === name && inRange(row.date));
-        const reviews = (supplement.reviewRecords || []).filter((row) => inRange(row.updateDate) && (row.members?.includes(name) || row.proposers?.includes(name)));
-        const issueValue = ecn.length + nonBom.length + reviews.reduce((sum, row) => sum + (row.proposers || []).filter((item) => item === name).length, 0);
-        return { name, site: inferRankingSite(matched, files, spec.modules, spec.fields, name), value: issueValue, detail: `ECN ${ecn.length} / 非BOM ${nonBom.length} / 评审参与 ${reviews.filter((row) => row.members?.includes(name)).length} / 意见 ${reviews.reduce((sum, row) => sum + (row.proposers || []).filter((item) => item === name).length, 0)}` };
+      if (role === "研发工程师") {
+        const qualityRows = matched.filter((row) => String(row["问题描述"] || "").trim());
+        return { name, site: inferRankingSite(qualityRows, files, spec.modules, spec.fields, name), value: qualityRows.length, detail: `研发质量问题 ${qualityRows.length} 项` };
       }
       if (role === "组装人员") {
         const issues = matched.reduce((sum, row) => sum + roleIpqcIssue(row), 0);
@@ -619,7 +630,25 @@ const buildRoleRanking = (role, recipientNames, selectedRecipient, data, files, 
   const selected = sorted.find((row) => row.name === selectedRecipient);
   const limited = sorted.slice(0, 12);
   if (selected && !limited.some((row) => row.name === selected.name)) limited.push(selected);
-  return limited.map((row, index) => ({ ...row, rank: sorted.findIndex((item) => item.name === row.name) + 1, selected: row.name === selectedRecipient }));
+  return limited.map((row) => ({ ...row, rank: sorted.findIndex((item) => item.name === row.name) + 1, total: sorted.length, selected: row.name === selectedRecipient }));
+};
+const buildSnapshotRankingRows = (ranking = [], selectedRecipient, role) => {
+  const rows = Array.isArray(ranking) ? ranking.filter((row) => row?.recipient) : [];
+  const limited = rows.slice(0, 12);
+  const selected = rows.find((row) => row.recipient === selectedRecipient);
+  if (selected && !limited.some((row) => row.recipient === selectedRecipient)) limited.push(selected);
+  return limited.map((row) => {
+    const rank = rows.findIndex((item) => item.recipient === row.recipient) + 1;
+    const rd = role === "研发工程师";
+    return {
+      name: row.recipient,
+      value: Number(row.bad || 0),
+      detail: rd ? `研发质量问题 ${Number(row.bad || 0)} 项` : `不良 ${Number(row.bad || 0)} 条 / 总数 ${Number(row.total || 0)} 条 / 不良率 ${Number(row.badRate || 0)}%`,
+      rank,
+      total: rows.length,
+      selected: row.recipient === selectedRecipient,
+    };
+  });
 };
 
 // The model writes the management narrative.  The deterministic statistics and
@@ -630,28 +659,32 @@ const buildRoleVisualSpec = (role, recipient, evidence = {}, rankingRows = []) =
   const total = Number(evidence.ipqcMetrics?.badRecords || 0);
   let cumulative = 0;
   const figures = [];
-  const rdMetrics = { ...(evidence.engineerMetrics || {}), ...(evidence.roleSnapshot?.dqaAgentMetrics || {}) };
+  const rdMetrics = withDerivedEcnMetrics(evidence.roleSnapshot?.dqaAgentMetrics || evidence.engineerMetrics || {});
   if (["研发工程师", "PM", "TPM", "产总"].includes(role) && Object.keys(rdMetrics).length) {
-    const rate = (value) => Number.isFinite(Number(value)) ? Number((Number(value) * 100).toFixed(2)) : 0;
-    figures.push({ id: "rd-ecn-composition", sectionId: "二", intent: "comparison", preferredChart: "clustered-horizontal-bar", title: "ECN物料属性构成", unit: "项", categories: ["加工件", "标准件"], series: [{ name: "ECN", values: [rdMetrics.ecnMachinedCount ?? rdMetrics.ecnMachined ?? 0, rdMetrics.ecnStandardCount ?? 0], axis: "left" }], coverage: "complete", tablePolicy: "replace", accessibilitySummary: `ECN共 ${rdMetrics.ecnCount ?? rdMetrics.ecn ?? 0} 项，其中加工件 ${rdMetrics.ecnMachinedCount ?? rdMetrics.ecnMachined ?? 0} 项、标准件 ${rdMetrics.ecnStandardCount ?? 0} 项；涉及项目 ${rdMetrics.projectCount ?? 0} 个，ECN比例 ${rate(rdMetrics.ecnRate)}%，加工件ECN比例 ${rate(rdMetrics.machinedEcnRate)}%。` });
-    figures.push({ id: "rd-nonbom-composition", sectionId: "二", intent: "comparison", preferredChart: "clustered-horizontal-bar", title: "非BOM物料属性构成", unit: "项", categories: ["加工件", "标准件"], series: [{ name: "非BOM", values: [rdMetrics.nonBomMachinedCount ?? rdMetrics.nonBomMachined ?? 0, rdMetrics.nonBomStandardCount ?? rdMetrics.nonBomStandard ?? 0], axis: "left" }], coverage: "complete", tablePolicy: "replace", accessibilitySummary: `非BOM共 ${rdMetrics.nonBomCount ?? rdMetrics.nonBom ?? 0} 项，其中加工件 ${rdMetrics.nonBomMachinedCount ?? rdMetrics.nonBomMachined ?? 0} 项、标准件 ${rdMetrics.nonBomStandardCount ?? rdMetrics.nonBomStandard ?? 0} 项。` });
+    const rate = (value) => value != null && Number.isFinite(Number(value)) ? Number((Number(value) * 100).toFixed(2)) : 0;
+    figures.push({ id: "rd-ecn-composition", sectionId: "ECN变更活动", intent: "comparison", preferredChart: "clustered-horizontal-bar", title: "ECN物料属性构成", unit: "项", categories: ["加工件", "标准件"], series: [{ name: "ECN", values: [rdMetrics.ecnMachinedCount ?? rdMetrics.ecnMachined ?? 0, rdMetrics.ecnStandardCount ?? 0], axis: "left" }], coverage: "complete", tablePolicy: "replace", accessibilitySummary: `ECN共 ${rdMetrics.ecnCount ?? rdMetrics.ecn ?? 0} 项，其中加工件 ${rdMetrics.ecnMachinedCount ?? rdMetrics.ecnMachined ?? 0} 项、标准件 ${rdMetrics.ecnStandardCount ?? 0} 项；涉及项目 ${rdMetrics.projectCount ?? 0} 个，ECN比例 ${rate(rdMetrics.ecnRate)}%，加工件ECN比例 ${rate(rdMetrics.machinedEcnRate)}%，标准件ECN比例 ${rate(rdMetrics.standardEcnRate)}%。` });
+    figures.push({ id: "rd-nonbom-composition", sectionId: "非BOM申请活动", intent: "comparison", preferredChart: "clustered-horizontal-bar", title: "非BOM物料属性构成", unit: "项", categories: ["加工件", "标准件"], series: [{ name: "非BOM", values: [rdMetrics.nonBomMachinedCount ?? rdMetrics.nonBomMachined ?? 0, rdMetrics.nonBomStandardCount ?? rdMetrics.nonBomStandard ?? 0], axis: "left" }], coverage: "complete", tablePolicy: "replace", accessibilitySummary: `非BOM共 ${rdMetrics.nonBomCount ?? rdMetrics.nonBom ?? 0} 项，其中加工件 ${rdMetrics.nonBomMachinedCount ?? rdMetrics.nonBomMachined ?? 0} 项、标准件 ${rdMetrics.nonBomStandardCount ?? rdMetrics.nonBomStandard ?? 0} 项。` });
     const reasons = (rdMetrics.ecnReasons || []).slice(0, 8);
     if (reasons.length) {
       let totalReasons = 0;
-      figures.push({ id: "rd-ecn-reason-pareto", sectionId: "二", intent: "pareto", preferredChart: "pareto-column-line", title: "ECN变更原因 Pareto", unit: "项", categories: reasons.map((item) => item.name), series: [{ name: "ECN数量", values: reasons.map((item) => item.count), axis: "left" }, { name: "累计占比", values: reasons.map((item) => { totalReasons += Number(item.count || 0); const total = reasons.reduce((sum, row) => sum + Number(row.count || 0), 0); return total ? Number((totalReasons / total * 100).toFixed(1)) : 0; }), axis: "right", unit: "%" }], coverage: "complete", tablePolicy: "replace", accessibilitySummary: "按变更原因统计ECN数量及累计占比。" });
+      figures.push({ id: "rd-ecn-reason-pareto", sectionId: "ECN变更活动", intent: "pareto", preferredChart: "pareto-column-line", title: "ECN变更原因 Pareto", unit: "项", categories: reasons.map((item) => item.name), series: [{ name: "ECN数量", values: reasons.map((item) => item.count), axis: "left" }, { name: "累计占比", values: reasons.map((item) => { totalReasons += Number(item.count || 0); const total = reasons.reduce((sum, row) => sum + Number(row.count || 0), 0); return total ? Number((totalReasons / total * 100).toFixed(1)) : 0; }), axis: "right", unit: "%" }], coverage: "complete", tablePolicy: "replace", accessibilitySummary: "按变更原因统计ECN数量及累计占比。" });
     }
   }
   if (role === "研发工程师" && evidence.rdQualityIssues) {
     const issues = evidence.rdQualityIssues.categories || [];
     if (issues.length) {
       let accumulated = 0; const total = Number(evidence.rdQualityIssues.count || 0);
-      figures.push({ id: "rd-quality-issue-pareto", sectionId: "一", intent: "pareto", preferredChart: "pareto-column-line", title: "研发质量问题 Pareto", unit: "问题", categories: issues.map((item) => item.name), series: [{ name: "问题数量", values: issues.map((item) => item.count), axis: "left" }, { name: "累计占比", values: issues.map((item) => { accumulated += Number(item.count || 0); return total ? Number((accumulated / total * 100).toFixed(1)) : 0; }), axis: "right", unit: "%" }], coverage: "complete", tablePolicy: "replace", accessibilitySummary: `当前工程师研发质量问题 ${total} 项，按问题分类进行 Pareto 展示。` });
+      figures.push({ id: "rd-quality-issue-pareto", sectionId: "问题类型分布", intent: "pareto", preferredChart: "pareto-column-line", title: "研发质量问题分类 Pareto", unit: "问题", categories: issues.map((item) => item.name), series: [{ name: "问题数量", values: issues.map((item) => item.count), axis: "left" }, { name: "累计占比", values: issues.map((item) => { accumulated += Number(item.count || 0); return total ? Number((accumulated / total * 100).toFixed(1)) : 0; }), axis: "right", unit: "%" }], coverage: "complete", tablePolicy: "replace", accessibilitySummary: `当前工程师研发质量问题 ${total} 项，按问题分类进行 Pareto 展示；问题分类不等同于已证实根因。` });
     }
+    [evidence.rdQualityIssues.periodTrend?.month, evidence.rdQualityIssues.periodTrend?.week].filter(Boolean).forEach((item) => {
+      const isMonth = item.granularity === "month";
+      figures.push({ id: `rd-quality-${item.granularity}-trend`, sectionId: isMonth ? "月度问题趋势" : "周度问题趋势", intent: "single-series-trend", preferredChart: "line", title: `研发质量问题${isMonth ? "月度" : "周度"}趋势`, unit: "问题", categories: item.rows.map((row) => row.label), series: [{ name: "问题数量", values: item.rows.map((row) => Number(row.count || 0)), axis: "left" }], coverage: "complete", tablePolicy: "replace", accessibilitySummary: `从当年首个${isMonth ? "月" : "周"}到报告截止日，连续展示本人研发质量问题数量；无有效设计输出总量分母，不生成不良率。` });
+    });
   }
   if (role === "研发工程师" && rdMetrics && (rdMetrics.reviewParticipation || rdMetrics.reviewSuggestions)) {
-    figures.push({ id: "rd-review-contribution", sectionId: "四", intent: "positive-contribution", preferredChart: "clustered-horizontal-bar", title: "设计评审正向贡献", unit: "次", categories: ["参与评审", "有效改善项"], series: [{ name: "贡献次数", values: [rdMetrics.reviewParticipation || 0, rdMetrics.reviewSuggestions || 0], axis: "left" }], coverage: "complete", tablePolicy: "replace", accessibilitySummary: `设计评审参与 ${rdMetrics.reviewParticipation || 0} 次，有效改善项 ${rdMetrics.reviewSuggestions || 0} 条；该指标为正向贡献，不与质量问题合并。` });
+    figures.push({ id: "rd-review-contribution", sectionId: "设计评审正向贡献", intent: "positive-contribution", preferredChart: "clustered-horizontal-bar", title: "设计评审正向贡献", unit: "次", categories: ["参与评审", "有效改善项"], series: [{ name: "贡献次数", values: [rdMetrics.reviewParticipation || 0, rdMetrics.reviewSuggestions || 0], axis: "left" }], coverage: "complete", tablePolicy: "replace", accessibilitySummary: `设计评审参与 ${rdMetrics.reviewParticipation || 0} 次，有效改善项 ${rdMetrics.reviewSuggestions || 0} 条；该指标为正向贡献，不与质量问题合并。` });
   }
-  if (stats.length) {
+  if (stats.length && role !== "研发工程师") {
     const values = stats.map((item) => Number(item.count) || 0);
     const accumulated = values.map((value) => { cumulative += value; return total ? Number((cumulative / total * 100).toFixed(1)) : 0; });
     figures.push({ id: "direct-category-pareto", sectionId: "三", intent: "pareto", preferredChart: "pareto-column-line", title: "问题类型 Pareto", unit: "不良记录", categories: stats.map((item) => item.name), series: [{ name: "不良记录", values, axis: "left" }, { name: "累计占比", values: accumulated, axis: "right", unit: "%" }], coverage: "complete", tablePolicy: "replace", accessibilitySummary: `TOP问题类型覆盖 ${total} 条本人不良记录。` });
@@ -660,14 +693,32 @@ const buildRoleVisualSpec = (role, recipient, evidence = {}, rankingRows = []) =
     const isMonth = trend.granularity === "month";
     figures.push({ id: `direct-${trend.granularity}-trend`, sectionId: "二", intent: "period-trend", preferredChart: "dual-column-line", title: isMonth ? "月度趋势" : "周度趋势", unit: "记录", categories: trend.rows.map((item) => item.label), series: [{ name: "不良数量", values: trend.rows.map((item) => item.bad), axis: "left" }, { name: "总数量", values: trend.rows.map((item) => item.total), axis: "left" }, { name: "不良率", values: trend.rows.map((item) => item.rate), axis: "right", unit: "%" }], coverage: "complete", tablePolicy: "replace", accessibilitySummary: `${isMonth ? "月度" : "周度"}不良数量、总数量与不良率趋势。` });
   });
-  if (rankingRows.length) figures.push({ id: "direct-ranking", sectionId: "四", intent: "ranking", preferredChart: "clustered-horizontal-bar", title: "个人风险排名", unit: "不良记录", categories: rankingRows.map((row) => ({ name: row.name, focus: row.selected, site: row.site || "" })), series: [{ name: "不良记录", values: rankingRows.map((row) => Number(row.value) || 0), axis: "left" }], coverage: "complete", tablePolicy: "replace", accessibilitySummary: `${recipient}在当前统计周期内按不良记录进行同口径比较。` });
+  if (rankingRows.length) {
+    const metric = role === "研发工程师" ? "研发质量问题" : "不良记录";
+    const focus = rankingRows.find((row) => row.selected);
+    figures.push({ id: "direct-ranking", sectionId: "排名", intent: "ranking", preferredChart: "clustered-horizontal-bar", title: "个人风险排名", unit: metric, categories: rankingRows.map((row) => ({ name: row.selected && row.rank ? `${row.name} · 第${row.rank}/${row.total}` : row.name, focus: row.selected, site: row.site || "", rank: row.rank, rankTotal: row.total })), series: [{ name: metric, values: rankingRows.map((row) => Number(row.value) || 0), axis: "left" }], coverage: "complete", tablePolicy: "replace", accessibilitySummary: focus ? `${recipient}按${metric}降序排列为第${focus.rank}/${focus.total}名。` : `${recipient}在当前统计周期内按${metric}进行同口径比较。` });
+  }
   return { version: "1.0", layoutProfile: "research-briefing-v1", reportKind: "role", subject: { role, name: recipient, scopeType: "direct" }, figures, sourceLimitations: [] };
 };
+const assertRoleVisualConsistency = (role, evidence = {}, visualSpec = {}) => {
+  if (role !== "研发工程师") return;
+  const metrics = evidence.roleSnapshot?.dqaAgentMetrics || evidence.engineerMetrics || {};
+  const sumFigure = (id) => (visualSpec.figures?.find((figure) => figure.id === id)?.series?.[0]?.values || []).reduce((sum, value) => sum + Number(value || 0), 0);
+  const expectedEcn = Number(metrics.ecnCount ?? metrics.ecn ?? 0);
+  const expectedNonBom = Number(metrics.nonBomCount ?? metrics.nonBom ?? 0);
+  if (sumFigure("rd-ecn-composition") !== expectedEcn || sumFigure("rd-nonbom-composition") !== expectedNonBom) {
+    throw new Error("研发工程师报告图表与固定快照口径不一致，请重新生成角色快照");
+  }
+};
 const escapeRegExp = (value) => String(value || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-const enforceRoleReportFacts = (content = "", evidence = {}) => {
+const enforceRoleReportFacts = (content = "", evidence = {}, role = "", rankingRows = []) => {
   let next = String(content || "")
     .replace(/^\s*#{1,6}\s*章节标题\s*$/gmi, "")
     .replace(/^\s*-\s*当前排名图表数据：\s*(?:空|暂无排名数据\/待补充)\s*$/gmi, "");
+  if (role === "研发工程师") {
+    const metrics = withDerivedEcnMetrics(evidence.roleSnapshot?.dqaAgentMetrics || evidence.engineerMetrics || {});
+    next = enforceRdEngineerReportFacts(next, evidence, rankingRows, metrics);
+  }
   const metrics = evidence.ipqcMetrics;
   if (!metrics) return next;
   next = next.replace(/(\|\s*问题记录数\s*\|\s*)待核实(\s*\|)/gi, `$1${metrics.issueRecords}$2`);
@@ -1311,7 +1362,7 @@ export function AgentRoleReportPage({ initialRole = "组装人员", data = {}, f
       // Snapshots created before R&D issue evidence was persisted cannot prove
       // a zero count. Treat them as stale so the generation path loads source
       // rows or waits for a newly generated role snapshot.
-      if (role === "研发工程师" && snapshot && !snapshot.rdQualityIssues) return null;
+      if (role === "研发工程师" && snapshot && (!snapshot.rdQualityIssues || snapshot.metricContract !== "rd-quality-only-v1")) return null;
       return snapshot;
     };
     const snapshotReady = targetRecipients.length > 0 && targetRecipients.every((name) => snapshotFor(name));
@@ -1433,16 +1484,32 @@ export function AgentRoleReportPage({ initialRole = "组装人员", data = {}, f
             // the browser intentionally keeps source rows unloaded for speed,
             // never replace that fixed evidence with an empty live recount.
             rdQualityIssues: deterministicRoleSnapshot.rdQualityIssues || liveEvidence.rdQualityIssues,
+            ...(role === "研发工程师" ? {
+              matchedRows: deterministicRoleSnapshot.rdQualityIssues?.count ?? deterministicRoleSnapshot.metrics?.total ?? 0,
+              engineerMetrics: deterministicRoleSnapshot.dqaAgentMetrics || liveEvidence.engineerMetrics,
+              periodTrend: null,
+              topCategories: (deterministicRoleSnapshot.rdQualityIssues?.categories || []).map((item) => item.name),
+              topCategoryStats: (deterministicRoleSnapshot.rdQualityIssues?.categories || []).map((item) => ({ name: item.name, count: item.count, share: deterministicRoleSnapshot.rdQualityIssues?.count ? Number((item.count / deterministicRoleSnapshot.rdQualityIssues.count * 100).toFixed(1)) : null })),
+            } : {}),
           } : {}),
           recurrence: recurrenceEvidenceForRecipient(role, name, recurrenceRows, roleFiles, roleDateRange),
         };
-        const snapshotRanking = generationRoleSnapshotRegistry?.history?.[0]?.snapshot?.ranking || [];
+        if (role === "研发工程师") {
+          const fixedMetrics = withDerivedEcnMetrics(evidence.roleSnapshot?.dqaAgentMetrics || evidence.engineerMetrics || {});
+          evidence.engineerMetrics = fixedMetrics;
+          if (evidence.roleSnapshot) evidence.roleSnapshot = { ...evidence.roleSnapshot, dqaAgentMetrics: fixedMetrics };
+        }
+        const snapshotRanking = generationRoleSnapshotRegistry?.history?.find((entry) => entry.active !== false
+          && entry.role === role
+          && entry.period?.start === period.start
+          && entry.period?.end === period.end)?.snapshot?.ranking || [];
         const personRankingRows = nonRankingRoles.has(role)
           ? []
           : snapshotReady && snapshotRanking.length
-            ? snapshotRanking.slice(0, 12).map((row, rankingIndex) => ({ name: row.recipient, value: row.bad, detail: `不良 ${row.bad} 条 / 总数 ${row.total} 条 / 不良率 ${row.badRate}%`, rank: rankingIndex + 1, selected: row.recipient === name }))
+            ? buildSnapshotRankingRows(snapshotRanking, name, role)
             : buildRoleRanking(role, recipients, name, data, roleFiles, roleDateRange, generationRoleRowIndex, generationRoleRows);
         const deterministicVisualSpec = buildRoleVisualSpec(role, name, evidence, personRankingRows);
+        assertRoleVisualConsistency(role, evidence, deterministicVisualSpec);
         const previousExamResult = previousExamByRecipient.get(name) || null;
         const ipqcCountingInstruction = role === "组装人员"
           ? "IPQC口径必须严格执行：matchedRows和ipqcMetrics.inspectedRecords均为送检记录数；不良内容或不良类型至少一项非空才计1条不良；两项同时为空计为合格，不得写成数据缺失、未分类或异常。报告必须分别写明送检记录、不良记录、合格记录和不良率。"
@@ -1450,9 +1517,15 @@ export function AgentRoleReportPage({ initialRole = "组装人员", data = {}, f
         const managerInstruction = individualRoles.has(role)
           ? "这是当事人报告，必须具体列出本人问题、问题类型、数量、证据和改善动作。"
           : "这是管理者报告，不要写管理者本人犯了什么问题，也不要虚构个人问题；只展示其管理范围、下属质量汇总、TOP责任单元、管理风险、需要向上级汇报的事项和管理动作。";
+        const rdHardContract = role === "研发工程师"
+          ? "研发工程师硬口径：研发质量问题是唯一质量结果数量；ECN、非BOM和设计评审分别属于工程活动与正向贡献，禁止进入质量问题总数、分母、趋势或排名。没有设计输出总量分母时，禁止计算或展示不良率。正文和图表必须只使用人员证据中的engineerMetrics权威对象。阶段数组只表示出现过的阶段，禁止写成全部问题都在这些阶段暴露。问题分类Pareto不是根因Pareto。排名结论只在独立的研发质量问题排名章节出现一次。工程行动只保留一张表：每项只有一个Owner，协同人另列，截止日期必须是YYYY-MM-DD；不得再重复30/60/90天待办列表。样本覆盖率目标100%；发布前检出率=发布前发现问题数÷（发布前发现问题数+后端再暴露问题数），分母为0时标记不适用，目标100%；单项验证周期=提交验证至放行结论，试行目标≤5个工作日；后端再暴露数目标0项。"
+          : "";
+        const fixedRdTrend = role === "研发工程师" ? `\n确定性研发问题趋势（必须分析）：${JSON.stringify(evidence.rdQualityIssues?.periodTrend || null)}` : "";
+        const reportDate = new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Shanghai" });
+        const rdMilestones = role === "研发工程师" ? `30天=${addIsoDays(reportDate, 30)}，60天=${addIsoDays(reportDate, 60)}，90天=${addIsoDays(reportDate, 90)}` : "";
         const requestRoleReport = async (retry = false) => requestAiChat([
-          { role: "system", content: `你是质量分析 Agent 的角色闭环报告生成器。只能使用输入的固定 Agent报告和人员证据，不得新增数字，不得用上级数据冒充本人。${managerInstruction}${ipqcCountingInstruction}报告必须包含：结果指标、过程暴露、根因证据/待核实、责任链汇报、改善措施、30/60/90天待办、验证指标和关闭条件。输出结构化 Markdown，使用一级/二级标题、表格和清晰列表；排名章节只输出章节标题，系统会在该标题下插入统一排名图表。禁止输出“章节标题”、模板占位词或空白排名结论。已提供的确定性统计必须原样引用；仅缺失的字段才写“待核实”。研发工程师报告必须严格分组：研发质量问题是问题指标；ECN与非BOM是变更/申请活动，不能自动写成质量问题；非BOM必须分别说明加工件与标准件；设计评审参与和有效改善项是正向贡献，单独成节，不能与问题、ECN或非BOM相加或混排。趋势不得截断：跨月半年周期必须完整列出每个自然月，跨周周期必须列出统计起止日期之间的全部连续周。责任链姓名只能取人员证据中的 directResponsibility 或 mapping，不得把当前人员姓名推断为其交付经理。必须严格执行角色 Skill，不得违反其中的角色边界、数据口径和禁止事项。复发判断只能引用人员证据摘要中 recurrence 的系统确定性结果；考试通过不能单独证明问题关闭。组装人员和研发工程师的考试结果由系统确定性追加，不要自行输出考试章节。不要输出 REPORT_VISUAL_SPEC_JSON，系统会使用固定统计生成视觉契约。${retry ? "本次为网关超时后的精简重试：只输出最关键结论、行动和验证项，最多6个二级章节。" : ""}\n\n角色 Skill：\n${String(roleSkill.content || "").slice(0, retry ? 2000 : 3600)}\n\n当前网页呈现风格 Profile：${layoutSkillName}` },
-          { role: "user", content: `角色：${role}\n角色 Skill 名称：${roleSkill.name}\n网页呈现风格 Profile：${layoutSkillName}\n责任链：${spec.chain}\n统计年份：${roleDateRange._periodYear}\n统计周期：${roleDateRange._periodStart}—${roleDateRange._periodEnd}\n当前人员：${name}\n本人员工证据摘要（固定统计，不得重算）：${JSON.stringify(compactRolePromptValue(evidence, retry ? 2 : 3, retry ? 5 : 10))}\n上次知识考试结果（只可引用，不得重算）：${JSON.stringify(compactRolePromptValue(previousExamResult, 2, 4))}\n排名图表数据（只可引用，不得重算）：${JSON.stringify(personRankingRows.slice(0, retry ? 12 : 24))}\n基线 Agent 报告摘要：${retry ? roleBaselineBrief(generationBaseline, spec.modules, true) : baselineText}\n${managerInstruction}\n${ipqcCountingInstruction}\n请只输出该人员的 Markdown 报告；没有证据的部分写“待核实”，不得把下属问题写成管理者个人问题。` },
+          { role: "system", content: `你是质量分析 Agent 的角色闭环报告生成器。只能使用输入的固定 Agent报告和人员证据，不得新增数字，不得用上级数据冒充本人。${managerInstruction}${ipqcCountingInstruction}${rdHardContract}报告必须包含：结果指标、过程暴露、根因证据/待核实、责任链汇报、改善措施、30/60/90天待办、验证指标和关闭条件。输出结构化 Markdown，使用一级/二级标题、表格和清晰列表；排名章节只输出章节标题，系统会在该标题下插入统一排名图表。禁止输出“章节标题”、模板占位词或空白排名结论。已提供的确定性统计必须原样引用；仅缺失的字段才写“待核实”。研发工程师报告必须严格分组：研发质量问题是问题指标；ECN与非BOM是变更/申请活动，不能自动写成质量问题；非BOM必须分别说明加工件与标准件；设计评审参与和有效改善项是正向贡献，单独成节，不能与问题、ECN或非BOM相加或混排。趋势不得截断：跨月半年周期必须完整列出每个自然月，跨周周期必须列出统计起止日期之间的全部连续周。责任链姓名只能取人员证据中的 directResponsibility 或 mapping，不得把当前人员姓名推断为其交付经理。必须严格执行角色 Skill，不得违反其中的角色边界、数据口径和禁止事项。复发判断只能引用人员证据摘要中 recurrence 的系统确定性结果；考试通过不能单独证明问题关闭。组装人员和研发工程师的考试结果由系统确定性追加，不要自行输出考试章节。不要输出 REPORT_VISUAL_SPEC_JSON，系统会使用固定统计生成视觉契约。${retry ? "本次为网关超时后的精简重试：只输出最关键结论、行动和验证项，最多6个二级章节。" : ""}\n\n角色 Skill：\n${String(roleSkill.content || "").slice(0, retry ? 2000 : 3600)}\n\n当前网页呈现风格 Profile：${layoutSkillName}` },
+          { role: "user", content: `角色：${role}\n角色 Skill 名称：${roleSkill.name}\n网页呈现风格 Profile：${layoutSkillName}\n报告生成日期：${reportDate}\n${rdMilestones ? `研发行动里程碑日期（必须逐项原样写入）：${rdMilestones}\n最小验证必须明确采用“3个新项目或5个高风险设计输出”，并给出发布前检出、验证周期、后端再暴露的数值阈值。\n` : ""}责任链：${spec.chain}\n统计年份：${roleDateRange._periodYear}\n统计周期：${roleDateRange._periodStart}—${roleDateRange._periodEnd}\n当前人员：${name}\n本人员工证据摘要（固定统计，不得重算）：${JSON.stringify(compactRolePromptValue(evidence, retry ? 2 : 3, retry ? 5 : 10))}${fixedRdTrend}\n上次知识考试结果（只可引用，不得重算）：${JSON.stringify(compactRolePromptValue(previousExamResult, 2, 4))}\n排名图表数据（只可引用，不得重算）：${JSON.stringify(personRankingRows.slice(0, retry ? 12 : 24))}\n基线 Agent 报告摘要：${retry ? roleBaselineBrief(generationBaseline, spec.modules, true) : baselineText}\n${managerInstruction}\n${ipqcCountingInstruction}\n请只输出该人员的 Markdown 报告；没有证据的部分写“待核实”，不得把下属问题写成管理者个人问题。` },
         ], { max_tokens: retry ? 1800 : 2400, agent: true, operation: "agent-role-report-generate", signal: controller.signal });
         let result;
         try {
@@ -1466,7 +1539,7 @@ export function AgentRoleReportPage({ initialRole = "组装人员", data = {}, f
         }
         const reportModel = String(result.model || "");
         if (reportModel) setLastGeneratedModel(reportModel);
-        let reportContent = enforceRoleReportFacts(sanitizeHumanReportContent(result.content || "暂无报告"), evidence);
+        let reportContent = enforceRoleReportFacts(sanitizeHumanReportContent(result.content || "暂无报告"), evidence, role, personRankingRows);
         if (role === "研发工程师") reportContent += reviewContributionMarkdown(evidence, reportContent);
         if (individualRoles.has(role)) {
           const confirmedMatches = confirmedKnowledgeByRecipient == null ? null : (confirmedKnowledgeByRecipient.get(name) || []);

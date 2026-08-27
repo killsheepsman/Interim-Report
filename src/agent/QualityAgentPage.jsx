@@ -558,6 +558,29 @@ const renderDualColumnLineChart = ({ title, subtitle, rows, barLabels = ["不良
   return `<figure class="agent-report-auto-chart agent-report-combo-chart combo-period-trend" role="img" aria-label="${escapeHtml(title)}，两组柱形为${escapeHtml(barLabels.join("和"))}，折线为${escapeHtml(lineLabel)}"><figcaption><strong>${escapeHtml(title)}</strong><span>${escapeHtml(subtitle)}</span></figcaption><div class="agent-report-combo-legend"><span><i class="bar bar-bad"></i>${escapeHtml(barLabels[0])}</span><span><i class="bar bar-total"></i>${escapeHtml(barLabels[1])}</span><span><i class="line"></i>${escapeHtml(lineLabel)}</span></div><svg viewBox="0 0 ${width} ${height}" preserveAspectRatio="xMidYMid meet" aria-hidden="true">${grid}${rightTicks}<line x1="${margin.left}" y1="${margin.top + plotHeight}" x2="${width - margin.right}" y2="${margin.top + plotHeight}" class="combo-axis"/>${bars}<polyline points="${points}" class="combo-line"/>${pointsMarkup}</svg></figure>`;
 };
 
+const renderSingleSeriesLineChart = ({ title, subtitle, rows, seriesLabel = "数量" }) => {
+  const sourceRows = (rows || []).filter((row) => row.label && Number.isFinite(row.value));
+  if (sourceRows.length < 2) return "";
+  const width = Math.max(920, sourceRows.length * 48);
+  const height = 350;
+  const margin = { top: 38, right: 30, bottom: 88, left: 70 };
+  const plotWidth = width - margin.left - margin.right;
+  const plotHeight = height - margin.top - margin.bottom;
+  const maxValue = niceChartMax(Math.max(...sourceRows.map((row) => row.value), 1));
+  const step = plotWidth / Math.max(sourceRows.length - 1, 1);
+  const point = (row, index) => ({ x: margin.left + step * index, y: margin.top + plotHeight - Math.max(0, row.value) / maxValue * plotHeight });
+  const grid = [0, .25, .5, .75, 1].map((ratio) => {
+    const y = margin.top + plotHeight * (1 - ratio);
+    return `<g><line x1="${margin.left}" y1="${y}" x2="${width - margin.right}" y2="${y}" class="combo-grid"/><text x="${margin.left - 10}" y="${y + 4}" text-anchor="end" class="combo-axis-label">${Math.round(maxValue * ratio)}</text></g>`;
+  }).join("");
+  const points = sourceRows.map((row, index) => { const item = point(row, index); return `${item.x.toFixed(1)},${item.y.toFixed(1)}`; }).join(" ");
+  const marks = sourceRows.map((row, index) => {
+    const item = point(row, index);
+    return `<g><title>${escapeHtml(row.label)}：${escapeHtml(seriesLabel)} ${row.value}</title><circle cx="${item.x.toFixed(1)}" cy="${item.y.toFixed(1)}" r="5" class="combo-line-point"/><text x="${item.x.toFixed(1)}" y="${Math.max(margin.top + 10, item.y - 10).toFixed(1)}" text-anchor="middle" class="combo-value">${row.value}</text><text x="${item.x.toFixed(1)}" y="${margin.top + plotHeight + 22}" text-anchor="end" transform="rotate(-32 ${item.x.toFixed(1)} ${margin.top + plotHeight + 22})" class="combo-x-label">${escapeHtml(chartText(row.label, 12))}</text></g>`;
+  }).join("");
+  return `<figure class="agent-report-auto-chart agent-report-combo-chart combo-single-line" role="img" aria-label="${escapeHtml(title)}，折线表示${escapeHtml(seriesLabel)}"><figcaption><strong>${escapeHtml(title)}</strong><span>${escapeHtml(subtitle)}</span></figcaption><div class="agent-report-combo-legend"><span><i class="line"></i>${escapeHtml(seriesLabel)}</span></div><div style="overflow-x:auto"><svg viewBox="0 0 ${width} ${height}" style="min-width:${width}px" preserveAspectRatio="xMidYMid meet" aria-hidden="true">${grid}<line x1="${margin.left}" y1="${margin.top + plotHeight}" x2="${width - margin.right}" y2="${margin.top + plotHeight}" class="combo-axis"/><polyline points="${points}" class="combo-line"/>${marks}</svg></div></figure>`;
+};
+
 // Render the machine-readable visual contract emitted by every Agent.  Older
 // reports use `charts/data`, newer reports use `figures/categories/series`;
 // both are normalised here so the Markdown renderer remains the single entry
@@ -597,6 +620,7 @@ const renderVisualSpecFigure = (figure) => {
   const intent = String(figure.intent || figure.preferredChart || "comparison").toLowerCase();
   const title = String(figure.title || "数据图表");
   if (!categories.length && !Array.isArray(figure.data)) return `<figure class="agent-report-auto-chart agent-report-visual-empty"><figcaption><strong>${escapeHtml(title)}</strong><span>数据覆盖：${escapeHtml(figure.coverage || figure.status || "partial")}</span></figcaption><p>${escapeHtml(figure.data?.note || figure.accessibilitySummary || "当前缺少完整可视化分母，保留为待补数据，不生成误导性图表。")}</p></figure>`;
+  if (String(figure.preferredChart).toLowerCase() === "line" && series.length === 1) return renderSingleSeriesLineChart({ title, subtitle: figure.accessibilitySummary || "按连续周期展示固定快照数量", rows: categories.map((label, index) => ({ label: String(label), value: Number(series[0]?.values?.[index]) })), seriesLabel: series[0]?.name || figure.unit || "数量" });
   const makeRows = (barIndex = 0, lineIndex = 1) => categories.map((label, index) => ({ label: String(label), bar: Number(series[barIndex]?.values?.[index]), line: Number(series[lineIndex]?.values?.[index]) })).filter((row) => Number.isFinite(row.bar) && Number.isFinite(row.line));
   if (intent.includes("pareto") || String(figure.preferredChart).includes("pareto")) return renderComboChart({ title, subtitle: `${figure.unit || "数量"}柱形 + 累计占比折线`, rows: makeRows(0, 1), barLabel: series[0]?.name || "数量", lineLabel: series[1]?.name || "累计占比", lineMin: 0, lineMax: 100, lineClass: "pareto" });
   if (intent.includes("period-trend") || intent.includes("dual-column-line") || String(figure.preferredChart).includes("dual-column-line")) {

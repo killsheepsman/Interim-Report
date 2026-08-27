@@ -52,16 +52,49 @@ const categoryStats = (rows) => {
   return [...map.entries()].sort((a, b) => b[1] - a[1]).map(([name, count]) => ({ name, count }));
 };
 const rdRowNames = (row) => rowNames(row, RD_ENGINEER_FIELDS).map(rdPerson).filter(Boolean);
-const rdIssueEvidence = (files, recipient, period) => {
-  const rows = sourceRows(files, ["DQA"])
+const rdIssueRows = (files, recipient, period) => sourceRows(files, ["DQA"])
     .filter((row) => inPeriod(row, period))
     .filter((row) => text(row?.问题描述))
     .filter((row) => rdRowNames(row).includes(recipient));
+const isoWeekKey = (value) => {
+  const date = new Date(`${value}T00:00:00Z`);
+  if (Number.isNaN(date.getTime())) return "";
+  const day = date.getUTCDay() || 7;
+  date.setUTCDate(date.getUTCDate() + 4 - day);
+  const yearStart = new Date(Date.UTC(date.getUTCFullYear(), 0, 1));
+  return `${date.getUTCFullYear()}-W${String(Math.ceil((((date - yearStart) / 86400000) + 1) / 7)).padStart(2, "0")}`;
+};
+const rdIssuePeriodTrend = (rows, period, granularity) => {
+  const end = text(period?.end);
+  const year = (end || text(period?.start) || String(new Date().getFullYear())).slice(0, 4);
+  const start = `${year}-01-01`;
+  if (!end || end < start) return null;
+  const groups = new Map();
+  for (let cursor = new Date(`${start}T00:00:00Z`), to = new Date(`${end}T00:00:00Z`); cursor <= to; cursor.setUTCDate(cursor.getUTCDate() + 1)) {
+    const date = cursor.toISOString().slice(0, 10);
+    const label = granularity === "month" ? date.slice(0, 7) : isoWeekKey(date);
+    if (!groups.has(label)) groups.set(label, { label, count: 0 });
+  }
+  rows.forEach((row) => {
+    const date = dateKey(rowDate(row));
+    if (!date || date < start || date > end) return;
+    const label = granularity === "month" ? date.slice(0, 7) : isoWeekKey(date);
+    if (groups.has(label)) groups.get(label).count += 1;
+  });
+  const result = [...groups.values()];
+  return result.length >= 2 ? { granularity, rows: result } : null;
+};
+const rdIssueEvidence = (files, recipient, period, selectedRows = null) => {
+  const rows = selectedRows || rdIssueRows(files, recipient, period);
   return {
     count: rows.length,
     categories: categoryStats(rows).slice(0, 10),
     productDepts: unique(rows.map((row) => row?.产品部)),
     stages: unique(rows.map((row) => row?.阶段)),
+    periodTrend: {
+      month: rdIssuePeriodTrend(rows, period, "month"),
+      week: rdIssuePeriodTrend(rows, period, "week"),
+    },
     examples: rows.slice(0, 8).map((row) => ({
       date: dateKey(rowDate(row)),
       category: text(row?.问题分类 || row?.类别 || row?.问题类型) || "未分类",
@@ -162,11 +195,29 @@ export const buildRoleSnapshots = ({ role, files = [], dateRange = {}, mappings 
   };
   const all = names.map((recipient) => {
     const matched = rule.manager ? managerRowsFor(recipient) : rows.filter((row) => rule.role === "研发工程师" ? rdRowNames(row).includes(recipient) : rowNames(row, rule.fields).includes(recipient));
+    if (rule.role === "研发工程师") {
+      const qualityRows = rdIssueRows(files, recipient, dateRange);
+      const count = qualityRows.length;
+      const issueEvidence = rdIssueEvidence(files, recipient, dateRange, qualityRows);
+      const snapshot = {
+        role, recipient, chain: rule.chain, modules: rule.modules,
+        period: { start: dateRange.start || "", end: dateRange.end || "" },
+        metricContract: "rd-quality-only-v1",
+        metrics: { total: count, bad: count, good: null, badRate: null, rateAvailable: false, metricLabel: "研发质量问题" },
+        categories: categoryStats(qualityRows).slice(0, 12),
+        trend: issueEvidence.periodTrend,
+        mapping: mappings[recipient] || {},
+        sourceRows: count,
+        rdQualityIssues: issueEvidence,
+        generatedAt: nowIso(),
+      };
+      return { recipient, snapshot };
+    }
     const base = metric(matched);
-    const snapshot = { role, recipient, chain: rule.chain, modules: rule.modules, period: { start: dateRange.start || "", end: dateRange.end || "" }, metrics: { ...base, badRate: base.total ? Number((base.bad / base.total * 100).toFixed(2)) : 0 }, categories: categoryStats(matched).slice(0, 12), trend: trend(matched, dateRange), mapping: mappings[recipient] || {}, sourceRows: matched.length, ...(rule.role === "研发工程师" ? { rdQualityIssues: rdIssueEvidence(files, recipient, dateRange) } : {}), generatedAt: nowIso() };
+    const snapshot = { role, recipient, chain: rule.chain, modules: rule.modules, period: { start: dateRange.start || "", end: dateRange.end || "" }, metrics: { ...base, badRate: base.total ? Number((base.bad / base.total * 100).toFixed(2)) : 0 }, categories: categoryStats(matched).slice(0, 12), trend: trend(matched, dateRange), mapping: mappings[recipient] || {}, sourceRows: matched.length, generatedAt: nowIso() };
     return { recipient, snapshot };
   });
-  const ranking = all.map(({ recipient, snapshot }) => ({ recipient, bad: snapshot.metrics.bad, total: snapshot.metrics.total, badRate: snapshot.metrics.badRate })).sort((a, b) => b.bad - a.bad || b.badRate - a.badRate);
+  const ranking = all.map(({ recipient, snapshot }) => ({ recipient, bad: snapshot.metrics.bad, total: snapshot.metrics.total, badRate: snapshot.metrics.badRate, metricLabel: snapshot.metrics.metricLabel || "不良记录" })).sort((a, b) => b.bad - a.bad || Number(b.badRate || 0) - Number(a.badRate || 0));
   return { role, ruleId: rule.id, period: dateRange, sourceSignature: roleSnapshotSourceSignature(files, agentRaw), generatedAt: nowIso(), ranking, people: all };
 };
 export const attachDqaAgentRawMetrics = (payload, rawMetrics, mappings = {}, reviewRecords = []) => {
@@ -184,8 +235,9 @@ export const attachDqaAgentRawMetrics = (payload, rawMetrics, mappings = {}, rev
     const ecn = records.filter((row) => row.source === "ECN"); const nonBom = records.filter((row) => row.source === "非BOM"); const projects = [...new Set(ecn.map((row) => row.project).filter(Boolean))];
     const denominator = new Map(); ecn.forEach((row) => { if (row.project && !denominator.has(row.project)) denominator.set(row.project, raw.projectBom?.[row.project] || {}); });
     const bomTotal = [...denominator.values()].reduce((sum, row) => sum + Number(row.bomTotal || 0), 0); const bomMachinedTotal = [...denominator.values()].reduce((sum, row) => sum + Number(row.bomMachinedTotal || 0), 0); const machined = ecn.filter((row) => row.isMachined).length;
+    const standard = ecn.length - machined; const standardBomTotal = Math.max(0, bomTotal - bomMachinedTotal); const machinedRate = bomMachinedTotal ? machined / bomMachinedTotal : null; const standardRate = standardBomTotal ? standard / standardBomTotal : null;
     const reasons = new Map(); ecn.forEach((row) => { const name = text(row.reason) || "未填写原因"; reasons.set(name, (reasons.get(name) || 0) + 1); });
-    return { ecnCount: ecn.length, nonBomCount: nonBom.length, projectCount: projects.length, ecnMachinedCount: machined, ecnStandardCount: ecn.length - machined, nonBomMachinedCount: nonBom.filter((row) => row.isMachined).length, nonBomStandardCount: nonBom.filter((row) => !row.isMachined).length, bomDenominator: bomTotal, machinedBomDenominator: bomMachinedTotal, ecnRate: bomTotal ? ecn.length / bomTotal : null, machinedEcnRate: bomMachinedTotal ? machined / bomMachinedTotal : null, ecnReasons: [...reasons.entries()].map(([name, count]) => ({ name, count })).sort((a, b) => b.count - a.count) };
+    return { ecnCount: ecn.length, nonBomCount: nonBom.length, projectCount: projects.length, ecnMachinedCount: machined, ecnStandardCount: standard, nonBomMachinedCount: nonBom.filter((row) => row.isMachined).length, nonBomStandardCount: nonBom.filter((row) => !row.isMachined).length, bomDenominator: bomTotal, machinedBomDenominator: bomMachinedTotal, standardBomDenominator: standardBomTotal, ecnRate: bomTotal ? ecn.length / bomTotal : null, machinedEcnRate: machinedRate, standardEcnRate: standardRate, machinedToStandardEcnRateRatio: machinedRate != null && standardRate ? machinedRate / standardRate : null, ecnReasons: [...reasons.entries()].map(([name, count]) => ({ name, count })).sort((a, b) => b.count - a.count) };
   };
   const reviewInPeriod = (row) => {
     const date = dateKey(row?.updateDate || row?.date || "");

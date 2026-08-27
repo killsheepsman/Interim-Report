@@ -137,6 +137,24 @@ Before accepting the upgrade, verify:
 
 If any mandatory item fails, label the result `未通过验收`, list the failed checks, and do not promote the Skill to the default version.
 
+## Automated Forward-Test Pipeline
+
+This pipeline runs only when Codex is upgrading a Skill. It is deliberately outside the end-user Agent report generation path: generating a report must not trigger semantic repair calls or Skill mutation.
+
+When the target name starts with `quality-role-`, read and execute [references/role-skill-iteration.md](references/role-skill-iteration.md). That reference is the single shared upgrade and acceptance contract for every role Skill; do not duplicate it into individual production Skills.
+
+When Codex upgrades a Skill, use the following bounded loop instead of repeated unrestricted rewrites:
+
+1. Build a fingerprint from the target Skill name/content, fixed snapshot signature, prompt version, Profile, model, period, and report subject.
+2. Reuse an accepted report only when the analytical fingerprint is unchanged. A Profile-only change re-renders the accepted report without another model call. A Skill, snapshot, prompt, model, period, or subject change requires a new generation.
+3. Apply deterministic fact and formatting corrections before asking the model to repair anything. Fixed totals, trends, categories, rankings, formulas, chart IDs, and section placement remain owned by project code.
+4. Run the mandatory acceptance checklist automatically. Pass only when all blocking checks succeed.
+5. If checks fail, map each failure back to the candidate Skill clause that allowed it, revise only those Skill clauses, and regenerate a shadow report from the same frozen validation package. Do not repair the report text directly because that would hide a weak Skill.
+6. Run at most three candidate-Skill rounds in one upgrade task. If the third shadow report still fails, retain the production Skill unchanged and report the blocking failures.
+7. Persist the forward-test result with its pipeline fingerprint, pass/fail checks, iteration count, model, Skill, Profile, and acceptance time in the upgrade work log or test artifact. Do not persist shadow reports, full prompts, or large evidence objects in production report metadata.
+
+The automated loop is a forward test, not a substitute for the source-data audit required by this protocol.
+
 ## Versioning and Handoff
 
 Save the upgraded Skill as a versioned copy when the project has an existing production Skill, for example `quality-analysis-iqc-v2` or `quality-analysis-iqc-musk-v2`. Keep the original untouched until the acceptance checklist passes. In the final handoff, report:
