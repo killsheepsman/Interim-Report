@@ -15,3 +15,9 @@ When implementing from a selected generated mock, treat that image as the source
 - Preserve the existing quality-analysis formulas and raw-text classification approach.
 - The product must support reusable templates, interactive charts, saved views, exported analysis data, and improvement action tracking.
 - Agent report layout skills must be executed by a deterministic renderer, not only appended to the model prompt. Apple and Notion modes must remain visibly distinct, reuse the same audited data, convert short factual metrics into KPI blocks, keep risk/action/evidence semantics, and replace duplicate ranking tables with charts in the original ranking section.
+
+## Development tracking rule
+
+- Develop larger features by WBS stage. At the end of every completed stage, update the relevant tracking document and tell the user: what was completed, how it was verified, remaining risks, and what the next stage will develop.
+- Knowledge-base pilot material comes from `C:\Users\77247\Desktop\半年报\知识库\素材`; every supported format must be represented in the pilot.
+- Move a source file to `C:\Users\77247\Desktop\半年报\知识库\移除素材` only after it is confirmed damaged, inaccessible, or encrypted without an available password. Files that can be recovered through OCR, conversion, or visual review must remain in the source directory and be marked for processing.

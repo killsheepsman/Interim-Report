@@ -26,6 +26,48 @@ QMS_DATABASE_URL=postgresql://qms_app:密码@127.0.0.1:5432/qms
 
 如果 PostgreSQL 暂时不可用，项目仍会读写现有 JSON 文件，不会阻止服务启动。恢复数据库后重新启动服务，缓存会继续同步。
 
+## 知识库PDF解析依赖
+
+PDF原件保存在 `QMS_DATA_DIR/knowledge-originals`，不存入浏览器缓存。服务端需要Python `pypdf` 和Poppler `pdftoppm`：
+
+```bash
+sudo apt update
+sudo apt install -y python3-pypdf poppler-utils
+```
+
+如果发行版没有 `python3-pypdf`：
+
+```bash
+python3 -m pip install --user pypdf
+```
+
+可在 `.env` 显式配置：
+
+```text
+QMS_PYTHON=/usr/bin/python3
+QMS_PDFTOPPM=/usr/bin/pdftoppm
+```
+
+原生文字可读的PDF在Windows/Linux服务器上都可直接解析。Windows中文OCR只能在Windows执行；Linux服务器遇到扫描页时会保留原件并标记“需要复核/重试”，不会伪造文字。后续如需在Linux自动处理扫描件，应部署Windows OCR Worker，而不是在Node服务中写第二套OCR规则。
+
+## 知识蒸馏后台任务参数
+
+阶段6已将知识蒸馏迁移到服务端队列。浏览器只读取任务索引和进度，关闭页面不会中断后台任务。可在 `.env` 调整以下上限：
+
+```text
+QMS_KNOWLEDGE_DISTILL_MAX_CLAUSES=5000
+QMS_KNOWLEDGE_DISTILL_BATCH_CHARS=12000
+QMS_KNOWLEDGE_DISTILL_BATCH_CLAUSES=50
+QMS_KNOWLEDGE_DISTILL_RETRIES=2
+```
+
+- `MAX_CLAUSES`：单份文档允许进入一次蒸馏任务的最大条款数，防止异常文档无限扩张。
+- `BATCH_CHARS`：单批最大字符数，用于控制模型上下文和上游超时风险。
+- `BATCH_CLAUSES`：单批最大条款数，与字符上限同时生效。
+- `RETRIES`：单批自动重试次数；任务中心仍可只重试最终失败的批次。
+
+默认值适用于当前试点。服务器内存或模型上下文较小时应下调批次字符数和条款数，不要通过提高浏览器内存解决。后台任务使用管理员保存在服务器 `data/ai-config.json` 的AI接口配置；公司规范和客户资料是否允许发送到外部模型，仍由管理员按资料等级和公司安全要求决定。
+
 ## WSL2 Ubuntu 联调（推荐）
 
 在 Windows PowerShell（管理员）执行：

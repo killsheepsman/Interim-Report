@@ -478,6 +478,17 @@ export const openSnapshotStorage = async (kind) => {
   return await response.json();
 };
 
+/* Database-backed knowledge has no user-facing folder. */
+export const openKnowledgeStorage = async (kind = "knowledge") => {
+  const base = sharedApiBase();
+  if (!base) throw new Error("当前页面未连接本机服务，请先启动项目服务");
+  let response;
+  try { response = await fetch(`${base}/knowledge-storage/open`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ kind }) }); }
+  catch (error) { throw new Error(`无法连接本机服务：${error?.message || error}`); }
+  if (!response.ok) { let detail = "服务拒绝打开目录"; try { detail = (await response.json())?.error || detail; } catch {} throw new Error(detail); }
+  return await response.json();
+};
+
 export const saveCachedAnalysis = async (cache) => {
   await saveAnalysisCacheLocal(cache);
   const remoteSaved = await saveRemoteState(REMOTE_ANALYSIS_CACHE_KEY, cache);
@@ -736,21 +747,61 @@ const knowledgeApiJson = async (path, options = {}) => {
 };
 
 export const loadKnowledgeDocuments = async () => knowledgeApiJson("/knowledge/documents", { method: "GET", cache: "no-store" });
+export const loadKnowledgeSearchMetrics = async () => knowledgeApiJson("/knowledge/search-metrics", { method: "GET", cache: "no-store" });
+export const loadKnowledgePerformanceMetrics = async () => knowledgeApiJson("/knowledge/performance-metrics", { method: "GET", cache: "no-store" });
+export const runKnowledgePerformanceBenchmark = async ({ concurrency = 5, rounds = 3 } = {}) => knowledgeApiJson("/knowledge/performance-benchmark", { method: "POST", body: JSON.stringify({ concurrency, rounds }) });
+export const uploadKnowledgeSource = async (file, { category = "未分类", sourceLevel = "C" } = {}) => {
+  const base = sharedApiBase();
+  if (!base) throw new Error("当前页面未连接QMS后端，请通过项目服务地址打开");
+  const params = new URLSearchParams({ name: file.name, category, sourceLevel });
+  let response;
+  try { response = await fetch(`${base}/knowledge/import?${params.toString()}`, { method: "POST", headers: { "Content-Type": file.type || "application/octet-stream" }, body: file }); }
+  catch { throw new Error("无法上传知识原文件，请检查QMS服务是否正常"); }
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(payload?.error || `原文件入库失败（${response.status}）`);
+  return payload;
+};
+export const uploadKnowledgePdf = uploadKnowledgeSource;
 export const createKnowledgeDocument = async (document) => knowledgeApiJson("/knowledge/documents", { method: "POST", body: JSON.stringify(document) });
 export const deleteKnowledgeDocument = async (documentId) => knowledgeApiJson(`/knowledge/documents/${encodeURIComponent(documentId)}`, { method: "DELETE" });
 export const reparseKnowledgeDocument = async (documentId) => knowledgeApiJson(`/knowledge/documents/${encodeURIComponent(documentId)}/parse`, { method: "POST" });
+export const reviewKnowledgeDocument = async (documentId, reviewStatus, reviewNote = "") => knowledgeApiJson(`/knowledge/documents/${encodeURIComponent(documentId)}/review`, { method: "PUT", body: JSON.stringify({ reviewStatus, reviewNote }) });
+export const updateKnowledgeDocumentMetadata = async (documentId, payload) => knowledgeApiJson(`/knowledge/documents/${encodeURIComponent(documentId)}`, { method: "PUT", body: JSON.stringify(payload) });
+export const governKnowledgeDocument = async (documentId, payload) => knowledgeApiJson(`/knowledge/documents/${encodeURIComponent(documentId)}/governance`, { method: "POST", body: JSON.stringify(payload) });
+export const loadKnowledgeConflicts = async ({ status = "", limit = 200 } = {}) => {
+  const params = new URLSearchParams({ status, limit: String(limit) });
+  return knowledgeApiJson(`/knowledge/conflicts?${params.toString()}`, { method: "GET", cache: "no-store" });
+};
+export const saveKnowledgeConflict = async (conflict) => knowledgeApiJson(conflict.id ? `/knowledge/conflicts/${encodeURIComponent(conflict.id)}` : "/knowledge/conflicts", { method: conflict.id ? "PUT" : "POST", body: JSON.stringify(conflict) });
+export const loadKnowledgeAuditLogs = async ({ entityType = "", entityId = "", action = "", limit = 200 } = {}) => {
+  const params = new URLSearchParams({ entityType, entityId, action, limit: String(limit) });
+  return knowledgeApiJson(`/knowledge/audit-logs?${params.toString()}`, { method: "GET", cache: "no-store" });
+};
 export const loadKnowledgeClauses = async (documentId, { limit = 100, offset = 0, query = "" } = {}) => {
   const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
   if (query) params.set("query", query);
   return knowledgeApiJson(`/knowledge/documents/${encodeURIComponent(documentId)}/clauses?${params.toString()}`, { method: "GET", cache: "no-store" });
 };
-export const startKnowledgeDistillation = async (documentId, skillId) => knowledgeApiJson(`/knowledge/documents/${encodeURIComponent(documentId)}/distillation-jobs`, { method: "POST", body: JSON.stringify({ skillId }) });
+export const startKnowledgeDistillation = async (documentId, skillId, options = {}) => {
+  const local = localAiRequestConfig();
+  return knowledgeApiJson(`/knowledge/documents/${encodeURIComponent(documentId)}/distillation-jobs`, { method: "POST", body: JSON.stringify({ skillId, ...options, ...(local ? { config: local } : {}) }) });
+};
+export const loadKnowledgeJobs = async (documentId = "") => {
+  const params = new URLSearchParams();
+  if (documentId) params.set("documentId", documentId);
+  return knowledgeApiJson(`/knowledge/jobs${params.size ? `?${params.toString()}` : ""}`, { method: "GET", cache: "no-store" });
+};
+export const loadKnowledgeJob = async (jobId) => knowledgeApiJson(`/knowledge/jobs/${encodeURIComponent(jobId)}`, { method: "GET", cache: "no-store" });
+export const deleteKnowledgeJob = async (jobId) => knowledgeApiJson(`/knowledge/jobs/${encodeURIComponent(jobId)}`, { method: "DELETE" });
 export const updateKnowledgeJob = async (jobId, patch) => knowledgeApiJson(`/knowledge/jobs/${encodeURIComponent(jobId)}`, { method: "PUT", body: JSON.stringify(patch) });
+export const controlKnowledgeDistillationJob = async (jobId, action) => knowledgeApiJson(`/knowledge/jobs/${encodeURIComponent(jobId)}/control`, { method: "POST", body: JSON.stringify({ action }) });
 export const saveKnowledgeDistillation = async (documentId, payload) => knowledgeApiJson(`/knowledge/documents/${encodeURIComponent(documentId)}/distillations`, { method: "POST", body: JSON.stringify(payload) });
+export const importKnowledgeDistillation = async (documentId, payload) => knowledgeApiJson(`/knowledge/documents/${encodeURIComponent(documentId)}/distillations/import`, { method: "POST", body: JSON.stringify(payload) });
+export const reviewDistilledKnowledge = async (knowledgeId, payload) => knowledgeApiJson(`/knowledge/distillations/${encodeURIComponent(knowledgeId)}/review`, { method: "PUT", body: JSON.stringify(payload) });
 export const loadDistilledKnowledge = async (documentId, { limit = 100, offset = 0 } = {}) => knowledgeApiJson(`/knowledge/documents/${encodeURIComponent(documentId)}/distillations?limit=${encodeURIComponent(limit)}&offset=${encodeURIComponent(offset)}`, { method: "GET", cache: "no-store" });
 export const syncKnowledgeIssues = async (issues) => knowledgeApiJson("/knowledge/issues", { method: "POST", body: JSON.stringify({ issues }) });
-export const loadKnowledgeIssues = async ({ module = "", personName = "", query = "", status = "", limit = 30, offset = 0 } = {}) => {
-  const params = new URLSearchParams({ module, personName, query, status, limit: String(limit), offset: String(offset) });
+export const loadKnowledgeIssues = async ({ module = "", personName = "", query = "", status = "", threshold = 80, limit = 30, offset = 0 } = {}) => {
+  const params = new URLSearchParams({ module, personName, query, status, threshold: String(threshold), limit: String(limit), offset: String(offset) });
   return knowledgeApiJson(`/knowledge/issues?${params.toString()}`, { method: "GET", cache: "no-store" });
 };
 export const generateKnowledgeMatches = async (issueId) => knowledgeApiJson(`/knowledge/issues/${encodeURIComponent(issueId)}/matches`, { method: "POST", body: "{}" });
@@ -764,7 +815,21 @@ export const loadKnowledgeRecurrences = async ({ module = "IPQC", query = "", st
   const params = new URLSearchParams({ module, query, state, limit: String(limit), offset: String(offset), compact: compact ? "true" : "false" });
   return knowledgeApiJson(`/knowledge/recurrences?${params.toString()}`, { method: "GET", cache: "no-store" });
 };
+export const loadKnowledgeReviewPoints = async ({ module = "DQA", process = "", risk = "", project = "", projectStage = "", brandModel = "", query = "", limit = 50, offset = 0 } = {}) => {
+  const params = new URLSearchParams({ module, process, risk, project, projectStage, brandModel, query, limit: String(limit), offset: String(offset) });
+  return knowledgeApiJson(`/knowledge/review-points?${params.toString()}`, { method: "GET", cache: "no-store" });
+};
 export const saveKnowledgeRecurrenceAction = async (recurrenceKey, action) => knowledgeApiJson(`/knowledge/recurrences/${encodeURIComponent(recurrenceKey)}/action`, { method: "PUT", body: JSON.stringify(action) });
+export const loadKnowledgeReviewSessions = async ({ module = "", status = "", limit = 100 } = {}) => {
+  const params = new URLSearchParams({ module, status, limit: String(limit) });
+  return knowledgeApiJson(`/knowledge/review-sessions?${params.toString()}`, { method: "GET", cache: "no-store" });
+};
+export const saveKnowledgeReviewSession = async (session) => knowledgeApiJson(session.id ? `/knowledge/review-sessions/${encodeURIComponent(session.id)}` : "/knowledge/review-sessions", { method: session.id ? "PUT" : "POST", body: JSON.stringify(session) });
+export const loadKnowledgeFeedbackRecords = async ({ targetType = "", status = "", limit = 200 } = {}) => {
+  const params = new URLSearchParams({ targetType, status, limit: String(limit) });
+  return knowledgeApiJson(`/knowledge/feedback?${params.toString()}`, { method: "GET", cache: "no-store" });
+};
+export const saveKnowledgeFeedbackRecord = async (record) => knowledgeApiJson(record.id ? `/knowledge/feedback/${encodeURIComponent(record.id)}` : "/knowledge/feedback", { method: record.id ? "PUT" : "POST", body: JSON.stringify(record) });
 
 const examApiJson = async (path, options = {}) => {
   const base = sharedApiBase();

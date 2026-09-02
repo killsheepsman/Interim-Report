@@ -1,0 +1,36 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="900" viewBox="0 0 1440 900">
+  <rect width="1440" height="900" fill="#f4f6f8"/>
+  <rect x="34" y="28" width="1372" height="844" rx="16" fill="#ffffff" stroke="#d9e0e7"/>
+  <text x="76" y="78" font-family="Arial, Microsoft YaHei, sans-serif" font-size="24" font-weight="700" fill="#14212b">知识卡退回修改</text>
+  <text x="76" y="108" font-family="Arial, Microsoft YaHei, sans-serif" font-size="14" fill="#6c7a86">吸附区域保持平整坚固 · 修改后状态回到待复核</text>
+  <rect x="1170" y="52" width="178" height="40" rx="8" fill="#eff6ff" stroke="#b9d5f5"/>
+  <text x="1259" y="78" text-anchor="middle" font-family="Arial, Microsoft YaHei, sans-serif" font-size="14" font-weight="700" fill="#1d67b1">字段 7 / 10</text>
+
+  <line x1="60" y1="138" x2="1380" y2="138" stroke="#e5eaf0"/>
+  <rect x="60" y="164" width="420" height="650" rx="12" fill="#f8fafc" stroke="#e0e6ec"/>
+  <rect x="510" y="164" width="420" height="650" rx="12" fill="#f8fafc" stroke="#e0e6ec"/>
+  <rect x="960" y="164" width="420" height="650" rx="12" fill="#f8fafc" stroke="#e0e6ec"/>
+
+  <text x="88" y="208" font-family="Arial, Microsoft YaHei, sans-serif" font-size="16" font-weight="700" fill="#14212b">基本信息</text>
+  <text x="538" y="208" font-family="Arial, Microsoft YaHei, sans-serif" font-size="16" font-weight="700" fill="#14212b">事实与解释</text>
+  <text x="988" y="208" font-family="Arial, Microsoft YaHei, sans-serif" font-size="16" font-weight="700" fill="#14212b">执行与验证</text>
+
+  <g font-family="Arial, Microsoft YaHei, sans-serif" font-size="13" fill="#52616d">
+    <text x="88" y="250">知识标题</text><text x="88" y="342">知识类型</text><text x="88" y="434">问题标签</text><text x="88" y="526">同义词</text><text x="88" y="618">适用范围</text><text x="88" y="710">不适用范围</text>
+    <text x="538" y="250">知识内容</text><text x="538" y="406">原文事实</text><text x="538" y="562">工程解释</text>
+    <text x="988" y="250">执行 / 评审点</text><text x="988" y="406">纠偏动作</text><text x="988" y="562">验证方法</text>
+  </g>
+  <g fill="#ffffff" stroke="#cbd5df">
+    <rect x="88" y="266" width="364" height="48" rx="7"/><rect x="88" y="358" width="364" height="48" rx="7"/><rect x="88" y="450" width="364" height="48" rx="7"/><rect x="88" y="542" width="364" height="48" rx="7"/><rect x="88" y="634" width="364" height="48" rx="7"/><rect x="88" y="726" width="364" height="48" rx="7"/>
+    <rect x="538" y="266" width="364" height="116" rx="7"/><rect x="538" y="422" width="364" height="116" rx="7"/><rect x="538" y="578" width="364" height="116" rx="7"/>
+    <rect x="988" y="266" width="364" height="116" rx="7"/><rect x="988" y="422" width="364" height="116" rx="7"/><rect x="988" y="578" width="364" height="116" rx="7"/>
+  </g>
+  <g font-family="Arial, Microsoft YaHei, sans-serif" font-size="14" fill="#25333d">
+    <text x="104" y="296">吸附区域保持平整坚固</text><text x="104" y="388">mandatory</text><text x="104" y="480">平整、吸附、凸点</text><text x="104" y="572">平整坚固</text><text x="104" y="664">吸附区域</text><text x="104" y="756">非吸附区域</text>
+    <text x="554" y="298">吸附区域表面必须相对平整，且无凸出元件、过孔或明显凹凸。</text><text x="554" y="454">吸附区域表面必须相对平整，且无凸出元件、过孔或明显凹凸。</text><text x="554" y="610">吸附区域应避免局部凸起，保证设备吸附稳定。</text>
+    <text x="1004" y="298">确认吸附面无凸出元件；检查平整度并记录结果。</text><text x="1004" y="454">发现凸点时返工处理，必要时调整结构设计。</text><text x="1004" y="610">使用平整度量具复核，并保留检查记录。</text>
+  </g>
+  <rect x="60" y="832" width="1320" height="1" fill="#e5eaf0"/>
+  <rect x="1128" y="844" width="120" height="40" rx="8" fill="#ffffff" stroke="#cbd5df"/><text x="1188" y="870" text-anchor="middle" font-family="Arial, Microsoft YaHei, sans-serif" font-size="14" fill="#52616d">取消</text>
+  <rect x="1260" y="844" width="120" height="40" rx="8" fill="#1769aa"/><text x="1320" y="870" text-anchor="middle" font-family="Arial, Microsoft YaHei, sans-serif" font-size="14" font-weight="700" fill="#ffffff">保存修改</text>
+</svg>
