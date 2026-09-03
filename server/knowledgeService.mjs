@@ -822,7 +822,12 @@ export const createKnowledgeService = ({ filePath, originalDir = path.join(path.
       return documentIndexCache.rows;
     }
     const postgres = await listPostgresKnowledgeDocuments();
-    const documents = postgres.available && postgres.documents.length ? postgres.documents : (await readFallback()).documents.map(({ sourceText, ...item }) => ({ ...item, storage: "json" }));
+    const storedDocuments = postgres.available && postgres.documents.length ? postgres.documents : (await readFallback()).documents.map(({ sourceText, ...item }) => ({ ...item, storage: "json" }));
+    const documents = storedDocuments.filter((document) => {
+      if (!document.metadata?.originalStored) return true;
+      const originalPath = resolveOriginalPath(document);
+      return Boolean(originalPath && existsSync(originalPath));
+    });
     const rows = await Promise.all(documents.map(async (document) => {
       const knowledge = await listPostgresDistilledKnowledge(document.id, { limit: 10000, offset: 0 });
       const items = knowledge.available ? (knowledge.knowledge || []) : (await readFallback()).knowledge.filter((item) => item.documentId === document.id);
