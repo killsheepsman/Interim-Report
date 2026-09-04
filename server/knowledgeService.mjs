@@ -82,6 +82,7 @@ const markerLevel = (marker) => {
 
 const normalizedEvidenceText = (value) => cleanText(value).toLowerCase().replace(/[\s\p{P}\p{S}]+/gu, "");
 const evidenceMetadataLabels = new Set(["文件类型", "文档类型", "资料类型", "文件名称", "文档名称", "资料名称", "设计规范", "版本", "版本号", "作者", "编制", "审核", "批准", "日期", "发布日期", "生效日期", "目录", "封面"]);
+const evidenceStructuralLabels = new Set(["机密等级", "内部公开", "维护部门", "研发中心", "生效日期", "文 件 会 签 表", "文件会签表", "部 门", "负 责 人 /日 期", "负责人/日期", "备注", "修订记录", "新增/更改 理由", "新增/更改理由", "新增/更改 主要点说明", "新增/更改主要点说明", "修订人", "修订时间", "引用文件及参考文献", "职责与权限", "区域名称", "区域定义", "可选择性", "推荐吸盘直径", "理论依据", "推荐吸嘴型号"]);
 const isEvidenceMetadataLine = (value) => {
   const text = cleanText(value).replace(/[：:]$/, "");
   const normalized = normalizedEvidenceText(text);
@@ -89,6 +90,7 @@ const isEvidenceMetadataLine = (value) => {
   if (evidenceMetadataLabels.has(text)) return true;
   if (/^(?:文件|文档|资料)(?:类型|名称|编号|版本)$/.test(text)) return true;
   if (/^(?:文件类型|文档类型|资料类型)[：:]?(?:设计规范|企业标准|国家标准|教材|sop|作业指导书)$/i.test(cleanText(value))) return true;
+  if (evidenceStructuralLabels.has(text)) return true;
   return false;
 };
 // Evidence must be independently understandable.  Parser output such as a
@@ -102,11 +104,18 @@ const isEvidenceCompleteCandidate = (value) => {
   const text = cleanText(value);
   const normalized = normalizedEvidenceText(text);
   if (!normalized || isEvidenceMetadataLine(text) || isEvidenceValueFragment(text)) return false;
+  if (/^《[^》]+》$/.test(text)) return false;
+  if (/(?:工程师|SE|ME|IPQC|DQA)$/.test(text) && !/[：。！？；?!]/.test(text)) return false;
   if (/^[-–—•●▪·\s\d.()（）]+$/.test(text)) return false;
   // A short noun label without a predicate is context, not evidence.
   if (normalized.length <= 12 && !/[。！？；?!;：:，,]/.test(text) && /(?:类型|名称|编号|版本|日期|区域|规范|标准|单位|参数|类别|章节|目录|封面|标题|说明)$/.test(text)) return false;
   if (normalized.length < 6 && !/[。！？；?!;：:，,]/.test(text)) return false;
   return true;
+};
+const evidenceHeadingPattern = /(?:选择|原则|场景|设计|规范|总结|如下|选型|说明|方法|要求|介绍|分析|内容|流程|权限|分类|清单)$/;
+const isEvidenceHeadingFragment = (value) => {
+  const text = cleanText(value);
+  return text.length <= 28 && !/[。！？；?!;：:，,]$/.test(text) && evidenceHeadingPattern.test(text);
 };
 const normalizeOcrText = (value) => cleanText(value)
   .replace(/([\u3400-\u9fff])\s+(?=[\u3400-\u9fff])/g, "$1")
@@ -139,7 +148,7 @@ export const splitEvidenceText = (value) => {
       const bullet = /^[-•●▪]\s*/.test(line);
       const heading = isHeading(line);
       // Standalone headings and very short labels are context for the next statement.
-      if (heading || (!numbered && !bullet && normalizedEvidenceText(line).length < 10 && !/[。！？；?!;]$/.test(line))) {
+      if (heading || isEvidenceHeadingFragment(line) || (!numbered && !bullet && normalizedEvidenceText(line).length < 10 && !/[。！？；?!;]$/.test(line))) {
         current = current ? `${current}\n${line}` : line;
         return;
       }
@@ -163,6 +172,19 @@ export const splitEvidenceText = (value) => {
     else merged.push(unit);
   });
   return merged.filter(isEvidenceCompleteCandidate);
+};
+
+// Word/PDF text extraction commonly places cover metadata, revision tables and
+// the table of contents before the first actual requirement. Those lines are
+// useful document metadata but are not independently meaningful evidence.
+const evidenceBodyStart = (lines = []) => {
+  const index = lines.findIndex((line) => /^(?:目的|1[、.．\s]+目的)(?:[：:]|$)/.test(cleanText(line)));
+  return index >= 0 ? index : 0;
+};
+const prepareQualityEvidenceLines = (sourceText) => {
+  const raw = cleanText(sourceText).split(/\n+/).map((line) => line.replace(/[\t ]+/g, " ").trim()).filter(Boolean);
+  const body = raw.slice(evidenceBodyStart(raw));
+  return body.filter((line) => !isEvidenceMetadataLine(line));
 };
 
 export const buildPdfEvidenceClauses = (document = {}, pages = []) => {
@@ -341,37 +363,40 @@ const runProcess = (command, args, options = {}) => new Promise((resolve, reject
 });
 
 export const splitQualityClauses = (document = {}) => {
-  const rawLines = cleanText(document.sourceText).split(/\n+/).map((line) => line.replace(/[\t ]+/g, " ").trim()).filter((line) => line && !isEvidenceMetadataLine(line));
+  const rawLines = prepareQualityEvidenceLines(document.sourceText);
   const lines = rawLines;
   const sections = [];
   const clauses = [];
   let current = null;
   const flush = () => {
     if (!current?.text?.trim()) return;
-    const ordinal = clauses.length + 1;
-    const clauseText = current.text.trim();
-    clauses.push({
-      id: stableId("clause", `${document.id}:${ordinal}:${clauseText}`),
-      documentId: document.id,
-      ordinal,
-      sectionPath: current.sectionPath || sections.filter(Boolean).join(" / "),
-      clauseNumber: current.clauseNumber || "",
-      title: current.title || clauseText.split("\n")[0],
-      clauseText,
-      searchText: `${current.sectionPath || ""} ${current.clauseNumber || ""} ${clauseText}`.trim(),
-      metadata: {
-        evidenceKind: "semantic",
-        sourceDocument: document.name,
-        sourceHash: document.fileHash || "",
-        version: document.version || "",
-        sourceFormat: document.contentType || "text",
-        sourceLocation: document.metadata?.segmentMetadata?.[current.sourceSegmentIndex] || {
-          locatorType: document.contentType === "excel" ? "sheet-row" : document.contentType === "ppt" ? "slide" : document.contentType === "word" ? "paragraph" : "text-line",
-          locator: document.contentType === "excel" ? `第${(current.sourceSegmentIndex || 0) + 1}行` : `${(current.sourceSegmentIndex || 0) + 1}`,
+    const sourceText = current.text.trim();
+    const parts = splitEvidenceText(sourceText);
+    (parts.length ? parts : [sourceText]).forEach((clauseText) => {
+      const ordinal = clauses.length + 1;
+      clauses.push({
+        id: stableId("clause", `${document.id}:${ordinal}:${clauseText}`),
+        documentId: document.id,
+        ordinal,
+        sectionPath: current.sectionPath || sections.filter(Boolean).join(" / "),
+        clauseNumber: current.clauseNumber || "",
+        title: current.title || clauseText.split("\n")[0],
+        clauseText,
+        searchText: `${current.sectionPath || ""} ${current.clauseNumber || ""} ${clauseText}`.trim(),
+        metadata: {
+          evidenceKind: "semantic",
+          sourceDocument: document.name,
+          sourceHash: document.fileHash || "",
+          version: document.version || "",
+          sourceFormat: document.contentType || "text",
+          sourceLocation: document.metadata?.segmentMetadata?.[current.sourceSegmentIndex] || {
+            locatorType: document.contentType === "excel" ? "sheet-row" : document.contentType === "ppt" ? "slide" : document.contentType === "word" ? "paragraph" : "text-line",
+            locator: document.contentType === "excel" ? `第${(current.sourceSegmentIndex || 0) + 1}行` : `${(current.sourceSegmentIndex || 0) + 1}`,
+          },
+          ocrStatus: document.metadata?.healthStatus === "待OCR" ? "待OCR" : "not_required",
         },
-        ocrStatus: document.metadata?.healthStatus === "待OCR" ? "待OCR" : "not_required",
-      },
-      createdAt: nowIso(),
+        createdAt: nowIso(),
+      });
     });
     current = null;
   };
@@ -390,8 +415,14 @@ export const splitQualityClauses = (document = {}) => {
       current = { clauseNumber: match[1], title: match[2], text: line, sectionPath: sections.filter(Boolean).join(" / "), sourceSegmentIndex, structured: true };
       return;
     }
+    if (!match && isEvidenceHeadingFragment(line)) {
+      if (!current) current = { clauseNumber: "", title: line, text: line, sectionPath: sections.filter(Boolean).join(" / "), sourceSegmentIndex, context: true };
+      else if (current.context && !current.structured) current.text += `\n${line}`;
+      else if (!current.structured) { flush(); current = { clauseNumber: "", title: line, text: line, sectionPath: sections.filter(Boolean).join(" / "), sourceSegmentIndex, context: true }; }
+      return;
+    }
     if (!current) current = { clauseNumber: "", title: line, text: line, sectionPath: sections.filter(Boolean).join(" / "), sourceSegmentIndex };
-    else if (current.structured) current.text += `\n${line}`;
+    else if (current.structured || current.context) current.text += `\n${line}`;
     else { flush(); current = { clauseNumber: "", title: line, text: line, sectionPath: sections.filter(Boolean).join(" / "), sourceSegmentIndex }; }
   });
   flush();
