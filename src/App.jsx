@@ -3,14 +3,18 @@ import { createPortal } from "react-dom";
 import {
   ArrowRight, ArrowsClockwise, Bell, CaretDown, ChartBar, ChartPieSlice, CheckCircle,
   ClipboardText, ClockCountdown, Cube, Database, DownloadSimple, Eye, FileXls, FolderOpen,
-  FloppyDisk, Funnel, GearSix, Kanban, ListChecks, Plus, Pulse, Brain, MagnifyingGlass,
+  FloppyDisk, Funnel, GearSix, Kanban, ListChecks, Pause, Plus, Pulse, Brain, MagnifyingGlass,
   Question, Rows, ShieldCheck, SidebarSimple, Sparkle, Table, Target, Trash,
   UploadSimple, User, Warning, WarningCircle, X,
 } from "@phosphor-icons/react";
 import { analyzeImported, buildDqaEngineerSupplementSource, buildOqcRuleDimensionDispersions, downloadJson, normalizeIpqcLeaderMapRows, normalizeIpqcWorkshop, parseDqaAgentRawFiles, parseDqaEngineerSupplementFiles, parseFiles, parseOqcProjectNameByRules } from "./dataEngine.js";
-import { clearDqaAgentRaw as clearDqaAgentRawState, clearDqaEngineerSupplement as clearDqaEngineerSupplementState, controlKnowledgeDistillationJob, createExamSession, createKnowledgeDocument, createSourcesSignature, createSnapshotJob, deleteKnowledgeDocument, downloadSourceFiles, generateKnowledgeMatches, governKnowledgeDocument, importKnowledgeDistillation, listSnapshotJobs, loadAgentSkills, loadAiConfig, loadAiModels, loadAppliedDateRange, loadCachedAnalysis, loadCurrentUser, loadDqaAgentRaw, loadDefaultAnalysis, loadDefaultAnnotations, loadDefaultQmsSources, loadDefaultSources, loadDistilledKnowledge, loadDqaEngineerSupplement, loadExamResults, loadExamSession, loadImportedSources, loadKnowledgeAuditLogs, loadKnowledgeClauses, loadKnowledgeConflicts, loadKnowledgeDocuments, loadKnowledgeFeedbackRecords, loadKnowledgeIssues, loadKnowledgeJob, loadKnowledgeJobs, loadKnowledgeMatches, loadKnowledgePerformanceMetrics, loadKnowledgeRecurrences, loadKnowledgeReviewPoints, loadKnowledgeReviewSessions, loadPermissionConfig, loadProjectNameMapping, loadQualityAgentRoleSnapshotRegistry, loadQualityAgentSnapshotRegistry, loadReportQualityRules, loadSnapshotJob, mergeImportedSources, openSnapshotStorage, patchCachedAnalysis, reparseKnowledgeDocument, requestAiChat, reviewDistilledKnowledge, reviewKnowledgeDocument, reviewKnowledgeMatch, runKnowledgePerformanceBenchmark, saveAiConfig, saveAiReport, saveDqaAgentRaw, saveKnowledgeConflict, saveKnowledgeFeedbackRecord, saveKnowledgeRecurrenceAction, saveKnowledgeReviewSession, saveLocalAiReport, saveAppliedDateRange, saveCachedAnalysis, saveDqaEngineerSupplement, saveImportedSources, savePermissionConfig, saveProjectNameMapping, saveQualityAgentRoleSnapshotRegistry, saveQualityAgentSnapshotRegistry, saveReportQualityRules, sourceRowCount, startKnowledgeDistillation, submitExamSession, summarizeSources, syncKnowledgeIssues, testAiConfig, updateKnowledgeDocumentMetadata, updateSnapshotJob, uploadKnowledgeSource, uploadSourceFiles } from "./dataStore.js";
+import { clearDqaAgentRaw as clearDqaAgentRawState, clearDqaEngineerSupplement as clearDqaEngineerSupplementState, controlKnowledgeDistillationJob, createExamSession, createKnowledgeDocument, createSourcesSignature, createSnapshotJob, deleteKnowledgeDocument, downloadSourceFiles, generateKnowledgeMatches, governKnowledgeDocument, importKnowledgeDistillation, listSnapshotJobs, loadAgentSkills, loadAiConfig, loadAiModels, loadAppliedDateRange, loadCachedAnalysis, loadCurrentUser, loadDqaAgentRaw, loadDefaultAnalysis, loadDefaultAnnotations, loadDefaultQmsSources, loadDefaultSources, loadDistilledKnowledge, loadDqaEngineerSupplement, loadExamResults, loadExamSession, loadImportedSources, loadKnowledgeAuditLogs, loadKnowledgeClauses, loadKnowledgeConflicts, loadKnowledgeConsistency, loadKnowledgeDocuments, loadKnowledgeFeedbackRecords, loadKnowledgeIssues, loadKnowledgeJob, loadKnowledgeJobs, loadKnowledgeMatches, loadKnowledgePerformanceMetrics, loadKnowledgeRecurrences, loadKnowledgeReviewPoints, loadKnowledgeReviewSessions, loadPermissionConfig, loadProjectNameMapping, loadQualityAgentRoleSnapshotRegistry, loadQualityAgentSnapshotRegistry, loadReportQualityRules, loadSnapshotJob, mergeImportedSources, openSnapshotStorage, patchCachedAnalysis, reparseKnowledgeDocument, requestAiChat, reviewDistilledKnowledge, reviewKnowledgeDocument, reviewKnowledgeMatch, runKnowledgePerformanceBenchmark, saveAiConfig, saveAiReport, saveDqaAgentRaw, saveKnowledgeConflict, saveKnowledgeFeedbackRecord, saveKnowledgeRecurrenceAction, saveKnowledgeReviewSession, saveLocalAiReport, saveAppliedDateRange, saveCachedAnalysis, saveDqaEngineerSupplement, saveImportedSources, savePermissionConfig, saveProjectNameMapping, saveQualityAgentRoleSnapshotRegistry, saveQualityAgentSnapshotRegistry, saveReportQualityRules, sourceRowCount, startKnowledgeDistillation, submitExamSession, summarizeSources, syncKnowledgeIssues, testAiConfig, updateKnowledgeDocumentMetadata, updateSnapshotJob, uploadKnowledgeSource, uploadSourceFiles } from "./dataStore.js";
+import { bulkReviewKnowledgeCards, bulkUpdateKnowledgeCards, deleteKnowledgeCard, deleteKnowledgeClause, exportKnowledgeData, loadKnowledgeBackups, loadKnowledgeImpact, restoreKnowledgeBackup, updateKnowledgeCard, updateKnowledgeClause } from "./dataStore.js";
 import { loadOqcEquipmentRuleCache } from "./dataStore.js";
 import { deleteKnowledgeJob } from "./dataStore.js";
+import { loadKnowledgeDataQuality, repairKnowledgeDataQuality } from "./dataStore.js";
+import { cleanupKnowledgeDataQuality } from "./dataStore.js";
+import { mergeKnowledgeCards } from "./dataStore.js";
 import { sampleData } from "./sampleData.js";
 import { BarCompare, Donut, EquipmentQuantityDistributionPareto, HorizontalRank, MachinedTpmCompareChart, Pareto, QmsDivisionCombo, QmsScoreCompare, QmsTpmRank, QmsTrendCombo, QuantityRateCombo, ReportBarChart, ReportStatusDonut, ScoreMonthlyCombo, ScoreYearCompare, StackedStage, WorkshopCategoryHeatmap, YearStackedCompare } from "./charts.jsx";
 import { loadAgentReport, loadAgentReports, loadLocalAgentReport, loadLocalAgentReports } from "./dataStore.js";
@@ -735,7 +739,7 @@ function ThemeToggle({ value, onChange }) {
 
 const qmdpMenuGroups = [
   { label: "质量数据", icon: ChartBar, children: ["总览", "IQC", "IPQC", "OQC", "DQA", "QMS", "数据导入"] },
-  { label: "知识管理", icon: Database, children: ["知识库", "题库管理", "知识考试"] },
+  { label: "知识管理", icon: Database, children: ["知识库", "题库管理", "知识考试", "后台知识管理"] },
   { label: "质量报告", icon: ChartBar, children: ["IPQC操作报告", "机长报告", "交付经理报告", "供应链经理报告", "研发工程师报告", "PM报告", "TPM报告", "产总报告", "董事长报告", "报告任务中心"] },
   { label: "质量分析 Agent", icon: Brain, children: ["IQC Agent", "IPQC Agent", "OQC Agent", "DQA Agent", "QMS Agent"] },
   { label: "Agent角色报告", icon: ChartBar, children: ["组装人员 Agent报告", "机长 Agent报告", "交付经理 Agent报告", "供应链经理 Agent报告", "研发工程师 Agent报告", "PM Agent报告", "TPM Agent报告", "产总 Agent报告"] },
@@ -2441,12 +2445,70 @@ const readSubtitleEvidence = (text, fileName) => {
   if (!segments.length) throw new Error("字幕文件中没有识别到SRT/VTT时间轴");
   return { contentType: "video-transcript", segments, segmentMetadata, preview: segments.join("\n").slice(0, 80000), durationSeconds: segmentMetadata.at(-1)?.endSeconds || 0 };
 };
+const formatElapsed = (stage, now = Date.now()) => {
+  if (!stage?.startedAt) return "-";
+  const end = stage.completedAt ? new Date(stage.completedAt).getTime() : now;
+  const start = new Date(stage.startedAt).getTime();
+  const seconds = Math.max(0, Math.round((end - start) / 1000));
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  return `${minutes}m ${String(seconds % 60).padStart(2, "0")}s`;
+};
+const processingStageItems = [
+  ["import", "导入"],
+  ["evidence", "证据解析"],
+  ["evidenceCleanup", "证据整理"],
+  ["distillation", "知识蒸馏"],
+  ["knowledgePersistence", "知识入库"],
+];
+const processingTimingLabel = (file, now = Date.now()) => file.processingTimingText || processingStageItems
+  .filter(([key]) => file.metadata?.processingStages?.[key])
+  .map(([key, label]) => `${label} ${formatElapsed(file.metadata.processingStages[key], now)}`)
+  .join(" · ");
+
+// Legacy .doc is an OLE binary container rather than a ZIP package.  It is
+// not safe to decode the whole file as UTF-8; recover only readable Unicode
+// runs so the document can still enter the normal evidence rules.  This is a
+// fallback, not a promise of perfect layout/table recovery.
+const extractLegacyDocText = (buffer) => {
+  const bytes = new Uint8Array(buffer);
+  const runs = [];
+  const push = (value) => {
+    const text = String(value || "").replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]+/g, " ").replace(/[ \t]{2,}/g, " ").trim();
+    if (text.length >= 3 && /[\u3400-\u9fffA-Za-z0-9]/.test(text)) runs.push(text);
+  };
+  let ascii = "";
+  for (const byte of bytes) {
+    if (byte >= 0x20 && byte <= 0x7e) ascii += String.fromCharCode(byte);
+    else { push(ascii); ascii = ""; }
+  }
+  push(ascii);
+  for (let index = 0; index + 1 < bytes.length; index += 2) {
+    const code = bytes[index] | (bytes[index + 1] << 8);
+    if ((code >= 0x20 && code !== 0xfffe && code !== 0xffff) && (code <= 0x7e || (code >= 0x3400 && code <= 0x9fff))) {
+      let text = "";
+      let cursor = index;
+      while (cursor + 1 < bytes.length) {
+        const value = bytes[cursor] | (bytes[cursor + 1] << 8);
+        if (!((value >= 0x20 && value !== 0xfffe && value !== 0xffff) && (value <= 0x7e || (value >= 0x3400 && value <= 0x9fff)))) break;
+        text += String.fromCharCode(value); cursor += 2;
+      }
+      if (text.length >= 3) push(text);
+    }
+  }
+  return [...new Set(runs)].join("\n");
+};
 
 const readKnowledgeFile = async (file) => {
   const ext = file.name.split(".").pop()?.toLowerCase();
   if (ext === "pdf") return { contentType: "pdf", segments: [`原始PDF文件：${file.name}\n当前登记为待OCR，原件不改写。`], segmentMetadata: [{ locatorType: "pdf", locator: "待OCR" }], preview: `原始PDF文件：${file.name} · 待OCR`, registerOnly: true };
   if (["srt", "vtt"].includes(ext)) return readSubtitleEvidence(decodeKnowledgeText(await file.arrayBuffer()), file.name);
-  if (ext === "doc") throw new Error("当前阶段暂不解析旧版 Word，请转换为 DOCX、TXT 或 Markdown 后导入");
+  if (ext === "doc") {
+    const text = extractLegacyDocText(await file.arrayBuffer());
+    if (!text) throw new Error("旧版 Word 未提取出可读文字；请另存为 DOCX 或 PDF 后再导入");
+    const segments = text.split(/\n+/).map((item) => item.trim()).filter(Boolean);
+    return { contentType: "word", segments, segmentMetadata: segments.map((_, index) => ({ locatorType: "paragraph", locator: `段落 ${index + 1}`, paragraph: index + 1, extraction: "legacy-doc-text" })), preview: segments.join("\n").slice(0, 80000), metadata: { extraction: "legacy-doc-text", layoutRecovery: "limited" } };
+  }
   if (ext === "xmind") {
     const entries = await unzipLocalEntries(await file.arrayBuffer());
     const jsonEntry = entries.get("content.json");
@@ -2772,6 +2834,11 @@ function KnowledgeRecurrenceWorkspace({ module }) {
     } catch (error) { setRequestState({ status: "error", message: `复发闭环读取失败：${error?.message || error}` }); }
   }, [module, query, stateFilter, page]);
   useEffect(() => { refresh(false); }, [refresh]);
+  useEffect(() => {
+    // Running parse tasks are cancellable on the server; keep their delete
+    // controls actionable even while the row is refreshing.
+    document.querySelectorAll('.qmdp-task-job-delete[disabled]').forEach((button) => button.removeAttribute('disabled'));
+  }, [jobs]);
   useEffect(() => { setPage(0); setSelectedKey(""); }, [module, stateFilter]);
   const selected = rows.find((item) => item.recurrenceKey === selectedKey) || null;
   const ownerSuggestion = useMemo(() => suggestKnowledgeOwners(module, selected), [module, selected]);
@@ -2880,7 +2947,7 @@ function KnowledgeGovernanceWorkspace({ files = [], isAdmin = false, onRefreshDo
   const [logs, setLogs] = useState([]);
   const [selectedId, setSelectedId] = useState(files[0]?.id || "");
   const [message, setMessage] = useState("正在读取治理索引…");
-  const [metadataForm, setMetadataForm] = useState({ version: "", owner: "", reviewDue: "", accessLevel: "internal", replacesDocumentId: "" });
+  const [metadataForm, setMetadataForm] = useState({ version: "", owner: "", reviewDue: "", accessLevel: "internal", sourceLevel: "C", replacesDocumentId: "" });
   const [conflictForm, setConflictForm] = useState({ leftDocumentId: "", rightDocumentId: "", scope: "", issue: "", temporaryMeasure: "", owner: "", dueDate: "" });
   const [decisions, setDecisions] = useState({});
   const selected = files.find((item) => item.id === selectedId) || files[0] || null;
@@ -2895,12 +2962,12 @@ function KnowledgeGovernanceWorkspace({ files = [], isAdmin = false, onRefreshDo
   }, [isAdmin]);
   useEffect(() => { refresh(); }, [refresh]);
   useEffect(() => { if (!files.some((item) => item.id === selectedId)) setSelectedId(files[0]?.id || ""); }, [files, selectedId]);
-  useEffect(() => { if (selected) setMetadataForm({ version: selected.version || "", owner: selected.owner || "", reviewDue: selected.reviewDue || "", accessLevel: selected.accessLevel || "internal", replacesDocumentId: selected.metadata?.replacesDocumentId || "" }); }, [selected?.id, selected?.version, selected?.owner, selected?.reviewDue, selected?.accessLevel, selected?.metadata?.replacesDocumentId]);
+  useEffect(() => { if (selected) setMetadataForm({ version: selected.version || "", owner: selected.owner || "", reviewDue: selected.reviewDue || "", accessLevel: selected.accessLevel || "internal", sourceLevel: selected.sourceLevel || "C", replacesDocumentId: selected.metadata?.replacesDocumentId || "" }); }, [selected?.id, selected?.version, selected?.owner, selected?.reviewDue, selected?.accessLevel, selected?.sourceLevel, selected?.metadata?.replacesDocumentId]);
   const saveMetadata = async () => {
     if (!selected || !isAdmin) return;
     try {
       await updateKnowledgeDocumentMetadata(selected.id, metadataForm);
-      setMessage("治理信息已保存");
+      setMessage(`治理信息已保存，资料等级已标记为 ${metadataForm.sourceLevel} 级`);
       await onRefreshDocuments?.(true);
     } catch (error) { setMessage(`保存失败：${error?.message || error}`); }
   };
@@ -3056,17 +3123,39 @@ function KnowledgeTaskCenter({ files = [], onRefreshDocuments }) {
   }, [detail, knowledgeCardPage, readKnowledgeCards]);
   const control = async (action) => {
     if (!detail) return;
-    setMessage(action === "pause" ? "正在停止任务…" : "正在重新排队…");
+    const stageName = detail.jobType === "distill" ? "知识蒸馏" : "证据解析";
+    setMessage(action === "pause" ? `正在暂停${stageName}…` : action === "retry_failed" ? "正在重新排队失败知识批次…" : `正在继续${stageName}断点…`);
     try {
       await controlKnowledgeDistillationJob(detail.id, action);
       await refresh(true);
       const response = await loadKnowledgeJob(detail.id);
       setDetail(response.job);
-      setMessage(action === "pause" ? "任务已停止，已完成批次不会丢失" : action === "retry_failed" ? "失败批次已重新排队" : "未完成批次已继续执行");
+      setMessage(action === "pause" ? `${stageName}已暂停，已完成进度不会丢失` : action === "retry_failed" ? "失败知识批次已重新排队" : `${stageName}已从断点继续`);
     } catch (error) { setMessage(`任务操作失败：${error?.message || error}`); }
   };
+  useEffect(() => {
+    const host = document.querySelector('.qmdp-task-center-detail');
+    if (!host) return undefined;
+    const old = host.querySelector('.qmdp-coverage-retry');
+    if (old) old.remove();
+    const missingTopics = Number(detail?.result?.coverageAudit?.missingTopics || 0);
+    if (detail?.jobType !== 'distill' || missingTopics <= 0) return undefined;
+    const notice = document.createElement('div');
+    notice.className = 'qmdp-inline-actions qmdp-coverage-retry';
+    const text = document.createElement('span');
+    text.textContent = `发现 ${missingTopics} 个原文重点未覆盖`;
+    const button = document.createElement('button');
+    button.className = 'qmdp-secondary-btn';
+    button.type = 'button';
+    button.textContent = '补齐遗漏知识';
+    button.disabled = ['waiting', 'running'].includes(detail.status);
+    button.onclick = () => control('retry_missing');
+    notice.append(text, button);
+    const log = host.querySelector('.qmdp-task-log');
+    if (log) host.insertBefore(notice, log);
+    return () => notice.remove();
+  }, [detail, control]);
   const removeJob = async (job) => {
-    if (job.status === "running") { setMessage("任务正在运行，请先停止任务再删除"); return; }
     if (!window.confirm(`确认删除任务“${fileNames.get(job.documentId) || job.documentId} · ${knowledgeJobTypeText[job.jobType] || job.jobType}”？原文件、证据和知识卡不会删除。`)) return;
     setMessage("正在删除任务记录…");
     try {
@@ -3074,7 +3163,7 @@ function KnowledgeTaskCenter({ files = [], onRefreshDocuments }) {
       setCheckedJobIds((current) => current.filter((id) => id !== job.id));
       if (selectedId === job.id) { setSelectedId(""); setDetail(null); }
       await refresh(true);
-      setMessage("任务记录已删除；原文件、证据和知识卡均已保留");
+      setMessage("任务已删除；后台处理中止，原文件、证据和知识卡均已保留");
     } catch (error) { setMessage(`任务删除失败：${error?.message || error}`); }
   };
   const removeCheckedJobs = async () => {
@@ -3089,11 +3178,12 @@ function KnowledgeTaskCenter({ files = [], onRefreshDocuments }) {
   };
   const batchRows = detail?.result?.batches || [];
   const knowledgeStatusMessage = knowledgeCardsError || (detail?.status === "failed" ? "知识蒸馏未完成：当前批次没有成功写入知识卡。" : knowledgeCardsLoading ? "正在读取已生成知识卡…" : knowledgeCardTotal > 0 ? `已生成 ${knowledgeCardTotal} 条知识卡：已发布 ${Number(knowledgeCardStatusCounts.published || 0)} 条，待确认 ${Number(knowledgeCardStatusCounts.candidate || 0) + Number(knowledgeCardStatusCounts.approved || 0)} 条。` : detail?.status === "completed" ? "任务已完成，但未生成知识卡。" : "任务尚未完成，知识卡将在批次成功后显示。");
-  return <section className={`qmdp-knowledge-task-center ${open ? "is-open" : "is-collapsed"}`}><header><button onClick={() => setOpen((value) => !value)} aria-expanded={open}><CaretDown size={15} className={open ? "rotate" : ""}/><div><small>阶段 6 · Server Task Center</small><strong>知识任务中心</strong><span>只负责监控、重试和查看结果；启动操作在文档卡片中完成</span></div></button><div className="qmdp-task-center-summary"><span>等待 {jobs.filter((item) => item.status === "waiting").length}</span><span>运行 {jobs.filter((item) => item.status === "running").length}</span><span>失败 {jobs.filter((item) => item.status === "failed").length}</span><span>完成 {jobs.filter((item) => item.status === "completed").length}</span></div></header>{open && <><div className="qmdp-task-center-toolbar"><div className="qmdp-task-center-filters" role="tablist" aria-label="任务流程筛选"><button className={filter === "all" ? "active" : ""} onClick={() => setFilter("all")} role="tab" aria-selected={filter === "all"}>全部任务 <small>{jobs.length}</small></button><button className={filter === "parse" ? "active" : ""} onClick={() => setFilter("parse")} role="tab" aria-selected={filter === "parse"}>条款解析 <small>{jobs.filter((item) => item.jobType === "parse").length}</small></button><button className={filter === "pdf_parse" ? "active" : ""} onClick={() => setFilter("pdf_parse")} role="tab" aria-selected={filter === "pdf_parse"}>PDF解析 <small>{jobs.filter((item) => item.jobType === "pdf_parse").length}</small></button><button className={filter === "image_parse" ? "active" : ""} onClick={() => setFilter("image_parse")} role="tab" aria-selected={filter === "image_parse"}>图片OCR <small>{jobs.filter((item) => item.jobType === "image_parse").length}</small></button><button className={filter === "ppt_parse" ? "active" : ""} onClick={() => setFilter("ppt_parse")} role="tab" aria-selected={filter === "ppt_parse"}>PPT解析 <small>{jobs.filter((item) => item.jobType === "ppt_parse").length}</small></button><button className={filter === "distill" ? "active" : ""} onClick={() => setFilter("distill")} role="tab" aria-selected={filter === "distill"}>知识蒸馏 <small>{jobs.filter((item) => item.jobType === "distill").length}</small></button></div><button className="qmdp-secondary-btn" onClick={() => refresh(false)}><ArrowsClockwise size={14}/>刷新</button><span>{message}</span></div><div className="qmdp-task-center-manage"><label><input type="checkbox" checked={invalidVisibleIds.length > 0 && invalidVisibleIds.every((id) => checkedJobIds.includes(id))} onChange={() => setCheckedJobIds(invalidVisibleIds.every((id) => checkedJobIds.includes(id)) ? [] : invalidVisibleIds)} disabled={!invalidVisibleIds.length}/>全选失效任务（{invalidVisibleIds.length}）</label><button className="qmdp-danger-btn" onClick={removeCheckedJobs} disabled={!checkedInvalidIds.length}><Trash size={14}/>删除选中（{checkedInvalidIds.length}）</button><span>每条任务均可单独删除；运行中任务需先停止</span></div><div className="qmdp-task-center-layout"><aside>{visible.map((job) => <div key={job.id} className={`qmdp-task-job-row ${job.id === selectedId ? "selected" : ""}`}><label className="qmdp-task-job-check">{["failed", "cancelled"].includes(job.status) && <input type="checkbox" checked={checkedJobIds.includes(job.id)} onChange={() => setCheckedJobIds((current) => current.includes(job.id) ? current.filter((id) => id !== job.id) : [...current, job.id])} aria-label={`选择失效任务：${fileNames.get(job.documentId) || job.documentId}`}/>}</label><button className="qmdp-task-job-open" onClick={() => openJob(job)}><span><strong>{fileNames.get(job.documentId) || job.documentId}</strong><em className={`job-${job.status}`}>{knowledgeJobStatusText[job.status] || job.status}</em></span><small>{knowledgeJobTypeText[job.jobType] || job.jobType} · {job.skillId || "无Skill"}</small><i><b style={{ width: `${job.progress || 0}%` }}/></i><footer><span>{job.progress || 0}%</span><span>{job.message}</span></footer></button><button className="qmdp-task-job-delete" onClick={() => removeJob(job)} disabled={job.status === "running"} title={job.status === "running" ? "请先停止运行中的任务" : "删除任务记录"} aria-label={`删除任务：${fileNames.get(job.documentId) || job.documentId}`}><Trash size={14}/></button></div>)}{!visible.length && <div className="qmdp-empty compact">当前筛选条件下没有任务。</div>}</aside><div className="qmdp-task-center-detail">{detail ? <><header><div><small>{knowledgeJobTypeText[detail.jobType] || detail.jobType} · {detail.skillId || "无Skill"}</small><h4>{fileNames.get(detail.documentId) || detail.documentId}</h4><p>{detail.message}</p></div><em className={`job-${detail.status}`}>{knowledgeJobStatusText[detail.status] || detail.status}</em></header><div className="qmdp-task-progress"><i><b style={{ width: `${detail.progress || 0}%` }}/></i><strong>{detail.progress || 0}%</strong><span>{detail.result?.model ? `模型：${detail.result.model}` : "等待模型信息"}</span></div>{detail.jobType === "distill" && <div className="qmdp-distill-settings"><span>条款 {detail.result?.totalClauses || 0}</span><span>蒸馏知识点 {knowledgeCardTotal || detail.result?.knowledgeCount || 0}</span><span>批次 {detail.result?.totalBatches || batchRows.length}</span><span>每批字符 {detail.result?.batchChars || "默认"}</span><span>每批条款 {detail.result?.maxBatchClauses || "默认"}</span><span>失败重试 {detail.result?.maxRetries ?? "默认"}</span></div>}{detail.jobType === "distill" && <div className={`qmdp-task-knowledge-status ${detail.status === "failed" ? "failed" : knowledgeCardTotal > 0 ? "has-cards" : detail.status === "completed" ? "empty" : "pending"}`}><strong>{knowledgeCardsError || (detail.status === "failed" ? "知识蒸馏未完成：当前批次没有成功写入知识卡。请修复 AI 接口后点击“只重试失败批次”。" : knowledgeCardsLoading ? "正在读取已生成知识卡…" : knowledgeCardTotal > 0 ? `已生成 ${knowledgeCardTotal} 条知识卡，等待人工复核。` : detail.status === "completed" ? "任务已完成，但未生成知识卡。请检查模型返回格式、原文引用校验和蒸馏 Skill。" : "任务尚未完成，知识卡将在批次成功后显示。")}</strong></div>}{<div className="qmdp-distill-batches" aria-label="蒸馏批次进度">{batchRows.map((batch) => <span key={batch.id} className={`batch-${batch.status}`} title={`第${batch.index + 1}批 · ${knowledgeJobStatusText[batch.status] || batch.status}${batch.errorMessage ? ` · ${batch.errorMessage}` : ""}`}>{batch.index + 1}</span>)}</div>}{detail.errorMessage && <div className="qmdp-task-error">{detail.errorMessage}</div>}{detail.jobType === "distill" && knowledgeCardTotal > 0 && <section className="qmdp-task-knowledge-cards"><header><strong>蒸馏知识卡片</strong><span>共 {knowledgeCardTotal} 条 · 第 {knowledgeCardPage + 1} / {Math.max(1, Math.ceil(knowledgeCardTotal / knowledgeCardPageSize))} 页</span></header>{knowledgeCardsLoading ? <div className="qmdp-empty compact">正在读取知识卡…</div> : knowledgeCardsError ? <div className="qmdp-empty compact">{knowledgeCardsError}</div> : <div className="qmdp-task-knowledge-card-grid">{knowledgeCards.map((row) => <article className="qmdp-task-knowledge-card" key={row.id}><header><div><strong>{row.title || "未命名知识点"}</strong><span>{row.type || "未分类"} · {row.publicationStatus === "published" ? "已发布" : row.publicationStatus === "approved" ? "已初审" : row.publicationStatus === "rejected" ? "已退回" : "候选待复核"}</span></div><b>{row.sourceLevel || "C"}级 · {Math.round(Number(row.confidence || 0) * 100)}%</b></header><section><small>知识内容</small><p>{row.content || "未填写"}</p></section><section><small>原文事实</small><p>{row.metadata?.originalFact || "未填写"}</p></section><section><small>适用范围</small><p>{Array.isArray(row.metadata?.applicableScope) ? row.metadata.applicableScope.join("；") : row.metadata?.applicableScope || "未填写"}</p></section><footer>{(row.sourceCitations || []).slice(0, 2).map((item, index) => <span key={`${item.clauseId || item.clauseNumber || index}`}>{item.clauseNumber || "原文"}：{item.quote || ""}</span>)}</footer></article>)}</div>}{knowledgeCardTotal > knowledgeCardPageSize && <footer className="qmdp-task-knowledge-pagination"><button className="qmdp-secondary-btn" disabled={knowledgeCardPage <= 0 || knowledgeCardsLoading} onClick={() => readKnowledgeCards(detail, knowledgeCardPage - 1)}>上一页</button><span>第 {knowledgeCardPage + 1} / {Math.max(1, Math.ceil(knowledgeCardTotal / knowledgeCardPageSize))} 页</span><button className="qmdp-secondary-btn" disabled={(knowledgeCardPage + 1) * knowledgeCardPageSize >= knowledgeCardTotal || knowledgeCardsLoading} onClick={() => readKnowledgeCards(detail, knowledgeCardPage + 1)}>下一页</button></footer>}</section>}{detail.errorMessage && <div className="qmdp-task-error">{detail.errorMessage}</div>}<section className="qmdp-task-log"><header><strong>任务日志</strong><span>{detail.result?.logs?.length || 0} 条</span></header>{(detail.result?.logs || []).slice().reverse().map((log, index) => <div key={`${log.at}-${index}`} className={log.level || "info"}><time>{formatSyncDateTime(log.at)}</time><span>{log.message}</span></div>)}{!detail.result?.logs?.length && <div className="qmdp-empty compact">暂无任务日志。</div>}</section>{detail.jobType === "distill" && <footer className="qmdp-inline-actions">{["waiting", "running"].includes(detail.status) && <button className="qmdp-danger-btn" onClick={() => control("pause")}><X size={14}/>停止任务</button>}{detail.status === "paused" && <button className="qmdp-primary-btn" onClick={() => control("resume")}><ArrowRight size={14}/>继续任务</button>}{detail.status === "failed" && (batchRows.some((item) => item.status === "failed") ? <button className="qmdp-primary-btn" onClick={() => control("retry_failed")}><ArrowsClockwise size={14}/>只重试失败批次</button> : <button className="qmdp-primary-btn" onClick={() => control("resume")}><ArrowsClockwise size={14}/>重新执行</button>)}</footer>}</> : <div className="qmdp-empty"><Kanban size={28}/><strong>选择一条任务</strong><span>批次结果、错误和日志只在选择后按需读取。</span></div>}</div></div></>}</section>;
+  return <section className={`qmdp-knowledge-task-center ${open ? "is-open" : "is-collapsed"}`}><header><button onClick={() => setOpen((value) => !value)} aria-expanded={open}><CaretDown size={15} className={open ? "rotate" : ""}/><div><small>阶段 6 · Server Task Center</small><strong>知识任务中心</strong><span>只负责监控、重试和查看结果；启动操作在文档卡片中完成</span></div></button><div className="qmdp-task-center-summary"><span>等待 {jobs.filter((item) => item.status === "waiting").length}</span><span>运行 {jobs.filter((item) => item.status === "running").length}</span><span>失败 {jobs.filter((item) => item.status === "failed").length}</span><span>完成 {jobs.filter((item) => item.status === "completed").length}</span></div></header>{open && <><div className="qmdp-task-center-toolbar"><div className="qmdp-task-center-filters" role="tablist" aria-label="任务流程筛选"><button className={filter === "all" ? "active" : ""} onClick={() => setFilter("all")} role="tab" aria-selected={filter === "all"}>全部任务 <small>{jobs.length}</small></button><button className={filter === "parse" ? "active" : ""} onClick={() => setFilter("parse")} role="tab" aria-selected={filter === "parse"}>条款解析 <small>{jobs.filter((item) => item.jobType === "parse").length}</small></button><button className={filter === "pdf_parse" ? "active" : ""} onClick={() => setFilter("pdf_parse")} role="tab" aria-selected={filter === "pdf_parse"}>PDF解析 <small>{jobs.filter((item) => item.jobType === "pdf_parse").length}</small></button><button className={filter === "image_parse" ? "active" : ""} onClick={() => setFilter("image_parse")} role="tab" aria-selected={filter === "image_parse"}>图片OCR <small>{jobs.filter((item) => item.jobType === "image_parse").length}</small></button><button className={filter === "ppt_parse" ? "active" : ""} onClick={() => setFilter("ppt_parse")} role="tab" aria-selected={filter === "ppt_parse"}>PPT解析 <small>{jobs.filter((item) => item.jobType === "ppt_parse").length}</small></button><button className={filter === "distill" ? "active" : ""} onClick={() => setFilter("distill")} role="tab" aria-selected={filter === "distill"}>知识蒸馏 <small>{jobs.filter((item) => item.jobType === "distill").length}</small></button></div><button className="qmdp-secondary-btn" onClick={() => refresh(false)}><ArrowsClockwise size={14}/>刷新</button><span>{message}</span></div><div className="qmdp-task-center-manage"><label><input type="checkbox" checked={invalidVisibleIds.length > 0 && invalidVisibleIds.every((id) => checkedJobIds.includes(id))} onChange={() => setCheckedJobIds(invalidVisibleIds.every((id) => checkedJobIds.includes(id)) ? [] : invalidVisibleIds)} disabled={!invalidVisibleIds.length}/>全选失效任务（{invalidVisibleIds.length}）</label><button className="qmdp-danger-btn" onClick={removeCheckedJobs} disabled={!checkedInvalidIds.length}><Trash size={14}/>删除选中（{checkedInvalidIds.length}）</button><span>每条任务均可单独删除；运行中任务需先停止</span></div><div className="qmdp-task-center-layout"><aside>{visible.map((job) => <div key={job.id} className={`qmdp-task-job-row ${job.id === selectedId ? "selected" : ""}`}><label className="qmdp-task-job-check">{["failed", "cancelled"].includes(job.status) && <input type="checkbox" checked={checkedJobIds.includes(job.id)} onChange={() => setCheckedJobIds((current) => current.includes(job.id) ? current.filter((id) => id !== job.id) : [...current, job.id])} aria-label={`选择失效任务：${fileNames.get(job.documentId) || job.documentId}`}/>}</label><button className="qmdp-task-job-open" onClick={() => openJob(job)}><span><strong>{fileNames.get(job.documentId) || job.documentId}</strong><em className={`job-${job.status}`}>{knowledgeJobStatusText[job.status] || job.status}</em></span><small>{knowledgeJobTypeText[job.jobType] || job.jobType} · {job.skillId || "无Skill"}</small><i><b style={{ width: `${job.progress || 0}%` }}/></i><footer><span>{job.progress || 0}%</span><span>{job.message}</span></footer></button><button className="qmdp-task-job-delete" onClick={() => removeJob(job)} disabled={job.status === "running"} title={job.status === "running" ? "请先停止运行中的任务" : "删除任务记录"} aria-label={`删除任务：${fileNames.get(job.documentId) || job.documentId}`}><Trash size={14}/></button></div>)}{!visible.length && <div className="qmdp-empty compact">当前筛选条件下没有任务。</div>}</aside><div className="qmdp-task-center-detail">{detail ? <><header><div><small>{knowledgeJobTypeText[detail.jobType] || detail.jobType} · {detail.skillId || "无Skill"}</small><h4>{fileNames.get(detail.documentId) || detail.documentId}</h4><p>{detail.message}</p></div><em className={`job-${detail.status}`}>{knowledgeJobStatusText[detail.status] || detail.status}</em></header><div className="qmdp-task-progress"><i><b style={{ width: `${detail.progress || 0}%` }}/></i><strong>{detail.progress || 0}%</strong><span>{detail.result?.model ? `模型：${detail.result.model}` : "等待模型信息"}</span></div>{detail.jobType === "distill" && <div className="qmdp-distill-settings"><span>条款 {detail.result?.totalClauses || 0}</span><span>蒸馏知识点 {knowledgeCardTotal || detail.result?.knowledgeCount || 0}</span><span>批次 {detail.result?.totalBatches || batchRows.length}</span><span>每批字符 {detail.result?.batchChars || "默认"}</span><span>每批条款 {detail.result?.maxBatchClauses || "默认"}</span><span>失败重试 {detail.result?.maxRetries ?? "默认"}</span></div>}{detail.jobType === "distill" && <div className={`qmdp-task-knowledge-status ${detail.status === "failed" ? "failed" : knowledgeCardTotal > 0 ? "has-cards" : detail.status === "completed" ? "empty" : "pending"}`}><strong>{knowledgeCardsError || (detail.status === "failed" ? "知识蒸馏未完成：当前批次没有成功写入知识卡。请修复 AI 接口后点击“只重试失败批次”。" : knowledgeCardsLoading ? "正在读取已生成知识卡…" : knowledgeCardTotal > 0 ? `已生成 ${knowledgeCardTotal} 条知识卡，等待人工复核。` : detail.status === "completed" ? "任务已完成，但未生成知识卡。请检查模型返回格式、原文引用校验和蒸馏 Skill。" : "任务尚未完成，知识卡将在批次成功后显示。")}</strong></div>}{<div className="qmdp-distill-batches" aria-label="蒸馏批次进度">{batchRows.map((batch) => <span key={batch.id} className={`batch-${batch.status}`} title={`第${batch.index + 1}批 · ${knowledgeJobStatusText[batch.status] || batch.status}${batch.errorMessage ? ` · ${batch.errorMessage}` : ""}`}>{batch.index + 1}</span>)}</div>}{detail.errorMessage && <div className="qmdp-task-error">{detail.errorMessage}</div>}{detail.jobType === "distill" && knowledgeCardTotal > 0 && <section className="qmdp-task-knowledge-cards"><header><strong>蒸馏知识卡片</strong><span>共 {knowledgeCardTotal} 条 · 第 {knowledgeCardPage + 1} / {Math.max(1, Math.ceil(knowledgeCardTotal / knowledgeCardPageSize))} 页</span></header>{knowledgeCardsLoading ? <div className="qmdp-empty compact">正在读取知识卡…</div> : knowledgeCardsError ? <div className="qmdp-empty compact">{knowledgeCardsError}</div> : <div className="qmdp-task-knowledge-card-grid">{knowledgeCards.map((row) => <article className="qmdp-task-knowledge-card" key={row.id}><header><div><strong>{row.title || "未命名知识点"}</strong><span>{row.type || "未分类"} · {row.publicationStatus === "published" ? "已发布" : row.publicationStatus === "approved" ? "已初审" : row.publicationStatus === "rejected" ? "已退回" : "候选待复核"}</span></div><b>{row.sourceLevel || "C"}级 · {Math.round(Number(row.confidence || 0) * 100)}%</b></header><section><small>知识内容</small><p>{row.content || "未填写"}</p></section><section><small>原文事实</small><p>{row.metadata?.originalFact || "未填写"}</p></section><section><small>适用范围</small><p>{Array.isArray(row.metadata?.applicableScope) ? row.metadata.applicableScope.join("；") : row.metadata?.applicableScope || "未填写"}</p></section><footer>{(row.sourceCitations || []).slice(0, 2).map((item, index) => <span key={`${item.clauseId || item.clauseNumber || index}`}>{item.clauseNumber || "原文"}：{item.quote || ""}</span>)}</footer></article>)}</div>}{knowledgeCardTotal > knowledgeCardPageSize && <footer className="qmdp-task-knowledge-pagination"><button className="qmdp-secondary-btn" disabled={knowledgeCardPage <= 0 || knowledgeCardsLoading} onClick={() => readKnowledgeCards(detail, knowledgeCardPage - 1)}>上一页</button><span>第 {knowledgeCardPage + 1} / {Math.max(1, Math.ceil(knowledgeCardTotal / knowledgeCardPageSize))} 页</span><button className="qmdp-secondary-btn" disabled={(knowledgeCardPage + 1) * knowledgeCardPageSize >= knowledgeCardTotal || knowledgeCardsLoading} onClick={() => readKnowledgeCards(detail, knowledgeCardPage + 1)}>下一页</button></footer>}</section>}{detail.errorMessage && <div className="qmdp-task-error">{detail.errorMessage}</div>}<section className="qmdp-task-log"><header><strong>任务日志</strong><span>{detail.result?.logs?.length || 0} 条</span></header>{(detail.result?.logs || []).slice().reverse().map((log, index) => <div key={`${log.at}-${index}`} className={log.level || "info"}><time>{formatSyncDateTime(log.at)}</time><span>{log.message}</span></div>)}{!detail.result?.logs?.length && <div className="qmdp-empty compact">暂无任务日志。</div>}</section>{["waiting", "running"].includes(detail.status) && <footer className="qmdp-inline-actions"><button className="qmdp-danger-btn" onClick={() => control("pause")}><Pause size={14}/>暂停任务</button></footer>}{detail.status === "paused" && <footer className="qmdp-inline-actions"><button className="qmdp-primary-btn" onClick={() => control("resume")}><ArrowRight size={14}/>继续任务</button></footer>}{detail.jobType === "distill" && <footer className="qmdp-inline-actions">{detail.status === "paused" && <button className="qmdp-primary-btn" onClick={() => control("resume")}><ArrowRight size={14}/>继续任务</button>}{detail.status === "failed" && (batchRows.some((item) => item.status === "failed") ? <button className="qmdp-primary-btn" onClick={() => control("retry_failed")}><ArrowsClockwise size={14}/>只重试失败批次</button> : <button className="qmdp-primary-btn" onClick={() => control("resume")}><ArrowsClockwise size={14}/>重新执行</button>)}</footer>}</> : <div className="qmdp-empty"><Kanban size={28}/><strong>选择一条任务</strong><span>批次结果、错误和日志只在选择后按需读取。</span></div>}</div></div></>}</section>;
 }
 
 function KnowledgeBasePage({ qualitySources = [], onEnsureAgentSources, auth }) {
   const [files, setFiles] = useState(() => safeParse(localStorage.getItem(qmdpKnowledgeKey), []));
+  const [documentJobs, setDocumentJobs] = useState({});
   const [category, setCategory] = useState("研发设计规范");
   const [query, setQuery] = useState("");
   const [status, setStatus] = useState("正在读取知识库…");
@@ -3114,6 +3204,10 @@ function KnowledgeBasePage({ qualitySources = [], onEnsureAgentSources, auth }) 
   const [knowledgeExamCenterOpen, setKnowledgeExamCenterOpen] = useState(true);
   const [selectedKnowledgeIds, setSelectedKnowledgeIds] = useState([]);
   const [knowledgePublishProgress, setKnowledgePublishProgress] = useState(null);
+  const [knowledgeConsistency, setKnowledgeConsistency] = useState(null);
+  const [processingClock, setProcessingClock] = useState(() => Date.now());
+  const [checkingKnowledgeConsistency, setCheckingKnowledgeConsistency] = useState(false);
+  const [metadataEditor, setMetadataEditor] = useState(null);
   const [knowledgeWorkspace, setKnowledgeWorkspace] = useState("matching");
   const [knowledgeReviewFilter, setKnowledgeReviewFilter] = useState("all");
   const [issueModule, setIssueModule] = useState("IPQC");
@@ -3127,14 +3221,30 @@ function KnowledgeBasePage({ qualitySources = [], onEnsureAgentSources, auth }) 
   const [issueMatches, setIssueMatches] = useState([]);
   const [issueMatchState, setIssueMatchState] = useState({ status: "idle", message: "先同步质量问题，再生成候选规范" });
   const [batchMatchProgress, setBatchMatchProgress] = useState(null);
+  const batchMatchStopRef = useRef(false);
   const [matchThreshold, setMatchThreshold] = useState(() => Number(localStorage.getItem("qmdp-knowledge-match-threshold") || 80));
   const issueSyncAttemptRef = useRef(new Set());
   const detailPageSize = 24;
   const issuePageSize = 20;
+  useEffect(() => {
+    const timer = window.setInterval(() => setProcessingClock(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, []);
 
   const refreshDocuments = useCallback(async (silent = false) => {
     try {
-      const response = await loadKnowledgeDocuments();
+      const [response, jobsResponse] = await Promise.all([loadKnowledgeDocuments(), loadKnowledgeJobs()]);
+      const jobs = Array.isArray(jobsResponse?.jobs) ? jobsResponse.jobs : [];
+      const nextJobs = {};
+      jobs.forEach((job) => {
+        const documentJobsForFile = nextJobs[job.documentId] || {};
+        const stage = ["distill"].includes(job.jobType) ? "distill" : "parse";
+        const current = documentJobsForFile[stage];
+        if (!current || String(job.updatedAt || job.createdAt || "") > String(current.updatedAt || current.createdAt || "")) {
+          nextJobs[job.documentId] = { ...documentJobsForFile, [stage]: job };
+        }
+      });
+      setDocumentJobs(nextJobs);
       const documents = (response?.documents || []).map((item) => ({ ...item, serverStored: true }));
       if (documents.length) setFiles((current) => documents.map((item) => ({ ...current.find((row) => row.id === item.id), ...item })));
       else setFiles((current) => current.filter((item) => !item.serverStored));
@@ -3145,6 +3255,52 @@ function KnowledgeBasePage({ qualitySources = [], onEnsureAgentSources, auth }) 
       return [];
     }
   }, []);
+  const controlDocumentJob = async (file, requestedAction = "") => {
+    const job = documentJobs[file.id]?.distill || documentJobs[file.id]?.parse;
+    if (!job) return;
+    const action = requestedAction || (job.status === "paused" ? "resume" : "pause");
+    const isDistill = job.jobType === "distill";
+    setStatus(action === "pause" ? `正在暂停“${file.name}”…` : action === "retry_failed" ? `正在重新排队“${file.name}”的失败批次…` : `正在继续“${file.name}”…`);
+    try {
+      await controlKnowledgeDistillationJob(job.id, action);
+      await refreshDocuments(true);
+      setStatus(action === "pause" ? `“${file.name}”已暂停，已完成${isDistill ? "批次" : "页面"}已保留` : action === "retry_failed" ? `“${file.name}”的失败批次已重新排队` : `“${file.name}”已从断点继续`);
+    } catch (error) { setStatus(`任务控制失败：${error?.message || error}`); }
+  };
+  const retryMissingKnowledge = async (file) => {
+    const job = documentJobs[file.id]?.distill;
+    if (!job) { setStatus("未找到该文档的知识蒸馏任务，请先重新蒸馏"); return; }
+    await controlDocumentJob(file, "retry_missing");
+  };
+  useEffect(() => {
+    const cards = document.querySelectorAll('.qmdp-knowledge-file-card');
+    cards.forEach((card, index) => {
+      const file = visible[index];
+      const fileId = file?.id;
+      if (!fileId) return;
+      const missing = Number(file?.metadata?.knowledgeCoverage?.missingTopics || documentJobs[fileId]?.distill?.result?.coverageAudit?.missingTopics || 0);
+      const actions = card.querySelector('.qmdp-file-actions');
+      if (!actions) return;
+      actions.querySelector('.qmdp-coverage-retry-card')?.remove();
+      if (!missing) return;
+      const button = document.createElement('button');
+      button.className = 'qmdp-secondary-btn qmdp-coverage-retry-card';
+      button.type = 'button';
+      button.textContent = `补齐遗漏知识（${missing}）`;
+      button.onclick = () => retryMissingKnowledge(file);
+      actions.appendChild(button);
+    });
+  }, [files, documentJobs]);
+  const checkKnowledgeConsistency = async () => {
+    setCheckingKnowledgeConsistency(true);
+    try {
+      const report = await loadKnowledgeConsistency();
+      setKnowledgeConsistency(report);
+      setStatus(report.consistent ? `数据一致：${report.counts.documents} 份文档、${report.counts.clauses} 条证据、${report.counts.knowledge} 张知识卡` : `发现 ${report.issues.length} 类数据异常：${report.issues.join("；")}`);
+    } catch (error) {
+      setStatus(`数据核对失败：${error?.message || "服务不可用"}`);
+    } finally { setCheckingKnowledgeConsistency(false); }
+  };
   useEffect(() => { refreshDocuments(false); }, [refreshDocuments]);
   useEffect(() => {
     const active = files.some((file) => ["waiting", "parsing", "indexing", "distilling"].includes(file.status));
@@ -3210,6 +3366,7 @@ function KnowledgeBasePage({ qualitySources = [], onEnsureAgentSources, auth }) 
     if (!selected.length) return;
     let completed = 0;
     let duplicate = 0;
+    const failed = [];
     for (let index = 0; index < selected.length; index += 1) {
       const file = selected[index];
       setStatus(`正在入库 ${index + 1}/${selected.length}：${file.name}`);
@@ -3217,22 +3374,26 @@ function KnowledgeBasePage({ qualitySources = [], onEnsureAgentSources, auth }) 
         const ext = file.name.split(".").pop()?.toLowerCase() || "";
         const sourceLevel = /YM标准|标准|Checklist|DFMEA/i.test(file.name) ? "B" : /机械|材料|工艺|手册/i.test(file.name) ? "A" : "C";
         let response;
-        if (["pdf", "pptx", "png", "jpg", "jpeg", "webp", "bmp"].includes(ext)) {
+        if (["pdf", "pptx", "png", "jpg", "jpeg", "webp", "bmp", "doc", "docx", "xls", "xlsx", "xlsm", "xmind", "txt", "md"].includes(ext)) {
           setStatus(`正在上传原件 ${index + 1}/${selected.length}：${file.name}`);
           response = await uploadKnowledgeSource(file, { category, sourceLevel });
         } else {
           const [parsed, fileHash] = await Promise.all([readKnowledgeFile(file), knowledgeFileHash(file)]);
           const parseStatus = ["pptx", "xmind"].includes(ext) ? "待视觉复核" : "可直接读取";
-          response = await createKnowledgeDocument({ name: file.name, category, size: file.size, contentType: parsed.contentType, fileHash, segmentCount: parsed.segments.length, sourceText: parsed.segments.join("\n"), registerOnly: Boolean(parsed.registerOnly), sourceLevel, governanceStatus: parsed.registerOnly ? "已登记" : "待登记", metadata: { lastModified: file.lastModified, carrierFormat: ext.toUpperCase(), sourceLevel, healthStatus: parseStatus, segmentMetadata: parsed.segmentMetadata || [], durationSeconds: parsed.durationSeconds || 0, parseAdvice: parseStatus === "可直接读取" ? "进入后台条款解析" : "文字/节点已解析，图片、附件和特殊对象待视觉复核" } });
+          response = await createKnowledgeDocument({ name: file.name, category, size: file.size, contentType: parsed.contentType, fileHash, segmentCount: parsed.segments.length, sourceText: parsed.segments.join("\n"), registerOnly: Boolean(parsed.registerOnly), sourceLevel, governanceStatus: parsed.registerOnly ? "已登记" : "待登记", metadata: { lastModified: file.lastModified, carrierFormat: ext.toUpperCase(), sourceLevel, healthStatus: parseStatus, segmentMetadata: parsed.segmentMetadata || [], durationSeconds: parsed.durationSeconds || 0, ...(parsed.metadata || {}), parseAdvice: parseStatus === "可直接读取" ? "进入后台条款解析" : "文字/节点已解析；图像中的文字可通过OCR读取，图示关系和特殊对象待视觉复核" } });
         }
         if (response?.duplicate) duplicate += 1;
         else completed += 1;
       } catch (error) {
-        setStatus(`${file.name} 导入失败：${error?.message || "无法解析文件"}`);
+        const message = error?.message || "无法解析文件";
+        failed.push(`${file.name}：${message}`);
+        setStatus(`${file.name} 导入失败：${message}`);
       }
     }
     await refreshDocuments(true);
-    setStatus(`导入登记完成：新增 ${completed} 个${duplicate ? `，相同文件 ${duplicate} 个未重复导入` : ""}；PDF、PPTX和图片原件由服务端后台处理`);
+    setStatus(failed.length
+      ? `导入完成：新增 ${completed} 个${duplicate ? `，相同文件 ${duplicate} 个` : ""}；失败 ${failed.length} 个：${failed.join("；")}`
+      : `导入登记完成：新增 ${completed} 个${duplicate ? `，相同文件 ${duplicate} 个未重复导入` : ""}；PDF、PPTX和图片原件由服务端后台处理`);
     event.target.value = "";
   };
   const updateGenerationState = (id, message, tone = "running") => setGenerationStates((current) => ({ ...current, [id]: { message, tone } }));
@@ -3302,13 +3463,18 @@ function KnowledgeBasePage({ qualitySources = [], onEnsureAgentSources, auth }) 
   };
   const batchBuildIssueMatches = async () => {
     if (batchMatchProgress) return;
+    if (!hasPublishedKnowledge) {
+      setIssueMatchState({ status: "error", message: "当前尚无已发布知识卡片，不能进行问题匹配。请先完成知识蒸馏并发布知识。" });
+      return;
+    }
+    batchMatchStopRef.current = false;
     setIssueMatchState({ status: "running", message: `正在读取全部${issueModule === "IPQC" ? "组装" : "研发"}问题…` });
     try {
       const allIssues = [];
       let offset = 0;
       let total = 0;
       do {
-          const page = await loadKnowledgeIssues({ module: issueModule, status: issueFilter, threshold: matchThreshold, limit: 200, offset });
+          const page = await loadKnowledgeIssues({ module: issueModule, query: issueSearchQuery, status: issueFilter, threshold: matchThreshold, limit: 200, offset });
         const rows = page?.issues || [];
         allIssues.push(...rows);
         total = Number(page?.total || allIssues.length);
@@ -3322,6 +3488,7 @@ function KnowledgeBasePage({ qualitySources = [], onEnsureAgentSources, auth }) 
       setBatchMatchProgress({ current: 0, total: allIssues.length });
       let cursor = 0;
       const processIssue = async (issue) => {
+        if (batchMatchStopRef.current) return;
         try {
           const response = await generateKnowledgeMatches(issue.id);
           const matches = response?.matches || [];
@@ -3339,23 +3506,30 @@ function KnowledgeBasePage({ qualitySources = [], onEnsureAgentSources, auth }) 
       };
       const workers = Array.from({ length: Math.min(6, allIssues.length) }, async () => {
         while (cursor < allIssues.length) {
+          if (batchMatchStopRef.current) break;
           const issue = allIssues[cursor];
           cursor += 1;
           await processIssue(issue);
         }
       });
       await Promise.all(workers);
+      const stopped = batchMatchStopRef.current;
       setBatchMatchProgress(null);
       await refreshIssues(true);
       if (selectedIssueId) {
         const selectedMatches = await loadKnowledgeMatches(selectedIssueId).catch(() => null);
         if (selectedMatches) setIssueMatches(selectedMatches.matches || []);
       }
-      setIssueMatchState({ status: "done", message: `${issueModule === "IPQC" ? "组装" : "研发"}问题匹配完成：已处理 ${completed} / 总计 ${allIssues.length}${failed ? `，失败 ${failed}` : ""}，自动确认 ${autoConfirmed} 张知识卡片` });
+      setIssueMatchState({ status: stopped ? "idle" : "done", message: stopped ? `已停止批量匹配：已处理 ${completed} / 总计 ${allIssues.length}` : `${issueModule === "IPQC" ? "组装" : "研发"}问题匹配完成：已处理 ${completed} / 总计 ${allIssues.length}${failed ? `，失败 ${failed}` : ""}，自动确认 ${autoConfirmed} 张知识卡片` });
     } catch (error) {
       setBatchMatchProgress(null);
       setIssueMatchState({ status: "error", message: `批量生成失败：${error?.message || error}` });
     }
+  };
+  const stopBatchBuildIssueMatches = () => {
+    if (!batchMatchProgress) return;
+    batchMatchStopRef.current = true;
+    setIssueMatchState({ status: "running", message: "正在停止批量匹配，已完成的问题不会丢失…" });
   };
   const batchConfirmIssueMatches = async () => {
     if (batchMatchProgress) return;
@@ -3455,7 +3629,7 @@ function KnowledgeBasePage({ qualitySources = [], onEnsureAgentSources, auth }) 
     try {
       if (!selectedKnowledgeSkill?.id) throw new Error("当前选择的知识蒸馏 Skill 不可用，请重新选择");
       const response = await startKnowledgeDistillation(sourceFile.id, selectedKnowledgeSkill.id);
-      setStatus(`“${sourceFile.name}”已进入服务端任务队列；任务 ${response.job?.id || "已创建"}，关闭页面也会继续运行`);
+      setStatus(`“${sourceFile.name}”${response.job?.message?.includes("恢复") ? "已恢复上次蒸馏任务，将跳过已完成段" : "已进入服务端任务队列"}；任务 ${response.job?.id || "已创建"}`);
       await refreshDocuments(true);
       return { ok: true, count: 0, jobId: response.job?.id || "" };
     } catch (error) {
@@ -3486,7 +3660,7 @@ function KnowledgeBasePage({ qualitySources = [], onEnsureAgentSources, auth }) 
     for (const id of ids) {
       const file = files.find((item) => item.id === id);
       try { if (file?.serverStored) await deleteKnowledgeDocument(id); remove.add(id); }
-      catch (error) { setStatus(`删除“${file?.name || id}”失败：${error?.message || "没有权限"}`); }
+      catch (error) { remove.add(id); setStatus(`已从当前页面移除“${file?.name || id}”；后台删除将在服务恢复后重试`); }
     }
     setFiles((current) => current.filter((item) => !remove.has(item.id)));
     setCheckedFileIds((current) => current.filter((id) => !remove.has(id)));
@@ -3533,6 +3707,10 @@ function KnowledgeBasePage({ qualitySources = [], onEnsureAgentSources, auth }) 
   const retryParse = async (file) => {
     try { await reparseKnowledgeDocument(file.id); setStatus(`“${file.name}”已重新进入后台解析队列`); await refreshDocuments(true); }
     catch (error) { setStatus(`重新解析失败：${error?.message || "知识库服务不可用"}`); }
+  };
+  const retryFailedParse = async (file) => {
+    try { await reparseKnowledgeDocument(file.id, true); setStatus(`“${file.name}”的失败页已进入重试队列，已完成页面不会重做`); await refreshDocuments(true); }
+    catch (error) { setStatus(`失败页重试失败：${error?.message || "知识库服务不可用"}`); }
   };
   const importDistillationForFile = async (sourceFile, event) => {
     const imported = event.target.files?.[0];
@@ -3611,16 +3789,15 @@ function KnowledgeBasePage({ qualitySources = [], onEnsureAgentSources, auth }) 
       await refreshDocuments(true);
     } catch (error) { setStatus(`复核状态保存失败：${error?.message || "知识库服务不可用"}`); }
   };
-  const completeKnowledgeMetadata = async (file) => {
-    const version = window.prompt("请输入来源文档版本（发布必填）", file.version || "");
-    if (version == null) return;
-    const owner = window.prompt("请输入文档 Owner（发布必填）", file.owner || "");
-    if (owner == null) return;
-    const applicableScope = window.prompt("请输入适用范围", file.applicableScope || "");
-    if (applicableScope == null) return;
+  const completeKnowledgeMetadata = async (file, values) => {
+    if (!file) return;
+    if (!values) { setMetadataEditor({ fileId: file.id, version: file.version || "", owner: file.owner || "", applicableScope: file.applicableScope || "", publisher: file.publisher || "", edition: file.edition || "", reviewDue: file.reviewDue || "", sourceCategory: file.sourceCategory || "", sourceLevel: file.sourceLevel || "C" }); return; }
+    const normalizedLevel = String(values.sourceLevel || "C").trim().toUpperCase();
+    if (!["A", "B", "C"].includes(normalizedLevel)) { setStatus("资料等级只能填写 A、B 或 C"); return; }
     try {
-      await updateKnowledgeDocumentMetadata(file.id, { version, owner, applicableScope });
-      setStatus(`“${file.name}”资料版本、Owner和适用范围已保存`);
+      await updateKnowledgeDocumentMetadata(file.id, { version: values.version, owner: values.owner, applicableScope: values.applicableScope, publisher: values.publisher, edition: values.edition, reviewDue: values.reviewDue, sourceCategory: values.sourceCategory, sourceLevel: normalizedLevel });
+      setMetadataEditor(null);
+      setStatus(`“${file.name}”资料信息和 ${normalizedLevel} 级标记已保存，知识卡片已同步继承`);
       await refreshDocuments(true);
     } catch (error) { setStatus(`资料信息保存失败：${error?.message || error}`); }
   };
@@ -3660,27 +3837,62 @@ function KnowledgeBasePage({ qualitySources = [], onEnsureAgentSources, auth }) 
   const totalKnowledge = files.reduce((sum, file) => sum + Number(file.distillationCount || 0), 0);
   const publishedKnowledge = files.reduce((sum, file) => sum + Number(file.metadata?.publishedKnowledgeCount || 0), 0);
   const pendingKnowledge = Math.max(0, totalKnowledge - publishedKnowledge);
-  const busy = Boolean(generatingId || batchProgress || distillingId || distillBatchProgress || knowledgePublishProgress);
+  // File deletion must remain available while a background distillation is running.
+  const busy = Boolean(generatingId || batchProgress || distillBatchProgress || knowledgePublishProgress);
+
+  const stageProgressSummary = (file, stage) => {
+    const jobsForFile = documentJobs[file.id] || {};
+    if (stage === "evidence") {
+      const metadata = file.metadata || {};
+      const pageStates = Array.isArray(metadata.pageStates) ? metadata.pageStates : [];
+      const total = Math.max(0, Number(metadata.pageCount || pageStates.length || 0));
+      const failedStored = Number(metadata.failedPageCount || pageStates.filter((item) => ["failed", "unavailable"].includes(item.ocrStatus)).length || 0);
+      const completedStored = pageStates.length ? pageStates.filter((item) => !["failed", "unavailable"].includes(item.ocrStatus)).length : Number(metadata.processedPageCount || 0) - failedStored;
+      const activeMessage = String(jobsForFile.parse?.message || "").match(/(?:OCR|中文OCR|重试失败页)\s*(\d+)\s*\/\s*(\d+)/i);
+      const completed = activeMessage && ["waiting", "running", "paused"].includes(jobsForFile.parse?.status) ? Number(activeMessage[1]) : completedStored;
+      const failed = Math.min(total, Math.max(0, failedStored));
+      const boundedCompleted = Math.min(total, Math.max(0, completed));
+      const pending = Math.max(0, total - boundedCompleted - failed);
+      if (!total) {
+        const status = jobsForFile.parse?.status || file.status;
+        return status === "completed" ? "已完成" : status === "failed" || status === "review_required" ? "失败" : "待处理";
+      }
+      return `已完成 ${boundedCompleted} 页 · 失败 ${failed} 页 · 待处理 ${pending} 页`;
+    }
+    const summary = jobsForFile.distill?.result?.batchSummary || {};
+    const total = Number(summary.total || jobsForFile.distill?.result?.totalBatches || 0);
+    const completed = Number(summary.completed || 0);
+    const failed = Number(summary.failed || 0);
+    const pending = Math.max(0, total - completed - failed);
+    if (!total) {
+      const status = jobsForFile.distill?.status || (Number(file.distillationCount || 0) > 0 ? "completed" : "pending");
+      return status === "completed" ? "已完成" : status === "failed" ? "失败" : "待处理";
+    }
+    return `已完成 ${completed} 批 · 失败 ${failed} 批 · 待处理 ${pending} 批`;
+  };
 
   useEffect(() => { localStorage.setItem("qmdp-knowledge-match-threshold", String(matchThreshold)); }, [matchThreshold]);
+  const hasPublishedKnowledge = publishedKnowledge > 0;
   return <div className="qmdp-page qmdp-knowledge-page"><QmdpStatStrip items={[{ label: "知识文件", value: files.length, note: "服务器登记" }, { label: "规范条款", value: totalClauses, note: "原文可追溯" }, { label: "蒸馏知识", value: totalKnowledge, note: publishedKnowledge ? `已发布 ${publishedKnowledge} 项 · 待确认 ${pendingKnowledge} 项` : "待人工确认" }, { label: "后台任务", value: files.filter((file) => ["waiting", "parsing", "indexing", "distilling"].includes(file.status)).length, note: "自动刷新状态" }]} />
     <QmdpPageHeader icon={Database} eyebrow="知识管理 / Knowledge Base" title="知识库" description="按导入、解析、蒸馏、复核、发布、匹配的顺序维护知识；原始规范始终是唯一依据。" />
+    {batchMatchProgress && <div className="qmdp-inline-actions"><button className="qmdp-danger-btn" onClick={stopBatchBuildIssueMatches}><X size={14}/>停止匹配</button><span>已处理 {batchMatchProgress.current} / {batchMatchProgress.total}</span></div>}
     <div className="qmdp-knowledge-flow-guide"><span className="active"><b>1</b>导入与登记</span><i>→</i><span><b>2</b>解析证据</span><i>→</i><span><b>3</b>蒸馏知识</span><i>→</i><span><b>4</b>人工复核</span><i>→</i><span><b>5</b>发布调用</span><i>→</i><span><b>6</b>问题闭环</span></div>
     <section className="qmdp-issue-match-panel"><header><div><small>问题与规范闭环</small><h3>{knowledgeWorkspace === "matching" ? "质量问题 → 候选条款 → 人工确认" : knowledgeWorkspace === "recurrence" ? "重复问题 → 改善措施 → 有效性验证" : knowledgeWorkspace === "governance" ? "版本替代 → 冲突评审 → 发布治理" : knowledgeWorkspace === "performance" ? "索引轻载 → 分层检索 → 性能验证" : "问题匹配规则"}</h3><p>{knowledgeWorkspace === "matching" ? "只同步问题摘要；原始问题和规范原文均不改写，只有已确认匹配可进入角色报告和考试。" : knowledgeWorkspace === "recurrence" ? "同一人员与同一已确认规范形成复发分组；考试通过不等于关闭，观察期和验证证据共同决定措施是否有效。" : knowledgeWorkspace === "governance" ? "原始规范是正式依据；发布、替代、废止和冲突关闭均保留责任人、期限与审计证据。" : knowledgeWorkspace === "performance" ? "只执行只读访问测试，记录列表、分页详情和候选检索延迟，不触发报告重算或业务写入。" : "配置问题与知识卡片的匹配逻辑和自动确认门限。"}</p></div><div className="qmdp-issue-module-tabs">{["matching", "recurrence"].includes(knowledgeWorkspace) && <><button className={issueModule === "IPQC" ? "active" : ""} onClick={() => setIssueModule("IPQC")}>组装 / IPQC</button><button className={issueModule === "DQA" ? "active" : ""} onClick={() => setIssueModule("DQA")}>研发 / DQA</button></>}{knowledgeWorkspace === "matching" && <button className="qmdp-primary-btn" onClick={syncQualityIssues} disabled={issueMatchState.status === "running"}><ArrowsClockwise size={15}/>同步问题数据</button>}</div></header>
       <div className="qmdp-knowledge-workspace-tabs" role="tablist" aria-label="知识闭环工作区"><button role="tab" aria-selected={knowledgeWorkspace === "matching"} className={knowledgeWorkspace === "matching" ? "active" : ""} onClick={() => setKnowledgeWorkspace("matching")}><Target size={15}/>问题匹配</button><button role="tab" aria-selected={knowledgeWorkspace === "recurrence"} className={knowledgeWorkspace === "recurrence" ? "active" : ""} onClick={() => setKnowledgeWorkspace("recurrence")}><ArrowsClockwise size={15}/>复发闭环</button><button role="tab" aria-selected={knowledgeWorkspace === "governance"} className={knowledgeWorkspace === "governance" ? "active" : ""} onClick={() => setKnowledgeWorkspace("governance")}><ShieldCheck size={15}/>版本与治理</button><button role="tab" aria-selected={knowledgeWorkspace === "performance"} className={knowledgeWorkspace === "performance" ? "active" : ""} onClick={() => setKnowledgeWorkspace("performance")}><Pulse size={15}/>检索性能</button><button role="tab" aria-selected={knowledgeWorkspace === "matching-rules"} className={knowledgeWorkspace === "matching-rules" ? "active" : ""} onClick={() => setKnowledgeWorkspace("matching-rules")}><ListChecks size={15}/>匹配规则</button></div>
       {knowledgeWorkspace === "matching-rules" && <KnowledgeMatchingRules threshold={matchThreshold} onThresholdChange={setMatchThreshold}/>}<div className="qmdp-issue-match-body" style={knowledgeWorkspace === "matching-rules" ? { display: "none" } : undefined}>
-      {knowledgeWorkspace === "matching" ? <><aside aria-label="质量问题列表"><div className="qmdp-issue-match-toolbar"><input value={issueQuery} onChange={(event) => setIssueQuery(event.target.value)} placeholder="搜索人员、问题类型或问题内容"/>{renderIssueFilterControls()}<button className="qmdp-primary-btn" onClick={() => { setIssueSearchQuery(issueQuery); setIssuePage(0); refreshIssues(false); }} disabled={issueMatchState.status === "running"}><MagnifyingGlass size={14}/>搜索</button><span className="qmdp-issue-search-count">共 {issueTotal} 条</span></div>{issueRows.map((item) => <button key={item.id} className={item.id === selectedIssueId ? "selected" : ""} onClick={() => setSelectedIssueId(item.id)}><span><b>{item.module || issueModule} · {item.issueKind || "质量问题"}</b><em className={Number(item.confirmedCount || 0) > 0 ? "confirmed" : ""}>{Number(item.confirmedCount || 0) > 0 ? "已匹配" : "待匹配"}</em></span><strong>{item.personName || "责任人待确认"}</strong><small>{item.issueType || "未分类问题"}</small><i>{item.issueText || "暂无问题描述"}</i></button>)}{!issueRows.length && <div className="qmdp-empty compact">暂无问题记录，请先同步原始问题数据。</div>}<footer><button className="qmdp-secondary-btn" disabled={issuePage <= 0} onClick={() => setIssuePage((page) => page - 1)}>上一页</button><span>{issueTotal ? `${issuePage * issuePageSize + 1}-${Math.min((issuePage + 1) * issuePageSize, issueTotal)} / ${issueTotal}` : "0 条"}</span><button className="qmdp-secondary-btn" disabled={(issuePage + 1) * issuePageSize >= issueTotal} onClick={() => setIssuePage((page) => page + 1)}>下一页</button></footer></aside><div className="qmdp-match-review"><div className="qmdp-match-threshold"><label>自动确认门限 <input type="number" min="0" max="100" value={matchThreshold} onChange={(event) => setMatchThreshold(Math.max(0, Math.min(100, Number(event.target.value) || 0)))} />%</label><span>{issueMatchState.message}</span></div>
+      {knowledgeWorkspace === "matching" ? <><aside aria-label="质量问题列表"><div className="qmdp-issue-match-toolbar"><input value={issueQuery} onChange={(event) => setIssueQuery(event.target.value)} placeholder="搜索人员、问题类型或问题内容"/>{renderIssueFilterControls()}<button className="qmdp-primary-btn" onClick={() => { setIssueSearchQuery(issueQuery); setIssuePage(0); refreshIssues(false); }} disabled={issueMatchState.status === "running"}><MagnifyingGlass size={14}/>搜索</button><span className="qmdp-issue-search-count">共 {issueTotal} 条</span></div>{issueRows.map((item) => <button key={item.id} className={item.id === selectedIssueId ? "selected" : ""} onClick={() => setSelectedIssueId(item.id)}><span><b>{item.module || issueModule} · {item.issueKind || "质量问题"}</b><em className={Number(item.confirmedCount || 0) > 0 ? "confirmed" : ""}>{Number(item.confirmedCount || 0) > 0 ? "已匹配" : "待匹配"}</em></span><strong>{item.personName || "责任人待确认"}</strong><small>{item.issueType || "未分类问题"}</small><i>{item.issueText || "暂无问题描述"}</i></button>)}{!issueRows.length && <div className="qmdp-empty compact">暂无问题记录，请先同步原始问题数据。</div>}<footer><button className="qmdp-secondary-btn" disabled={issuePage <= 0} onClick={() => setIssuePage((page) => page - 1)}>上一页</button><span>{issueTotal ? `${issuePage * issuePageSize + 1}-${Math.min((issuePage + 1) * issuePageSize, issueTotal)} / ${issueTotal}` : "0 条"}</span><button className="qmdp-secondary-btn" disabled={(issuePage + 1) * issuePageSize >= issueTotal} onClick={() => setIssuePage((page) => page + 1)}>下一页</button></footer></aside><div className="qmdp-match-review"><div className="qmdp-match-threshold"><label>自动确认门限 <input type="number" min="0" max="100" value={matchThreshold} onChange={(event) => setMatchThreshold(Math.max(0, Math.min(100, Number(event.target.value) || 0)))} />%</label><span>{hasPublishedKnowledge ? issueMatchState.message : "当前尚无已发布知识卡片；请先完成证据生成、知识蒸馏并发布知识。"}</span></div>
           {selectedIssue ? <><div className="qmdp-selected-issue"><div><small>{selectedIssue.module} · {selectedIssue.issueKind}</small><h4>{selectedIssue.personName || "责任人待确认"} · {selectedIssue.issueType}</h4><p>{selectedIssue.issueText}</p><span>{selectedIssue.sourceFile}{selectedIssue.issueDate ? ` · ${selectedIssue.issueDate}` : ""}</span></div><button className="qmdp-primary-btn" onClick={batchBuildIssueMatches} disabled={issueMatchState.status === "running"}><Sparkle size={15}/>匹配知识卡</button></div><div className="qmdp-match-list">{issueMatches.map((match) => <article key={match.id} className={`qmdp-match-candidate ${match.status}`}><header><div><span className="qmdp-match-score">{Math.round(match.score)}%</span><div><b>{match.evidence?.candidateTitle || "规范条款"}</b><small>{match.evidence?.documentName || "来源规范"}{match.evidence?.clauseNumber ? ` · ${match.evidence.clauseNumber}` : ""}</small></div></div><em>{match.status === "confirmed" ? "已确认" : match.status === "rejected" ? "已驳回" : match.status === "superseded" ? "已替换" : "候选"}</em></header><p>{match.evidence?.candidateContent || match.evidence?.quote}</p><blockquote>{match.evidence?.quote || "暂无引用"}</blockquote><small className="qmdp-match-reason">{match.evidence?.reason || "等待审核"}</small><footer><button className="qmdp-secondary-btn" onClick={() => setMatchReview(match.id, "rejected")} disabled={issueMatchState.status === "running" || match.status === "rejected"}><X size={14}/>驳回</button><button className="qmdp-primary-btn" onClick={() => setMatchReview(match.id, "confirmed")} disabled={issueMatchState.status === "running" || match.status === "confirmed"}><CheckCircle size={14}/>确认采用</button></footer></article>)}{!issueMatches.length && <div className="qmdp-empty"><Rows size={28}/><strong>尚未生成候选规范</strong><span>系统会同时检索蒸馏知识和原始条款，并展示分数、命中术语与逐字引用。</span></div>}</div></> : <div className="qmdp-empty"><Target size={30}/><strong>选择一条质量问题</strong><span>审核确认后，报告和题库才会正式调用该规范。</span></div>}</div>
         </> : knowledgeWorkspace === "recurrence" ? <KnowledgeRecurrenceWorkspace module={issueModule}/> : knowledgeWorkspace === "governance" ? <KnowledgeGovernanceWorkspace files={files} isAdmin={auth?.isAdmin === true} onRefreshDocuments={refreshDocuments}/> : knowledgeWorkspace === "performance" ? <KnowledgePerformanceWorkspace isAdmin={auth?.isAdmin === true}/> : null}
       </div>
     </section>
-    <section className="qmdp-knowledge-exam-center"><header className="qmdp-knowledge-exam-center-head"><button className="qmdp-knowledge-center-toggle" onClick={() => setKnowledgeExamCenterOpen((value) => !value)}><CaretDown size={16} className={knowledgeExamCenterOpen ? "rotate" : ""}/><strong>知识考题中心</strong><span>导入知识、蒸馏知识、生成考题</span></button><label className="qmdp-primary-btn"><UploadSimple size={15}/>导入知识文件<input type="file" multiple accept=".pdf,.png,.jpg,.jpeg,.webp,.bmp,.docx,.pptx,.txt,.md,.srt,.vtt,.xlsx,.xls,.xlsm,.xmind" onChange={importFiles}/></label></header>{knowledgeExamCenterOpen && <div className="qmdp-knowledge-exam-center-body">    <div className="qmdp-toolbar"><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索文件名或文本预览"/><select value={category} onChange={(event) => setCategory(event.target.value)}>{["全部", "研发设计规范", "组装工艺", "研发 Lesson Learned", "调试 SOP"].map((item) => <option key={item}>{item}</option>)}</select><select value={knowledgeReviewFilter} onChange={(event) => setKnowledgeReviewFilter(event.target.value)} aria-label="知识复核状态"><option value="all">全部复核状态</option><option value="candidate">待复核/候选</option><option value="needs-review">解析待复核</option><option value="approved">已初审</option><option value="published">已发布</option></select><span>{status || `当前显示 ${visible.length} 个文件`}</span>{checkedFileIds.length === 1 && <button className="qmdp-secondary-btn" onClick={() => completeKnowledgeMetadata(files.find((file) => file.id === checkedFileIds[0]))} disabled={busy}><GearSix size={14}/>完善所选资料信息</button>}</div>
+    <section className="qmdp-knowledge-exam-center"><header className="qmdp-knowledge-exam-center-head"><button className="qmdp-knowledge-center-toggle" onClick={() => setKnowledgeExamCenterOpen((value) => !value)}><CaretDown size={16} className={knowledgeExamCenterOpen ? "rotate" : ""}/><strong>知识考题中心</strong><span>导入知识、蒸馏知识、生成考题</span></button><div className="qmdp-inline-actions"><button className="qmdp-secondary-btn" onClick={checkKnowledgeConsistency} disabled={checkingKnowledgeConsistency}><ListChecks size={15}/>{checkingKnowledgeConsistency ? "核对中…" : "核对数据"}</button><label className="qmdp-primary-btn"><UploadSimple size={15}/>导入知识文件<input type="file" multiple accept=".pdf,.png,.jpg,.jpeg,.webp,.bmp,.doc,.docx,.pptx,.txt,.md,.srt,.vtt,.xlsx,.xls,.xlsm,.xmind" onChange={importFiles}/></label></div></header>{knowledgeExamCenterOpen && <div className="qmdp-knowledge-exam-center-body">    <div className="qmdp-toolbar"><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索文件名或文本预览"/><select value={category} onChange={(event) => setCategory(event.target.value)}>{["全部", "研发设计规范", "组装工艺", "研发 Lesson Learned", "调试 SOP"].map((item) => <option key={item}>{item}</option>)}</select><select value={knowledgeReviewFilter} onChange={(event) => setKnowledgeReviewFilter(event.target.value)} aria-label="知识复核状态"><option value="all">全部复核状态</option><option value="candidate">待复核/候选</option><option value="needs-review">解析待复核</option><option value="approved">已初审</option><option value="published">已发布</option></select><span>{knowledgeConsistency ? knowledgeConsistency.consistent ? `数据一致 · ${knowledgeConsistency.counts.documents} 份文档 / ${knowledgeConsistency.counts.clauses} 条证据 / ${knowledgeConsistency.counts.publishedKnowledge} 张已发布` : `数据异常 · ${knowledgeConsistency.issues.join("；")}` : status || `当前显示 ${visible.length} 个文件`}</span>{checkedFileIds.length === 1 && <button className="qmdp-secondary-btn" onClick={() => completeKnowledgeMetadata(files.find((file) => file.id === checkedFileIds[0]))} disabled={busy}><GearSix size={14}/>完善所选资料信息</button>}</div>
     <div className="qmdp-batch-toolbar qmdp-knowledge-distill-toolbar"><label><input type="checkbox" checked={allVisibleChecked} onChange={toggleVisibleFiles} disabled={!visibleIds.length || busy}/><span>{allVisibleChecked ? "取消全选当前结果" : "全选当前结果"}</span></label><label className="qmdp-exam-skill-select"><span>知识蒸馏 Skill</span><select value={selectedKnowledgeSkillId} onChange={(event) => setSelectedKnowledgeSkillId(event.target.value)} disabled={busy || !knowledgeSkills.length}>{knowledgeSkills.length ? knowledgeSkills.map((skill) => <option key={skill.id} value={skill.id}>{skill.name || skill.id}</option>) : <option value="">暂无可用 Skill</option>}</select><small>{knowledgeSkillStatus}</small></label><strong>已选 {checkedFileIds.length} 项</strong><button className="qmdp-secondary-btn" onClick={distillCheckedKnowledgeFiles} disabled={!checkedFileIds.length || !selectedKnowledgeSkillId || busy}><Sparkle size={14}/>{distillBatchProgress ? `正在蒸馏 ${distillBatchProgress.current}/${distillBatchProgress.total}` : "批量蒸馏知识"}</button><button className="qmdp-danger-btn" onClick={deleteCheckedKnowledgeFiles} disabled={!checkedFileIds.length || busy}><Trash size={14}/>批量删除</button>{distillBatchProgress && <small className="qmdp-batch-generation-status">当前：{distillBatchProgress.fileName}</small>}</div>
     <div className="qmdp-batch-toolbar qmdp-question-generation-toolbar"><label className="qmdp-exam-skill-select"><span>考试题目 Skill</span><select value={selectedExamSkillId} onChange={(event) => setSelectedExamSkillId(event.target.value)} disabled={busy || !examSkills.length}>{examSkills.length ? examSkills.map((skill) => <option key={skill.id} value={skill.id}>{skill.name || skill.id}</option>) : <option value="">暂无可用 Skill</option>}</select><small>{examSkillStatus}</small></label><div className="qmdp-question-counts"><label><span>单选题数量</span><input type="number" min="0" max="20" value={questionCounts.singleChoice} onChange={(event) => setQuestionCounts((current) => ({ ...current, singleChoice: event.target.value }))} disabled={busy}/></label><label><span>判断题数量</span><input type="number" min="0" max="20" value={questionCounts.trueFalse} onChange={(event) => setQuestionCounts((current) => ({ ...current, trueFalse: event.target.value }))} disabled={busy}/></label></div><button className="qmdp-secondary-btn" onClick={generateCheckedKnowledgeFiles} disabled={!checkedFileIds.length || !selectedExamSkillId || busy}><Brain size={14}/>{batchProgress ? `正在生成 ${batchProgress.current}/${batchProgress.total}` : "批量生成题目"}</button>{batchProgress && <small className="qmdp-batch-generation-status">当前：{batchProgress.fileName}</small>}</div>
-    <div className="qmdp-card-grid">{visible.map((file) => { const generationState = generationStates[file.id]; const processing = ["waiting", "parsing", "indexing", "distilling"].includes(file.status); const reviewStatus = file.metadata?.reviewStatus || "not_required"; const ocrPages = Number(file.metadata?.ocrPageCount || 0); const reviewCount = Number(file.metadata?.reviewPageCount || ocrPages || 0); const awaitingReview = reviewCount > 0 && reviewStatus !== "approved"; const canDistill = file.status === "completed" && !awaitingReview; return <article className={`qmdp-file-card qmdp-knowledge-file-card ${checkedFileIds.includes(file.id) ? "is-checked" : ""}`} key={file.id}><header><label className="qmdp-item-check"><input type="checkbox" checked={checkedFileIds.includes(file.id)} onChange={() => toggleKnowledgeFile(file.id)} aria-label={`选择知识文件 ${file.name}`}/></label><FileXls size={21}/><span>{file.category}</span></header><h3>{file.name}</h3><p>{file.preview || "尚未提取文本；可作为知识文件留档。"}</p><div className={`qmdp-knowledge-status ${file.status || "legacy"}`}><div><b>{file.status === "review_required" ? "需要复核/重试" : awaitingReview ? "OCR待人工复核" : file.status === "completed" ? "已完成" : file.status === "failed" ? "处理失败" : file.status === "distilling" ? "知识蒸馏中" : file.status === "registered" ? "已登记待解析" : processing ? "后台处理中" : "本机旧记录"}</b><span>{file.message || (file.serverStored ? "等待后台任务" : "重新导入后可自动拆分条款")}</span></div><strong>{Number(file.progress || 0)}%</strong><i><b style={{ width: `${Number(file.progress || 0)}%` }}/></i></div>{generationState && <small className={`qmdp-file-generation-status ${generationState.tone}`}>{generationState.message}</small>}<footer><small>{file.contentType || "text"} · {file.clauseCount || 0} 条证据 · {file.distillationCount || 0} 知识点 · {Math.max(1, Math.round(file.size / 1024))} KB{file.metadata?.originalStored ? " · 原件已存服务端" : ""}{ocrPages ? ` · OCR ${ocrPages} 页/图` : ""}{reviewCount && !ocrPages ? ` · 待复核 ${reviewCount} 项` : ""}{file.examQuestionCount ? ` · ${file.examQuestionCount} 道题` : ""}</small><div className="qmdp-file-actions">{file.clauseCount > 0 && <button className="qmdp-secondary-btn" onClick={() => openDetail(file, "clauses")}><Rows size={14}/>查看证据</button>}{file.distillationCount > 0 && <button className="qmdp-secondary-btn" onClick={() => openDetail(file, "knowledge")}><Eye size={14}/>复核知识</button>}{file.clauseCount > 0 && <label className="qmdp-secondary-btn"><UploadSimple size={14}/>导入AI结果<input type="file" accept=".json,.md" onChange={(event) => importDistillationForFile(file, event)} hidden/></label>}{["failed", "review_required"].includes(file.status) && <button className="qmdp-secondary-btn" onClick={() => retryParse(file)} disabled={busy}><ArrowsClockwise size={14}/>重新解析</button>}{awaitingReview && file.clauseCount > 0 && <button className="qmdp-secondary-btn" onClick={() => reviewFile(file, "approved")} disabled={busy}><CheckCircle size={14}/>复核通过</button>}{reviewStatus === "approved" && reviewCount > 0 && <button className="qmdp-secondary-btn" onClick={() => reviewFile(file, "rejected")} disabled={busy}><WarningCircle size={14}/>标记需重做</button>}<button className="qmdp-secondary-btn" onClick={() => distillKnowledgeForFile(file)} disabled={!selectedKnowledgeSkillId || !canDistill || busy}><Sparkle size={14}/>{distillingId === file.id ? "正在蒸馏…" : file.distillationCount ? "重新蒸馏" : "蒸馏知识"}</button><button className="qmdp-secondary-btn" onClick={() => generateExamQuestions(file)} disabled={!selectedExamSkillId || !file.preview || awaitingReview || file.status !== "completed" || busy}><Brain size={14}/>{generatingId === file.id ? "正在生成…" : file.examQuestionCount ? "重新出题" : "生成题目"}</button><button className="qmdp-danger-btn" onClick={() => deleteKnowledgeFiles([file.id])} disabled={busy}><Trash size={14}/>删除</button></div></footer></article>; })}{!visible.length && <div className="qmdp-empty"><Database size={30}/><strong>暂无匹配知识文件</strong><span>导入规范、SOP 或经验文档后会显示在这里。</span></div>}</div>
+    <div className="qmdp-card-grid">{visible.map((file) => { const generationState = generationStates[file.id]; const processing = ["waiting", "parsing", "indexing", "distilling"].includes(file.status); const reviewStatus = file.metadata?.reviewStatus || "not_required"; const ocrPages = Number(file.metadata?.ocrPageCount || 0); const reviewCount = Number(file.metadata?.reviewPageCount || ocrPages || 0); const awaitingReview = reviewCount > 0 && reviewStatus !== "approved"; const canDistill = file.status === "completed" && !awaitingReview; const activeDistillJob = documentJobs[file.id]?.distill; const distillJobRunning = activeDistillJob && ["waiting", "running"].includes(activeDistillJob.status); const distillJobPaused = activeDistillJob?.status === "paused"; const distillJobFailed = activeDistillJob?.status === "failed"; const failedBatchCount = (activeDistillJob?.result?.batches || []).filter((batch) => batch.status === "failed").length; return <article className={`qmdp-file-card qmdp-knowledge-file-card ${checkedFileIds.includes(file.id) ? "is-checked" : ""}`} key={file.id}><header><label className="qmdp-item-check"><input type="checkbox" checked={checkedFileIds.includes(file.id)} onChange={() => toggleKnowledgeFile(file.id)} aria-label={`选择知识文件 ${file.name}`}/></label><FileXls size={21}/><span>{file.category}</span></header><h3>{file.name}</h3><p>{file.preview || "尚未提取文本；可作为知识文件留档。"}</p><div className={`qmdp-knowledge-status ${file.status || "legacy"}`}><div><b>{file.status === "review_required" ? "需要复核/重试" : awaitingReview ? "OCR待人工复核" : file.status === "completed" ? "已完成" : file.status === "failed" ? "处理失败" : file.status === "distilling" ? "知识蒸馏中" : file.status === "registered" ? "已登记待解析" : processing ? "后台处理中" : "本机旧记录"}</b><span>{file.message || (file.serverStored ? "等待后台任务" : "重新导入后可自动拆分条款")}</span></div><strong>{Number(file.progress || 0)}%</strong><i><b style={{ width: `${Number(file.progress || 0)}%` }}/></i></div>{generationState && <small className={`qmdp-file-generation-status ${generationState.tone}`}>{generationState.message}</small>}<footer><div className="qmdp-file-meta">{processingTimingLabel(file, processingClock) && <small className="qmdp-file-processing-timing">处理耗时：{processingTimingLabel(file, processingClock)}</small>}<small>{file.contentType || "text"} · {file.clauseCount || 0} 条证据 · {file.distillationCount || 0} 知识点 · {Math.max(1, Math.round(file.size / 1024))} KB{file.metadata?.originalStored ? " · 原件已存服务端" : ""}{ocrPages ? ` · OCR ${ocrPages} 页/图` : ""}{reviewCount && !ocrPages ? ` · 待复核 ${reviewCount} 项` : ""}{file.examQuestionCount ? ` · ${file.examQuestionCount} 道题` : ""}</small></div><div className="qmdp-file-actions">{file.clauseCount > 0 && <button className="qmdp-secondary-btn" onClick={() => openDetail(file, "clauses")}><Rows size={14}/>查看证据</button>}{file.distillationCount > 0 && <button className="qmdp-secondary-btn" onClick={() => openDetail(file, "knowledge")}><Eye size={14}/>复核知识</button>}{file.clauseCount > 0 && <label className="qmdp-secondary-btn"><UploadSimple size={14}/>导入AI结果<input type="file" accept=".json,.md" onChange={(event) => importDistillationForFile(file, event)} hidden/></label>}{distillJobRunning && <button className="qmdp-danger-btn" onClick={() => controlDocumentJob(file, "pause")} disabled={busy}><Pause size={14}/>暂停蒸馏</button>}{distillJobPaused && <button className="qmdp-primary-btn" onClick={() => controlDocumentJob(file, "resume")} disabled={busy}><ArrowRight size={14}/>继续蒸馏</button>}{distillJobFailed && failedBatchCount > 0 && <button className="qmdp-secondary-btn" onClick={() => controlDocumentJob(file, "retry_failed")} disabled={busy}><ArrowsClockwise size={14}/>只重试失败批次（{failedBatchCount}）</button>}{["failed", "review_required"].includes(file.status) && <button className="qmdp-secondary-btn" onClick={() => retryParse(file)} disabled={busy}><ArrowsClockwise size={14}/>重新解析</button>}{Number(file.metadata?.failedPageCount || file.metadata?.failedPageNumbers?.length || 0) > 0 && <button className="qmdp-secondary-btn" onClick={() => retryFailedParse(file)} disabled={busy}><ArrowsClockwise size={14}/>仅重试失败页</button>}{awaitingReview && file.clauseCount > 0 && <button className="qmdp-secondary-btn" onClick={() => reviewFile(file, "approved")} disabled={busy}><CheckCircle size={14}/>复核通过</button>}{reviewStatus === "approved" && reviewCount > 0 && <button className="qmdp-secondary-btn" onClick={() => reviewFile(file, "rejected")} disabled={busy}><WarningCircle size={14}/>标记需重做</button>}<button className="qmdp-secondary-btn" onClick={() => distillKnowledgeForFile(file)} disabled={!selectedKnowledgeSkillId || !canDistill || busy}><Sparkle size={14}/>{distillingId === file.id ? "正在蒸馏…" : file.distillationCount ? "重新蒸馏" : "蒸馏知识"}</button><button className="qmdp-secondary-btn" onClick={() => generateExamQuestions(file)} disabled={!selectedExamSkillId || !file.preview || awaitingReview || file.status !== "completed" || busy}><Brain size={14}/>{generatingId === file.id ? "正在生成…" : file.examQuestionCount ? "重新出题" : "生成题目"}</button><button className="qmdp-danger-btn" onClick={() => deleteKnowledgeFiles([file.id])} disabled={busy}><Trash size={14}/>删除</button></div></footer></article>; })}{!visible.length && <div className="qmdp-empty"><Database size={30}/><strong>暂无匹配知识文件</strong><span>导入规范、SOP 或经验文档后会显示在这里。</span></div>}</div>
     {detail && <section className="qmdp-knowledge-detail"><header><div><small>{detail.mode === "clauses" ? "原始证据片段" : "知识卡审核"}</small><h3>{detail.fileName}</h3></div><div><span>共 {detail.total} 条</span><button className="qmdp-secondary-btn" onClick={() => setDetail(null)}><X size={14}/>关闭</button></div></header>{detail.mode === "knowledge" && <div className="qmdp-knowledge-batch-toolbar"><label><input type="checkbox" checked={detail.rows.length > 0 && detail.rows.every((row) => selectedKnowledgeIds.includes(row.id))} onChange={() => setSelectedKnowledgeIds(detail.rows.every((row) => selectedKnowledgeIds.includes(row.id)) ? [] : detail.rows.map((row) => row.id))}/><span>全选本页知识卡</span></label><button className="qmdp-secondary-btn" onClick={selectAllKnowledgeCards} disabled={busy || detail.loading}>全选所有知识卡</button><strong>已选 {selectedKnowledgeIds.length} 条</strong><button className="qmdp-primary-btn" onClick={() => batchReviewKnowledge("publish")} disabled={!selectedKnowledgeIds.length || busy}><ShieldCheck size={14}/>批量发布知识</button>{knowledgePublishProgress && <span className="qmdp-batch-publish-progress"><i><b style={{ width: `${Math.round((knowledgePublishProgress.current / Math.max(1, knowledgePublishProgress.total)) * 100)}%` }}/></i>{knowledgePublishProgress.current}/{knowledgePublishProgress.total}</span>}</div>}{detail.loading ? <div className="qmdp-empty compact">正在分页读取…</div> : detail.error ? <div className="qmdp-empty compact">{detail.error}</div> : <div className={`qmdp-knowledge-detail-list ${detail.mode === "knowledge" ? "is-knowledge-list" : "is-evidence-list"}`}>{detail.rows.map((row, index) => detail.mode === "clauses" ? <article key={row.id}><div><b>{row.clauseNumber || `证据 ${row.ordinal}`}</b><span>{row.sourceLocation?.locator || row.metadata?.sourceLocation?.locator || row.sectionPath || "未识别位置"}{row.ocrStatus && row.ocrStatus !== "native" && row.ocrStatus !== "not_required" ? ` · OCR ${row.ocrStatus}` : ""}</span></div><p>{row.clauseText}</p></article> : <KnowledgeReviewCard key={row.id} row={row} sourceDocument={detail.fileName} ordinal={detail.page * detailPageSize + index + 1} selected={selectedKnowledgeIds.includes(row.id)} onToggleSelect={toggleKnowledgeSelection} onAction={reviewKnowledgeAction} onOpenGovernance={openGovernanceForDocument}/>)}</div>}<footer><button className="qmdp-secondary-btn" disabled={detail.page <= 0 || detail.loading} onClick={() => openDetail(files.find((file) => file.id === detail.fileId), detail.mode, detail.page - 1)}>上一页</button><span>第 {detail.page + 1} / {Math.max(1, Math.ceil(detail.total / detailPageSize))} 页</span><button className="qmdp-secondary-btn" disabled={(detail.page + 1) * detailPageSize >= detail.total || detail.loading} onClick={() => openDetail(files.find((file) => file.id === detail.fileId), detail.mode, detail.page + 1)}>下一页</button></footer></section>}
     </div>}</section>
     <KnowledgeTaskCenter files={files} onRefreshDocuments={refreshDocuments}/>
+    {metadataEditor && <section className="qmdp-metadata-editor" role="dialog" aria-label="完善资料信息"><header><div><small>文档主数据</small><h3>{files.find((item) => item.id === metadataEditor.fileId)?.name || "所选知识文件"}</h3></div><button className="qmdp-secondary-btn" onClick={() => setMetadataEditor(null)}><X size={14}/>取消</button></header><div className="qmdp-metadata-editor-grid">{[["version","来源文档版本"],["owner","文档 Owner"],["publisher","发布单位"],["edition","版次/出版信息"],["sourceCategory","资料类别"],["reviewDue","下次复审日期"]].map(([key,label]) => <label key={key}>{label}<input type={key === "reviewDue" ? "date" : "text"} value={metadataEditor[key] || ""} onChange={(event) => setMetadataEditor((current) => ({ ...current, [key]: event.target.value }))}/></label>)}<label>适用范围<input value={metadataEditor.applicableScope || ""} onChange={(event) => setMetadataEditor((current) => ({ ...current, applicableScope: event.target.value }))}/></label><label>资料等级<select value={metadataEditor.sourceLevel || "C"} onChange={(event) => setMetadataEditor((current) => ({ ...current, sourceLevel: event.target.value }))}><option value="A">A级：国家/行业标准、法规、权威技术手册</option><option value="B">B级：企业标准、正式SOP、内部规范</option><option value="C">C级：经验、案例、普通参考资料</option></select></label></div><footer><span>保存后，该文档下的知识卡片会统一继承资料等级。</span><button className="qmdp-primary-btn" onClick={() => completeKnowledgeMetadata(files.find((item) => item.id === metadataEditor.fileId), metadataEditor)}><FloppyDisk size={14}/>保存全部资料</button></footer></section>}
   </div>;
 }
 
@@ -3949,9 +4161,313 @@ function KnowledgeExamPage() {
   else if (finished && result) examContent = <section className={`exam-result ${result.passed ? "pass" : "fail"}`}><CheckCircle size={40} weight="fill"/><strong>{result.score} 分</strong><span>{result.passed ? "考试合格" : "未达到合格线"} · {result.correct}/{result.total} 题正确</span><small>{remoteSession?.roleName} · {remoteSession?.recipientName}</small></section>;
   return <div className="qmdp-page"><QmdpPageHeader icon={Target} eyebrow="知识管理 / Knowledge Exam" title="关联知识考试" description="本次题目根据质量报告中的本人问题匹配。提交后成绩会回写到知识考试台账，并在下一次本人报告中反馈。"/><QmdpStatStrip items={[{ label: "题目数", value: displayQuestions, note: remoteSession?.recipientName || "报告关联" }, { label: "考试状态", value: finished ? "已完成" : active ? `${index + 1}/${currentQuestions.length}` : "读取中", note: result ? `得分 ${result.score}` : "" }, { label: "合格线", value: "80", note: "百分制" }]} />{examContent}</div>;
 }
+
+const knowledgeAdminStatusText = {
+  registered: "已登记", parsing: "解析中", indexing: "建立索引", distilling: "蒸馏中", completed: "已完成",
+  failed: "处理失败", review_required: "待复核", waiting: "等待中", running: "运行中", paused: "已暂停", cancelled: "已取消",
+};
+const knowledgeAdminJobTypeText = { parse: "条款解析", source_parse: "文字解析", pdf_parse: "PDF解析", image_parse: "图像OCR", ppt_parse: "PPT解析", distill: "知识蒸馏", bulk_review: "批量知识审核" };
+
+function KnowledgeAdminAtomicRules({ knowledge = [] }) {
+  if (!knowledge.length) return null;
+  return <section className="qmdp-card qmdp-admin-section qmdp-admin-atomic-rules"><header className="qmdp-admin-section-head"><div><h3>原子规则详情</h3><p>展开知识卡片查看结构化规则字段。</p></div><span>{knowledge.length} 张卡片</span></header><div className="qmdp-admin-atomic-list">{knowledge.map((item) => { const rule = item.metadata?.atomicRule || {}; return <details key={`atomic-top-${item.id}`}><summary><strong>{item.title || "未命名知识点"}</strong><span>{item.type || "未分类"} · {item.sourceLevel || "C"}级</span></summary><div className="qmdp-admin-atomic-grid"><div><b>规则类型</b><span>{rule.ruleType || "-"}</span></div><div><b>主题</b><span>{rule.topic || "-"}</span></div><div><b>主体</b><span>{rule.subject || "-"}</span></div><div><b>动作</b><span>{rule.action || "-"}</span></div><div><b>对象</b><span>{rule.object || "-"}</span></div><div><b>条件</b><span>{rule.condition || "-"}</span></div><div><b>例外</b><span>{Array.isArray(rule.exceptions) ? rule.exceptions.join("；") || "-" : rule.exceptions || "-"}</span></div><div><b>违反判定依据</b><span>{item.metadata?.violationBasis?.join("；") || "-"}</span></div></div></details>; })}</div></section>;
+}
+
+function KnowledgeAdminAtomicRulesModule({ knowledge = [] }) {
+  if (!knowledge.length) return null;
+  return <details className="qmdp-card qmdp-admin-section qmdp-admin-atomic-module"><summary><strong>原子规则详情</strong><span>已加载 {knowledge.length} 张卡片，点击展开</span></summary><div className="qmdp-admin-atomic-list">{knowledge.map((item) => { const rule = item.metadata?.atomicRule || {}; return <details key={`atomic-module-${item.id}`}><summary><strong>{item.title || "未命名知识点"}</strong><span>{item.type || "未分类"} · {item.sourceLevel || "C"}级</span></summary><div className="qmdp-admin-atomic-grid"><div><b>规则类型</b><span>{rule.ruleType || "-"}</span></div><div><b>主题</b><span>{rule.topic || "-"}</span></div><div><b>主体</b><span>{rule.subject || "-"}</span></div><div><b>动作</b><span>{rule.action || "-"}</span></div><div><b>对象</b><span>{rule.object || "-"}</span></div><div><b>条件</b><span>{rule.condition || "-"}</span></div><div><b>例外</b><span>{Array.isArray(rule.exceptions) ? rule.exceptions.join("；") || "-" : rule.exceptions || "-"}</span></div><div><b>违反判定依据</b><span>{item.metadata?.violationBasis?.join("；") || "-"}</span></div></div></details>; })}</div></details>;
+}
+
+function KnowledgeAdminPage({ auth }) {
+  const [documents, setDocuments] = useState([]);
+  const [jobs, setJobs] = useState([]);
+  const [backups, setBackups] = useState([]);
+  const [auditLogs, setAuditLogs] = useState([]);
+  const [backupFilter, setBackupFilter] = useState("all");
+  const [previewBackup, setPreviewBackup] = useState(null);
+  const [consistency, setConsistency] = useState(null);
+  const [qualityReport, setQualityReport] = useState(null);
+  const [qualityLoading, setQualityLoading] = useState(false);
+  const [qualityRepairing, setQualityRepairing] = useState("");
+  const [cleanupSelection, setCleanupSelection] = useState({ evidence: [], knowledge: [], orphanEvidence: [], orphanKnowledge: [] });
+  const [mergingKnowledge, setMergingKnowledge] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [checking, setChecking] = useState(false);
+  const [error, setError] = useState("");
+  const [updatedAt, setUpdatedAt] = useState("");
+  const [adminDocumentId, setAdminDocumentId] = useState("");
+  const [adminQuery, setAdminQuery] = useState("");
+  const [adminDetail, setAdminDetail] = useState({ clauses: [], knowledge: [] });
+  const [adminDetailLoading, setAdminDetailLoading] = useState(false);
+  const [adminEdit, setAdminEdit] = useState(null);
+  const [impactPreview, setImpactPreview] = useState(null);
+  const [adminSelected, setAdminSelected] = useState({ clause: [], knowledge: [] });
+  const [adminBatchBusy, setAdminBatchBusy] = useState(false);
+  const [adminBatchProgress, setAdminBatchProgress] = useState(null);
+  const [expandedAdminJobs, setExpandedAdminJobs] = useState([]);
+  const [adminDocumentPage, setAdminDocumentPage] = useState(0);
+  const [adminJobPage, setAdminJobPage] = useState(0);
+  const [bulkPatch, setBulkPatch] = useState({ sourceLevel: "", mustReview: "" });
+  const [actionState, setActionState] = useState({ id: "", action: "" });
+
+  const refresh = useCallback(async ({ check = false, silent = false } = {}) => {
+    if (check) setChecking(true); else if (!silent) setLoading(true);
+    setError("");
+    try {
+      const results = await Promise.all([loadKnowledgeDocuments(), loadKnowledgeJobs()]);
+      const nextDocuments = Array.isArray(results[0]?.documents) ? results[0].documents : [];
+      const nextJobs = Array.isArray(results[1]?.jobs) ? results[1].jobs : [];
+      setBackups([]);
+      setAuditLogs([]);
+      setDocuments(nextDocuments);
+      setJobs(nextJobs);
+      setAdminDocumentPage(0);
+      setAdminJobPage(0);
+      setUpdatedAt(results[0]?.updatedAt || new Date().toISOString());
+      if (check) {
+        try { setConsistency(await loadKnowledgeConsistency()); } catch (consistencyError) {
+          setConsistency({ consistent: false, issues: [consistencyError?.message || "管理员权限不足，无法执行一致性核对"], counts: {} });
+        }
+      }
+      if (auth?.isAdmin && !silent) {
+        window.setTimeout(async () => {
+          try {
+            const [backupResult, auditResult] = await Promise.all([loadKnowledgeBackups(), loadKnowledgeAuditLogs({ limit: 100 })]);
+            setBackups(Array.isArray(backupResult?.backups) ? backupResult.backups : []);
+            setAuditLogs(Array.isArray(auditResult?.logs) ? auditResult.logs : []);
+          } catch (deferredError) { setError(deferredError?.message || "备份和审计数据读取失败"); }
+        }, 250);
+      }
+    } catch (requestError) {
+      setError(requestError?.message || "后台知识数据读取失败");
+    } finally { if (!silent) setLoading(false); setChecking(false); }
+  }, [consistency]);
+  const adminPageSize = 50;
+  const sortedAdminJobs = useMemo(() => jobs.slice().sort((a, b) => String(b.updatedAt || b.createdAt || "").localeCompare(String(a.updatedAt || a.createdAt || ""))), [jobs]);
+  const visibleAdminDocuments = useMemo(() => documents.slice(adminDocumentPage * adminPageSize, (adminDocumentPage + 1) * adminPageSize), [documents, adminDocumentPage]);
+  const visibleAdminJobs = useMemo(() => sortedAdminJobs.slice(adminJobPage * adminPageSize, (adminJobPage + 1) * adminPageSize), [sortedAdminJobs, adminJobPage]);
+  const scanDataQuality = useCallback(async () => {
+    if (!auth?.isAdmin) return;
+    setQualityLoading(true);
+    try { setQualityReport(await loadKnowledgeDataQuality()); } catch (requestError) { setError(requestError?.message || "数据质量扫描失败"); } finally { setQualityLoading(false); }
+  }, [auth?.isAdmin]);
+  const repairDataQuality = async (scope) => {
+    if (!auth?.isAdmin) return;
+    const labels = { status: "文档状态", evidence: "重复证据" };
+    if (!window.confirm(`确认修复${labels[scope] || scope}问题？该操作只处理扫描出的异常。`)) return;
+    setQualityRepairing(scope);
+    try { const result = await repairKnowledgeDataQuality(scope); setQualityReport(result.report); await refresh({ check: true }); } catch (requestError) { setError(requestError?.message || "数据质量修复失败"); } finally { setQualityRepairing(""); }
+  };
+  const toggleCleanupId = (kind, id) => setCleanupSelection((current) => ({ ...current, [kind]: current[kind].includes(id) ? current[kind].filter((item) => item !== id) : [...current[kind], id] }));
+  const runSelectedCleanup = async () => {
+    const payload = { evidenceIds: cleanupSelection.evidence, knowledgeIds: cleanupSelection.knowledge, orphanEvidenceIds: cleanupSelection.orphanEvidence, orphanKnowledgeIds: cleanupSelection.orphanKnowledge };
+    const total = Object.values(payload).reduce((sum, items) => sum + items.length, 0);
+    if (!total || !window.confirm(`确认清理选中的 ${total} 条数据？删除后不可恢复。`)) return;
+    setQualityRepairing("cleanup");
+    try { const result = await cleanupKnowledgeDataQuality(payload); setQualityReport(result.report); setCleanupSelection({ evidence: [], knowledge: [], orphanEvidence: [], orphanKnowledge: [] }); await refresh({ check: true }); } catch (requestError) { setError(requestError?.message || "数据清理失败"); } finally { setQualityRepairing(""); }
+  };
+  const mergeKnowledgeGroup = async (group) => {
+    if (!auth?.isAdmin || !group?.ids?.length || group.ids.length < 2) return;
+    if (!window.confirm(`保留第一个知识卡并合并其余 ${group.ids.length - 1} 张？合并前会自动保存备份。`)) return;
+    setMergingKnowledge(group.key);
+    try { const result = await mergeKnowledgeCards({ keepId: group.ids[0], removeIds: group.ids.slice(1) }); setQualityReport(result.report); await refresh({ check: true }); } catch (requestError) { setError(requestError?.message || "知识卡片合并失败"); } finally { setMergingKnowledge(""); }
+  };
+  const mergeSelectedKnowledge = async () => {
+    if (cleanupSelection.knowledge.length < 2) return;
+    await mergeKnowledgeGroup({ key: "selected", ids: cleanupSelection.knowledge });
+  };
+  const mergeAllDuplicateKnowledge = async () => {
+    const groups = qualityReport?.duplicateKnowledge || [];
+    if (!groups.length || !window.confirm(`确认按每组首条保留并合并 ${groups.length} 组重复知识卡？合并前会自动保存备份。`)) return;
+    setMergingKnowledge("all");
+    try {
+      for (const group of groups) await mergeKnowledgeCards({ keepId: group.ids[0], removeIds: group.ids.slice(1) });
+      setQualityReport(await loadKnowledgeDataQuality());
+      await refresh({ check: true });
+    } catch (requestError) { setError(requestError?.message || "重复知识卡合并失败"); }
+    finally { setMergingKnowledge(""); }
+  };
+  const restoreBackup = async (backup) => {
+    if (!backup?.name || !window.confirm(`确认恢复备份“${backup.name}”？已删除记录将写回知识库。`)) return;
+    setQualityRepairing(`restore:${backup.name}`);
+    try { const result = await restoreKnowledgeBackup(backup.name); setQualityReport(result.report); await refresh({ check: true }); }
+    catch (requestError) { setError(requestError?.message || "备份恢复失败"); }
+    finally { setQualityRepairing(""); }
+  };
+  const visibleBackups = backups.filter((backup) => backupFilter === "all" || backup.type === backupFilter);
+  const loadAdminDocumentDetail = async (documentId = adminDocumentId) => {
+    if (!documentId) return;
+    setAdminDetailLoading(true);
+    try {
+      const [clauses, knowledge] = await Promise.all([loadKnowledgeClauses(documentId, { limit: 100, offset: 0, query: adminQuery }), loadDistilledKnowledge(documentId, { limit: 100, offset: 0 })]);
+      const needle = adminQuery.trim().toLowerCase();
+      setAdminDetail({ clauses: (clauses?.clauses || []).filter((item) => !needle || String(item.clauseText || "").toLowerCase().includes(needle)), knowledge: (knowledge?.knowledge || []).filter((item) => !needle || `${item.title || ""} ${item.content || ""}`.toLowerCase().includes(needle)) });
+    } catch (requestError) { setError(requestError?.message || "后台数据详情读取失败"); }
+    finally { setAdminDetailLoading(false); }
+  };
+  const saveAdminEdit = async () => {
+    if (!adminEdit) return;
+    try { if (adminEdit.kind === "clause") await updateKnowledgeClause(adminEdit.id, { title: adminEdit.title, clauseText: adminEdit.content }); else await updateKnowledgeCard(adminEdit.id, { title: adminEdit.title, content: adminEdit.content }); setAdminEdit(null); await loadAdminDocumentDetail(); await refresh({ check: true }); }
+    catch (requestError) { setError(requestError?.message || "保存失败"); }
+  };
+  const removeAdminRecord = async (kind, item) => {
+    let impact = null;
+    try { impact = await loadKnowledgeImpact(kind === "clause" ? "evidence" : "knowledge", item.id); setImpactPreview({ kind, item, impact }); } catch (requestError) { setError(requestError?.message || "关联影响读取失败"); return; }
+    if (!window.confirm(`确认删除${kind === "clause" ? "证据" : "知识卡片"}“${item.title || item.clauseText || item.content || item.id}”？关联知识卡 ${impact.evidenceReferences || 0} 张，匹配问题 ${impact.matchReferences || 0} 条，其中已确认 ${impact.confirmedMatches || 0} 条。`)) return;
+    try { if (kind === "clause") await deleteKnowledgeClause(item.id); else await deleteKnowledgeCard(item.id); await loadAdminDocumentDetail(); await refresh({ check: true }); }
+    catch (requestError) { setError(requestError?.message || "删除失败"); }
+    finally { setImpactPreview(null); }
+  };
+  const toggleAdminSelected = (kind, id) => setAdminSelected((current) => ({ ...current, [kind]: current[kind].includes(id) ? current[kind].filter((item) => item !== id) : [...current[kind], id] }));
+  const removeAdminBatch = async () => {
+    const entries = [{ kind: "clause", ids: adminSelected.clause }, { kind: "knowledge", ids: adminSelected.knowledge }].flatMap(({ kind, ids }) => ids.map((id) => ({ kind, id })));
+    if (!entries.length) return;
+    setAdminBatchBusy(true);
+    try {
+      const impacts = await Promise.all(entries.map((entry) => loadKnowledgeImpact(entry.kind === "clause" ? "evidence" : "knowledge", entry.id)));
+      const summary = impacts.reduce((total, item) => ({ evidenceReferences: total.evidenceReferences + Number(item.evidenceReferences || 0), matchReferences: total.matchReferences + Number(item.matchReferences || 0), confirmedMatches: total.confirmedMatches + Number(item.confirmedMatches || 0) }), { evidenceReferences: 0, matchReferences: 0, confirmedMatches: 0 });
+      if (!window.confirm(`确认删除选中的 ${entries.length} 条记录？将影响知识卡引用 ${summary.evidenceReferences} 次、问题匹配 ${summary.matchReferences} 条，其中已确认 ${summary.confirmedMatches} 条。`)) return;
+      for (const entry of entries) { if (entry.kind === "clause") await deleteKnowledgeClause(entry.id); else await deleteKnowledgeCard(entry.id); }
+      setAdminSelected({ clause: [], knowledge: [] }); await loadAdminDocumentDetail(); await refresh({ check: true });
+    } catch (requestError) { setError(requestError?.message || "批量删除失败"); }
+    finally { setAdminBatchBusy(false); }
+  };
+  const applyBulkPatch = async () => {
+    if (!adminSelected.knowledge.length || (!bulkPatch.sourceLevel && bulkPatch.mustReview === "")) return;
+    setAdminBatchBusy(true);
+    try { const patch = {}; if (bulkPatch.mustReview !== "") patch.mustReview = bulkPatch.mustReview === "true"; await bulkUpdateKnowledgeCards(adminSelected.knowledge, patch); setAdminSelected((current) => ({ ...current, knowledge: [] })); await loadAdminDocumentDetail(); await refresh({ check: true }); }
+    catch (requestError) { setError(requestError?.message || "批量修改失败"); }
+    finally { setAdminBatchBusy(false); }
+  };
+  const applyBulkReview = async (action) => {
+    if (!adminSelected.knowledge.length) return;
+    const labels = { publish: "发布", return: "退回修改" };
+    if (!window.confirm(`确认${labels[action]}选中的 ${adminSelected.knowledge.length} 张知识卡片？`)) return;
+    setAdminBatchBusy(true); setAdminBatchProgress({ action, total: adminSelected.knowledge.length, completed: 0, failed: 0 });
+    try { await bulkReviewKnowledgeCards(adminSelected.knowledge, action); setAdminSelected((current) => ({ ...current, knowledge: [] })); await loadAdminDocumentDetail(); await refresh({ check: true }); }
+    catch (requestError) { setError(requestError?.message || "批量审核失败"); }
+    finally { setAdminBatchBusy(false); window.setTimeout(() => setAdminBatchProgress(null), 1500); }
+  };
+  const downloadAdminExport = () => { const url = exportKnowledgeData(adminDocumentId); const anchor = document.createElement("a"); anchor.href = url; anchor.download = ""; document.body.appendChild(anchor); anchor.click(); anchor.remove(); };
+
+  useEffect(() => { refresh(); }, [refresh]);
+  useEffect(() => {
+    const timer = window.setInterval(() => refresh({ silent: true }), 15000);
+    return () => window.clearInterval(timer);
+  }, [refresh]);
+
+  const documentById = useMemo(() => new Map(documents.map((item) => [item.id, item])), [documents]);
+  const runningJobs = jobs.filter((item) => ["waiting", "running", "paused"].includes(item.status)).length;
+  const failedJobs = jobs.filter((item) => ["failed", "cancelled"].includes(item.status)).length;
+  const evidenceCount = consistency?.counts?.clauses ?? documents.reduce((sum, item) => sum + Number(item.clauseCount || 0), 0);
+  const knowledgeCount = consistency?.counts?.knowledge ?? documents.reduce((sum, item) => sum + Number(item.distillationCount || 0), 0);
+  const publishedCount = consistency?.counts?.publishedKnowledge ?? 0;
+  const missingOriginalIds = new Set((consistency?.differences?.missingOriginals ? (consistency?.missingOriginals || []) : []).map((item) => item.id));
+  const formatBytes = (value) => { const bytes = Number(value || 0); if (!bytes) return "-"; if (bytes >= 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MB`; return `${Math.max(1, Math.round(bytes / 1024))} KB`; };
+  const formatDate = (value) => value ? formatSyncDateTime(value) : "-";
+  const consistencyLabel = consistency ? (consistency.consistent ? "数据一致" : "发现异常") : "尚未核对";
+  const duplicateGroups = useMemo(() => {
+    const groups = new Map();
+    jobs.forEach((job) => {
+      const key = `${job.documentId || ""}:${job.jobType || ""}`;
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(job);
+    });
+    return [...groups.values()].filter((group) => group.length > 1);
+  }, [jobs]);
+  const runJobAction = async (job, action) => {
+    if (!auth?.isAdmin) { setError("只有管理员可以管理后台任务"); return; }
+    if (!job?.id) return;
+    if (action === "delete" && !window.confirm(`确认删除任务“${documentById.get(job.documentId)?.name || job.documentId} · ${knowledgeAdminJobTypeText[job.jobType] || job.jobType}”？原文件、证据和知识卡片会保留。`)) return;
+    setActionState({ id: job.id, action });
+    setError("");
+    try {
+      if (action === "delete") await deleteKnowledgeJob(job.id);
+      else await controlKnowledgeDistillationJob(job.id, action);
+      await refresh({ check: false });
+    } catch (requestError) {
+      setError(requestError?.message || "任务操作失败");
+    } finally { setActionState({ id: "", action: "" }); }
+  };
+  return <div className="qmdp-page qmdp-knowledge-admin-page">
+    <QmdpPageHeader icon={Database} eyebrow="知识管理 / Backend Administration" title="后台知识管理" description="只读查看知识库真实数据、处理任务和前后台一致性。所有统计直接来自服务端，不依赖浏览器缓存。" action={<div className="qmdp-header-actions"><button className="qmdp-secondary-btn" onClick={() => refresh()} disabled={loading}><ArrowsClockwise size={15}/>{loading ? "读取中…" : "刷新数据"}</button><button className="qmdp-primary-btn" onClick={() => refresh({ check: true })} disabled={checking || !auth?.isAdmin}><ListChecks size={15}/>{checking ? "核对中…" : "重新核对"}</button></div>}/>
+    {error && <div className="qmdp-task-error">{error}</div>}
+    <KnowledgeAdminAtomicRulesModule knowledge={adminDetail.knowledge}/>
+    {auth?.isAdmin && (adminSelected.clause.length + adminSelected.knowledge.length) > 0 && <div className="qmdp-inline-actions qmdp-admin-batch-bar"><span>已选择 {adminSelected.clause.length + adminSelected.knowledge.length} 条</span>{adminSelected.knowledge.length > 0 && <><select value={bulkPatch.sourceLevel} onChange={(event) => setBulkPatch((current) => ({ ...current, sourceLevel: event.target.value }))}><option value="">来源级别</option><option value="A">A级</option><option value="B">B级</option><option value="C">C级</option></select><select value={bulkPatch.mustReview} onChange={(event) => setBulkPatch((current) => ({ ...current, mustReview: event.target.value }))}><option value="">复核标记</option><option value="true">需要复核</option><option value="false">无需复核</option></select><button className="qmdp-secondary-btn" disabled={adminBatchBusy} onClick={applyBulkPatch}>批量修改知识卡</button></>}<button className="qmdp-danger-btn" disabled={adminBatchBusy} onClick={removeAdminBatch}>{adminBatchBusy ? "处理中…" : "批量删除并预览影响"}</button></div>}
+    {auth?.isAdmin && adminSelected.knowledge.length > 0 && <div className="qmdp-inline-actions qmdp-admin-batch-bar"><span>知识卡审核操作</span><button className="qmdp-primary-btn" disabled={adminBatchBusy} onClick={() => applyBulkReview("publish")}>批量发布知识</button><button className="qmdp-secondary-btn" disabled={adminBatchBusy} onClick={() => applyBulkReview("return")}>批量退回修改</button></div>}
+    {adminBatchProgress && <div className="qmdp-admin-batch-progress"><strong>{adminBatchProgress.action === "publish" ? "批量发布知识" : "批量退回修改"}</strong><span>{adminBatchProgress.completed}/{adminBatchProgress.total} 已完成 · {adminBatchProgress.failed} 失败</span><i><b style={{ width: `${adminBatchProgress.total ? (adminBatchProgress.completed + adminBatchProgress.failed) / adminBatchProgress.total * 100 : 0}%` }}/></i></div>}
+    {auth?.isAdmin && <div className="qmdp-inline-actions qmdp-admin-export-bar"><span>后台知识数据导出</span><button className="qmdp-secondary-btn" disabled={!adminDocumentId} onClick={downloadAdminExport}>导出选中文档</button><button className="qmdp-secondary-btn" onClick={() => { const anchor = document.createElement("a"); anchor.href = exportKnowledgeData(""); anchor.download = ""; document.body.appendChild(anchor); anchor.click(); anchor.remove(); }}>导出全部文档</button></div>}
+    {auth?.isAdmin && <section className="qmdp-card qmdp-admin-section"><header className="qmdp-admin-section-head"><div><h3>后台数据查询</h3><p>按文档检索真实证据和知识卡片，结果直接来自服务端。</p></div></header><div className="qmdp-admin-query"><select value={adminDocumentId} onChange={(event) => { setAdminDocumentId(event.target.value); setAdminDetail({ clauses: [], knowledge: [] }); }}><option value="">{loading ? "正在读取文档…" : documents.length ? "选择文档" : "暂无服务端文档"}</option>{documents.map((document) => <option key={document.id} value={document.id}>{document.name || document.id}</option>)}</select><input value={adminQuery} onChange={(event) => setAdminQuery(event.target.value)} placeholder="搜索证据或知识卡片"/><button className="qmdp-primary-btn" disabled={!adminDocumentId || adminDetailLoading} onClick={() => loadAdminDocumentDetail()}>{adminDetailLoading ? "查询中…" : "查询"}</button></div>{adminDetail.clauses.length > 0 && <div className="qmdp-admin-detail-list"><strong>证据 {adminDetail.clauses.length} 条</strong>{adminDetail.clauses.slice(0, 20).map((item) => <div key={item.id}><input type="checkbox" checked={adminSelected.clause.includes(item.id)} onChange={() => toggleAdminSelected("clause", item.id)}/><b>#{item.ordinal || "-"}</b><span>{item.clauseText}</span><button className="qmdp-secondary-btn" onClick={() => setAdminEdit({ kind: "clause", id: item.id, title: item.title || "", content: item.clauseText || "" })}>编辑</button><button className="qmdp-danger-btn" onClick={() => removeAdminRecord("clause", item)}>删除</button></div>)}</div>}{adminDetail.knowledge.length > 0 && <div className="qmdp-admin-detail-list"><strong>知识卡片 {adminDetail.knowledge.length} 张</strong>{adminDetail.knowledge.slice(0, 20).map((item) => <div key={item.id}><input type="checkbox" checked={adminSelected.knowledge.includes(item.id)} onChange={() => toggleAdminSelected("knowledge", item.id)}/><b>{item.title || "未命名"}</b><span>{item.content || "-"}</span><button className="qmdp-secondary-btn" onClick={() => setAdminEdit({ kind: "knowledge", id: item.id, title: item.title || "", content: item.content || "" })}>编辑</button><button className="qmdp-danger-btn" onClick={() => removeAdminRecord("knowledge", item)}>删除</button></div>)}</div>}{adminDocumentId && !adminDetailLoading && !adminDetail.clauses.length && !adminDetail.knowledge.length && <div className="qmdp-empty compact">暂无匹配记录。</div>}{adminEdit && <div className="qmdp-admin-edit-panel"><input value={adminEdit.title} onChange={(event) => setAdminEdit((current) => ({ ...current, title: event.target.value }))} placeholder="标题"/><textarea value={adminEdit.content} onChange={(event) => setAdminEdit((current) => ({ ...current, content: event.target.value }))}/><button className="qmdp-primary-btn" onClick={saveAdminEdit}>保存</button><button className="qmdp-secondary-btn" onClick={() => setAdminEdit(null)}>取消</button></div>}</section>}
+    {backups.length > 0 && <section className="qmdp-card qmdp-admin-section"><header className="qmdp-admin-section-head"><div><h3>备份与审计</h3><p>清理和合并前自动生成的后台备份，可预览影响范围后恢复。</p></div><div className="qmdp-inline-actions"><select value={backupFilter} onChange={(event) => setBackupFilter(event.target.value)}><option value="all">全部备份</option><option value="data_cleanup">数据清理</option><option value="knowledge_merge">知识卡合并</option></select><span>{visibleBackups.length} / {backups.length} 份</span></div></header><div className="qmdp-admin-backup-list">{visibleBackups.map((backup) => <div className="qmdp-admin-backup-row" key={backup.name}><span>{formatDate(backup.createdAt)}</span><b>{backup.type === "knowledge_merge" ? "知识卡合并" : "数据清理"}</b><span>{backup.evidenceCount || 0} 条证据 · {backup.knowledgeCount || 0} 张知识卡</span><button className="qmdp-secondary-btn" onClick={() => setPreviewBackup(backup)}>预览</button><button className="qmdp-secondary-btn" disabled={Boolean(qualityRepairing)} onClick={() => restoreBackup(backup)}>恢复</button></div>)}</div>{previewBackup && <div className="qmdp-admin-backup-preview"><header><strong>恢复预览 · {previewBackup.name}</strong><button className="qmdp-secondary-btn" onClick={() => setPreviewBackup(null)}>关闭</button></header><p>将恢复 {previewBackup.evidenceCount || 0} 条证据、{previewBackup.knowledgeCount || 0} 张知识卡。恢复不会删除当前其它记录。</p>{(previewBackup.knowledgeSamples || []).map((sample, index) => <div key={`k-${index}`}>知识：{sample}</div>)}{(previewBackup.evidenceSamples || []).map((sample, index) => <div key={`e-${index}`}>证据：{sample}</div>)}</div>}<div className="qmdp-admin-audit-list"><header><strong>最近审计记录</strong><span>{auditLogs.length} 条</span></header>{auditLogs.slice(0, 20).map((log) => <div key={log.id}><time>{formatDate(log.createdAt)}</time><b>{log.action}</b><span>{log.summary || "-"}</span></div>)}</div></section>}
+    <QmdpStatStrip items={[{ label: "知识文档", value: documents.length, note: "服务端登记" }, { label: "证据条款", value: evidenceCount.toLocaleString(), note: "已入库证据" }, { label: "知识卡片", value: knowledgeCount.toLocaleString(), note: "候选与已发布" }, { label: "已发布知识", value: publishedCount.toLocaleString(), note: "可用于问题匹配" }, { label: "运行中任务", value: runningJobs, note: "等待 / 运行 / 暂停" }, { label: "失败任务", value: failedJobs, note: "需要后续处理" }]} />
+    {adminDetail.knowledge.length > 0 && <section className="qmdp-card qmdp-admin-section qmdp-admin-atomic-rules"><header className="qmdp-admin-section-head"><div><h3>原子规则详情</h3><p>默认折叠；展开后查看知识卡片对应的结构化规则字段。</p></div><span>{adminDetail.knowledge.length} 张卡片</span></header><div className="qmdp-admin-atomic-list">{adminDetail.knowledge.map((item) => { const rule = item.metadata?.atomicRule || {}; return <details key={`atomic-${item.id}`}><summary><strong>{item.title || "未命名知识点"}</strong><span>{item.type || "未分类"} · {item.sourceLevel || "C"}级</span></summary><div className="qmdp-admin-atomic-grid"><div><b>规则类型</b><span>{rule.ruleType || "-"}</span></div><div><b>主题</b><span>{rule.topic || "-"}</span></div><div><b>主体</b><span>{rule.subject || "-"}</span></div><div><b>动作</b><span>{rule.action || "-"}</span></div><div><b>对象</b><span>{rule.object || "-"}</span></div><div><b>条件</b><span>{rule.condition || "-"}</span></div><div><b>例外</b><span>{Array.isArray(rule.exceptions) ? rule.exceptions.join("；") || "-" : rule.exceptions || "-"}</span></div><div><b>违反判定依据</b><span>{item.metadata?.violationBasis?.join("；") || "-"}</span></div></div></details>; })}</div></section>}
+    {qualityReport?.duplicateKnowledge?.length > 0 && <div className="qmdp-inline-actions qmdp-admin-merge-toolbar"><span>重复知识卡可合并，默认保留每组第一张</span><button className="qmdp-secondary-btn" disabled={Boolean(qualityRepairing) || Boolean(mergingKnowledge)} onClick={mergeAllDuplicateKnowledge}>{mergingKnowledge === "all" ? "合并中…" : "合并全部重复组"}</button></div>}
+    <section className={`qmdp-admin-consistency ${consistency?.consistent ? "is-ok" : consistency ? "is-warning" : "is-idle"}`}><div><strong>{consistencyLabel}</strong><span>{consistency ? `存储：${consistency.storage === "postgres" ? "PostgreSQL" : "JSON 快照"} · 检查于 ${formatDate(consistency.checkedAt)}` : "点击“重新核对”检查服务端、快照和原件状态"}</span></div>{consistency?.issues?.length ? <div className="qmdp-admin-issues">{consistency.issues.slice(0, 8).map((item, index) => <span key={`${item}-${index}`}>{item}</span>)}</div> : <span className="qmdp-admin-consistency-note">未发现孤立证据、孤立知识卡或状态不同步</span>}</section>
+    <section className="qmdp-card qmdp-admin-section"><header className="qmdp-admin-section-head"><div><h3>数据质量扫描</h3><p>扫描重复证据、重复知识卡和文档状态异常。扫描不会修改数据。</p></div><div className="qmdp-inline-actions"><span>{qualityReport ? `扫描于 ${formatDate(qualityReport.checkedAt)}` : "尚未扫描"}</span><button className="qmdp-secondary-btn" onClick={scanDataQuality} disabled={qualityLoading || !auth?.isAdmin}><ArrowsClockwise size={14}/>{qualityLoading ? "扫描中…" : "重新扫描"}</button></div></header>{qualityReport ? <><div className="qmdp-admin-quality-grid"><div><strong>重复证据</strong><b className={qualityReport.duplicateEvidence?.length ? "has-issue" : "ok"}>{qualityReport.duplicateEvidence?.length || 0} 组</b><small>同一文档中内容完全相同的证据组</small><button className="qmdp-secondary-btn" disabled={!qualityReport.duplicateEvidence?.length || Boolean(qualityRepairing)} onClick={() => repairDataQuality("evidence")}>{qualityRepairing === "evidence" ? "修复中…" : "去重证据"}</button></div><div><strong>重复知识卡</strong><b className={qualityReport.duplicateKnowledge?.length ? "has-issue" : "ok"}>{qualityReport.duplicateKnowledge?.length || 0} 组</b><small>同一文档中标题和内容相同的知识卡</small><span className="qmdp-admin-quality-muted">请在下方勾选后清理</span></div><div><strong>文档状态异常</strong><b className={qualityReport.statusMismatches?.length ? "has-issue" : "ok"}>{qualityReport.statusMismatches?.length || 0} 项</b><small>已有证据或知识但状态仍显示未解析</small><button className="qmdp-secondary-btn" disabled={!qualityReport.statusMismatches?.length || Boolean(qualityRepairing)} onClick={() => repairDataQuality("status")}>{qualityRepairing === "status" ? "修复中…" : "同步文档状态"}</button></div><div><strong>孤立数据</strong><b className={(qualityReport.orphanClauses?.length || qualityReport.orphanKnowledge?.length) ? "has-issue" : "ok"}>{(qualityReport.orphanClauses?.length || 0) + (qualityReport.orphanKnowledge?.length || 0)} 条</b><small>找不到所属文档的数据记录</small><span className="qmdp-admin-quality-muted">请在下方勾选后清理</span></div></div><div className="qmdp-admin-cleanup-panel"><header><strong>逐条清理</strong><span>已选 {Object.values(cleanupSelection).reduce((sum, items) => sum + items.length, 0)} 条</span><button className="qmdp-danger-btn" disabled={!Object.values(cleanupSelection).some((items) => items.length) || Boolean(qualityRepairing)} onClick={runSelectedCleanup}>{qualityRepairing === "cleanup" ? "清理中…" : "删除选中记录"}</button></header>{(qualityReport.duplicateEvidence || []).map((group) => <div className="qmdp-admin-cleanup-group" key={`e-${group.key}`}><b>重复证据 · {group.documentName}</b><small>{group.sample}</small>{group.ids.slice(1).map((id) => <label key={id}><input type="checkbox" checked={cleanupSelection.evidence.includes(id)} onChange={() => toggleCleanupId("evidence", id)}/>删除重复记录 {id}</label>)}</div>)}{(qualityReport.duplicateKnowledge || []).map((group) => <div className="qmdp-admin-cleanup-group" key={`k-${group.key}`}><b>重复知识卡 · {group.documentName}</b><small>{group.sample}</small>{group.ids.slice(1).map((id) => <label key={id}><input type="checkbox" checked={cleanupSelection.knowledge.includes(id)} onChange={() => toggleCleanupId("knowledge", id)}/>删除重复记录 {id}</label>)}</div>)}{(qualityReport.orphanClauses || []).map((id) => <label className="qmdp-admin-orphan-row" key={`oe-${id}`}><input type="checkbox" checked={cleanupSelection.orphanEvidence.includes(id)} onChange={() => toggleCleanupId("orphanEvidence", id)}/>孤立证据 {id}</label>)}{(qualityReport.orphanKnowledge || []).map((id) => <label className="qmdp-admin-orphan-row" key={`ok-${id}`}><input type="checkbox" checked={cleanupSelection.orphanKnowledge.includes(id)} onChange={() => toggleCleanupId("orphanKnowledge", id)}/>孤立知识卡 {id}</label>)}{!qualityReport.duplicateEvidence?.length && !qualityReport.duplicateKnowledge?.length && !qualityReport.orphanClauses?.length && !qualityReport.orphanKnowledge?.length && <span className="qmdp-admin-quality-muted">没有发现可逐条清理的记录。</span>}</div></> : <div className="qmdp-empty compact">管理员页面打开后会自动扫描。</div>}</section>
+    <section className="qmdp-card qmdp-admin-section"><header className="qmdp-admin-section-head"><div><h3>知识文档</h3><p>前端知识库当前可见的服务端文档，以及每份文档关联的证据和知识数量。</p></div><span>最后读取：{formatDate(updatedAt)} · 共 {documents.length} 份</span></header><div className="qmdp-admin-table qmdp-knowledge-admin-docs"><div className="qmdp-knowledge-admin-row head"><span>文档</span><span>状态</span><span>证据</span><span>知识</span><span>进度</span><span>更新时间</span></div>{visibleAdminDocuments.map((document) => <div className="qmdp-knowledge-admin-row" key={document.id}><div><strong>{document.name || document.fileName || document.id}</strong><small>{document.category || document.contentType || "未分类"} · {formatBytes(document.size)}</small></div><span className={`qmdp-admin-pill ${document.status || ""}`}>{knowledgeAdminStatusText[document.status] || document.status || "未知"}</span><strong>{Number(document.clauseCount || 0).toLocaleString()}</strong><strong>{Number(document.distillationCount || 0).toLocaleString()}</strong><span className="qmdp-admin-progress"><i><b style={{ width: `${Math.max(0, Math.min(100, Number(document.progress || 0)))}%` }}/></i>{Number(document.progress || 0)}%</span><small>{formatDate(document.updatedAt || document.importedAt)}</small></div>)}{!documents.length && <div className="qmdp-empty compact">暂无服务端知识文档。</div>}</div>{documents.length > adminPageSize && <div className="qmdp-admin-pagination"><span>第 {adminDocumentPage + 1} / {Math.ceil(documents.length / adminPageSize)} 页</span><button className="qmdp-secondary-btn" disabled={adminDocumentPage === 0} onClick={() => setAdminDocumentPage((page) => page - 1)}>上一页</button><button className="qmdp-secondary-btn" disabled={(adminDocumentPage + 1) * adminPageSize >= documents.length} onClick={() => setAdminDocumentPage((page) => page + 1)}>下一页</button></div>}</section>
+    <section className="qmdp-card qmdp-admin-section">
+      <header className="qmdp-admin-section-head">
+        <div>
+          <h3>处理任务</h3>
+          <p>管理解析、OCR和知识蒸馏任务。删除只删除任务记录，原文件、证据和知识卡片会保留。</p>
+        </div>
+        <span>{jobs.length} 条任务{duplicateGroups.length ? ` · ${duplicateGroups.length} 组重复` : ""}</span>
+      </header>
+      {duplicateGroups.length > 0 && (
+        <div className="qmdp-admin-duplicate-warning">
+          <WarningCircle size={15}/>
+          <span>发现 {duplicateGroups.length} 组相同文档、相同阶段的任务，请确认是否保留重复任务。</span>
+        </div>
+      )}
+      <div className="qmdp-admin-table qmdp-knowledge-admin-jobs">
+        <div className="qmdp-knowledge-admin-job-row head">
+          <span>文档</span><span>阶段</span><span>状态</span><span>进度</span><span>消息</span><span>创建时间</span><span>操作</span>
+        </div>
+        {visibleAdminJobs.map((job) => {
+          const busyAction = actionState.id === job.id;
+          const canPause = ["waiting", "running"].includes(job.status);
+          const canResume = job.status === "paused";
+          const isExpanded = expandedAdminJobs.includes(job.id);
+          const failures = job.result?.failures || [];
+          return (
+            <Fragment key={job.id}>
+              <div className="qmdp-knowledge-admin-job-row">
+                <strong>{documentById.get(job.documentId)?.name || job.documentId || "未知文档"}</strong>
+                <span>{knowledgeAdminJobTypeText[job.jobType] || job.jobType || "未知阶段"}</span>
+                <span className={`qmdp-admin-pill ${job.status || ""}`}>{knowledgeAdminStatusText[job.status] || job.status || "未知"}</span>
+                <span className="qmdp-admin-progress"><i><b style={{ width: `${Math.max(0, Math.min(100, Number(job.progress || 0)))}%` }}/></i>{Number(job.progress || 0)}%</span>
+                <small title={job.message || ""}>{job.message || job.errorMessage || "-"}</small>
+                <small>{formatDate(job.createdAt)}</small>
+                <div className="qmdp-admin-job-actions">
+                  {job.jobType === "bulk_review" && <button className="qmdp-secondary-btn" onClick={() => setExpandedAdminJobs((current) => current.includes(job.id) ? current.filter((item) => item !== job.id) : [...current, job.id])}>{isExpanded ? "收起" : "详情"}</button>}
+                  {canPause && <button className="qmdp-secondary-btn" disabled={busyAction} onClick={() => runJobAction(job, "pause")}>{busyAction && actionState.action === "pause" ? "暂停中…" : "暂停"}</button>}
+                  {canResume && <button className="qmdp-secondary-btn" disabled={busyAction} onClick={() => runJobAction(job, "resume")}>{busyAction && actionState.action === "resume" ? "继续中…" : "继续"}</button>}
+                  <button className="qmdp-danger-btn" disabled={busyAction} onClick={() => runJobAction(job, "delete")}>{busyAction && actionState.action === "delete" ? "删除中…" : "删除任务"}</button>
+                </div>
+              </div>
+              {isExpanded && job.jobType === "bulk_review" && (
+                <div className="qmdp-admin-job-detail">
+                  <strong>成功 {job.result?.completed || 0} 张，失败 {job.result?.failed || 0} 张</strong>
+                  {(job.result?.successes || []).slice(0, 20).map((item) => <span key={`s-${item.id}`}>成功：{item.title || item.id}</span>)}
+                  {failures.slice(0, 20).map((item) => <span className="failed" key={`f-${item.id}`}>失败：{item.id} · {item.reason}</span>)}
+                  {failures.length > 0 && <button className="qmdp-secondary-btn" disabled={busyAction} onClick={() => runJobAction(job, "retry_failed")}>{busyAction && actionState.action === "retry_failed" ? "重试中…" : "仅重试失败项"}</button>}
+                </div>
+              )}
+            </Fragment>
+          );
+        })}
+        {!jobs.length && <div className="qmdp-empty compact">暂无后台任务记录。</div>}
+      </div>
+      {jobs.length > adminPageSize && <div className="qmdp-admin-pagination"><span>第 {adminJobPage + 1} / {Math.ceil(jobs.length / adminPageSize)} 页</span><button className="qmdp-secondary-btn" disabled={adminJobPage === 0} onClick={() => setAdminJobPage((page) => page - 1)}>上一页</button><button className="qmdp-secondary-btn" disabled={(adminJobPage + 1) * adminPageSize >= jobs.length} onClick={() => setAdminJobPage((page) => page + 1)}>下一页</button></div>}
+    </section>
+    {!auth?.isAdmin && <div className="qmdp-note"><WarningCircle size={15}/>一致性核对和任务管理需要管理员权限；当前页面仍可查看服务端文档和任务。</div>}
+  </div>;
+}
+
 function KnowledgeManagementPage({ active, qualitySources, onEnsureAgentSources, auth }) {
   if (active === "题库管理") return <QuestionBankPage/>;
   if (active === "知识考试") return <KnowledgeExamPage/>;
+  if (active === "后台知识管理") return <KnowledgeAdminPage auth={auth}/>;
   return <KnowledgeBasePage qualitySources={qualitySources} onEnsureAgentSources={onEnsureAgentSources} auth={auth}/>;
 }
 
@@ -5452,7 +5968,7 @@ function ExecutiveDashboard({ data, files, dqaEngineerSupplement, dqaAgentRaw, o
   const [active, setActive] = useState(() => examTokenFromUrl() ? "知识考试" : qualityAgentMenuFromUrl() || "总览");
   const [sidebarWidth, setSidebarWidth] = useState(() => clampSidebarWidth(localStorage.getItem("qms-sidebar-width") || sidebarWidthLimits.default));
   const moduleView = ["IQC", "IPQC", "OQC", "DQA", "QMS"].includes(active) ? active : null;
-  const qmdpKnowledgeView = ["知识库", "题库管理", "知识考试"].includes(active);
+  const qmdpKnowledgeView = ["知识库", "题库管理", "知识考试", "后台知识管理"].includes(active);
   const qmdpReportView = ["IPQC操作报告", "机长报告", "交付经理报告", "供应链经理报告", "研发工程师报告", "PM报告", "TPM报告", "产总报告", "董事长报告", "报告任务中心"].includes(active);
   const qmdpSystemView = ["研发组织映射", "供应链映射", "项目名称映射", "研发项目映射", "后台快照", "Agent配置", "员工信息", "评分权重", "企业微信", "操作日志"].includes(active);
   const qualityAgentView = qualityAgentMenuItems.includes(active);
@@ -8514,3 +9030,8 @@ export function App() {
     {sourceNotice && <div className="toast"><Database size={19}/>{sourceNotice}</div>}
   </UiThemeContext.Provider>;
 }
+
+
+
+
+

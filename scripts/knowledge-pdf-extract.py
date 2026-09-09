@@ -58,6 +58,14 @@ def main() -> None:
     pages = []
     for index in range(page_limit):
         page = reader.pages[index]
+        image_count = 0
+        try:
+            resources = page.get("/Resources") or {}
+            xobjects = resources.get("/XObject") if hasattr(resources, "get") else None
+            if xobjects:
+                image_count = sum(1 for ref in xobjects.values() if ref.get_object().get("/Subtype") == "/Image")
+        except Exception:
+            image_count = 0
         error_message = ""
         try:
             text = (page.extract_text() or "").replace("\x00", "").replace("\r", "").strip()
@@ -73,6 +81,7 @@ def main() -> None:
             "mediaBox": box_values(page.mediabox),
             "cropBox": box_values(page.cropbox),
             "rotation": int(page.get("/Rotate", 0) or 0),
+            "imageCount": image_count,
             "errorMessage": error_message,
         })
 

@@ -29,6 +29,8 @@ $ready = $false
 for ($attempt = 0; $attempt -lt 30; $attempt++) {
   Start-Sleep -Milliseconds 500
   try {
+    # Startup readiness must use a tiny endpoint; loading the full knowledge
+    # index here can transfer tens of megabytes before the browser opens.
     $response = Invoke-WebRequest -UseBasicParsing "http://127.0.0.1:$port/api/me" -TimeoutSec 2
     if ($response.StatusCode -eq 200) {
       $ready = $true

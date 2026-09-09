@@ -537,9 +537,9 @@ const handleKnowledge = async (req, res) => {
     if (pathname === "/api/knowledge/import" && req.method === "POST") {
       const name = String(requestUrl.searchParams.get("name") || "").trim();
       const extension = name.split(".").pop()?.toLowerCase() || "";
-      const contentTypes = { pdf: "pdf", pptx: "ppt", png: "image", jpg: "image", jpeg: "image", webp: "image", bmp: "image" };
+      const contentTypes = { pdf: "pdf", pptx: "ppt", png: "image", jpg: "image", jpeg: "image", webp: "image", bmp: "image", doc: "word", docx: "word", xls: "excel", xlsx: "excel", xlsm: "excel", xmind: "xmind", txt: "text", md: "text" };
       const contentType = contentTypes[extension];
-      if (!name || !contentType) return sendJson(res, 400, { error: "当前服务端原文件入库支持PDF、PPTX和PNG/JPG/WEBP/BMP图片" });
+      if (!name || !contentType) return sendJson(res, 400, { error: "不支持的知识文件类型" });
       await fs.mkdir(knowledgeOriginalDir, { recursive: true });
       const temporaryPath = path.join(knowledgeOriginalDir, `.upload-${randomUUID()}.tmp`);
       const hash = createHash("sha256");
@@ -570,8 +570,8 @@ const handleKnowledge = async (req, res) => {
         contentType,
         fileHash,
         segmentCount: 0,
-        sourceText: `原始${contentType === "pdf" ? "PDF" : contentType === "ppt" ? "PPTX" : "图片"}文件：${name}\n服务端原件已保存，等待后台证据解析。`,
-        registerOnly: true,
+        sourceText: `原始${extension.toUpperCase()}文件：${name}\n服务端原件已保存，等待后台证据解析。`,
+        registerOnly: false,
         sourceLevel,
         governanceStatus: "已登记",
         metadata: {
@@ -579,13 +579,18 @@ const handleKnowledge = async (req, res) => {
           sourceLevel,
           healthStatus: "待检测",
           originalStored: true,
+          // Captured before the new upload is moved into the hash path. This
+          // lets createDocument distinguish a valid duplicate from a stale
+          // database row whose original had already been deleted.
+          originalExistedBeforeUpload: targetExists,
           originalRelativePath: relativePath,
           originalFileName: name,
           originalSize: size,
           uploadedBy: user.name || user.ip || "",
           uploadedAt: new Date().toISOString(),
           reviewStatus: "pending",
-          parseAdvice: contentType === "pdf" ? "后台先检测原生文字；仅低质量页面进入Windows中文OCR" : contentType === "ppt" ? "后台提取幻灯片文字与嵌入图片；图片进入Windows中文OCR并保留幻灯片坐标" : "后台执行Windows中文OCR，保留像素坐标并进入人工复核",
+          deferParse: !["pdf", "ppt", "image"].includes(contentType),
+          parseAdvice: contentType === "pdf" ? "后台先检测原生文字；大文件自动切割后解析；扫描页图像文字可通过OCR读取，图示关系待复核" : contentType === "ppt" ? "后台提取幻灯片文字；嵌入图像中的文字可OCR，图示关系待复核" : ["excel", "word"].includes(contentType) ? "后台解析文字；嵌入图像中的文字和图示关系当前需视觉复核" : "原件已接收，等待对应解析器处理",
         },
         actor: user.name || user.ip || "",
         actorIp: user.ip || "",
@@ -596,6 +601,27 @@ const handleKnowledge = async (req, res) => {
       const documents = await knowledgeService.listDocuments();
       const visible = documents.map((document) => document.accessLevel === "restricted" && !user.isAdmin && !user.isDeputy ? { ...document, preview: "受限资料：仅显示治理索引", metadata: { accessLevel: "restricted" }, originalRestricted: true } : document);
       return sendJson(res, 200, { documents: visible, updatedAt: new Date().toISOString() });
+    }
+    if (pathname === "/api/knowledge/consistency" && req.method === "GET") {
+      if (!user.isAdmin) return sendJson(res, 403, { error: "只有管理员可以核对知识库数据" });
+      return sendJson(res, 200, await knowledgeService.getConsistencyReport());
+    }
+    if (pathname === "/api/knowledge/data-quality" && req.method === "GET") {
+      if (!user.isAdmin) return sendJson(res, 403, { error: "只有管理员可以扫描知识库数据质量" });
+      return sendJson(res, 200, await knowledgeService.getDataQualityReport());
+    }
+    if (pathname === "/api/knowledge/data-quality/repair" && req.method === "POST") {
+      if (!user.isAdmin) return sendJson(res, 403, { error: "只有管理员可以修复知识库数据" });
+      const payload = await jsonBody();
+      return sendJson(res, 200, await knowledgeService.repairDataQuality(String(payload.scope || "status")));
+    }
+    if (pathname === "/api/knowledge/data-quality/cleanup" && req.method === "POST") {
+      if (!user.isAdmin) return sendJson(res, 403, { error: "只有管理员可以清理知识库数据" });
+      return sendJson(res, 200, await knowledgeService.cleanupDataQuality(await jsonBody()));
+    }
+    if (pathname === "/api/knowledge/data-quality/merge" && req.method === "POST") {
+      if (!user.isAdmin) return sendJson(res, 403, { error: "只有管理员可以合并知识卡片" });
+      return sendJson(res, 200, await knowledgeService.mergeKnowledgeCards(await jsonBody()));
     }
     if (pathname === "/api/knowledge/documents" && req.method === "POST") {
       const result = await knowledgeService.createDocument({ ...(await jsonBody()), actor: user.name || user.ip || "", actorIp: user.ip || "" });
@@ -632,6 +658,21 @@ const handleKnowledge = async (req, res) => {
       if (!user.isAdmin) return sendJson(res, 403, { error: "只有管理员可以查看知识治理审计日志" });
       const result = await knowledgeService.listAuditLogs({ entityType: requestUrl.searchParams.get("entityType") || "", entityId: requestUrl.searchParams.get("entityId") || "", action: requestUrl.searchParams.get("action") || "", limit: requestUrl.searchParams.get("limit") });
       return sendJson(res, 200, result);
+    }
+    if (pathname === "/api/knowledge/backups" && req.method === "GET") {
+      if (!user.isAdmin) return sendJson(res, 403, { error: "只有管理员可以查看知识库备份" });
+      return sendJson(res, 200, await knowledgeService.listKnowledgeBackups({ limit: requestUrl.searchParams.get("limit") }));
+    }
+    if (pathname === "/api/knowledge/export" && req.method === "GET") {
+      if (!user.isAdmin) return sendJson(res, 403, { error: "只有管理员可以导出后台知识数据" });
+      const result = await knowledgeService.exportKnowledgeData(requestUrl.searchParams.get("documentId") || "");
+      res.writeHead(200, { "Content-Type": "application/json; charset=utf-8", "Content-Disposition": `attachment; filename="knowledge-export-${Date.now()}.json"` });
+      return res.end(JSON.stringify(result, null, 2));
+    }
+    const backupRestoreMatch = pathname.match(/^\/api\/knowledge\/backups\/([^/]+)\/restore$/);
+    if (backupRestoreMatch && req.method === "POST") {
+      if (!user.isAdmin) return sendJson(res, 403, { error: "只有管理员可以恢复知识库备份" });
+      return sendJson(res, 200, await knowledgeService.restoreKnowledgeBackup(decodeURIComponent(backupRestoreMatch[1])));
     }
     if (pathname === "/api/knowledge/jobs" && req.method === "GET") {
       const jobs = await knowledgeService.listJobs(String(requestUrl.searchParams.get("documentId") || ""), { compact: true });
@@ -746,8 +787,10 @@ const handleKnowledge = async (req, res) => {
       return document ? sendJson(res, 200, { document: { ...document, sourceText: undefined } }) : sendJson(res, 404, { error: "知识文件不存在" });
     }
     if (documentMatch && req.method === "DELETE") {
-      const deleted = await knowledgeService.deleteDocument(decodeURIComponent(documentMatch[1]), { actor: user.name || user.ip || "", actorIp: user.ip || "" });
-      return sendJson(res, 200, { deleted });
+      const documentId = decodeURIComponent(documentMatch[1]);
+      const deleted = await knowledgeService.deleteDocument(documentId, { actor: user.name || user.ip || "", actorIp: user.ip || "" });
+      const removedExamSessions = deleted ? await removeExamSessionsForKnowledgeDocument(documentId) : 0;
+      return sendJson(res, 200, { deleted, removedExamSessions });
     }
     if (documentMatch && req.method === "PUT") {
       if (!user.isAdmin) return sendJson(res, 403, { error: "只有管理员可以修改知识治理信息" });
@@ -780,7 +823,8 @@ const handleKnowledge = async (req, res) => {
     }
     const parseMatch = pathname.match(/^\/api\/knowledge\/documents\/([^/]+)\/parse$/);
     if (parseMatch && req.method === "POST") {
-      const job = await knowledgeService.enqueueParse(decodeURIComponent(parseMatch[1]));
+      const payload = await jsonBody();
+      const job = await knowledgeService.enqueueParse(decodeURIComponent(parseMatch[1]), "", { failedOnly: payload.failedOnly === true });
       return sendJson(res, 202, { job });
     }
     const clauseMatch = pathname.match(/^\/api\/knowledge\/documents\/([^/]+)\/clauses$/);
@@ -798,6 +842,39 @@ const handleKnowledge = async (req, res) => {
     if (knowledgeMatch && req.method === "POST") {
       const knowledge = await knowledgeService.saveDistillation(decodeURIComponent(knowledgeMatch[1]), await jsonBody());
       return sendJson(res, 200, { knowledge, total: knowledge.length });
+    }
+    const clauseItemMatch = pathname.match(/^\/api\/knowledge\/clauses\/([^/]+)$/);
+    if (clauseItemMatch && req.method === "PUT") {
+      if (!user.isAdmin) return sendJson(res, 403, { error: "只有管理员可以修改证据" });
+      return sendJson(res, 200, { clause: await knowledgeService.updateKnowledgeClause(decodeURIComponent(clauseItemMatch[1]), { ...(await jsonBody()), actor: user.name || user.ip || "", actorIp: user.ip || "" }) });
+    }
+    if (clauseItemMatch && req.method === "DELETE") {
+      if (!user.isAdmin) return sendJson(res, 403, { error: "只有管理员可以删除证据" });
+      return sendJson(res, 200, { deleted: await knowledgeService.deleteKnowledgeClause(decodeURIComponent(clauseItemMatch[1]), { actor: user.name || user.ip || "", actorIp: user.ip || "" }) });
+    }
+    const knowledgeItemMatch = pathname.match(/^\/api\/knowledge\/cards\/([^/]+)$/);
+    if (knowledgeItemMatch && req.method === "PUT") {
+      if (!user.isAdmin) return sendJson(res, 403, { error: "只有管理员可以修改知识卡片" });
+      return sendJson(res, 200, { knowledge: await knowledgeService.updateKnowledgeCard(decodeURIComponent(knowledgeItemMatch[1]), { ...(await jsonBody()), actor: user.name || user.ip || "", actorIp: user.ip || "" }) });
+    }
+    if (knowledgeItemMatch && req.method === "DELETE") {
+      if (!user.isAdmin) return sendJson(res, 403, { error: "只有管理员可以删除知识卡片" });
+      return sendJson(res, 200, { deleted: await knowledgeService.deleteKnowledgeCard(decodeURIComponent(knowledgeItemMatch[1]), { actor: user.name || user.ip || "", actorIp: user.ip || "" }) });
+    }
+    if (pathname === "/api/knowledge/cards/bulk" && req.method === "PUT") {
+      if (!user.isAdmin) return sendJson(res, 403, { error: "只有管理员可以批量修改知识卡片" });
+      const payload = await jsonBody();
+      return sendJson(res, 200, await knowledgeService.bulkUpdateKnowledgeCards(payload.ids || [], payload.patch || {}, user.name || user.ip || "", user.ip || ""));
+    }
+    if (pathname === "/api/knowledge/cards/bulk-review" && req.method === "POST") {
+      if (!user.isAdmin) return sendJson(res, 403, { error: "只有管理员可以批量审核知识卡片" });
+      const payload = await jsonBody();
+      return sendJson(res, 202, { job: await knowledgeService.enqueueBulkReview(payload.ids || [], payload.action || "", user.name || user.ip || "", user.ip || "") });
+    }
+    const impactMatch = pathname.match(/^\/api\/knowledge\/impact\/(evidence|knowledge)\/([^/]+)$/);
+    if (impactMatch && req.method === "GET") {
+      if (!user.isAdmin) return sendJson(res, 403, { error: "只有管理员可以查看数据关联影响" });
+      return sendJson(res, 200, await knowledgeService.getKnowledgeImpact(decodeURIComponent(impactMatch[2]), impactMatch[1]));
     }
     const knowledgeImportMatch = pathname.match(/^\/api\/knowledge\/documents\/([^/]+)\/distillations\/import$/);
     if (knowledgeImportMatch && req.method === "POST") {
@@ -1540,6 +1617,13 @@ const saveExamSessions = async (sessions) => {
   const tempFile = `${examSessionsFile}.${process.pid}.${Date.now()}.tmp`;
   await fs.writeFile(tempFile, JSON.stringify(sessions.slice(-500), null, 2), "utf8");
   await fs.rename(tempFile, examSessionsFile);
+};
+const removeExamSessionsForKnowledgeDocument = async (documentId) => {
+  const id = String(documentId || "");
+  const sessions = await loadExamSessions();
+  const retained = sessions.filter((session) => !(Array.isArray(session.knowledgeDocumentIds) && session.knowledgeDocumentIds.map(String).includes(id)));
+  if (retained.length !== sessions.length) await saveExamSessions(retained);
+  return sessions.length - retained.length;
 };
 
 const examQuestionForClient = (question) => ({

@@ -5,6 +5,8 @@ import { spawn } from "node:child_process";
 import os from "node:os";
 import {
   deletePostgresKnowledgeJob,
+  deletePostgresKnowledgeClauses,
+  deletePostgresDistilledKnowledge,
   deletePostgresKnowledgeDocument,
   deletePostgresQualityIssue,
   listPostgresConfirmedKnowledgeMatches,
@@ -12,6 +14,7 @@ import {
   listPostgresKnowledgeClauses,
   listPostgresKnowledgeDocuments,
   listPostgresKnowledgeJobs,
+  readPostgresKnowledgeJob,
   listPostgresKnowledgeMatches,
   listPostgresKnowledgeFeedbackRecords,
   listPostgresKnowledgeConflicts,
@@ -39,7 +42,26 @@ import {
 const emptyStore = () => ({ version: 5, documents: [], clauses: [], jobs: [], knowledge: [], issues: [], matches: [], recurrenceActions: [], reviewSessions: [], feedbackRecords: [], conflicts: [], auditLogs: [] });
 const fallbackMutationLocks = new Map();
 const nowIso = () => new Date().toISOString();
+const formatProcessingElapsed = (stage = {}) => {
+  if (!stage?.startedAt) return "-";
+  const end = stage.completedAt ? new Date(stage.completedAt).getTime() : Date.now();
+  const seconds = Math.max(0, Math.round((end - new Date(stage.startedAt).getTime()) / 1000));
+  return seconds < 60 ? `${seconds}s` : `${Math.floor(seconds / 60)}m ${String(seconds % 60).padStart(2, "0")}s`;
+};
+const processingStageText = (metadata = {}) => {
+  const stages = metadata.processingStages || {};
+  const labels = [["import", "导入"], ["evidence", "证据解析"], ["evidenceCleanup", "证据整理"], ["distillation", "知识蒸馏"], ["knowledgePersistence", "知识入库"]];
+  return labels.filter(([key]) => stages[key]).map(([key, label]) => `${label} ${formatProcessingElapsed(stages[key])}`).join(" · ");
+};
 const cleanText = (value) => String(value || "").replace(/\u0000/g, "").replace(/\r/g, "").trim();
+const looksLikeBinaryDocumentText = (value) => {
+  const sample = String(value || "").slice(0, 120000);
+  if (!sample) return false;
+  const replacement = (sample.match(/[\uFFFD\u0001-\u0008\u000B\u000C\u000E-\u001F]/g) || []).length;
+  const cjk = (sample.match(/[\u3400-\u9FFF]/g) || []).length;
+  const controlLike = (sample.match(/[\uE000-\uF8FF]|[\u2500-\u25FF]/g) || []).length;
+  return replacement > 20 || (sample.length > 1000 && cjk / sample.length < 0.005 && controlLike > sample.length * 0.02);
+};
 const clampProgress = (value) => Math.min(100, Math.max(0, Number(value || 0)));
 const stableId = (prefix, value) => `${prefix}-${createHash("sha1").update(String(value)).digest("hex").slice(0, 20)}`;
 const toArray = (value) => Array.isArray(value) ? value.map((item) => String(item || "").trim()).filter(Boolean) : [];
@@ -55,6 +77,28 @@ const parseAiKnowledgePayload = (content) => {
   const rows = Array.isArray(value) ? value : value?.knowledge || value?.items || [];
   if (!Array.isArray(rows)) throw new Error("模型返回的知识结果不是数组");
   return rows;
+};
+const compactDistillationClause = (clause) => ({
+  clauseId: clause.id,
+  clauseNumber: clause.clauseNumber || "",
+  sectionPath: clause.sectionPath || "",
+  text: String(clause.clauseText || "").slice(0, 4000),
+  sourceFormat: clause.metadata?.sourceFormat || clause.evidenceType || "text",
+  ocrStatus: clause.metadata?.ocrStatus || clause.ocrStatus || "",
+});
+const distillationOutputContract = `只输出JSON：{"knowledge":[...]}
+每条只生成这些字段：type、title、content、atomicRule、originalFact、correctState、violationBasis、applicableScope、applicableRoles、processes、issueTags、synonyms、riskLevel、mustReview、confidence、sourceCitations。
+type只能是mandatory、prohibited、threshold、recommendation、evidence、definition、failure_mode、exam_point。明确区分：REQUIREMENT/PROHIBITION/THRESHOLD用mandatory/prohibited/threshold；RECOMMENDATION用recommendation；DEFINITION用definition；EVIDENCE或资料事实用evidence；失效机理用failure_mode，不能把推荐建议标成mandatory。
+atomicRule必须包含ruleType、topic、subject、action、object、condition、exceptions；ruleType仅用REQUIREMENT、PROHIBITION、RESTRICTION、TIME_LIMIT、PERMISSION、EXCEPTION、RESPONSIBILITY、PENALTY、APPLICABILITY、RECOMMENDATION、DEFINITION、EVIDENCE。topic、subject、action、object缺一不可；原文不支持就不要生成该卡片。
+mandatory、prohibited、threshold、recommendation、failure_mode必须提供至少一条客观violationBasis；definition和纯资料事实可以为空。sourceCitations至少一个，必须引用本批次的clauseId，quote必须是原文连续子串。无法由原文证明的字段用空字符串或空数组。不要生成reviewPoints、correctionActions、verification、method、commonViolations、engineeringExplanation。`;
+const buildDistillationSystemPrompt = (skillContent) => `你是QMS规范知识蒸馏器。只使用输入证据，不补充外部知识。将一条或多条原文整理为可检索、可复核的知识卡片；保留数字、单位、条件、例外和责任边界。删除页眉、标题、重复背景和无规则碎片。表格/数据密集内容应按同一适用条件合并，不要把单个数值或单位标题单独生成卡片。${distillationOutputContract}\n质量要求：每条知识必须有精确引用；同义内容合并但不能合并不同条件；原文不支持就不生成；返回前逐条检查类型与ruleType一致、atomicRule四个核心字段齐全、违反依据完整。\nSkill要点：${String(skillContent || "").slice(0, 12000)}`;
+const classifyDistillationBatch = (rows) => {
+  const text = rows.map((row) => `${row.text || ""} ${row.sectionPath || ""}`).join(" ");
+  const hasNumericRule = /\d+(?:\.\d+)?\s*(?:mm|cm|m|kg|g|N|Pa|MPa|V|A|Hz|℃|%|秒|分钟|小时|天|扣牙|mm|±)/i.test(text);
+  const hasConditions = /(?:如果|当|若|则|否则|应当|必须|不得|禁止|允许|除非|仅限|适用于|特殊要求|注意|条件|例外|前提)/.test(text);
+  const hasStructuredSource = rows.some((row) => row.sourceFormat === "excel" || row.sourceFormat === "pdf" || row.evidenceType === "structured_table" || row.ocrStatus === "completed");
+  const longText = text.length > 5000 || rows.length > 20;
+  return hasNumericRule || hasConditions || hasStructuredSource || longText ? "complex" : "simple";
 };
 const deduplicateKnowledge = (items = []) => {
   const byKey = new Map();
@@ -110,6 +154,10 @@ const isEvidenceCompleteCandidate = (value) => {
   // A short noun label without a predicate is context, not evidence.
   if (normalized.length <= 12 && !/[。！？；?!;：:，,]/.test(text) && /(?:类型|名称|编号|版本|日期|区域|规范|标准|单位|参数|类别|章节|目录|封面|标题|说明)$/.test(text)) return false;
   if (normalized.length < 6 && !/[。！？；?!;：:，,]/.test(text)) return false;
+  // Short noun fragments (for example “文件类型”“设计规范”“吸嘴”“M3”) are
+  // context only. Keep short lines only when they contain an explicit rule
+  // predicate; this prevents headings and isolated labels becoming evidence.
+  if (normalized.length <= 16 && !/[。！？；?!;：:，,]/.test(text) && !/(应当|应该|必须|不得|禁止|允许|采用|使用|安装|连接|设置|确保|保持|达到|选择|选用|锁紧|要求|为)/.test(text)) return false;
   return true;
 };
 const evidenceHeadingPattern = /(?:选择|原则|场景|设计|规范|总结|如下|选型|说明|方法|要求|介绍|分析|内容|流程|权限|分类|清单)$/;
@@ -118,9 +166,81 @@ const isEvidenceHeadingFragment = (value) => {
   return text.length <= 28 && !/[。！？；?!;：:，,]$/.test(text) && evidenceHeadingPattern.test(text);
 };
 const normalizeOcrText = (value) => cleanText(value)
+  .replace(/[一壹]\s*[-—]\s*(?=QP)/gi, "-")
+  .replace(/([A-Z]{2,})\s*[-—]\s*(?=QP)/gi, "$1-")
+  .replace(/\s*[、，]\s*(?=\d{1,2}(?:\.|、))/g, ".")
   .replace(/([\u3400-\u9fff])\s+(?=[\u3400-\u9fff])/g, "$1")
   .replace(/\s+([，。；：！？、）】》])/g, "$1")
-  .replace(/([（【《])\s+/g, "$1");
+  .replace(/([（【《])\s+/g, "$1")
+  .replace(/[\uE000-\uF8FF]/g, "")
+  .replace(/[\uFFF0-\uFFFF]/g, "")
+  .replace(/\s{2,}/g, " ");
+
+// OCR quality gate for distillation.  Some scanned PDFs produce visually
+// plausible text while still containing unmistakable recognition artifacts
+// (for example “灬” in place of mm, “乛/咿/ܳ”, replacement glyphs, or a broken
+// numeric comparison).  Such text must not become a searchable knowledge
+// card: keep the evidence for review, but reject the card until the page is
+// corrected or re-OCR'd.
+const ocrArtifactPattern = /[灬乛咿ܳ�]|锟斤拷/gu;
+const hasUnreadableOcrArtifact = (value) => {
+  const text = cleanText(value);
+  if (!text) return false;
+  if ((text.match(ocrArtifactPattern) || []).length > 0) return true;
+  // A run of separated digits/letters is a common OCR failure in tables and
+  // formulas; it is unsafe when no Chinese semantic context accompanies it.
+  const compact = text.replace(/\s+/g, "");
+  const cjk = (compact.match(/[\u3400-\u9FFF]/g) || []).length;
+  const separatedNumericRun = /(?:\d\s+){3,}\d/.test(text);
+  return separatedNumericRun && cjk < 8 && compact.length < 220;
+};
+
+const isPdfFrontMatterPage = (text, pageNumber) => {
+  const value = normalizeOcrText(text);
+  if (!value) return true;
+  const frontMatter = /(主编|副主编|出版社|出版发行|责任编辑|装帧设计|图书在版编目|ISBN|定价|版权所有|编者|致谢|目录)/.test(value);
+  const tocShape = /(…………|\.\.\.\.|第\s*[一二三四五六七八九十\d]+\s*章)/g.test(value) && (value.match(/第\s*[一二三四五六七八九十\d]+\s*章/g) || []).length >= 2;
+  return pageNumber <= 20 && (frontMatter || tocShape);
+};
+
+const splitLongEvidenceClause = (value, maxLength = 900) => {
+  const text = normalizeOcrText(value);
+  if (text.length <= maxLength) return [text];
+  const parts = evidenceSentenceParts(text);
+  if (parts.length <= 1) return text.match(new RegExp(`.{1,${maxLength}}`, "g")) || [];
+  const output = [];
+  let current = "";
+  parts.forEach((part) => {
+    if (current && current.length + part.length + 1 > maxLength) { output.push(current); current = ""; }
+    current = current ? `${current}${part}` : part;
+  });
+  if (current) output.push(current);
+  return output;
+};
+const enrichEvidenceClause = (clause) => {
+  const sourceLocation = clause.metadata?.sourceLocation || clause.sourceLocation || {};
+  const rawText = String(clause.clauseText || "").slice(0, 4000);
+  return {
+    ...clause,
+    metadata: {
+      ...(clause.metadata || {}),
+      parseBlock: {
+        blockId: stableId("parse-block", `${clause.documentId}:${sourceLocation.locator || clause.id}`),
+        blockType: clause.metadata?.evidenceKind || "semantic",
+        page: Number(sourceLocation.page || 0) || undefined,
+        locator: sourceLocation.locator || "",
+        bbox: sourceLocation.cropBox || [],
+        rawText,
+      },
+      // 原子规则不在证据阶段推断。这里只保留可供蒸馏模型读取的
+      // 原文区块和定位信息，避免正则误判规则类型。
+    },
+  };
+};
+const pdfSectionPath = (text, pageNumber) => {
+  const match = normalizeOcrText(text).match(/第\s*([一二三四五六七八九十百千\d]+)\s*章[^\n。；;]{0,80}/);
+  return match ? `第${match[1]}章 ${match[0].replace(/^第\s*[一二三四五六七八九十百千\d]+\s*章\s*/, "").trim()}` : `第 ${pageNumber} 页`;
+};
 
 const evidenceSentenceParts = (value) => String(value || "")
   .split(/(?<=[。！？；?!;])\s*|\n+/)
@@ -188,10 +308,29 @@ const prepareQualityEvidenceLines = (sourceText) => {
 };
 
 export const buildPdfEvidenceClauses = (document = {}, pages = []) => {
+  // This SMC instruction is diagram-led. Keep only executable requirements;
+  // page furniture and OCR fragments are not evidence.
+  const smc = /05[.、—-]?11|SMC.*调速阀/i.test(document.name || "");
   const clauses = [];
   const seen = new Map();
   pages.forEach((page) => {
-    splitEvidenceText(page.text).forEach((clauseText, chunkIndex) => {
+    const pageText = normalizeOcrText(page.text);
+    if (isPdfFrontMatterPage(pageText, Number(page.page || 0))) return;
+    // PDF extraction often returns a single page-sized string containing
+    // headers, footers and diagram labels. Split first by real line/sentence
+    // boundaries and discard metadata/value-only fragments.
+    const rawPieces = splitEvidenceText(pageText);
+    let pieces = rawPieces.length === 1 && rawPieces[0].length > 500
+      ? rawPieces[0].split(/\n+/).map((item) => normalizeOcrText(item)).filter(isEvidenceCompleteCandidate)
+      : rawPieces.filter(isEvidenceCompleteCandidate);
+    if (smc) {
+      pieces = pieces.map((item) => normalizeOcrText(item))
+        .filter((item) => /操作员|操作规范|箭头|进气|出气|安装|气路|特殊要求|难处|疑问|工艺确认/.test(item))
+        .map((item) => item.replace(/(?:文件编号|提出单位|主送单位|版本|制定日期|主要内容|修订记录|内部资料)[^。；;]*[。；;]/g, "").trim())
+        .filter((item) => item.length >= 15 && !/[�]/.test(item));
+    }
+    pieces = pieces.flatMap((item) => splitLongEvidenceClause(item).filter(isEvidenceCompleteCandidate));
+    pieces.forEach((clauseText, chunkIndex) => {
       const normalized = normalizedEvidenceText(clauseText);
       if (normalized.length < 8) return;
       const duplicateKey = createHash("sha1").update(normalized).digest("hex");
@@ -215,7 +354,7 @@ export const buildPdfEvidenceClauses = (document = {}, pages = []) => {
         id: stableId("clause", `${document.id}:${page.page}:${chunkIndex}:${clauseText}`),
         documentId: document.id,
         ordinal,
-        sectionPath: `第 ${page.page} 页`,
+        sectionPath: pdfSectionPath(pageText, page.page),
         clauseNumber: "",
         title: clauseText.split("\n")[0] || `第 ${page.page} 页`,
         clauseText,
@@ -231,6 +370,8 @@ export const buildPdfEvidenceClauses = (document = {}, pages = []) => {
           reviewStatus: page.reviewStatus || (page.ocrStatus === "completed" ? "pending" : "not_required"),
           textQuality: page.nativeTextQuality || {},
           duplicateKey,
+          visualEvidenceStatus: page.imageCount ? "image_detected_text_ocr_possible_visual_relation_review" : "not_detected",
+          imageCount: Number(page.imageCount || 0),
         },
         createdAt: nowIso(),
       });
@@ -352,18 +493,63 @@ export const buildPptTextEvidenceClauses = (document = {}, slides = []) => slide
   });
 });
 
+let activeTaskSignal = null;
 const runProcess = (command, args, options = {}) => new Promise((resolve, reject) => {
   const child = spawn(command, args, { windowsHide: true, ...options });
+  const signal = options.signal || activeTaskSignal;
+  const abort = () => { try { child.kill(); } catch {} };
+  if (signal) { if (signal.aborted) abort(); else signal.addEventListener("abort", abort, { once: true }); }
   let stdout = "";
   let stderr = "";
   child.stdout?.on("data", (chunk) => { stdout += chunk.toString(); });
   child.stderr?.on("data", (chunk) => { stderr += chunk.toString(); });
   child.once("error", reject);
-  child.once("close", (code) => code === 0 ? resolve({ stdout, stderr }) : reject(new Error(`${path.basename(command)} 执行失败（${code}）：${stderr || stdout}`.slice(0, 1200))));
+  child.once("close", (code) => { if (signal) signal.removeEventListener("abort", abort); code === 0 ? resolve({ stdout, stderr }) : reject(new Error(`${path.basename(command)} 执行失败（${code}）：${stderr || stdout}`.slice(0, 1200))); });
 });
 
 export const splitQualityClauses = (document = {}) => {
+  if (looksLikeBinaryDocumentText(document.sourceText)) return [];
   const rawLines = prepareQualityEvidenceLines(document.sourceText);
+  if (document.contentType === "excel") {
+    const excelRows = rawLines.map((line) => line.split("|").map((cell) => cleanText(cell)).filter(Boolean)).filter((cells) => cells.length);
+    const isAdministrative = (cells) => /(?:深圳市燕麦科技股份有限公司|文件编号|版本|提出单位|制定日期|审核|批准|主送单位|主要内容|修订记录|变更记录|页|第\s*\d+\s*页)/.test(cells.join(" "));
+    const semanticRows = excelRows.filter((cells) => !isAdministrative(cells));
+    const tableRows = semanticRows.filter((cells) => cells.some((cell) => /螺孔材质|选用螺丝|扣牙|螺丝|螺纹|胶水|打胶|划线|锁紧|M\d+/i.test(cell)));
+    const clauses = [];
+    const clauseByText = new Map();
+    let current = null;
+    tableRows.forEach((cells) => {
+      const text = cells.join("；");
+      if (cells.includes("序号") || cells.includes("螺孔材质") || cells.includes("选用螺丝规格")) return;
+      const size = cells.find((cell) => /^M\d+/i.test(cell));
+      const material = cells.find((cell) => /^(钢|铝|不锈钢|铜)$/.test(cell));
+      const turns = cells.find((cell) => /扣牙|\d+(?:\.\d+)?d/i.test(cell));
+      if (size) current = { size, steel: null, aluminum: null };
+      if (material && turns && current) current[material === "钢" ? "steel" : material === "铝" ? "aluminum" : "steel"] = turns;
+      if (current && current.steel && current.aluminum) {
+        const clauseText = `螺孔材质为钢时，选用${current.size}螺丝，螺丝旋入深度应为${current.steel}；螺孔材质为铝时，选用${current.size}螺丝，螺丝旋入深度应为${current.aluminum}。`;
+        const key = normalizedEvidenceText(clauseText);
+        const location = document.metadata?.segmentMetadata?.find((m) => m.locator === `${cells[0] || ""}`) || null;
+        const existing = clauseByText.get(key);
+        if (existing) existing.sources.push(text);
+        else {
+          const item = { text: clauseText, source: text, sources: [text], locations: location ? [location] : [] };
+          clauseByText.set(key, item);
+          clauses.push(item);
+        }
+        current = null;
+      } else if (!size && !material && !turns && isEvidenceCompleteCandidate(text)) clauses.push({ text, source: text });
+    });
+    if (clauses.length) {
+      const tableText = `螺丝选用与旋入深度要求（表格规范）：${clauses.map((item) => item.text).join("；")}`;
+      const allSources = clauses.flatMap((item) => item.sources || []);
+      return [{
+        id: stableId("clause", `${document.id}:table:${tableText}`), documentId: document.id, ordinal: 1,
+        sectionPath: "表格规范", clauseNumber: "1", title: "螺丝选用与旋入深度要求", clauseText: tableText, searchText: tableText,
+        metadata: { evidenceKind: "structured_table", sourceDocument: document.name, sourceHash: document.fileHash || "", version: document.version || "", sourceFormat: "excel", sourceLocation: { locatorType: "sheet-table", locator: "多个工作表" }, duplicateLocations: allSources.map((source) => ({ locatorType: "sheet-row", locator: source })), visualEvidenceStatus: document.metadata?.embeddedImageCount ? "detected_not_decoded" : "not_detected", embeddedImageCount: Number(document.metadata?.embeddedImageCount || 0), ocrStatus: "not_required" }, createdAt: nowIso(),
+      }];
+    }
+  }
   const lines = rawLines;
   const sections = [];
   const clauses = [];
@@ -466,7 +652,7 @@ const knowledgeReviewActions = new Set(["accept", "reject", "conflict", "publish
 const knowledgeAccessLevels = new Set(["internal", "restricted"]);
 const semanticKnowledgeText = (value) => cleanText(value).replace(/[\t ]+/g, " ").replace(/\n{3,}/g, "\n\n");
 const semanticKnowledgeArray = (value) => [...new Set(toArray(value).map(semanticKnowledgeText).filter(Boolean))];
-const editableKnowledgeTypes = new Set(["mandatory", "prohibited", "threshold", "evidence", "definition", "failure_mode", "exam_point", "review_point", "verification_method"]);
+const editableKnowledgeTypes = new Set(["mandatory", "prohibited", "threshold", "recommendation", "evidence", "definition", "failure_mode", "exam_point", "review_point", "verification_method"]);
 const applyKnowledgeReviewChanges = (current = {}, changes = {}) => {
   if (!changes || typeof changes !== "object") return current;
   const metadata = current.metadata || {};
@@ -495,6 +681,8 @@ const applyKnowledgeReviewChanges = (current = {}, changes = {}) => {
   };
 };
 const normalizeKnowledge = (document = {}, skillId, items = []) => items.map((item, index) => {
+  const atomicRule = item.atomicRule && typeof item.atomicRule === "object" ? item.atomicRule : item.metadata?.atomicRule && typeof item.metadata.atomicRule === "object" ? item.metadata.atomicRule : {};
+  const inferredType = item.type === "failure_mode" && atomicRule.ruleType === "RESTRICTION" ? "failure_mode" : item.type === "threshold" && ["REQUIREMENT", "RESTRICTION", "THRESHOLD"].includes(atomicRule.ruleType) ? "threshold" : atomicRule.ruleType === "PROHIBITION" ? "prohibited" : atomicRule.ruleType === "THRESHOLD" ? "threshold" : atomicRule.ruleType === "DEFINITION" ? "definition" : atomicRule.ruleType === "EVIDENCE" ? "evidence" : atomicRule.ruleType === "RECOMMENDATION" || atomicRule.ruleType === "PERMISSION" ? "recommendation" : atomicRule.ruleType === "REQUIREMENT" || atomicRule.ruleType === "RESPONSIBILITY" ? "mandatory" : atomicRule.ruleType === "RESTRICTION" ? "mandatory" : item.type || "mandatory";
   const citations = (Array.isArray(item.sourceCitations) ? item.sourceCitations : []).map((citation) => ({
     clauseId: String(citation.clauseId || ""),
     clauseNumber: String(citation.clauseNumber || ""),
@@ -505,13 +693,14 @@ const normalizeKnowledge = (document = {}, skillId, items = []) => items.map((it
     reviewStatus: cleanText(citation.reviewStatus),
     quote: semanticKnowledgeText(citation.quote),
   })).map((citation) => Object.fromEntries(Object.entries(citation).filter(([, value]) => value !== undefined))).filter((citation) => citation.clauseId && citation.quote);
+  const uniqueCitations = [...new Map(citations.map((citation) => [`${citation.clauseId}:${citation.quote}`, citation])).values()];
   return {
     id: stableId("knowledge", `${document.id}:${skillId}:${item.title || ""}:${item.content || ""}:${index}`),
     documentId: document.id,
-    clauseIds: [...new Set(citations.map((citation) => citation.clauseId))],
-    type: ["mandatory", "prohibited", "threshold", "evidence", "definition", "failure_mode", "exam_point", "review_point", "verification_method"].includes(item.type) ? item.type : "mandatory",
-    title: semanticKnowledgeText(item.title || "未命名知识点"),
-    content: semanticKnowledgeText(item.content),
+    clauseIds: [...new Set(uniqueCitations.map((citation) => citation.clauseId))],
+    type: inferredType,
+    title: semanticKnowledgeText(item.title || atomicRule.topic || atomicRule.subject || "未命名知识点"),
+    content: semanticKnowledgeText(item.content || atomicRule.sourceText || atomicRule.action),
     applicableRoles: semanticKnowledgeArray(item.applicableRoles),
     processes: semanticKnowledgeArray(item.processes),
     issueTags: semanticKnowledgeArray(item.issueTags),
@@ -520,6 +709,7 @@ const normalizeKnowledge = (document = {}, skillId, items = []) => items.map((it
     version: cleanText(item.version || document.version),
     metadata: {
       originalFact: semanticKnowledgeText(item.originalFact),
+      atomicRule,
       engineeringExplanation: semanticKnowledgeText(item.engineeringExplanation),
       inference: semanticKnowledgeText(item.inference),
       correctState: semanticKnowledgeText(item.correctState || item.metadata?.correctState),
@@ -541,7 +731,7 @@ const normalizeKnowledge = (document = {}, skillId, items = []) => items.map((it
     },
     confidence: Math.min(1, Math.max(0, Number(item.confidence ?? 0.8))),
     skillId,
-    sourceCitations: citations,
+    sourceCitations: uniqueCitations,
     reviewStatus: ["approved", "rejected"].includes(String(item.reviewStatus)) ? String(item.reviewStatus) : "pending",
     publicationStatus: knowledgePublicationStatuses.has(String(item.publicationStatus)) ? String(item.publicationStatus) : "candidate",
     publicationNote: cleanText(item.publicationNote).slice(0, 2000),
@@ -550,7 +740,50 @@ const normalizeKnowledge = (document = {}, skillId, items = []) => items.map((it
     createdAt: nowIso(),
     updatedAt: nowIso(),
   };
-}).filter((item) => item.content && item.sourceCitations.length);
+}).filter((item) => {
+  if (!item.content || !item.sourceCitations.length) return false;
+  const rule = item.metadata?.atomicRule || {};
+  if (["topic", "subject", "action", "object"].some((key) => !cleanText(rule[key]))) return false;
+  if (["mandatory", "prohibited", "threshold", "recommendation", "failure_mode"].includes(item.type) && !item.metadata?.violationBasis?.length) return false;
+  return true;
+});
+
+// Build a document-wide coverage audit after distillation.  This is deliberately
+// source-driven: it does not hard-code any document name or expected card count.
+// Numbered points, headings that signal a complete topic (key/principle/note),
+// and sufficiently self-contained evidence units become audit subjects. A
+// subject is covered when at least one card cites its clause or shares its main
+// semantic anchors. Missing subjects are reported for a later targeted retry.
+const buildKnowledgeCoverageAudit = (clauses = [], cards = []) => {
+  const topicPattern = /(?:第\s*[一二三四五六七八九十百千\d]+\s*[点条章节]|^\s*[一二三四五六七八九十\d]+[、.)．]|关键|原则|注意事项?|适用范围|选型依据|定义|特性|特点|方法|要求|限制|条件|例外)/i;
+  const subjects = clauses.filter((clause) => {
+    const text = cleanText(clause.clauseText || clause.title);
+    return text.length >= 20 && topicPattern.test(text);
+  }).map((clause) => ({
+    clauseId: clause.id,
+    title: cleanText(clause.title || clause.clauseText).slice(0, 120),
+    page: clause.sourceLocation?.page || clause.metadata?.sourceLocation?.page || undefined,
+    text: cleanText(clause.clauseText || clause.title),
+  }));
+  const normalizeAnchors = (value) => [...new Set((cleanText(value).match(/[\u3400-\u9FFF]{2,8}|[A-Za-z]{2,}|\d+(?:\.\d+)?/g) || []).filter((token) => token.length >= 2))].slice(0, 12);
+  const covered = []; const missing = [];
+  subjects.forEach((subject) => {
+    const anchors = normalizeAnchors(subject.text);
+    const hit = cards.find((card) => {
+      if ((card.sourceCitations || []).some((citation) => String(citation.clauseId) === String(subject.clauseId))) return true;
+      const cardText = cleanText(`${card.title} ${card.content}`);
+      const overlap = anchors.filter((anchor) => cardText.includes(anchor)).length;
+      // A single evidence clause may contain several adjacent topics. Once a
+      // card covers the clause's main subject and one distinguishing anchor,
+      // treat it as covered; the targeted retry is reserved for truly absent
+      // subjects rather than long mixed paragraphs.
+      return anchors.length >= 2 && overlap >= Math.max(2, Math.ceil(anchors.length * 0.25));
+    });
+    const item = { clauseId: subject.clauseId, title: subject.title, page: subject.page, covered: Boolean(hit), knowledgeId: hit?.id || "" };
+    (hit ? covered : missing).push(item);
+  });
+  return { version: "qms-knowledge-coverage-v1", generatedAt: nowIso(), totalTopics: subjects.length, coveredTopics: covered.length, missingTopics: missing.length, coverageRate: subjects.length ? Math.round(covered.length / subjects.length * 100) : 100, covered, missing };
+};
 
 const issueVocabulary = [
   "错装", "装反", "漏装", "少装", "松动", "划伤", "破损", "脏污", "异物", "压伤", "变形", "翘曲", "开裂", "虚焊", "漏焊", "短路", "断路", "接线", "标签", "螺丝", "扭矩", "首件", "点检", "巡检", "装配", "加工", "调试",
@@ -683,6 +916,14 @@ const candidateScore = (issue, candidate, eligibility = {}) => {
     },
   };
 };
+const hasSpecificMatchSignal = (issue, result) => {
+  const generic = new Set([...matchingTermGroups.object, ...matchingTermGroups.action, "问题", "异常", "设计", "装配", "组装", "过程", "研发", "评审"]);
+  const issueTerms = searchTerms(`${issue.issueType || ""} ${issue.issueText || ""}`).filter((term) => !generic.has(term));
+  const sharedSpecific = (result.evidence?.sharedTerms || []).some((term) => !generic.has(term) && term.length >= 2);
+  const matchedTag = (result.evidence?.matchedIssueTags || []).some((term) => !generic.has(term));
+  const matchedDefect = (result.evidence?.matchedDefects || []).length > 0;
+  return Boolean(sharedSpecific || matchedTag || matchedDefect || result.evidence?.typeMatch || issueTerms.length === 0);
+};
 const dateTimestamp = (value) => {
   const text = cleanText(value);
   if (!text) return 0;
@@ -698,6 +939,9 @@ export const createKnowledgeService = ({ filePath, originalDir = path.join(path.
   let queue = [];
   let queueRunning = false;
   const deletedJobIds = new Set();
+  const deletedDocumentIds = new Set();
+  const pausedJobIds = new Set();
+  const taskControllers = new Map();
   const distillationControllers = new Map();
   let corpusRevision = 0;
   let corpusCache = { expiresAt: 0, revision: -1, rows: [] };
@@ -738,6 +982,213 @@ export const createKnowledgeService = ({ filePath, originalDir = path.join(path.
   };
   const getSearchMetrics = () => ({ ...retrievalMetrics, averageElapsedMs: retrievalMetrics.queries ? Math.round(retrievalMetrics.totalElapsedMs / retrievalMetrics.queries) : 0, cacheHitRate: retrievalMetrics.queries ? Number((retrievalMetrics.cacheHits / retrievalMetrics.queries).toFixed(3)) : 0, corpusRevision });
   const getPerformanceMetrics = () => ({ operations: operationMetricSnapshot(), search: getSearchMetrics(), caches: { documentIndex: documentIndexCache.expiresAt > Date.now() ? 1 : 0, clausePages: clausePageCache.size, knowledgePages: distilledPageCache.size, retrievals: retrievalCache.size }, lastBenchmark: lastReadBenchmark, measuredAt: nowIso() });
+  const getConsistencyReport = async () => {
+    const fallback = await readFallback();
+    const postgresDocuments = await listPostgresKnowledgeDocuments();
+    const primaryDocuments = postgresDocuments.available && postgresDocuments.documents.length ? postgresDocuments.documents : fallback.documents;
+    const primaryKnowledge = [];
+    if (postgresDocuments.available) {
+      for (const document of primaryDocuments) {
+        const page = await listPostgresDistilledKnowledge(document.id, { limit: 10000, offset: 0 });
+        primaryKnowledge.push(...(page.knowledge || []));
+      }
+    } else primaryKnowledge.push(...(fallback.knowledge || []));
+    const primaryDocumentIds = new Set(primaryDocuments.map((item) => item.id));
+    const fallbackDocumentsById = new Map((fallback.documents || []).map((item) => [item.id, item]));
+    const fallbackKnowledgeById = new Map((fallback.knowledge || []).map((item) => [item.id, item]));
+    const missingOriginals = primaryDocuments.filter((document) => document.metadata?.originalStored && !existsSync(resolveOriginalPath(document))).map((document) => ({ id: document.id, name: document.name }));
+    const documentDifferences = primaryDocuments.filter((document) => {
+      const local = fallbackDocumentsById.get(document.id);
+      return !local || local.status !== document.status || Number(local.clauseCount || 0) !== Number(document.clauseCount || 0) || Number(local.distillationCount || 0) !== Number(document.distillationCount || 0);
+    });
+    const knowledgeStatusDifferences = primaryKnowledge.filter((item) => fallbackKnowledgeById.get(item.id)?.publicationStatus !== item.publicationStatus);
+    const orphanClauses = (fallback.clauses || []).filter((item) => !primaryDocumentIds.has(item.documentId)).length;
+    const orphanKnowledge = (fallback.knowledge || []).filter((item) => !primaryDocumentIds.has(item.documentId)).length;
+    const orphanMatches = (fallback.matches || []).filter((item) => item.documentId && !primaryDocumentIds.has(item.documentId)).length;
+    const issues = [
+      ...missingOriginals.map((item) => `原件缺失：${item.name}`),
+      ...(documentDifferences.length ? [`文档状态不同步 ${documentDifferences.length} 项`] : []),
+      ...(knowledgeStatusDifferences.length ? [`知识卡状态不同步 ${knowledgeStatusDifferences.length} 项`] : []),
+      ...(orphanClauses ? [`孤立证据 ${orphanClauses} 条`] : []),
+      ...(orphanKnowledge ? [`孤立知识卡 ${orphanKnowledge} 条`] : []),
+      ...(orphanMatches ? [`孤立匹配 ${orphanMatches} 条`] : []),
+    ];
+    return {
+      consistent: issues.length === 0,
+      storage: postgresDocuments.available ? "postgres" : "json",
+      checkedAt: nowIso(),
+      counts: {
+        documents: primaryDocuments.length,
+        clauses: primaryDocuments.reduce((sum, item) => sum + Number(item.clauseCount || 0), 0),
+        knowledge: primaryKnowledge.length,
+        publishedKnowledge: primaryKnowledge.filter((item) => item.publicationStatus === "published").length,
+      },
+      differences: { missingOriginals: missingOriginals.length, documents: documentDifferences.length, knowledgeStatuses: knowledgeStatusDifferences.length, orphanClauses, orphanKnowledge, orphanMatches },
+      issues,
+    };
+  };
+  const getDataQualityReport = async () => {
+    const fallback = await readFallback();
+    const postgresDocuments = await listPostgresKnowledgeDocuments();
+    const documents = postgresDocuments.available && postgresDocuments.documents.length ? postgresDocuments.documents : fallback.documents;
+    const clauses = [];
+    const knowledge = [];
+    for (const document of documents) {
+      const clausePage = await listClauses(document.id, { limit: 100000, offset: 0 });
+      clauses.push(...(clausePage.clauses || []).map((item) => ({ ...item, documentName: document.name })));
+      const knowledgePage = await listDistilled(document.id, { limit: 100000, offset: 0 });
+      knowledge.push(...(knowledgePage.knowledge || []).map((item) => ({ ...item, documentName: document.name })));
+    }
+    const duplicateGroups = (rows, keyOf) => {
+      const groups = new Map();
+      rows.forEach((row) => { const key = keyOf(row); if (!key) return; if (!groups.has(key)) groups.set(key, []); groups.get(key).push(row); });
+      return [...groups.values()].filter((group) => group.length > 1).map((group) => ({ key: keyOf(group[0]), documentId: group[0].documentId, documentName: group[0].documentName, count: group.length, ids: group.map((item) => item.id), sample: String(group[0].clauseText || group[0].content || group[0].title || "").slice(0, 180) }));
+    };
+    const normalizeEvidence = (value) => String(value || "").replace(/\s+/g, " ").trim().toLowerCase();
+    const duplicateEvidence = duplicateGroups(clauses, (row) => `${row.documentId}:${normalizeEvidence(row.clauseText)}`);
+    const duplicateKnowledge = duplicateGroups(knowledge, (row) => `${row.documentId}:${normalizeEvidence(row.title)}:${normalizeEvidence(row.content)}`);
+    const jobs = await listJobs();
+    const activeDocuments = new Set(jobs.filter((job) => ["waiting", "running", "paused"].includes(job.status)).map((job) => job.documentId));
+    const statusMismatches = documents.filter((document) => !activeDocuments.has(document.id) && ((Number(document.clauseCount || 0) > 0 && document.status === "registered") || (Number(document.distillationCount || 0) > 0 && ["registered", "indexing"].includes(document.status)))).map((document) => ({ id: document.id, name: document.name, status: document.status, clauseCount: Number(document.clauseCount || 0), knowledgeCount: Number(document.distillationCount || 0), expectedStatus: Number(document.distillationCount || 0) > 0 ? "completed" : "completed" }));
+    const documentIds = new Set(documents.map((item) => item.id));
+    const orphanClauses = (fallback.clauses || []).filter((item) => !documentIds.has(item.documentId)).map((item) => item.id);
+    const orphanKnowledge = (fallback.knowledge || []).filter((item) => !documentIds.has(item.documentId)).map((item) => item.id);
+    return { checkedAt: nowIso(), storage: postgresDocuments.available ? "postgres" : "json", counts: { documents: documents.length, clauses: clauses.length, knowledge: knowledge.length }, duplicateEvidence, duplicateKnowledge, statusMismatches, orphanClauses, orphanKnowledge, hasRepairableIssues: duplicateEvidence.length > 0 || statusMismatches.length > 0 };
+  };
+  const repairDataQuality = async (scope = "status") => {
+    const report = await getDataQualityReport();
+    let repaired = 0;
+    if (scope === "status") {
+      for (const item of report.statusMismatches) { await updateDocument(item.id, { status: item.expectedStatus, progress: 100, message: item.knowledgeCount ? `已蒸馏 ${item.knowledgeCount} 条知识点，等待人工审核` : `已解析 ${item.clauseCount} 条规范条款`, errorMessage: "" }); repaired += 1; }
+    }
+    if (scope === "evidence") {
+      const fallback = await readFallback();
+      for (const group of report.duplicateEvidence) {
+        const document = await getDocument(group.documentId);
+        const all = document ? (await listClauses(group.documentId, { limit: 100000, offset: 0 })).clauses || [] : (fallback.clauses || []).filter((item) => item.documentId === group.documentId);
+        const seen = new Set();
+        const unique = all.filter((item) => { const key = String(item.clauseText || "").replace(/\s+/g, " ").trim().toLowerCase(); if (!key || seen.has(key)) return false; seen.add(key); return true; });
+        if (document && unique.length !== all.length) await replacePostgresKnowledgeClauses(document, unique);
+        const keepIds = new Set(unique.map((item) => item.id));
+        await mutateFallback((store) => { store.clauses = (store.clauses || []).filter((item) => !group.ids.includes(item.id) || keepIds.has(item.id)); return { store }; });
+        repaired += Math.max(0, group.count - 1);
+      }
+    }
+    return { report: await getDataQualityReport(), repaired, scope };
+  };
+  const cleanupDataQuality = async ({ evidenceIds = [], knowledgeIds = [], orphanEvidenceIds = [], orphanKnowledgeIds = [] } = {}) => {
+    const evidence = [...new Set([...evidenceIds, ...orphanEvidenceIds].map(String).filter(Boolean))];
+    const knowledge = [...new Set([...knowledgeIds, ...orphanKnowledgeIds].map(String).filter(Boolean))];
+    let deletedEvidence = 0;
+    let deletedKnowledge = 0;
+    const beforeReport = await getDataQualityReport();
+    const backupDir = path.join(path.dirname(filePath), "knowledge-backups");
+    const backupPath = path.join(backupDir, `data-quality-${Date.now()}-${randomUUID()}.json`);
+    await fs.mkdir(backupDir, { recursive: true });
+    const evidenceRecords = [];
+    const knowledgeRecords = [];
+    for (const document of await listDocuments()) {
+      const clausePage = await listClauses(document.id, { limit: 100000, offset: 0 });
+      evidenceRecords.push(...(clausePage.clauses || []).filter((item) => evidence.includes(String(item.id))));
+      const knowledgePage = await listDistilled(document.id, { limit: 100000, offset: 0 });
+      knowledgeRecords.push(...(knowledgePage.knowledge || []).filter((item) => knowledge.includes(String(item.id))));
+    }
+    await fs.writeFile(backupPath, JSON.stringify({ createdAt: nowIso(), type: "data_cleanup", report: beforeReport, selected: { evidence, knowledge }, evidenceRecords, knowledgeRecords }), "utf8");
+    if (evidence.length) {
+      const result = await deletePostgresKnowledgeClauses(evidence);
+      deletedEvidence = result.available ? result.deleted : 0;
+      await mutateFallback((store) => { const before = (store.clauses || []).length; store.clauses = (store.clauses || []).filter((item) => !evidence.includes(String(item.id))); deletedEvidence += before - store.clauses.length; return { store }; });
+    }
+    if (knowledge.length) {
+      const result = await deletePostgresDistilledKnowledge(knowledge);
+      deletedKnowledge = result.available ? result.deleted : 0;
+      await mutateFallback((store) => { const before = (store.knowledge || []).length; store.knowledge = (store.knowledge || []).filter((item) => !knowledge.includes(String(item.id))); deletedKnowledge += before - store.knowledge.length; return { store }; });
+    }
+    const documents = await listDocuments();
+    for (const document of documents) {
+      const clauses = await listClauses(document.id, { limit: 100000, offset: 0 });
+      const cards = await listDistilled(document.id, { limit: 100000, offset: 0 });
+      if (Number(document.clauseCount || 0) !== Number(clauses.total || clauses.clauses?.length || 0) || Number(document.distillationCount || 0) !== Number(cards.total || cards.knowledge?.length || 0)) {
+        await updateDocument(document.id, { clauseCount: Number(clauses.total || clauses.clauses?.length || 0), distillationCount: Number(cards.total || cards.knowledge?.length || 0), message: "后台数据清理后已重新统计" });
+      }
+    }
+    const afterReport = await getDataQualityReport();
+    await recordAudit({ action: "data_cleanup", entityType: "knowledge_data", entityId: "", summary: `后台知识数据清理：删除证据 ${deletedEvidence} 条，知识卡片 ${deletedKnowledge} 条`, beforeState: { duplicateEvidence: beforeReport.duplicateEvidence?.length || 0, duplicateKnowledge: beforeReport.duplicateKnowledge?.length || 0 }, afterState: { deletedEvidence, deletedKnowledge }, metadata: { backupPath, evidenceIds: evidence.slice(0, 200), knowledgeIds: knowledge.slice(0, 200) } });
+    return { deletedEvidence, deletedKnowledge, backupPath, report: afterReport };
+  };
+  const listKnowledgeBackups = async ({ limit = 100 } = {}) => {
+    const backupDir = path.join(path.dirname(filePath), "knowledge-backups");
+    const entries = await fs.readdir(backupDir, { withFileTypes: true }).catch(() => []);
+    const files = [];
+    for (const entry of entries) {
+      if (!entry.isFile() || !entry.name.toLowerCase().endsWith(".json")) continue;
+      const fullPath = path.join(backupDir, entry.name);
+      const stat = await fs.stat(fullPath).catch(() => null);
+      if (!stat) continue;
+      const raw = await fs.readFile(fullPath, "utf8").catch(() => "");
+      let manifest = {};
+      try { manifest = JSON.parse(raw); } catch { /* ignore malformed backup */ }
+      files.push({ name: entry.name, path: fullPath, createdAt: manifest.createdAt || stat.birthtime.toISOString(), type: manifest.type || (entry.name.startsWith("merge-") ? "knowledge_merge" : "data_cleanup"), size: stat.size, evidenceCount: manifest.evidenceRecords?.length || 0, knowledgeCount: manifest.knowledgeRecords?.length || 0, selected: manifest.selected || {}, keep: manifest.keep ? { id: manifest.keep.id, title: manifest.keep.title } : null, removeCount: manifest.remove?.length || 0, evidenceSamples: (manifest.evidenceRecords || []).slice(0, 3).map((item) => String(item.clauseText || item.title || "").slice(0, 80)), knowledgeSamples: (manifest.knowledgeRecords || []).slice(0, 3).map((item) => String(item.title || item.content || "").slice(0, 80)) });
+    }
+    return { backups: files.sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt))).slice(0, Math.min(500, Math.max(1, Number(limit || 100)))) };
+  };
+  const restoreKnowledgeBackup = async (name) => {
+    const safeName = path.basename(String(name || ""));
+    if (!safeName || safeName !== String(name || "") || !safeName.endsWith(".json")) throw new Error("备份文件名无效");
+    const backupDir = path.join(path.dirname(filePath), "knowledge-backups");
+    const backupPath = path.join(backupDir, safeName);
+    const backup = JSON.parse(await fs.readFile(backupPath, "utf8"));
+    const evidenceRecords = Array.isArray(backup.evidenceRecords) ? backup.evidenceRecords : [];
+    const knowledgeRecords = Array.isArray(backup.knowledgeRecords) ? backup.knowledgeRecords : [];
+    if (!evidenceRecords.length && !knowledgeRecords.length) throw new Error("该备份没有可恢复的原始记录");
+    const documents = await listDocuments();
+    const documentMap = new Map(documents.map((item) => [String(item.id), item]));
+    const evidenceByDocument = new Map();
+    for (const item of evidenceRecords) { const id = String(item.documentId || ""); if (!evidenceByDocument.has(id)) evidenceByDocument.set(id, []); evidenceByDocument.get(id).push(item); }
+    for (const [documentId, records] of evidenceByDocument) {
+      const document = documentMap.get(documentId); if (!document) continue;
+      const current = (await listClauses(documentId, { limit: 100000, offset: 0 })).clauses || [];
+      const merged = [...current.filter((item) => !records.some((record) => String(record.id) === String(item.id))), ...records].sort((a, b) => Number(a.ordinal || 0) - Number(b.ordinal || 0));
+      await replacePostgresKnowledgeClauses(document, merged);
+      await mutateFallback((store) => { const keep = (store.clauses || []).filter((item) => !(String(item.documentId) === documentId && records.some((record) => String(record.id) === String(item.id)))); store.clauses = [...keep, ...records]; return { store }; });
+    }
+    const knowledgeByGroup = new Map();
+    for (const item of knowledgeRecords) { const key = `${item.documentId || ""}:${item.skillId || ""}`; if (!knowledgeByGroup.has(key)) knowledgeByGroup.set(key, []); knowledgeByGroup.get(key).push(item); }
+    for (const [key, records] of knowledgeByGroup) {
+      const [documentId, skillId] = key.split(":"); const document = documentMap.get(documentId); if (!document) continue;
+      const current = (await listDistilled(documentId, { limit: 100000, offset: 0 })).knowledge || [];
+      const merged = [...current.filter((item) => !(item.skillId === skillId && records.some((record) => String(record.id) === String(item.id)))), ...records];
+      await replacePostgresDistilledKnowledge(documentId, skillId, merged.filter((item) => item.skillId === skillId), { finalize: false, updateDocument: false });
+      await mutateFallback((store) => { const keep = (store.knowledge || []).filter((item) => !(String(item.documentId) === documentId && String(item.skillId || "") === skillId && records.some((record) => String(record.id) === String(item.id)))); store.knowledge = [...keep, ...records]; return { store }; });
+    }
+    await recordAudit({ action: "backup_restore", entityType: "knowledge_data", entityId: "", summary: `恢复知识库备份：${safeName}`, afterState: { evidenceCount: evidenceRecords.length, knowledgeCount: knowledgeRecords.length }, metadata: { backupName: safeName } });
+    return { restoredEvidence: evidenceRecords.length, restoredKnowledge: knowledgeRecords.length, backup: safeName, report: await getDataQualityReport() };
+  };
+  const mergeKnowledgeCards = async ({ keepId = "", removeIds = [] } = {}) => {
+    const ids = [...new Set(removeIds.map(String).filter(Boolean))].filter((id) => id !== String(keepId));
+    if (!keepId || !ids.length) throw new Error("请选择主知识卡和至少一张待合并知识卡");
+    const current = await listDocuments();
+    let target = null;
+    let all = [];
+    for (const document of current) { const page = await listDistilled(document.id, { limit: 100000, offset: 0 }); const found = (page.knowledge || []).filter((item) => [keepId, ...ids].includes(String(item.id))); if (found.length) { target = document; all = page.knowledge || []; break; } }
+    if (!target) throw new Error("知识卡片不存在");
+    const keep = all.find((item) => String(item.id) === String(keepId));
+    const remove = all.filter((item) => ids.includes(String(item.id)));
+    if (!keep || !remove.length) throw new Error("待合并知识卡不存在");
+    const merged = { ...keep, sourceCitations: [...new Map([...(keep.sourceCitations || []), ...remove.flatMap((item) => item.sourceCitations || [])].map((item) => [JSON.stringify(item), item])).values()], issueTags: [...new Set([...(keep.issueTags || []), ...remove.flatMap((item) => item.issueTags || [])])], synonyms: [...new Set([...(keep.synonyms || []), ...remove.flatMap((item) => item.synonyms || [])])], metadata: { ...(keep.metadata || {}), mergedKnowledgeIds: [...new Set([...(keep.metadata?.mergedKnowledgeIds || []), ...ids])] }, updatedAt: nowIso() };
+    const next = all.filter((item) => !ids.includes(String(item.id))).map((item) => String(item.id) === String(keepId) ? merged : item);
+    const skillGroups = new Map();
+    next.forEach((item) => { const key = item.skillId || ""; if (!skillGroups.has(key)) skillGroups.set(key, []); skillGroups.get(key).push(item); });
+    const backupDir = path.join(path.dirname(filePath), "knowledge-backups");
+    const backupPath = path.join(backupDir, `merge-${Date.now()}-${randomUUID()}.json`);
+    await fs.mkdir(backupDir, { recursive: true });
+    await fs.writeFile(backupPath, JSON.stringify({ createdAt: nowIso(), type: "knowledge_merge", documentId: target.id, keep, remove, knowledgeRecords: [keep, ...remove] }), "utf8");
+    for (const [skillId, items] of skillGroups) await replacePostgresDistilledKnowledge(target.id, skillId, items, { finalize: true, updateDocument: false });
+    await mutateFallback((store) => { store.knowledge = (store.knowledge || []).filter((item) => !ids.includes(String(item.id))).map((item) => String(item.id) === String(keepId) ? merged : item); return { store }; });
+    await updateDocument(target.id, { distillationCount: next.length, message: `知识卡片合并完成，当前 ${next.length} 条` });
+    await recordAudit({ action: "knowledge_merge", entityType: "knowledge", entityId: keepId, summary: `合并 ${remove.length} 张知识卡片`, beforeState: { removedIds: ids }, afterState: { keepId, count: next.length }, metadata: { backupPath } });
+    return { keepId, mergedIds: ids, backupPath, report: await getDataQualityReport() };
+  };
   const durationSummary = (values = []) => {
     const sorted = values.slice().sort((left, right) => left - right);
     const percentile = (ratio) => sorted.length ? sorted[Math.min(sorted.length - 1, Math.floor((sorted.length - 1) * ratio))] : 0;
@@ -760,6 +1211,8 @@ export const createKnowledgeService = ({ filePath, originalDir = path.join(path.
 
   const readFallback = async () => {
     try {
+      // Keep reading the legacy snapshot for migration/backward visibility.
+      // It may be too large to rewrite, but it is still parseable on disk.
       const value = JSON.parse(await fs.readFile(filePath, "utf8"));
       return { ...emptyStore(), ...(value && typeof value === "object" ? value : {}) };
     } catch (error) {
@@ -768,6 +1221,8 @@ export const createKnowledgeService = ({ filePath, originalDir = path.join(path.
     }
   };
   const writeFallback = async (store) => {
+    const existingSize = await fs.stat(filePath).then((stat) => stat.size).catch(() => 0);
+    if (existingSize > 100 * 1024 * 1024) return;
     fallbackWrite = fallbackWrite.then(async () => {
       await fs.mkdir(path.dirname(filePath), { recursive: true });
       const temporary = `${filePath}.${process.pid}.${Date.now()}.${randomUUID()}.tmp`;
@@ -782,6 +1237,32 @@ export const createKnowledgeService = ({ filePath, originalDir = path.join(path.
       }
     });
     return fallbackWrite;
+  };
+  const removeFallbackDocumentFast = async (id) => {
+    try {
+      const source = await fs.readFile(filePath, "utf8");
+      const marker = `"id":"${String(id || "")}"`;
+      const markerIndex = source.indexOf(marker);
+      const documentsIndex = source.indexOf('"documents":[');
+      if (markerIndex < documentsIndex || documentsIndex < 0) return false;
+      let start = source.lastIndexOf("{", markerIndex);
+      let depth = 0; let inString = false; let escaped = false; let end = -1;
+      for (let index = start; index < source.length; index += 1) {
+        const char = source[index];
+        if (inString) { if (escaped) escaped = false; else if (char === "\\") escaped = true; else if (char === '"') inString = false; continue; }
+        if (char === '"') { inString = true; continue; }
+        if (char === "{") depth += 1;
+        else if (char === "}" && --depth === 0) { end = index + 1; break; }
+      }
+      if (end < 0) return false;
+      let removeStart = start; let removeEnd = end;
+      if (source[removeEnd] === ",") removeEnd += 1;
+      else if (source[removeStart - 1] === ",") removeStart -= 1;
+      const temporary = `${filePath}.${process.pid}.${Date.now()}.delete.tmp`;
+      await fs.writeFile(temporary, source.slice(0, removeStart) + source.slice(removeEnd), "utf8");
+      await fs.rename(temporary, filePath);
+      return true;
+    } catch { return false; }
   };
   const mutateFallback = async (mutator) => {
     const previous = fallbackMutationLocks.get(filePath) || Promise.resolve();
@@ -810,7 +1291,10 @@ export const createKnowledgeService = ({ filePath, originalDir = path.join(path.
       store.jobs = upsertFallback(store.jobs, job);
       return { store };
     });
-    await writePostgresKnowledgeJob(job);
+    // Legacy JSON records may reference documents that were never migrated;
+    // keep them in the fallback store without violating PostgreSQL FKs.
+    const document = await getDocument(job.documentId);
+    if (document?.storage !== "json") await writePostgresKnowledgeJob(job);
     return job;
   };
   const updateDocument = async (id, patch) => {
@@ -827,6 +1311,27 @@ export const createKnowledgeService = ({ filePath, originalDir = path.join(path.
     next.governanceStatus = governanceStatuses.has(String(next.governanceStatus)) ? String(next.governanceStatus) : "待登记";
     return persistDocument({ ...next, updatedAt: nowIso(), storage: undefined });
   };
+  const recordProcessingStage = async (documentId, stage, event = "start", at = nowIso()) => {
+    const document = await getDocument(documentId);
+    if (!document) return null;
+    const stages = { ...(document.metadata?.processingStages || {}) };
+    const current = { ...(stages[stage] || {}) };
+    if (event === "start") {
+      if (!current.startedAt) current.startedAt = at;
+      current.status = "running";
+    } else if (event === "complete") {
+      current.startedAt ||= at;
+      current.completedAt = at;
+      current.status = "completed";
+      current.elapsedMs = Math.max(0, new Date(current.completedAt).getTime() - new Date(current.startedAt).getTime());
+    } else if (event === "failed") {
+      current.completedAt = at;
+      current.status = "failed";
+      current.elapsedMs = current.startedAt ? Math.max(0, new Date(at).getTime() - new Date(current.startedAt).getTime()) : 0;
+    }
+    stages[stage] = current;
+    return updateDocument(documentId, { metadata: { ...(document.metadata || {}), processingStages: stages } });
+  };
   const updateJob = async (id, patch) => {
     const jobs = await listJobs();
     const current = jobs.find((job) => job.id === id);
@@ -840,7 +1345,7 @@ export const createKnowledgeService = ({ filePath, originalDir = path.join(path.
     });
     await writePostgresKnowledgeJob(next);
     if (next.jobType === "distill") {
-      const status = ["failed", "completed"].includes(next.status) ? "completed" : "distilling";
+      const status = next.status === "failed" ? "failed" : next.status === "completed" ? "completed" : "distilling";
       await updateDocument(next.documentId, { status, progress: next.progress, message: next.message, errorMessage: next.errorMessage || "" });
     }
     return next;
@@ -853,19 +1358,83 @@ export const createKnowledgeService = ({ filePath, originalDir = path.join(path.
       return documentIndexCache.rows;
     }
     const postgres = await listPostgresKnowledgeDocuments();
-    const storedDocuments = postgres.available && postgres.documents.length ? postgres.documents : (await readFallback()).documents.map(({ sourceText, ...item }) => ({ ...item, storage: "json" }));
+    const fallbackDocuments = postgres.available ? [] : (await readFallback()).documents.map(({ sourceText, ...item }) => ({ ...item, storage: "json" }));
+    const storedDocuments = postgres.available
+      ? [...postgres.documents, ...fallbackDocuments.filter((legacy) => !postgres.documents.some((current) => current.id === legacy.id || current.fileHash === legacy.fileHash))]
+      : fallbackDocuments;
     const documents = storedDocuments.filter((document) => {
-      if (!document.metadata?.originalStored) return true;
+      if (deletedDocumentIds.has(document.id)) return false;
+      // Legacy JSON records may not have a server-side original path. They
+      // remain valid historical documents and must stay visible after the
+      // PostgreSQL migration; only uploaded originals are hidden when their
+      // attachment is genuinely missing.
+      if (document.storage === "json" || !document.metadata?.originalStored) return true;
       const originalPath = resolveOriginalPath(document);
       return Boolean(originalPath && existsSync(originalPath));
     });
-    const rows = await Promise.all(documents.map(async (document) => {
-      const knowledge = await listPostgresDistilledKnowledge(document.id, { limit: 10000, offset: 0 });
-      const items = knowledge.available ? (knowledge.knowledge || []) : (await readFallback()).knowledge.filter((item) => item.documentId === document.id);
-      const publishedKnowledgeCount = items.filter((item) => item.publicationStatus === "published").length;
-      const pendingKnowledgeCount = items.filter((item) => ["candidate", "approved"].includes(item.publicationStatus)).length;
-      return decorateDocumentGovernance({ ...document, distillationCount: items.length || Number(document.distillationCount || 0), metadata: { ...(document.metadata || {}), publishedKnowledgeCount, pendingKnowledgeCount } });
-    }));
+    // Older versions exposed a failed distillation job as a completed
+    // document. Reconcile that visible state with one compact jobs query.
+    const allJobs = (await listPostgresKnowledgeJobs("")).jobs;
+    const failedDistillationByDocument = new Map();
+    const latestDistillationByDocument = new Map();
+    const latestParseByDocument = new Map();
+    allJobs.forEach((job) => {
+      const target = job.jobType === "distill" ? latestDistillationByDocument : latestParseByDocument;
+      const current = target.get(job.documentId);
+      if (!current || String(job.updatedAt || job.createdAt || "") > String(current.updatedAt || current.createdAt || "")) target.set(job.documentId, job);
+    });
+    allJobs.filter((job) => job.jobType === "distill" && job.status === "failed").forEach((job) => {
+      if (!failedDistillationByDocument.has(job.documentId)) failedDistillationByDocument.set(job.documentId, job);
+    });
+    const recoveredKnowledgeByDocument = new Map();
+    for (const job of failedDistillationByDocument.values()) {
+      const partial = deduplicateKnowledge((job.result?.batches || []).filter((batch) => batch.status === "completed").flatMap((batch) => batch.knowledge || []));
+      if (!partial.length) continue;
+      recoveredKnowledgeByDocument.set(job.documentId, partial.length);
+      const document = documents.find((item) => item.id === job.documentId);
+      if (document && Number(document.distillationCount || 0) === 0) {
+        await saveDistillation(job.documentId, { jobId: "", skillId: job.skillId || "quality-knowledge-distillation", knowledge: partial, finalize: false });
+      }
+    }
+    // The index is a first-screen endpoint. Do not fetch every knowledge card
+    // for every document here; that made startup transfer and render scale
+    // with the full corpus. Counts are maintained on the document row and the
+    // detail view loads cards on demand.
+    const rows = documents.map((document) => {
+      const failedDistillation = failedDistillationByDocument.get(document.id);
+      const recoveredCount = recoveredKnowledgeByDocument.get(document.id) || 0;
+      const failedBatches = Number(failedDistillation?.result?.batchSummary?.failed || 0);
+      const visibleDocument = failedDistillation && failedBatches > 0
+        ? { ...document, status: "failed", progress: failedDistillation.progress, message: failedDistillation.message, errorMessage: failedDistillation.errorMessage || document.errorMessage, distillationCount: Math.max(Number(document.distillationCount || 0), recoveredCount) }
+        : document;
+      const processingStages = { ...(visibleDocument.metadata?.processingStages || {}) };
+      if (!processingStages.import && visibleDocument.importedAt) processingStages.import = { startedAt: visibleDocument.importedAt, completedAt: visibleDocument.importedAt, status: "completed" };
+      if (!processingStages.evidence && Number(visibleDocument.clauseCount || 0) > 0) processingStages.evidence = { startedAt: visibleDocument.importedAt, completedAt: visibleDocument.updatedAt || nowIso(), status: "completed" };
+      if (processingStages.evidence?.status === "running" && Number(visibleDocument.clauseCount || 0) > 0 && ["completed", "review_required", "distilling", "failed"].includes(visibleDocument.status)) { processingStages.evidence = { ...processingStages.evidence, completedAt: visibleDocument.updatedAt || nowIso(), status: "completed" }; }
+      if (processingStages.evidenceCleanup?.status === "running" && Number(visibleDocument.clauseCount || 0) > 0 && ["completed", "review_required", "distilling", "failed"].includes(visibleDocument.status)) { processingStages.evidenceCleanup = { ...processingStages.evidenceCleanup, completedAt: visibleDocument.updatedAt || nowIso(), status: "completed" }; }
+      if (!processingStages.distillation && ["distilling", "completed"].includes(visibleDocument.status) && Number(visibleDocument.distillationCount || 0) > 0) processingStages.distillation = { startedAt: visibleDocument.updatedAt || visibleDocument.importedAt, completedAt: visibleDocument.status === "completed" ? visibleDocument.updatedAt : undefined, status: visibleDocument.status === "completed" ? "completed" : "running" };
+      const row = decorateDocumentGovernance({
+      ...visibleDocument, metadata: { ...(visibleDocument.metadata || {}), processingStages, publishedKnowledgeCount: Number(visibleDocument.metadata?.publishedKnowledgeCount || 0), pendingKnowledgeCount: Number(visibleDocument.metadata?.pendingKnowledgeCount || 0) },
+      distillationCount: Number(visibleDocument.distillationCount || 0),
+      });
+      row.processingSummary = `${Number(row.clauseCount || 0)} 条证据 · ${Number(row.distillationCount || 0)} 张知识卡片`;
+      const pageStates = Array.isArray(row.metadata?.pageStates) ? row.metadata.pageStates : [];
+      const pageTotal = Number(row.metadata?.pageCount || pageStates.length || 0);
+      const pageFailed = Number(row.metadata?.failedPageCount || pageStates.filter((item) => ["failed", "unavailable"].includes(item.ocrStatus)).length || 0);
+      const pageCompleted = pageStates.length ? pageStates.filter((item) => !["failed", "unavailable"].includes(item.ocrStatus)).length : Math.max(0, Number(row.metadata?.processedPageCount || 0) - pageFailed);
+      const pagePending = Math.max(0, pageTotal - pageCompleted - pageFailed);
+      const parseJob = latestParseByDocument.get(row.id);
+      const parseState = pageTotal ? `已完成 ${pageCompleted} 页 · 失败 ${pageFailed} 页 · 待处理 ${pagePending} 页` : (parseJob?.status === "completed" || row.status === "completed" ? "已完成" : parseJob?.status === "failed" || row.status === "failed" ? "失败" : "待处理");
+      const distillJob = latestDistillationByDocument.get(row.id);
+      const batchSummary = distillJob?.result?.batchSummary || {};
+      const batchTotal = Number(batchSummary.total || distillJob?.result?.totalBatches || 0);
+      const distillState = batchTotal ? `已完成 ${Number(batchSummary.completed || 0)} 批 · 失败 ${Number(batchSummary.failed || 0)} 批 · 待处理 ${Math.max(0, batchTotal - Number(batchSummary.completed || 0) - Number(batchSummary.failed || 0))} 批` : (distillJob?.status === "completed" || Number(row.distillationCount || 0) > 0 ? "已完成" : distillJob?.status === "failed" ? "失败" : "待处理");
+      row.processingSummary = `${row.processingSummary} · 证据解析：${parseState} · 知识蒸馏：${distillState}`;
+      row.message = `${row.message || ""}${row.message ? " · " : ""}证据解析：${parseState} · 知识蒸馏：${distillState}`;
+      row.metadata.processingStages = processingStages;
+      return row;
+    });
+    rows.forEach((row) => { const timing = processingStageText(row.metadata); if (timing) row.processingTimingText = timing; });
     documentIndexCache = { expiresAt: Date.now() + 5000, rows };
     recordOperationMetric("document_index", Math.round(performance.now() - startedAt), false);
     return rows;
@@ -873,27 +1442,56 @@ export const createKnowledgeService = ({ filePath, originalDir = path.join(path.
   const getDocument = async (id) => {
     const postgres = await readPostgresKnowledgeDocument(id);
     const document = postgres.available && postgres.found ? postgres.document : (await readFallback()).documents.find((item) => item.id === id) || null;
-    return document ? decorateDocumentGovernance(document) : null;
+    if (!document) return null;
+    const stages = { ...(document.metadata?.processingStages || {}) };
+    if (!stages.import && document.importedAt) stages.import = { startedAt: document.importedAt, completedAt: document.importedAt, status: "completed", elapsedMs: 0 };
+    if (!stages.evidence && Number(document.clauseCount || 0) > 0) stages.evidence = { startedAt: document.importedAt, completedAt: document.updatedAt || nowIso(), status: "completed", elapsedMs: Math.max(0, new Date(document.updatedAt || nowIso()).getTime() - new Date(document.importedAt || nowIso()).getTime()) };
+    if (!stages.distillation && ["distilling", "completed"].includes(document.status) && Number(document.distillationCount || 0) > 0) stages.distillation = { startedAt: document.updatedAt || document.importedAt, status: document.status === "completed" ? "completed" : "running", ...(document.status === "completed" ? { completedAt: document.updatedAt, elapsedMs: 0 } : {}) };
+    return decorateDocumentGovernance({ ...document, metadata: { ...(document.metadata || {}), processingStages: stages } });
   };
   const compactKnowledgeJob = (job) => {
     const batches = Array.isArray(job.result?.batches) ? job.result.batches : [];
     const batchSummary = { total: batches.length, pending: 0, running: 0, completed: 0, failed: 0 };
     batches.forEach((batch) => { if (batchSummary[batch.status] != null) batchSummary[batch.status] += 1; });
-    return { ...job, result: { schemaVersion: job.result?.schemaVersion, model: job.result?.model || "", totalClauses: job.result?.totalClauses || 0, totalBatches: job.result?.totalBatches || batches.length, knowledgeCount: job.result?.knowledgeCount || 0, batchChars: job.result?.batchChars || 0, maxBatchClauses: job.result?.maxBatchClauses || 0, maxRetries: job.result?.maxRetries ?? 0, batchSummary, logs: (job.result?.logs || []).slice(-3) } };
+    const compactBatches = batches.length ? batches : Array.from({ length: batchSummary.failed }, (_, index) => ({ id: `failed-${index + 1}`, index, status: "failed", errorMessage: "失败批次详情未返回" }));
+    return { ...job, result: { schemaVersion: job.result?.schemaVersion, model: job.result?.model || "", totalClauses: job.result?.totalClauses || 0, totalBatches: job.result?.totalBatches || batches.length || batchSummary.failed, knowledgeCount: job.result?.knowledgeCount || 0, batchChars: job.result?.batchChars || 0, maxBatchClauses: job.result?.maxBatchClauses || 0, maxRetries: job.result?.maxRetries ?? 0, batchSummary, coverageAudit: job.result?.coverageAudit || null, batches: compactBatches, logs: (job.result?.logs || []).slice(-3) } };
   };
   const listJobs = async (documentId = "", options = {}) => {
     const postgres = await listPostgresKnowledgeJobs(documentId);
     const jobs = postgres.available && postgres.jobs.length ? postgres.jobs : (await readFallback()).jobs.filter((job) => !documentId || job.documentId === documentId);
+    // Reconcile jobs left in a non-terminal state after a process restart.
+    // When every distillation batch is completed or failed, the job itself
+    // must not remain "running" (for example after a stalled persistence
+    // call); expose it as failed so the UI can offer retry_failed.
+    for (const job of jobs) {
+      const batches = Array.isArray(job.result?.batches) ? job.result.batches : [];
+      if (job.jobType !== "distill" || job.status !== "running" || !batches.length || !batches.every((batch) => ["completed", "failed"].includes(batch.status))) continue;
+      const failedCount = batches.filter((batch) => batch.status === "failed").length;
+      const nextStatus = failedCount ? "failed" : "completed";
+      const next = { ...job, status: nextStatus, progress: nextStatus === "completed" ? 100 : Math.round(batches.filter((batch) => batch.status === "completed").length / batches.length * 90), message: failedCount ? `${failedCount} 个批次失败；已完成批次已保留` : "全部蒸馏批次完成", completedAt: job.completedAt || nowIso(), updatedAt: nowIso() };
+      Object.assign(job, next);
+      await mutateFallback((store) => ({ store: { ...store, jobs: upsertFallback(store.jobs, next) } }));
+      await writePostgresKnowledgeJob(next);
+    }
     return options.compact ? jobs.map(compactKnowledgeJob) : jobs;
   };
-  const getJob = async (id) => (await listJobs()).find((job) => job.id === id) || null;
+  const getJob = async (id) => {
+    const postgres = await readPostgresKnowledgeJob(id);
+    if (postgres.available && postgres.found) return postgres.job;
+    return (await listJobs()).find((job) => job.id === id) || null;
+  };
   const deleteJob = async (id) => {
     const job = await getJob(id);
     if (!job) return false;
-    if (job.status === "running") throw new Error("任务正在运行，请先停止任务再删除");
+    // Mark active workers stale before removing the row. Late parser output
+    // is ignored by finishEvidenceJob, so large files can be deleted safely.
+    if (["running", "waiting", "paused"].includes(job.status)) deletedJobIds.add(id);
+    distillationControllers.get(id)?.abort();
+    taskControllers.get(id)?.abort();
+    pausedJobIds.delete(id);
     const wasQueued = queue.some((item) => item.jobId === id);
     queue = queue.filter((item) => item.jobId !== id);
-    if (wasQueued || job.status === "waiting") deletedJobIds.add(id);
+    pausedJobIds.delete(id);
     await mutateFallback((store) => {
       store.jobs = store.jobs.filter((item) => item.id !== id);
       return { store };
@@ -903,7 +1501,9 @@ export const createKnowledgeService = ({ filePath, originalDir = path.join(path.
     if (document && ["waiting", "paused"].includes(job.status)) {
       await updateDocument(job.documentId, job.jobType === "distill"
         ? { status: "completed", progress: 100, message: "蒸馏任务已删除；原始证据和已有知识保留" }
-        : { status: "registered", progress: 0, message: "后台解析任务已删除；原文件保留，可重新解析" });
+        : Number(document.clauseCount || 0) > 0
+          ? { status: document.metadata?.failedPageCount ? "review_required" : "completed", progress: document.metadata?.failedPageCount ? 95 : 100, message: document.metadata?.failedPageCount ? `已保留 ${document.clauseCount} 条证据；${document.metadata.failedPageCount} 页待重试` : "证据解析已完成；后台任务记录已删除" }
+          : { status: "registered", progress: 0, message: "后台解析任务已删除；原文件保留，可重新解析" });
     }
     return true;
   };
@@ -931,7 +1531,18 @@ export const createKnowledgeService = ({ filePath, originalDir = path.join(path.
   };
 
   const finishEvidenceJob = async ({ document, jobId, jobType, clauses, pages = [], reviewRequired = false, message }) => {
+    if (deletedJobIds.has(jobId) || pausedJobIds.has(jobId)) return null;
+    clauses = clauses.map(enrichEvidenceClause);
     const completedAt = nowIso();
+    const processingStages = { ...(document.metadata?.processingStages || {}) };
+    for (const stage of ["evidence", "evidenceCleanup"]) {
+      const current = { ...(processingStages[stage] || {}) };
+      current.startedAt ||= document.importedAt || completedAt;
+      current.completedAt = completedAt;
+      current.status = "completed";
+      current.elapsedMs = Math.max(0, new Date(completedAt).getTime() - new Date(current.startedAt).getTime());
+      processingStages[stage] = current;
+    }
     const ocrPages = pages.filter((page) => page.ocrStatus === "completed").length;
     const reviewPages = pages.filter((page) => page.reviewStatus === "pending" || page.reviewStatus === "required").length;
     const failedPages = pages.filter((page) => page.ocrStatus === "failed" || page.ocrStatus === "unavailable").length;
@@ -949,6 +1560,7 @@ export const createKnowledgeService = ({ filePath, originalDir = path.join(path.
       failedPageNumbers: pages.filter((page) => page.ocrStatus === "failed" || page.ocrStatus === "unavailable").map((page) => page.page),
       reviewStatus: reviewRequired ? "required" : reviewPages ? "pending" : "not_required",
       evidenceSchemaVersion: document.contentType === "pdf" ? "qms-pdf-evidence-v1" : "qms-media-evidence-v1",
+      pageStates: pages.map(({ page, ocrStatus, reviewStatus, errorMessage }) => ({ page, ocrStatus, reviewStatus, errorMessage: errorMessage || "" })),
     };
     const completedDocument = {
       ...document,
@@ -959,7 +1571,7 @@ export const createKnowledgeService = ({ filePath, originalDir = path.join(path.
       clauseCount: clauses.length,
       segmentCount: clauses.length,
       preview: clauses[0]?.clauseText?.slice(0, 1200) || document.preview,
-      metadata,
+      metadata: { ...metadata, processingStages },
       errorMessage: reviewRequired ? `${failedPages} 页未完成OCR，需要重试或人工处理` : "",
       updatedAt: completedAt,
     };
@@ -1039,6 +1651,27 @@ export const createKnowledgeService = ({ filePath, originalDir = path.join(path.
     }
   };
 
+  const processSourceDocument = async (document, jobId) => {
+    const sourcePath = resolveOriginalPath(document);
+    if (!sourcePath) throw new Error("知识文件原件路径无效");
+    const workDir = await fs.mkdtemp(path.join(os.tmpdir(), "qms-source-"));
+    const outputPath = path.join(workDir, "extracted.json");
+    try {
+      await updateJob(jobId, { status: "running", progress: 10, message: "正在后台读取原件", startedAt: nowIso(), errorMessage: "" });
+      await updateDocument(document.id, { status: "parsing", governanceStatus: "待解析", progress: 10, message: "正在后台读取原件", errorMessage: "" });
+      const excel = document.contentType === "excel";
+      const script = path.join(scriptDir, excel ? "knowledge-excel-extract.mjs" : "knowledge-file-extract.py");
+      if (excel) await runProcess(process.execPath, [script, sourcePath, outputPath]);
+      else await runProcess(pythonCommand(), pythonArgs(script, [sourcePath, outputPath]));
+      const extracted = JSON.parse(await fs.readFile(outputPath, "utf8"));
+      const rows = Array.isArray(extracted.segments) ? extracted.segments : [];
+      const sourceText = rows.map((item) => item.text || "").filter(Boolean).join("\n");
+      const hydrated = { ...document, sourceText, metadata: { ...(document.metadata || {}), segmentMetadata: rows.map((item) => item.metadata || {}), extraction: "server-background", embeddedImageCount: Number(extracted.embeddedImageCount || 0), imageExtraction: extracted.imageExtraction || "none_detected" } };
+      const clauses = splitQualityClauses(hydrated);
+      return finishEvidenceJob({ document: hydrated, jobId, jobType: "source_parse", clauses, message: `后台解析完成：${clauses.length} 条证据` });
+    } finally { await fs.rm(workDir, { recursive: true, force: true }).catch(() => {}); }
+  };
+
   const processPptDocument = async (document, jobId) => {
     const sourcePath = resolveOriginalPath(document);
     if (!sourcePath) throw new Error("PPTX原文件未保存到服务端");
@@ -1107,7 +1740,7 @@ export const createKnowledgeService = ({ filePath, originalDir = path.join(path.
     }
   };
 
-  const processPdfDocument = async (document, jobId) => {
+  const processPdfDocument = async (document, jobId, failedOnly = false) => {
     const sourcePath = resolveOriginalPath(document);
     if (!sourcePath) throw new Error("PDF原文件未保存到服务端，无法执行页面解析");
     const workDir = await fs.mkdtemp(path.join(os.tmpdir(), "qms-pdf-"));
@@ -1116,35 +1749,87 @@ export const createKnowledgeService = ({ filePath, originalDir = path.join(path.
       await updateJob(jobId, { status: "running", progress: 5, message: "正在检查PDF原生文字层", startedAt: nowIso(), errorMessage: "" });
       await updateDocument(document.id, { status: "parsing", governanceStatus: "待解析", progress: 5, message: "正在检查PDF原生文字层", errorMessage: "" });
       const script = path.join(scriptDir, "knowledge-pdf-extract.py");
-      await runProcess(pythonCommand(), pythonArgs(script, [sourcePath, outputPath]));
-      const extracted = JSON.parse(await fs.readFile(outputPath, "utf8"));
-      const pages = Array.isArray(extracted.pages) ? extracted.pages : [];
+      const fileSize = Number(document.size || document.metadata?.originalSize || 0);
+      // Keep extraction responsive for medium/large manuals too. A single
+      // pypdf process over hundreds of pages can otherwise leave the UI at
+      // 5% for a long time with no observable progress.
+      const splitThreshold = Number(process.env.QMS_PDF_SPLIT_THRESHOLD_MB || 5) * 1024 * 1024;
+      const splitPages = Number(process.env.QMS_PDF_SPLIT_CHUNK_PAGES || 100);
+      const shouldSplit = fileSize >= splitThreshold;
+      let splitManifest = null;
+      let extractionSource = sourcePath;
+      let splitDir = "";
+      if (shouldSplit) {
+        splitDir = await fs.mkdtemp(path.join(workDir, "parts-"));
+        const splitScript = path.join(scriptDir, "knowledge-pdf-split.py");
+        await updateJob(jobId, { status: "running", progress: 8, message: `文件较大，正在切割PDF（每段${splitPages}页）` });
+        await runProcess(pythonCommand(), pythonArgs(splitScript, [sourcePath, splitDir, "--chunk-pages", String(splitPages)]));
+        splitManifest = JSON.parse(await fs.readFile(path.join(splitDir, "manifest.json"), "utf8"));
+        await updateDocument(document.id, { progress: 12, message: `PDF已切割为 ${splitManifest.chunkCount} 段，开始后台解析`, metadata: { ...(document.metadata || {}), splitRequired: true, splitChunkPages: splitPages, splitChunkCount: splitManifest.chunkCount, splitStatus: "completed" } });
+      }
+      const extractionChunks = splitManifest?.chunks || [{ path: extractionSource, startPage: 1, pageCount: 0 }];
+      const pages = [];
+      let extractedPageCount = 0;
+      for (let chunkIndex = 0; chunkIndex < extractionChunks.length; chunkIndex += 1) {
+        const chunk = extractionChunks[chunkIndex];
+        const chunkProgress = Math.round(12 + (chunkIndex / Math.max(1, extractionChunks.length)) * 8);
+        await updateJob(jobId, { status: "running", progress: chunkProgress, message: `正在提取PDF原生文字：第 ${chunkIndex + 1}/${extractionChunks.length} 段` });
+        await updateDocument(document.id, { status: "parsing", progress: chunkProgress, message: `正在提取PDF原生文字：第 ${chunkIndex + 1}/${extractionChunks.length} 段` });
+        await runProcess(pythonCommand(), pythonArgs(script, [chunk.path, outputPath]));
+        const extractedChunk = JSON.parse(await fs.readFile(outputPath, "utf8"));
+        const chunkPages = Array.isArray(extractedChunk.pages) ? extractedChunk.pages : [];
+        chunkPages.forEach((page) => pages.push({ ...page, page: Number(page.page || 0) + Number(chunk.startPage || 1) - 1 }));
+        extractedPageCount += chunkPages.length;
+        const completedProgress = Math.round(12 + ((chunkIndex + 1) / Math.max(1, extractionChunks.length)) * 8);
+        await updateJob(jobId, { status: "running", progress: completedProgress, message: `PDF原生文字已提取 ${chunkIndex + 1}/${extractionChunks.length} 段` });
+      }
+      const extracted = { pageCount: splitManifest?.pageCount || extractedPageCount, pages };
       await updateDocument(document.id, { progress: 20, message: `原生文字检查完成，共 ${extracted.pageCount || pages.length} 页`, metadata: { ...(document.metadata || {}), pageCount: Number(extracted.pageCount || pages.length) } });
       const processed = [];
+      const previousPageStates = new Map((document.metadata?.pageStates || []).map((item) => [Number(item.page), item]));
+      const persistedRetryPages = (await getJob(jobId))?.result?.retryPages || [];
+      const retryPages = new Set(failedOnly ? (persistedRetryPages.length ? persistedRetryPages : (document.metadata?.failedPageNumbers || [])).map(Number) : []);
+      const existingClauses = failedOnly ? (await listClauses(document.id, { limit: 10000, offset: 0 })).clauses || [] : [];
       const ocrTargets = pages.filter((page) => page.needsOcr);
       let ocrDone = 0;
       for (const page of pages) {
+        if (deletedJobIds.has(jobId) || pausedJobIds.has(jobId)) return null;
+        const previous = previousPageStates.get(Number(page.page));
+        if (failedOnly && !retryPages.has(Number(page.page))) {
+          // Older jobs did not persist pageStates. Their failed-page list is
+          // still enough to skip OCR for every successful page and retain its
+          // already indexed clauses.
+          processed.push(previous ? { ...page, ...previous } : { ...page, ocrStatus: page.needsOcr ? "completed" : "native", reviewStatus: "not_required" });
+          continue;
+        }
         if (!page.needsOcr) {
           processed.push({ ...page, ocrStatus: "native", reviewStatus: "not_required" });
           continue;
         }
         processed.push(await runPdfOcr(document, page, workDir));
+        if (deletedJobIds.has(jobId) || pausedJobIds.has(jobId)) return null;
         ocrDone += 1;
         if (ocrDone === ocrTargets.length || ocrDone % 5 === 0) {
           const progress = Math.round(20 + ocrDone / Math.max(1, ocrTargets.length) * 60);
-          const message = `正在执行Windows中文OCR ${ocrDone}/${ocrTargets.length} 页`;
+          const message = failedOnly ? `正在重试失败页 ${ocrDone}/${Math.max(1, retryPages.size)} 页` : `正在执行Windows中文OCR ${ocrDone}/${ocrTargets.length} 页`;
           await updateJob(jobId, { status: "running", progress, message });
-          await updateDocument(document.id, { status: "parsing", progress, message });
+          const liveFailedPages = processed.filter((item) => ["failed", "unavailable"].includes(item.ocrStatus)).map((item) => Number(item.page));
+          const liveCompletedPages = processed.filter((item) => !["failed", "unavailable"].includes(item.ocrStatus)).map((item) => Number(item.page));
+          await updateDocument(document.id, { status: "parsing", progress, message, metadata: { ...(document.metadata || {}), pageCount: Number(extracted.pageCount || pages.length), processedPageCount: liveCompletedPages.length + liveFailedPages.length, failedPageCount: liveFailedPages.length, failedPageNumbers: liveFailedPages, pageStates: processed.map(({ page, ocrStatus, reviewStatus, errorMessage }) => ({ page, ocrStatus, reviewStatus, errorMessage: errorMessage || "" })) } });
         }
       }
+      if (deletedJobIds.has(jobId) || pausedJobIds.has(jobId)) return null;
       await updateJob(jobId, { status: "running", progress: 85, message: "正在分块、合并并去除重复证据" });
-      const clauses = buildPdfEvidenceClauses(document, processed);
+      const retriedClauses = buildPdfEvidenceClauses(document, failedOnly ? processed.filter((page) => retryPages.has(Number(page.page))) : processed);
+      const clauses = failedOnly
+        ? [...existingClauses.filter((clause) => !retryPages.has(Number(clause.sourceLocation?.page || clause.metadata?.sourceLocation?.page || 0))), ...retriedClauses].map((clause, index) => ({ ...clause, ordinal: index + 1 }))
+        : buildPdfEvidenceClauses(document, processed);
       const unavailable = processed.filter((page) => ["failed", "unavailable"].includes(page.ocrStatus)).length;
       const ocrCompleted = processed.filter((page) => page.ocrStatus === "completed").length;
       const reviewRequired = unavailable > 0 || clauses.length === 0;
       const message = reviewRequired
         ? `已保存 ${clauses.length} 条证据；${unavailable} 页OCR未完成，需重试或人工复核`
-        : `PDF解析完成：${clauses.length} 条证据，${ocrCompleted} 页OCR${ocrCompleted ? "待人工复核" : ""}`;
+        : `${failedOnly ? "失败页重试完成" : "PDF解析完成"}：${clauses.length} 条证据，${ocrCompleted} 页OCR${ocrCompleted ? "待人工复核" : ""}`;
       await finishEvidenceJob({ document: { ...document, metadata: { ...(document.metadata || {}), pageCount: Number(extracted.pageCount || pages.length) } }, jobId, jobType: "pdf_parse", clauses, pages: processed, reviewRequired, message });
     } finally {
       await fs.rm(workDir, { recursive: true, force: true }).catch(() => {});
@@ -1156,7 +1841,10 @@ export const createKnowledgeService = ({ filePath, originalDir = path.join(path.
     logs: [...(Array.isArray(result.logs) ? result.logs : []), { at: nowIso(), level, message: cleanText(message).slice(0, 500) }].slice(-100),
   });
   const loadDistillationClauses = async (documentId) => {
-    const maximum = Math.max(100, Number(process.env.QMS_KNOWLEDGE_DISTILL_MAX_CLAUSES || 5000));
+    // 大型手册已经在证据阶段按页/批次保存；蒸馏也必须允许继续按
+    // bounded batches 执行，不能因为 5000 条的旧保护阈值在启动前失败。
+    // 仍保留可配置上限，防止异常数据无限增长。
+    const maximum = Math.max(100, Number(process.env.QMS_KNOWLEDGE_DISTILL_MAX_CLAUSES || 100000));
     const clauses = [];
     let offset = 0;
     let total = 0;
@@ -1167,10 +1855,17 @@ export const createKnowledgeService = ({ filePath, originalDir = path.join(path.
       offset += page.clauses?.length || 0;
       if (clauses.length > maximum) throw new Error(`条款数量 ${total} 超过单任务上限 ${maximum}，请拆分文档后蒸馏`);
     } while (offset < total);
-    return clauses;
+    const unique = new Map();
+    clauses.forEach((clause) => {
+      const text = cleanText(clause.clauseText);
+      if (!text || !isEvidenceCompleteCandidate(text)) return;
+      const key = normalizedEvidenceText(text);
+      if (!unique.has(key)) unique.set(key, clause);
+    });
+    return [...unique.values()];
   };
   const createDistillationBatches = (clauses, options = {}) => {
-    const batchChars = Math.min(20000, Math.max(3000, Number(options.batchChars || process.env.QMS_KNOWLEDGE_DISTILL_BATCH_CHARS || 12000)));
+    const batchChars = Math.min(20000, Math.max(3000, Number(options.batchChars || process.env.QMS_KNOWLEDGE_DISTILL_BATCH_CHARS || 14000)));
     const maxBatchClauses = Math.min(100, Math.max(5, Number(options.maxBatchClauses || process.env.QMS_KNOWLEDGE_DISTILL_BATCH_CLAUSES || 50)));
     const batches = [];
     let current = [];
@@ -1186,7 +1881,15 @@ export const createKnowledgeService = ({ filePath, originalDir = path.join(path.
       size += rowSize;
     }
     if (current.length) batches.push(current);
-    return { batchChars, maxBatchClauses, batches: batches.map((items, index) => ({ id: stableId("batch", items.map((item) => item.id).join("|")), index, clauseIds: items.map((item) => item.id), inputHash: createHash("sha256").update(JSON.stringify(items.map((item) => [item.id, item.clauseText]))).digest("hex"), status: "pending", attempts: 0, knowledge: [], errorMessage: "", startedAt: null, completedAt: null })) };
+    const normalizedBatches = batches.map((items, index) => ({ id: stableId("batch", items.map((item) => item.id).join("|")), index, clauseIds: items.map((item) => item.id), inputHash: createHash("sha256").update(JSON.stringify(items.map((item) => [item.id, item.clauseText]))).digest("hex"), status: "pending", attempts: 0, knowledge: [], errorMessage: "", startedAt: null, completedAt: null }));
+    const segmentSize = Math.min(5000, Math.max(100, Number(options.segmentClauses || process.env.QMS_KNOWLEDGE_DISTILL_SEGMENT_CLAUSES || 1000)));
+    const segments = [];
+    for (let start = 0; start < clauses.length; start += segmentSize) {
+      const end = Math.min(clauses.length, start + segmentSize);
+      const batchIndexes = normalizedBatches.filter((batch) => batch.clauseIds.some((id) => clauses.findIndex((clause) => clause.id === id) >= start && clauses.findIndex((clause) => clause.id === id) < end)).map((batch) => batch.index);
+      segments.push({ id: stableId("segment", clauses.slice(start, end).map((item) => item.id).join("|")), index: segments.length, clauseStart: start, clauseEnd: end, clauseCount: end - start, batchStart: batchIndexes[0] ?? 0, batchEnd: batchIndexes.at(-1) ?? -1, status: "pending", knowledgeCount: 0, errorMessage: "", completedAt: null });
+    }
+    return { batchChars, maxBatchClauses, segmentClauses: segmentSize, batches: normalizedBatches, segments };
   };
   const processDistillationJobInner = async (document, jobId, controller) => {
     if (typeof aiComplete !== "function" || typeof loadSkillContent !== "function") throw new Error("服务端知识蒸馏尚未配置AI调用和Skill读取器");
@@ -1195,68 +1898,146 @@ export const createKnowledgeService = ({ filePath, originalDir = path.join(path.
     const skillId = job.skillId || "quality-knowledge-distillation";
     const skillContent = await loadSkillContent(skillId);
     if (!skillContent) throw new Error(`未找到知识蒸馏Skill：${skillId}`);
-    const clauses = await loadDistillationClauses(document.id);
+    const allClauses = await loadDistillationClauses(document.id);
+    const targetClauseIds = new Set((job.result?.targetClauseIds || []).map(String));
+    const clauses = targetClauseIds.size ? allClauses.filter((clause) => targetClauseIds.has(String(clause.id))) : allClauses;
     if (!clauses.length) throw new Error("没有可蒸馏的规范条款");
+    await recordProcessingStage(document.id, "distillation", "start");
     const configured = createDistillationBatches(clauses, job.result || {});
     const existing = new Map((job.result?.batches || []).map((item) => [item.id, item]));
     const batches = configured.batches.map((item) => ({ ...item, ...(existing.get(item.id) || {}), status: existing.get(item.id)?.status === "running" ? "pending" : existing.get(item.id)?.status || "pending" }));
     const maxRetries = Math.min(5, Math.max(0, Number(job.result?.maxRetries ?? process.env.QMS_KNOWLEDGE_DISTILL_RETRIES ?? 2)));
-    let result = distillationLog({ ...(job.result || {}), schemaVersion: "qms-distillation-job-v2", batchChars: configured.batchChars, maxBatchClauses: configured.maxBatchClauses, maxRetries, totalClauses: clauses.length, totalBatches: batches.length, batches }, `准备蒸馏 ${clauses.length} 条条款，共 ${batches.length} 批`);
+    const existingSegments = new Map((job.result?.segments || []).map((item) => [item.id, item]));
+    const segments = configured.segments.map((item) => ({ ...item, ...(existingSegments.get(item.id) || {}), status: existingSegments.get(item.id)?.status === "running" ? "pending" : existingSegments.get(item.id)?.status || "pending" }));
+    let result = distillationLog({ ...(job.result || {}), schemaVersion: "qms-distillation-job-v3", batchChars: configured.batchChars, maxBatchClauses: configured.maxBatchClauses, segmentClauses: configured.segmentClauses, maxRetries, totalClauses: clauses.length, totalBatches: batches.length, totalSegments: segments.length, batches, segments }, `准备蒸馏 ${clauses.length} 条条款，分为 ${segments.length} 段、${batches.length} 批`);
     job = (await listJobs(document.id)).find((item) => item.id === jobId);
     if (!job || controller.signal.aborted || ["paused", "cancelled", "completed"].includes(job.status)) return;
     await updateJob(jobId, { status: "running", progress: Math.max(5, job.progress || 5), message: `准备蒸馏 ${clauses.length} 条条款，共 ${batches.length} 批`, result, startedAt: job.startedAt || nowIso(), errorMessage: "", completedAt: null });
     const clauseById = new Map(clauses.map((item) => [item.id, item]));
-    for (let index = 0; index < batches.length; index += 1) {
-      job = (await listJobs(document.id)).find((item) => item.id === jobId);
-      if (!job || ["paused", "cancelled"].includes(job.status)) return;
+    // Five workers keeps large documents moving without serializing model
+    // calls; callers can still override this with the environment variable.
+    const configuredConcurrency = Number(job.result?.concurrency || 0);
+    const defaultConcurrency = Number(process.env.QMS_KNOWLEDGE_DISTILL_CONCURRENCY || 8);
+    const concurrency = Math.min(8, Math.max(1, configuredConcurrency ? Math.max(configuredConcurrency, defaultConcurrency) : defaultConcurrency));
+    result = { ...result, concurrency };
+    let stateWrite = Promise.resolve();
+    const persistState = (patch) => {
+      stateWrite = stateWrite.then(() => updateJob(jobId, patch)).catch(() => {});
+      return stateWrite;
+    };
+    let segmentSave = Promise.resolve();
+    const processBatch = async (index) => {
       const batch = batches[index];
-      if (batch.status === "completed") continue;
-      const sourceRows = batch.clauseIds.map((id) => clauseById.get(id)).filter(Boolean).map((clause) => ({ clauseId: clause.id, clauseNumber: clause.clauseNumber || "", sectionPath: clause.sectionPath || "", text: clause.clauseText }));
+      if (!batch || batch.status === "completed") return;
+      const sourceRows = batch.clauseIds.map((id) => clauseById.get(id)).filter(Boolean).map(compactDistillationClause);
       let completed = false;
       while (!completed && batch.attempts <= maxRetries) {
+        if (controller.signal.aborted) return;
+        const current = (await listJobs(document.id)).find((item) => item.id === jobId);
+        if (!current || ["paused", "cancelled"].includes(current.status)) return;
         batch.attempts += 1;
         batch.status = "running";
         batch.startedAt ||= nowIso();
+        const attemptStartedAt = performance.now();
         batch.errorMessage = "";
         result = distillationLog({ ...result, batches: [...batches] }, `第 ${index + 1}/${batches.length} 批开始，第 ${batch.attempts} 次尝试`);
-        const progress = Math.round(8 + batches.filter((item) => item.status === "completed").length / Math.max(1, batches.length) * 82);
-        await updateJob(jobId, { status: "running", progress, message: `正在蒸馏第 ${index + 1}/${batches.length} 批条款`, result });
         try {
-          const ai = await aiComplete({ messages: [{ role: "system", content: `严格执行以下知识蒸馏Skill。只允许使用用户提供的公司规范条款；输出纯JSON。\n\n${skillContent.slice(0, 30000)}` }, { role: "user", content: `来源文档：${document.name}\n版本：${document.version || "未标注"}\n这是第 ${index + 1}/${batches.length} 批条款。按Skill输出 {"knowledge": [...]}。每个知识点必须引用本批次存在的clauseId，并逐字给出原文quote。\n\n条款：\n${JSON.stringify(sourceRows)}` }], maxTokens: 5000, signal: controller.signal, operation: "knowledge-distillation" });
+          const batchMode = classifyDistillationBatch(sourceRows);
+          const systemPrompt = buildDistillationSystemPrompt(skillContent);
+          const modeInstruction = batchMode === "simple"
+            ? "本批为简单文字规则。优先合并重复句，标题和content保持简短；只输出原文明确的规则，不生成解释性扩展。"
+            : "本批为复杂或结构化规则。必须逐项保留数字、单位、条件、例外和适用边界；OCR内容疑似不完整时设置mustReview=true。";
+          const ai = await aiComplete({ messages: [{ role: "system", content: `${systemPrompt}\n${modeInstruction}` }, { role: "user", content: `来源文档：${document.name}\n版本：${document.version || "未标注"}\n批次：${index + 1}/${batches.length}\n处理模式：${batchMode}\n证据条款：${JSON.stringify(sourceRows)}` }], maxTokens: batchMode === "simple" ? Math.min(2600, Math.max(1200, sourceRows.length * 55)) : Math.min(4000, Math.max(1800, sourceRows.length * 75)), signal: controller.signal, operation: "knowledge-distillation" });
           if (controller.signal.aborted) { const aborted = new Error("stopped"); aborted.name = "AbortError"; throw aborted; }
           batch.knowledge = parseAiKnowledgePayload(ai.content);
           batch.status = "completed";
           batch.completedAt = nowIso();
           batch.model = ai.model || "";
           batch.usage = ai.usage || null;
+          batch.elapsedMs = Math.round(performance.now() - attemptStartedAt);
+          result = { ...result, metrics: { ...(result.metrics || {}), completedBatches: batches.filter((item) => item.status === "completed").length, totalAiElapsedMs: batches.reduce((sum, item) => sum + Number(item.elapsedMs || 0), 0), averageAiElapsedMs: Math.round(batches.filter((item) => item.elapsedMs).reduce((sum, item) => sum + Number(item.elapsedMs || 0), 0) / Math.max(1, batches.filter((item) => item.elapsedMs).length)) } };
           completed = true;
           result = distillationLog({ ...result, model: ai.model || result.model || "", batches: [...batches] }, `第 ${index + 1}/${batches.length} 批完成，提取 ${batch.knowledge.length} 条知识点`);
-          await updateJob(jobId, { status: "running", progress: Math.round(8 + batches.filter((item) => item.status === "completed").length / batches.length * 82), message: `已完成 ${batches.filter((item) => item.status === "completed").length}/${batches.length} 批`, result });
+          const segment = segments.find((item) => index >= item.batchStart && index <= item.batchEnd);
+          const segmentDone = segment && batches.slice(segment.batchStart, segment.batchEnd + 1).every((item) => item.status === "completed");
+          const completedCount = batches.filter((item) => item.status === "completed").length;
+          // Persist a checkpoint every few batches instead of serializing the
+          // complete growing result after every AI call. Segment completion
+          // remains a mandatory checkpoint for restart safety.
+          if (segmentDone || completedCount % 5 === 0) {
+            await persistState({ status: "running", progress: Math.round(8 + completedCount / batches.length * 82), message: `已完成 ${completedCount}/${batches.length} 批（并发 ${concurrency}）`, result });
+          }
+          if (segment && segmentDone) {
+            segment.status = "completed";
+            segment.knowledgeCount = batches.slice(segment.batchStart, segment.batchEnd + 1).reduce((sum, item) => sum + (item.knowledge || []).length, 0);
+            segment.completedAt = nowIso();
+            result = distillationLog({ ...result, batches: [...batches], segments: [...segments] }, `第 ${segment.index + 1}/${segments.length} 段完成，已保存 ${segment.knowledgeCount} 条知识候选`);
+            segmentSave = segmentSave.then(async () => {
+              await saveDistillation(document.id, { jobId: "", skillId, knowledge: deduplicateKnowledge(batches.filter((item) => item.status === "completed").flatMap((item) => item.knowledge || [])), finalize: false, mergeExisting: Boolean(job.result?.mergeExisting) });
+              await persistState({ status: "running", progress: Math.round(8 + segments.filter((item) => item.status === "completed").length / Math.max(1, segments.length) * 82), message: `已完成 ${segments.filter((item) => item.status === "completed").length}/${segments.length} 段`, result });
+            }).catch((error) => { result = distillationLog({ ...result }, `中间知识保存失败：${error.message || error}`, "error"); });
+            await segmentSave;
+          }
         } catch (error) {
           const latest = (await listJobs(document.id)).find((item) => item.id === jobId);
           if (latest?.status === "paused" || latest?.status === "cancelled") {
             batch.status = "pending";
             batch.errorMessage = "";
             result = distillationLog({ ...result, batches: [...batches] }, "任务已停止；当前批次将在继续后重新执行", "warning");
-            await updateJob(jobId, { status: latest.status, progress: latest.progress, message: latest.message, result });
+            await persistState({ status: latest.status, progress: latest.progress, message: latest.message, result });
             return;
           }
           batch.errorMessage = String(error?.message || error).slice(0, 1000);
           batch.status = batch.attempts > maxRetries ? "failed" : "pending";
           result = distillationLog({ ...result, batches: [...batches] }, `第 ${index + 1}/${batches.length} 批失败：${batch.errorMessage}`, "error");
-          await updateJob(jobId, { status: "running", message: batch.status === "failed" ? `第 ${index + 1} 批失败，继续处理其余批次` : `第 ${index + 1} 批失败，准备重试`, result, errorMessage: batch.errorMessage });
+          await persistState({ status: "running", message: batch.status === "failed" ? `第 ${index + 1} 批失败，继续处理其余批次` : `第 ${index + 1} 批失败，准备重试`, result, errorMessage: batch.errorMessage });
         }
       }
-    }
+    };
+    let nextIndex = 0;
+    const worker = async () => {
+      while (true) {
+        if (controller.signal.aborted) return;
+        const index = nextIndex++;
+        while (index < batches.length && batches[index].status === "completed") {
+          if (controller.signal.aborted) return;
+          const next = nextIndex++;
+          if (next >= batches.length) return;
+          await processBatch(next);
+        }
+        if (index >= batches.length) return;
+        await processBatch(index);
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(concurrency, batches.length) }, () => worker()));
+    await segmentSave;
+    const latestAfterWorkers = (await listJobs(document.id)).find((item) => item.id === jobId);
+    if (controller.signal.aborted || ["paused", "cancelled"].includes(latestAfterWorkers?.status)) return;
     const failed = batches.filter((item) => item.status === "failed");
     if (failed.length) {
       result = distillationLog({ ...result, batches: [...batches] }, `${failed.length} 个批次失败；可只重试失败批次`, "error");
+      // Preserve successful batches even when a later batch fails. The user
+      // can review these cards immediately and retry only the failed batch.
+      const partialKnowledge = deduplicateKnowledge(batches.filter((item) => item.status === "completed").flatMap((item) => item.knowledge || []));
+      await recordProcessingStage(document.id, "distillation", "failed");
+      // Mark the task terminal before persisting partial cards. A slow or
+      // unavailable knowledge write must not leave the whole task appearing
+      // as "running" indefinitely when all batches are already terminal.
       await updateJob(jobId, { status: "failed", progress: Math.round(batches.filter((item) => item.status === "completed").length / batches.length * 90), message: `${failed.length} 个批次失败；已完成批次已保留`, result, errorMessage: failed.map((item) => `批次${item.index + 1}：${item.errorMessage}`).join("；").slice(0, 2000), completedAt: nowIso() });
+      if (partialKnowledge.length) {
+        Promise.race([
+          saveDistillation(document.id, { jobId: "", skillId, knowledge: partialKnowledge, finalize: false }),
+          new Promise((_, reject) => setTimeout(() => reject(new Error("部分知识写入超时")), 30000)),
+        ]).catch((error) => console.warn("Partial distillation persistence failed", error?.message || error));
+      }
       return;
     }
     const knowledge = deduplicateKnowledge(batches.flatMap((item) => item.knowledge || []));
     await updateJob(jobId, { status: "running", progress: 94, message: "正在校验逐字引用并写入知识库", result: distillationLog({ ...result, batches: [...batches] }, "全部批次完成，开始引用校验和入库") });
-    await saveDistillation(document.id, { jobId, skillId, knowledge });
+    await recordProcessingStage(document.id, "knowledgePersistence", "start");
+    await saveDistillation(document.id, { jobId, skillId, knowledge, finalize: true, mergeExisting: Boolean(job.result?.mergeExisting) });
+    await recordProcessingStage(document.id, "distillation", "complete");
+    await recordProcessingStage(document.id, "knowledgePersistence", "complete");
   };
 
   const processDistillationJob = async (document, jobId) => {
@@ -1272,17 +2053,21 @@ export const createKnowledgeService = ({ filePath, originalDir = path.join(path.
     if (queueRunning) return;
     queueRunning = true;
     while (queue.length) {
-      const { documentId, jobId, jobType = "parse" } = queue.shift();
+      const { documentId, jobId, jobType = "parse", failedOnly = false, retryPages = [] } = queue.shift();
       if (deletedJobIds.delete(jobId)) continue;
       const document = await getDocument(documentId);
       if (!document || deletedJobIds.delete(jobId)) continue;
       try {
+        const taskController = new AbortController();
+        taskControllers.set(jobId, taskController);
+        activeTaskSignal = taskController.signal;
         if (jobType === "distill") {
           await processDistillationJob(document, jobId);
           continue;
         }
         if (jobType === "pdf_parse") {
-          await processPdfDocument(document, jobId);
+          if (retryPages.length) await updateJob(jobId, { result: { ...((await getJob(jobId))?.result || {}), failedOnly: true, retryPages } });
+          await processPdfDocument(document, jobId, failedOnly);
           continue;
         }
         if (jobType === "image_parse") {
@@ -1293,6 +2078,10 @@ export const createKnowledgeService = ({ filePath, originalDir = path.join(path.
           await processPptDocument(document, jobId);
           continue;
         }
+        if (jobType === "source_parse") {
+          await processSourceDocument(document, jobId);
+          continue;
+        }
         const startedAt = nowIso();
         await persistJob({ ...(await listJobs(documentId)).find((job) => job.id === jobId), id: jobId, documentId, jobType: "parse", status: "running", progress: 15, message: "正在识别章节与条款编号", skillId: "", result: {}, errorMessage: "", createdAt: startedAt, startedAt, completedAt: null, updatedAt: startedAt });
         await updateDocument(documentId, { status: "parsing", governanceStatus: "待解析", progress: 15, message: "正在识别章节与条款编号", errorMessage: "" });
@@ -1300,30 +2089,46 @@ export const createKnowledgeService = ({ filePath, originalDir = path.join(path.
         await updateDocument(documentId, { status: "indexing", progress: 70, message: `正在建立 ${clauses.length} 条规范索引` });
         await finishEvidenceJob({ document, jobId, jobType: "parse", clauses, message: `已解析 ${clauses.length} 条规范条款` });
       } catch (error) {
+        const cancelled = deletedJobIds.has(jobId) || pausedJobIds.has(jobId) || error?.name === "AbortError";
+        if (cancelled) continue;
         const message = String(error?.message || error || "条款解析失败").slice(0, 500);
         if (jobType === "distill") {
           const currentJob = (await listJobs(documentId)).find((job) => job.id === jobId);
-          await updateJob(jobId, { status: "failed", progress: currentJob?.progress || 94, message: "知识蒸馏校验失败，可重新执行", errorMessage: message, completedAt: nowIso() });
+          await updateJob(jobId, { status: "failed", progress: currentJob?.progress || 2, message: `知识蒸馏失败：${message}`, errorMessage: message, completedAt: nowIso() });
+          await updateDocument(documentId, { status: "completed", progress: currentJob?.progress || 2, message: `知识蒸馏失败：${message}`, errorMessage: message });
           continue;
         }
         await updateDocument(documentId, { status: "failed", progress: 0, message: "条款解析失败，可重新尝试", errorMessage: message });
         await updateJob(jobId, { status: "failed", progress: 0, message: "条款解析失败，可重新尝试", errorMessage: message, completedAt: nowIso() });
+      } finally {
+        taskControllers.delete(jobId);
+        activeTaskSignal = null;
       }
     }
     queueRunning = false;
   };
-  const enqueueParse = async (documentId, existingJobId = "") => {
+  const enqueueParse = async (documentId, existingJobId = "", options = {}) => {
     const document = await getDocument(documentId);
     if (!document) throw new Error("知识文件不存在");
     const isPdf = document.contentType === "pdf" && Boolean(resolveOriginalPath(document));
     const isImage = document.contentType === "image" && Boolean(resolveOriginalPath(document));
     const isPpt = document.contentType === "ppt" && Boolean(resolveOriginalPath(document));
-    const jobType = isPdf ? "pdf_parse" : isImage ? "image_parse" : isPpt ? "ppt_parse" : "parse";
+    const isSource = Boolean(resolveOriginalPath(document)) && !isPdf && !isImage && !isPpt;
+    const jobType = isPdf ? "pdf_parse" : isImage ? "image_parse" : isPpt ? "ppt_parse" : isSource ? "source_parse" : "parse";
+    // Check persisted jobs as well as the in-memory queue. A running worker
+    // is already removed from `queue`; without this guard, repeated clicks
+    // create concurrent full PDF parses for the same document.
+    const activeJob = (await listJobs(documentId)).find((job) => job.jobType === jobType && ["waiting", "running"].includes(job.status));
+    if (activeJob) return activeJob;
     if (queue.some((item) => item.documentId === documentId)) return (await listJobs(documentId)).find((job) => job.jobType === jobType && ["waiting", "running"].includes(job.status));
-    const job = { id: existingJobId || randomUUID(), documentId, jobType, status: "waiting", progress: 0, message: isPdf ? "等待PDF页面解析" : isImage ? "等待图片OCR解析" : isPpt ? "等待PPT幻灯片解析" : "等待条款解析", skillId: "", result: {}, errorMessage: "", createdAt: nowIso(), startedAt: null, completedAt: null, updatedAt: nowIso() };
+    const failedOnly = options.failedOnly === true && isPdf;
+    const retryPages = failedOnly && isPdf ? [...new Set((document.metadata?.failedPageNumbers || []).map(Number).filter(Boolean))] : [];
+    const retryProgress = failedOnly && retryPages.length ? Math.max(20, Math.round((Number(document.metadata?.processedPageCount || 0) - retryPages.length) / Math.max(1, Number(document.metadata?.pageCount || 1)) * 80)) : 0;
+    const job = { id: existingJobId || randomUUID(), documentId, jobType, status: "waiting", progress: retryProgress, message: failedOnly ? `等待重试 ${retryPages.length} 个失败PDF页面` : isPdf ? "等待PDF页面解析" : isImage ? "等待图片OCR解析" : isPpt ? "等待PPT幻灯片解析" : isSource ? "等待原件后台解析" : "等待条款解析", skillId: "", result: { failedOnly, retryPages }, errorMessage: "", createdAt: nowIso(), startedAt: null, completedAt: null, updatedAt: nowIso() };
     await persistJob(job);
+    await recordProcessingStage(documentId, "evidence", "start");
     await updateDocument(documentId, { status: "waiting", governanceStatus: "待解析", progress: 0, message: job.message, errorMessage: "" });
-    queue.push({ documentId, jobId: job.id, jobType });
+    queue.push({ documentId, jobId: job.id, jobType, failedOnly, retryPages });
     setImmediate(() => runQueue().catch((error) => console.error("Knowledge parse queue failed", error)));
     return job;
   };
@@ -1333,11 +2138,27 @@ export const createKnowledgeService = ({ filePath, originalDir = path.join(path.
     if (!sourceText) throw new Error("知识文件没有可解析的文本");
     const fileHash = String(payload.fileHash || createHash("sha256").update(sourceText).digest("hex"));
     const existing = (await listDocuments()).find((item) => item.fileHash === fileHash);
-    if (existing) return { document: existing, job: null, duplicate: true };
+    if (existing) {
+      // A previous upload may have left only a database row after its
+      // original was removed. Reusing that row resurrects stale progress and
+      // makes a new upload appear to be already 58% processed. Purge the
+      // invalid row and all of its derived data before accepting the file.
+      const existingOriginalPath = existing.metadata?.originalStored ? resolveOriginalPath(existing) : "";
+      const originalMissing = Boolean(existing.metadata?.originalStored && (
+        payload.metadata?.originalExistedBeforeUpload === false
+        || !existingOriginalPath
+        || !existsSync(existingOriginalPath)
+      ));
+      if (originalMissing) {
+        await deleteDocument(existing.id, { actor: payload.actor || "", actorIp: payload.actorIp || "", reason: "stale-original" });
+      } else {
+        return { document: existing, job: null, duplicate: true };
+      }
+    }
     const importedAt = nowIso();
     const inputMetadata = payload.metadata && typeof payload.metadata === "object" ? payload.metadata : {};
     const accessLevel = knowledgeAccessLevels.has(payload.accessLevel || inputMetadata.accessLevel) ? payload.accessLevel || inputMetadata.accessLevel : /客户|客诉|保密/.test(`${payload.category || ""} ${payload.name || ""}`) ? "restricted" : "internal";
-    const metadata = { ...inputMetadata, accessLevel };
+    const metadata = { ...inputMetadata, accessLevel, processingStages: { ...(inputMetadata.processingStages || {}), import: { startedAt: importedAt, completedAt: importedAt, status: "completed", elapsedMs: 0 } } };
     const sourceLevel = String(payload.sourceLevel || metadata.sourceLevel || "C").trim().toUpperCase();
     if (!sourceLevels.has(sourceLevel)) throw new Error("资料等级必须为 A、B 或 C");
     const governanceStatus = String(payload.governanceStatus || metadata.governanceStatus || "待登记").trim();
@@ -1383,7 +2204,47 @@ export const createKnowledgeService = ({ filePath, originalDir = path.join(path.
   };
 
   const deleteDocument = async (id, audit = {}) => {
+    deletedDocumentIds.add(id);
+    const activeJobs = (await listJobs(id)).filter((job) => ["waiting", "running", "paused"].includes(job.status));
+    activeJobs.forEach((job) => { deletedJobIds.add(job.id); pausedJobIds.delete(job.id); distillationControllers.get(job.id)?.abort(); taskControllers.get(job.id)?.abort(); });
     queue = queue.filter((item) => item.documentId !== id);
+    // PostgreSQL is authoritative in normal operation. Avoid parsing the
+    // legacy 400MB JSON snapshot for a delete request.
+    const postgresDocument = await readPostgresKnowledgeDocument(id);
+    if (postgresDocument.available && postgresDocument.found) {
+      const existingDocument = postgresDocument.document;
+      await deletePostgresKnowledgeDocument(id);
+      await mutateFallback((store) => {
+        store.documents = (store.documents || []).filter((item) => item.id !== id);
+        store.clauses = (store.clauses || []).filter((item) => item.documentId !== id);
+        store.jobs = (store.jobs || []).filter((item) => item.documentId !== id);
+        store.knowledge = (store.knowledge || []).filter((item) => item.documentId !== id);
+        store.matches = (store.matches || []).filter((item) => item.documentId !== id);
+        store.conflicts = (store.conflicts || []).filter((item) => item.leftDocumentId !== id && item.rightDocumentId !== id);
+        return { store };
+      }).catch(() => {});
+      const originalPath = existingDocument?.metadata?.originalStored ? resolveOriginalPath(existingDocument) : "";
+      if (originalPath && audit.reason !== "stale-original") await fs.unlink(originalPath).catch(() => {});
+      invalidateCorpusCache();
+      invalidateDocumentIndexCache();
+      return true;
+    }
+    // Legacy fallback snapshots can be hundreds of MB because they contain
+    // raw sourceText. Remove the targeted document without JSON.parse.
+    if (await removeFallbackDocumentFast(id)) {
+      await mutateFallback((store) => {
+        store.clauses = store.clauses.filter((item) => item.documentId !== id);
+        store.jobs = store.jobs.filter((item) => item.documentId !== id);
+        store.knowledge = store.knowledge.filter((item) => item.documentId !== id);
+        store.matches = (store.matches || []).filter((item) => item.documentId !== id);
+        store.conflicts = (store.conflicts || []).filter((item) => item.leftDocumentId !== id && item.rightDocumentId !== id);
+        return { store };
+      });
+      await deletePostgresKnowledgeDocument(id).catch(() => {});
+      invalidateCorpusCache();
+      invalidateDocumentIndexCache();
+      return true;
+    }
     const existingDocument = await getDocument(id);
     const store = await readFallback();
     const deleted = store.documents.some((item) => item.id === id);
@@ -1392,10 +2253,22 @@ export const createKnowledgeService = ({ filePath, originalDir = path.join(path.
     store.jobs = store.jobs.filter((item) => item.documentId !== id);
     store.knowledge = store.knowledge.filter((item) => item.documentId !== id);
     store.matches = (store.matches || []).filter((item) => item.documentId !== id);
+    store.conflicts = (store.conflicts || []).filter((item) => item.leftDocumentId !== id && item.rightDocumentId !== id);
     await writeFallback(store);
-    await deletePostgresKnowledgeDocument(id);
+    // Do not hold the HTTP request open on a large/locked PostgreSQL row.
+    // Fallback/index data is removed first; the database cleanup is bounded
+    // and can finish in the background without blocking the UI.
+    await Promise.race([
+      deletePostgresKnowledgeDocument(id),
+      new Promise((resolve) => setTimeout(() => resolve({ available: false, timedOut: true }), 2500)),
+    ]).catch(() => {});
+    if (existingDocument?.metadata?.originalStored) {
+      const originalPath = resolveOriginalPath(existingDocument);
+      if (originalPath && audit.reason !== "stale-original") await fs.unlink(originalPath).catch(() => {});
+    }
     if (existingDocument) await recordAudit({ action: "delete", entityType: "document", entityId: id, actor: audit.actor || "", actorIp: audit.actorIp || "", summary: `删除知识文件：${existingDocument.name}`, beforeState: { name: existingDocument.name, version: existingDocument.version, governanceStatus: existingDocument.governanceStatus } });
     invalidateCorpusCache();
+    invalidateDocumentIndexCache();
     retrievalCache.clear();
     return deleted;
   };
@@ -1434,7 +2307,24 @@ export const createKnowledgeService = ({ filePath, originalDir = path.join(path.
     if (payload.effectiveStatus !== undefined) patch.effectiveStatus = cleanText(payload.effectiveStatus).slice(0, 80);
     if (payload.accessLevel !== undefined || payload.replacesDocumentId !== undefined) patch.metadata = { ...(document.metadata || {}), ...(payload.accessLevel !== undefined ? { accessLevel: knowledgeAccessLevels.has(payload.accessLevel) ? payload.accessLevel : "internal" } : {}), ...(payload.replacesDocumentId !== undefined ? { replacesDocumentId: cleanText(payload.replacesDocumentId) } : {}) };
     const next = await updateDocument(id, patch);
-    await recordAudit({ action: "modify", entityType: "document", entityId: id, actor: payload.actor || "", actorIp: payload.actorIp || "", summary: `修改知识文件信息：${document.name}`, beforeState: { version: document.version, owner: document.owner, reviewDue: document.reviewDue, accessLevel: document.accessLevel }, afterState: { version: next.version, owner: next.owner, reviewDue: next.reviewDue, accessLevel: next.accessLevel } });
+    if (patch.sourceLevel) {
+      const currentCards = [];
+      let cardOffset = 0;
+      while (true) {
+        const page = await listDistilled(id, { limit: 1000, offset: cardOffset });
+        const rows = page.knowledge || [];
+        currentCards.push(...rows);
+        if (!rows.length || currentCards.length >= Number(page.total || currentCards.length) || rows.length < 1000) break;
+        cardOffset += rows.length;
+      }
+      if (currentCards.length) {
+        const updatedCards = currentCards.map((card) => ({ ...card, sourceLevel: patch.sourceLevel, metadata: { ...(card.metadata || {}), sourceLevel: patch.sourceLevel } }));
+        const skillIds = [...new Set(updatedCards.map((card) => card.skillId || "quality-knowledge-distillation"))];
+        for (const skillId of skillIds) await replacePostgresDistilledKnowledge(id, skillId, updatedCards.filter((card) => (card.skillId || "quality-knowledge-distillation") === skillId), { finalize: false, updateDocument: false });
+        await mutateFallback((store) => ({ store: { ...store, knowledge: (store.knowledge || []).map((card) => String(card.documentId) === String(id) ? { ...card, sourceLevel: patch.sourceLevel, metadata: { ...(card.metadata || {}), sourceLevel: patch.sourceLevel } } : card) } }));
+      }
+    }
+    await recordAudit({ action: "modify", entityType: "document", entityId: id, actor: payload.actor || "", actorIp: payload.actorIp || "", summary: patch.sourceLevel ? `修改知识文件信息：${document.name}（资料等级 ${document.sourceLevel || "C"} → ${patch.sourceLevel}，已同步知识卡片）` : `修改知识文件信息：${document.name}`, beforeState: { version: document.version, owner: document.owner, reviewDue: document.reviewDue, accessLevel: document.accessLevel, sourceLevel: document.sourceLevel || "C" }, afterState: { version: next.version, owner: next.owner, reviewDue: next.reviewDue, accessLevel: next.accessLevel, sourceLevel: next.sourceLevel || "C" } });
     invalidateCorpusCache();
     return next;
   };
@@ -1470,8 +2360,14 @@ export const createKnowledgeService = ({ filePath, originalDir = path.join(path.
     if (Number(document.metadata?.reviewPageCount || 0) > 0 && document.metadata?.reviewStatus !== "approved") throw new Error("OCR或媒体证据尚未完成人工复核，不能进入知识蒸馏");
     const active = (await listJobs(documentId)).find((item) => item.jobType === "distill" && ["waiting", "running", "paused"].includes(item.status));
     if (active) return active;
+    const previous = (await listJobs(documentId)).filter((item) => item.jobType === "distill" && ["failed", "paused"].includes(item.status)).sort((a, b) => String(b.updatedAt || b.createdAt).localeCompare(String(a.updatedAt || a.createdAt)))[0];
+    if (previous?.result?.batches?.length) {
+      const resumed = await updateJob(previous.id, { status: "waiting", message: "已恢复上次蒸馏任务，将跳过已完成段和批次", errorMessage: "", completedAt: null });
+      queueDistillation(documentId, previous.id);
+      return resumed;
+    }
     const timestamp = nowIso();
-    const job = { id: randomUUID(), documentId, jobType: "distill", status: "waiting", progress: 2, message: "等待服务端分批蒸馏", skillId: String(skillId || "quality-knowledge-distillation"), result: { schemaVersion: "qms-distillation-job-v2", batchChars: Number(options.batchChars || 0) || undefined, maxBatchClauses: Number(options.maxBatchClauses || 0) || undefined, maxRetries: Number(options.maxRetries ?? 2), batches: [], logs: [{ at: timestamp, level: "info", message: "任务已创建，等待服务端执行" }] }, errorMessage: "", createdAt: timestamp, startedAt: null, completedAt: null, updatedAt: timestamp };
+    const job = { id: randomUUID(), documentId, jobType: "distill", status: "waiting", progress: 2, message: "等待服务端分批蒸馏", skillId: String(skillId || "quality-knowledge-distillation"), result: { schemaVersion: "qms-distillation-job-v2", batchChars: Number(options.batchChars || 0) || undefined, maxBatchClauses: Number(options.maxBatchClauses || 0) || undefined, maxRetries: Number(options.maxRetries ?? 2), concurrency: Number(options.concurrency || 0) || undefined, batches: [], logs: [{ at: timestamp, level: "info", message: "任务已创建，等待服务端执行" }] }, errorMessage: "", createdAt: timestamp, startedAt: null, completedAt: null, updatedAt: timestamp };
     await persistJob(job);
     await updateDocument(documentId, { status: "distilling", progress: 2, message: "等待服务端分批蒸馏", errorMessage: "" });
     queueDistillation(documentId, job.id);
@@ -1479,8 +2375,50 @@ export const createKnowledgeService = ({ filePath, originalDir = path.join(path.
   };
   const controlDistillationJob = async (jobId, action) => {
     const job = (await listJobs()).find((item) => item.id === jobId);
-    if (!job || job.jobType !== "distill") throw new Error("知识蒸馏任务不存在");
+    if (!job) throw new Error("知识任务不存在");
     const normalizedAction = action === "stop" ? "pause" : cleanText(action);
+    if (normalizedAction === "retry_missing") {
+      if (job.jobType !== "distill") throw new Error("只有知识蒸馏任务支持补齐遗漏知识");
+      const document = await getDocument(job.documentId);
+      const missing = document?.metadata?.knowledgeCoverage?.missing || [];
+      const targetClauseIds = [...new Set(missing.map((item) => String(item.clauseId || "")).filter(Boolean))];
+      if (!targetClauseIds.length) throw new Error("当前没有检测到未覆盖的原文重点");
+      const timestamp = nowIso();
+      const retryJob = { ...job, id: randomUUID(), status: "waiting", progress: 2, message: `等待补齐 ${targetClauseIds.length} 个遗漏重点`, result: { ...(job.result || {}), schemaVersion: "qms-distillation-job-v3", targetClauseIds, mergeExisting: true, batches: [], segments: [], logs: [{ at: timestamp, level: "info", message: `已创建遗漏知识补齐任务：${targetClauseIds.length} 个重点` }] }, errorMessage: "", createdAt: timestamp, startedAt: null, completedAt: null, updatedAt: timestamp };
+      await persistJob(retryJob);
+      await updateDocument(job.documentId, { status: "distilling", progress: 2, message: retryJob.message, errorMessage: "" });
+      queueDistillation(job.documentId, retryJob.id);
+      return retryJob;
+    }
+    if (job.jobType !== "distill") {
+      if (normalizedAction === "pause") {
+        if (!["waiting", "running"].includes(job.status)) return job;
+        pausedJobIds.add(jobId);
+        queue = queue.filter((item) => item.jobId !== jobId);
+        taskControllers.get(jobId)?.abort();
+        return await updateJob(jobId, { status: "paused", message: "任务已暂停；可继续或删除", errorMessage: "" });
+      }
+      if (normalizedAction === "resume") {
+        pausedJobIds.delete(jobId);
+        deletedJobIds.delete(jobId);
+        await updateJob(jobId, { status: "waiting", message: "任务已重新排队", errorMessage: "", completedAt: null });
+        queue = queue.filter((item) => item.jobId !== jobId);
+        if (job.jobType === "bulk_review") { setImmediate(() => runBulkReviewJob(jobId).catch(() => {})); return await getJob(jobId); }
+        queue.push({ documentId: job.documentId, jobId, jobType: job.jobType, failedOnly: Boolean(job.result?.failedOnly), retryPages: job.result?.retryPages || [] });
+        setImmediate(() => runQueue().catch((error) => console.error("Knowledge task resume failed", error)));
+        return await getJob(jobId);
+      }
+      if (normalizedAction === "retry_failed" && job.jobType === "bulk_review") {
+        if (job.status !== "failed") throw new Error("只有已失败的批量审核任务可以重试失败项");
+        const failedIds = (job.result?.failures || []).map((item) => item.id).filter(Boolean);
+        if (!failedIds.length) throw new Error("当前任务没有失败项");
+        const next = await updateJob(jobId, { status: "waiting", progress: 0, message: `仅重试 ${failedIds.length} 张失败知识卡`, result: { ...job.result, ids: failedIds, completed: 0, failed: 0, successes: [], failures: [] }, errorMessage: "", completedAt: null });
+        setImmediate(() => runBulkReviewJob(jobId).catch(() => {}));
+        return next;
+      }
+      if (normalizedAction === "cancel" || normalizedAction === "stop") { deletedJobIds.add(jobId); taskControllers.get(jobId)?.abort(); return await updateJob(jobId, { status: "cancelled", message: "任务已取消", completedAt: nowIso() }); }
+      throw new Error("不支持的知识任务操作");
+    }
     if (normalizedAction === "finalize") {
       const batches = job.result?.batches || [];
       if (!batches.length || batches.some((batch) => batch.status !== "completed")) throw new Error("只有全部AI批次已完成的任务才能离线重新校验入库");
@@ -1494,6 +2432,7 @@ export const createKnowledgeService = ({ filePath, originalDir = path.join(path.
       for (let attempt = 0; attempt < 300 && distillationControllers.has(jobId); attempt += 1) {
         await new Promise((resolve) => setTimeout(resolve, 10));
       }
+      await updateDocument(job.documentId, { status: "distilling", message: "知识蒸馏已暂停；已完成批次保留，可继续执行", errorMessage: "" });
       return next;
     }
     if (!["resume", "retry_failed"].includes(normalizedAction)) throw new Error("不支持的蒸馏任务操作");
@@ -1505,10 +2444,21 @@ export const createKnowledgeService = ({ filePath, originalDir = path.join(path.
     if (normalizedAction === "retry_failed" && !batches.some((item) => item.status === "pending")) throw new Error("当前任务没有失败批次需要重试");
     const result = distillationLog({ ...(job.result || {}), batches }, normalizedAction === "retry_failed" ? "只重试失败批次" : "继续执行未完成批次");
     const next = await updateJob(jobId, { status: "waiting", message: normalizedAction === "retry_failed" ? "失败批次已重新排队" : "未完成批次已重新排队", result, errorMessage: "", completedAt: null });
+    // A distillation retry must never fall back to document parsing. Restore
+    // the stage explicitly and remove any stale parse queue entry for this
+    // document before enqueueing the same distillation job.
+    queue = queue.filter((item) => !(item.documentId === job.documentId && item.jobType !== "distill"));
+    const staleParseJobs = (await listJobs(job.documentId)).filter((item) => item.id !== jobId && item.jobType !== "distill" && ["waiting", "running", "paused"].includes(item.status));
+    for (const stale of staleParseJobs) {
+      deletedJobIds.add(stale.id);
+      taskControllers.get(stale.id)?.abort();
+      await updateJob(stale.id, { status: "cancelled", message: "知识蒸馏重试已取消旧解析任务", completedAt: nowIso() });
+    }
+    await updateDocument(job.documentId, { status: "distilling", progress: next.progress || job.progress || 2, message: normalizedAction === "retry_failed" ? "失败知识批次已重新排队" : "未完成知识批次已重新排队", errorMessage: "" });
     queueDistillation(job.documentId, job.id);
     return next;
   };
-  const saveDistillation = async (documentId, { jobId, skillId, knowledge = [] } = {}) => {
+  const saveDistillation = async (documentId, { jobId, skillId, knowledge = [], finalize = true, mergeExisting = false } = {}) => {
     const clauseRows = [];
     let clauseOffset = 0;
     let clauseTotal = 0;
@@ -1517,12 +2467,22 @@ export const createKnowledgeService = ({ filePath, originalDir = path.join(path.
       clauseRows.push(...(page.clauses || []));
       clauseTotal = Number(page.total || 0);
       clauseOffset += page.clauses?.length || 0;
-    } while (clauseOffset < clauseTotal && clauseOffset < 5000);
-    const document = await getDocument(documentId);
-    if (!document) throw new Error("知识文件不存在");
-    const clauseById = new Map(clauseRows.map((clause) => [clause.id, clause]));
-    const audit = { inputCount: Array.isArray(knowledge) ? knowledge.length : 0, acceptedCount: 0, rejectedCount: 0, issues: [] };
-    const verified = (Array.isArray(knowledge) ? knowledge : []).map((item, index) => {
+    } while (clauseOffset < clauseTotal && clauseOffset < 100000);
+  const document = await getDocument(documentId);
+  if (!document) throw new Error("知识文件不存在");
+  const clauseById = new Map(clauseRows.map((clause) => [clause.id, clause]));
+  const audit = { inputCount: Array.isArray(knowledge) ? knowledge.length : 0, acceptedCount: 0, rejectedCount: 0, issues: [] };
+    const validRuleTypes = new Set(["REQUIREMENT", "PROHIBITION", "RESTRICTION", "TIME_LIMIT", "PERMISSION", "EXCEPTION", "RESPONSIBILITY", "PENALTY", "APPLICABILITY", "RECOMMENDATION", "DEFINITION", "EVIDENCE"]);
+    const validateAtomicRule = (item, validCitations) => {
+      const rule = item?.atomicRule;
+      if (!rule || typeof rule !== "object") return { rule: null, warning: "缺少atomicRule；保留为兼容旧格式，建议重新蒸馏" };
+      const ruleType = String(rule.ruleType || "").toUpperCase();
+      if (ruleType && !validRuleTypes.has(ruleType)) return { error: `atomicRule.ruleType无效：${ruleType}` };
+      const sourceText = String(rule.sourceText || "").trim();
+      if (sourceText && !validCitations.some((citation) => String(citation.quote || "").includes(sourceText))) return { error: "atomicRule.sourceText不在引用证据中，疑似模型改写" };
+      return { rule: { ...rule, ...(ruleType ? { ruleType } : {}) } };
+    };
+  const verified = (Array.isArray(knowledge) ? knowledge : []).map((item, index) => {
       const citations = Array.isArray(item.sourceCitations) ? item.sourceCitations : [];
       const validCitations = citations.map((citation) => {
         const clause = clauseById.get(String(citation.clauseId || ""));
@@ -1536,27 +2496,51 @@ export const createKnowledgeService = ({ filePath, originalDir = path.join(path.
         audit.issues.push({ index: index + 1, title: cleanText(item.title).slice(0, 120) || `知识点${index + 1}`, reason: !citations.length ? "缺少sourceCitations" : "存在无效或非连续逐字引用" });
         return null;
       }
+      const unreadableOcrCitation = validCitations.find((citation) => citation.ocrStatus === "completed" && hasUnreadableOcrArtifact(citation.quote));
+      if (unreadableOcrCitation) {
+        audit.rejectedCount += 1;
+        audit.issues.push({ index: index + 1, title: cleanText(item.title).slice(0, 120) || `知识点${index + 1}`, reason: `OCR引用含疑似识别伪影（${unreadableOcrCitation.page ? `第${unreadableOcrCitation.page}页` : "来源页"}），已拒绝入库` });
+        return null;
+      }
+      const atomicRuleAudit = validateAtomicRule(item, validCitations);
+      if (atomicRuleAudit.error) {
+        audit.rejectedCount += 1;
+        audit.issues.push({ index: index + 1, title: cleanText(item.title).slice(0, 120) || `知识点${index + 1}`, reason: atomicRuleAudit.error });
+        return null;
+      }
       audit.acceptedCount += 1;
       const ocrNeedsReview = validCitations.some((citation) => citation.ocrStatus === "completed" && citation.reviewStatus !== "approved");
-      return { ...item, confidence: ocrNeedsReview ? Math.min(0.7, Number(item.confidence ?? 0.7)) : item.confidence, mustReview: item.mustReview === true || ocrNeedsReview, sourceCitations: validCitations };
+      return { ...item, atomicRule: atomicRuleAudit.rule || item.atomicRule, confidence: ocrNeedsReview ? Math.min(0.7, Number(item.confidence ?? 0.7)) : item.confidence, mustReview: item.mustReview === true || ocrNeedsReview || !atomicRuleAudit.rule, sourceCitations: validCitations };
     }).filter(Boolean);
     if (audit.rejectedCount && !verified.length) throw new Error(`逐字引用校验失败：${audit.rejectedCount} 条知识点未通过；${audit.issues.slice(0, 3).map((item) => `${item.title}（${item.reason}）`).join("、")}`);
-    const normalized = normalizeKnowledge(document, skillId || "quality-knowledge-distillation", verified);
+    let normalized = normalizeKnowledge(document, skillId || "quality-knowledge-distillation", verified);
     if (!normalized.length) throw new Error("蒸馏结果没有通过原文引用校验，请重新生成或检查规范文本");
+    if (mergeExisting) {
+      const existingPostgres = await listPostgresDistilledKnowledge(documentId, { limit: 100000, offset: 0 });
+      const existing = existingPostgres.available ? (existingPostgres.knowledge || []) : (await readFallback()).knowledge.filter((item) => item.documentId === documentId && (item.skillId || "quality-knowledge-distillation") === (skillId || "quality-knowledge-distillation"));
+      normalized = deduplicateKnowledge([...existing, ...normalized]);
+    }
+    const coverageAudit = buildKnowledgeCoverageAudit(clauseRows, normalized);
     const blockedByReview = normalized.some((item) => item.metadata?.mustReview);
     normalized.forEach((item) => { if (blockedByReview || item.metadata?.mustReview) item.publicationStatus = "candidate"; });
     const store = await readFallback();
     store.knowledge = [...normalized, ...store.knowledge.filter((item) => item.documentId !== documentId || item.skillId !== skillId)];
     const fallbackDocument = store.documents.find((item) => item.id === documentId);
-    const completionMessage = `已蒸馏 ${normalized.length} 条知识点${audit.rejectedCount ? `，剔除 ${audit.rejectedCount} 条无效引用` : ""}，等待人工审核`;
-    if (fallbackDocument) store.documents = upsertFallback(store.documents, { ...fallbackDocument, status: "completed", governanceStatus: "候选知识", progress: 100, message: completionMessage, distillationCount: normalized.length, errorMessage: "", updatedAt: nowIso() });
+    const completionMessage = `已蒸馏 ${normalized.length} 条知识点${audit.rejectedCount ? `，剔除 ${audit.rejectedCount} 条无效引用` : ""}${coverageAudit.missingTopics ? `，发现 ${coverageAudit.missingTopics} 个原文重点未覆盖` : ""}，等待人工审核`;
+    if (fallbackDocument) store.documents = upsertFallback(store.documents, finalize
+      ? { ...fallbackDocument, status: "completed", governanceStatus: "候选知识", progress: 100, message: completionMessage, distillationCount: normalized.length, errorMessage: "", updatedAt: nowIso() }
+      : { ...fallbackDocument, status: "distilling", governanceStatus: "知识蒸馏中", message: `已保存 ${normalized.length} 条知识候选，蒸馏任务继续执行`, distillationCount: normalized.length, errorMessage: "", updatedAt: nowIso() });
     await writeFallback(store);
-    await replacePostgresDistilledKnowledge(documentId, skillId, normalized);
+    await updateDocument(documentId, { metadata: { ...(document.metadata || {}), knowledgeCoverage: coverageAudit }, message: completionMessage });
+    await replacePostgresDistilledKnowledge(documentId, skillId, normalized, { finalize, progress: finalize ? 100 : 50 });
     invalidateCorpusCache();
-    if (jobId) {
+    if (jobId && finalize) {
       const currentJob = (await listJobs(documentId)).find((item) => item.id === jobId);
       const compactBatches = (currentJob?.result?.batches || []).map(({ knowledge: batchKnowledge = [], ...batch }) => ({ ...batch, knowledgeCount: batchKnowledge.length, outputHash: batchKnowledge.length ? createHash("sha256").update(JSON.stringify(batchKnowledge)).digest("hex") : "" }));
-      await updateJob(jobId, { status: "completed", progress: 100, message: completionMessage, result: distillationLog({ ...(currentJob?.result || {}), batches: compactBatches, knowledgeCount: normalized.length, citationAudit: audit }, audit.rejectedCount ? `引用校验完成，剔除 ${audit.rejectedCount} 条无效引用，其余知识已入库` : "引用校验和知识入库完成"), errorMessage: "", completedAt: nowIso() });
+      await updateJob(jobId, { status: "completed", progress: 100, message: completionMessage, result: distillationLog({ ...(currentJob?.result || {}), batches: compactBatches, knowledgeCount: normalized.length, citationAudit: audit, coverageAudit }, audit.rejectedCount ? `引用校验完成，剔除 ${audit.rejectedCount} 条无效引用，其余知识已入库` : "引用校验和知识入库完成"), errorMessage: "", completedAt: nowIso() });
+    }
+    if (jobId && !finalize) {
+      return normalized;
     }
     return normalized;
   };
@@ -1580,6 +2564,101 @@ export const createKnowledgeService = ({ filePath, originalDir = path.join(path.
     if (distilledPageCache.size > 300) distilledPageCache.delete(distilledPageCache.keys().next().value);
     recordOperationMetric("knowledge_page", Math.round(performance.now() - startedAt), false);
     return value;
+  };
+  const findKnowledgeRecord = async (id, kind) => {
+    for (const document of await listDocuments()) {
+      const page = kind === "clause" ? await listClauses(document.id, { limit: 100000, offset: 0 }) : await listDistilled(document.id, { limit: 100000, offset: 0 });
+      const rows = kind === "clause" ? page.clauses || [] : page.knowledge || [];
+      const found = rows.find((item) => String(item.id) === String(id));
+      if (found) return { document, record: found, rows };
+    }
+    return null;
+  };
+  const exportKnowledgeData = async (documentId = "") => {
+    const documents = (await listDocuments()).filter((item) => !documentId || String(item.id) === String(documentId));
+    const output = [];
+    for (const document of documents) {
+      const clauses = await listClauses(document.id, { limit: 100000, offset: 0 });
+      const knowledge = await listDistilled(document.id, { limit: 100000, offset: 0 });
+      output.push({ document: { id: document.id, name: document.name, version: document.version, status: document.status }, evidence: clauses.clauses || [], knowledge: knowledge.knowledge || [] });
+    }
+    await recordAudit({ action: "export", entityType: "knowledge_data", entityId: documentId, summary: `导出后台知识数据：${documents.length} 份文档`, metadata: { documentCount: documents.length, evidenceCount: output.reduce((sum, item) => sum + item.evidence.length, 0), knowledgeCount: output.reduce((sum, item) => sum + item.knowledge.length, 0) } });
+    return { exportedAt: nowIso(), documents: output };
+  };
+  const getKnowledgeImpact = async (id, kind) => {
+    const target = await findKnowledgeRecord(id, kind === "evidence" ? "clause" : "knowledge");
+    if (!target) throw new Error(`${kind === "evidence" ? "证据" : "知识卡片"}不存在`);
+    const cards = kind === "evidence" ? (await listDistilled(target.document.id, { limit: 100000, offset: 0 })).knowledge || [] : [];
+    const referencingCards = kind === "evidence" ? cards.filter((item) => (item.clauseIds || []).map(String).includes(String(id)) || (item.sourceCitations || []).some((citation) => String(citation.clauseId) === String(id))) : [];
+    const fallback = await readFallback();
+    const postgresMatches = await listPostgresConfirmedKnowledgeMatches({ limit: 5000 });
+    const allMatches = [...(fallback.matches || []), ...(postgresMatches.matches || [])];
+    const matches = allMatches.filter((item, index, rows) => rows.findIndex((candidate) => String(candidate.id) === String(item.id)) === index && (kind === "knowledge" ? String(item.knowledgeId) === String(id) : String(item.clauseId) === String(id)));
+    const confirmed = matches.filter((item) => item.status === "confirmed");
+    return { kind, id: String(id), documentId: target.document.id, evidenceReferences: referencingCards.length, matchReferences: matches.length, confirmedMatches: confirmed.length, samples: { cards: referencingCards.slice(0, 5).map((item) => item.title), matches: matches.slice(0, 5).map((item) => ({ issueId: item.issueId, score: item.score, status: item.status })) } };
+  };
+  const updateKnowledgeClause = async (id, payload = {}) => {
+    const found = await findKnowledgeRecord(id, "clause"); if (!found) throw new Error("证据不存在");
+    const next = { ...found.record, clauseText: cleanText(payload.clauseText ?? found.record.clauseText), title: cleanText(payload.title ?? found.record.title), searchText: cleanText(payload.searchText ?? payload.clauseText ?? found.record.searchText), updatedAt: nowIso() };
+    const rows = found.rows.map((item) => String(item.id) === String(id) ? next : item);
+    await replacePostgresKnowledgeClauses(found.document, rows);
+    await mutateFallback((store) => { store.clauses = (store.clauses || []).map((item) => String(item.id) === String(id) ? next : item); return { store }; });
+    await recordAudit({ action: "modify", entityType: "evidence", entityId: id, actor: payload.actor || "", actorIp: payload.actorIp || "", summary: `修改证据：${next.title || id}`, beforeState: { clauseText: found.record.clauseText }, afterState: { clauseText: next.clauseText }, metadata: { documentId: found.document.id } });
+    return next;
+  };
+  const deleteKnowledgeClause = async (id, payload = {}) => {
+    const found = await findKnowledgeRecord(id, "clause"); if (!found) throw new Error("证据不存在");
+    const rows = found.rows.filter((item) => String(item.id) !== String(id));
+    await replacePostgresKnowledgeClauses(found.document, rows);
+    await mutateFallback((store) => { store.clauses = (store.clauses || []).filter((item) => String(item.id) !== String(id)); return { store }; });
+    await recordAudit({ action: "delete", entityType: "evidence", entityId: id, actor: payload.actor || "", actorIp: payload.actorIp || "", summary: `删除证据：${found.record.title || id}`, beforeState: { documentId: found.document.id, clauseText: found.record.clauseText }, metadata: { documentId: found.document.id } });
+    return true;
+  };
+  const updateKnowledgeCard = async (id, payload = {}) => {
+    const found = await findKnowledgeRecord(id, "knowledge"); if (!found) throw new Error("知识卡片不存在");
+    const next = { ...found.record, title: cleanText(payload.title ?? found.record.title), content: cleanText(payload.content ?? found.record.content), sourceLevel: cleanText(payload.sourceLevel ?? found.record.sourceLevel).toUpperCase() || "C", mustReview: payload.mustReview === undefined ? Boolean(found.record.mustReview) : Boolean(payload.mustReview), metadata: { ...(found.record.metadata || {}), ...(payload.sourceLevel !== undefined ? { sourceLevel: cleanText(payload.sourceLevel).toUpperCase() } : {}), ...(payload.mustReview !== undefined ? { mustReview: Boolean(payload.mustReview) } : {}) }, updatedAt: nowIso() };
+    const rows = found.rows.map((item) => String(item.id) === String(id) ? next : item);
+    await replacePostgresDistilledKnowledge(found.document.id, found.record.skillId || "quality-knowledge-distillation", rows.filter((item) => (item.skillId || "quality-knowledge-distillation") === (found.record.skillId || "quality-knowledge-distillation")), { finalize: false, updateDocument: false });
+    await mutateFallback((store) => { store.knowledge = (store.knowledge || []).map((item) => String(item.id) === String(id) ? next : item); return { store }; });
+    await recordAudit({ action: "modify", entityType: "knowledge", entityId: id, actor: payload.actor || "", actorIp: payload.actorIp || "", summary: `修改知识卡片：${next.title || id}`, beforeState: { title: found.record.title, content: found.record.content }, afterState: { title: next.title, content: next.content }, metadata: { documentId: found.document.id } });
+    return next;
+  };
+  const bulkUpdateKnowledgeCards = async (ids = [], patch = {}, actor = "", actorIp = "") => {
+    const unique = [...new Set(ids.map(String).filter(Boolean))];
+    const updated = [];
+    for (const id of unique) updated.push(await updateKnowledgeCard(id, { ...patch, actor, actorIp }));
+    return { updated, count: updated.length };
+  };
+  const bulkReviewKnowledgeCards = async (ids = [], action = "", actor = "", actorIp = "") => {
+    const unique = [...new Set(ids.map(String).filter(Boolean))];
+    if (!["publish", "return"].includes(action)) throw new Error("批量审核仅支持发布或退回修改");
+    const updated = [];
+    for (const id of unique) updated.push(await reviewDistilledKnowledge(id, { action, reviewer: actor, actorIp, note: action === "publish" ? "后台批量发布" : "后台批量退回修改" }));
+    return { updated: updated.filter(Boolean), count: updated.filter(Boolean).length };
+  };
+  const enqueueBulkReview = async (ids = [], action = "", actor = "", actorIp = "") => {
+    if (!["publish", "return"].includes(action)) throw new Error("批量审核仅支持发布或退回修改");
+    const unique = [...new Set(ids.map(String).filter(Boolean))]; const timestamp = nowIso(); const jobId = randomUUID();
+    const job = { id: jobId, documentId: "", jobType: "bulk_review", status: "waiting", progress: 0, message: `等待批量处理 ${unique.length} 张知识卡`, skillId: "", result: { action, ids: unique, completed: 0, failed: 0 }, errorMessage: "", createdAt: timestamp, startedAt: null, completedAt: null, updatedAt: timestamp };
+    await persistJob(job);
+    setImmediate(() => runBulkReviewJob(jobId, actor, actorIp).catch(() => {}));
+    return job;
+  };
+  const runBulkReviewJob = async (jobId, actor = "", actorIp = "") => {
+    const job = await getJob(jobId); if (!job || job.jobType !== "bulk_review") return null;
+    const ids = job.result?.ids || []; const action = job.result?.action || "publish"; let completed = Number(job.result?.completed || 0); let failed = Number(job.result?.failed || 0); const failures = Array.isArray(job.result?.failures) ? [...job.result.failures] : []; const successes = Array.isArray(job.result?.successes) ? [...job.result.successes] : [];
+    await updateJob(jobId, { status: "running", startedAt: job.startedAt || nowIso(), message: "正在批量处理知识卡片" });
+    for (let index = completed + failed; index < ids.length; index += 1) { const current = await getJob(jobId); if (current?.status === "paused" || current?.status === "cancelled") return current; try { const result = await reviewDistilledKnowledge(ids[index], { action, reviewer: actor, actorIp, note: action === "publish" ? "后台异步批量发布" : "后台异步批量退回修改" }); completed += 1; successes.push({ id: ids[index], title: result?.title || ids[index] }); } catch (error) { failed += 1; failures.push({ id: ids[index], reason: String(error?.message || error).slice(0, 300) }); } await updateJob(jobId, { progress: ids.length ? Math.round((completed + failed) / ids.length * 100) : 100, message: `已处理 ${completed + failed}/${ids.length} 张，失败 ${failed} 张`, result: { action, ids, completed, failed, successes, failures } }); }
+    return updateJob(jobId, { status: failed ? "failed" : "completed", progress: 100, message: `批量处理完成：成功 ${completed} 张，失败 ${failed} 张`, result: { action, ids, completed, failed, successes, failures }, completedAt: nowIso(), errorMessage: failed ? `${failed} 张知识卡片处理失败` : "" });
+  };
+  const deleteKnowledgeCard = async (id, payload = {}) => {
+    const found = await findKnowledgeRecord(id, "knowledge"); if (!found) throw new Error("知识卡片不存在");
+    const skillId = found.record.skillId || "quality-knowledge-distillation";
+    const rows = found.rows.filter((item) => String(item.id) !== String(id));
+    await replacePostgresDistilledKnowledge(found.document.id, skillId, rows.filter((item) => (item.skillId || "quality-knowledge-distillation") === skillId), { finalize: false, updateDocument: false });
+    await mutateFallback((store) => { store.knowledge = (store.knowledge || []).filter((item) => String(item.id) !== String(id)); return { store }; });
+    await recordAudit({ action: "delete", entityType: "knowledge", entityId: id, actor: payload.actor || "", actorIp: payload.actorIp || "", summary: `删除知识卡片：${found.record.title || id}`, beforeState: { documentId: found.document.id, title: found.record.title }, metadata: { documentId: found.document.id } });
+    return true;
   };
 
   const parseKnowledgeImport = (content, format = "json") => {
@@ -1641,9 +2720,10 @@ export const createKnowledgeService = ({ filePath, originalDir = path.join(path.
     const next = { ...changed, reviewStatus: action === "reject" || action === "return" ? "rejected" : action === "conflict" ? "rejected" : "approved", publicationStatus: action === "publish" ? "published" : action === "conflict" ? "conflict" : action === "reject" || action === "return" ? "rejected" : "approved", publicationNote: cleanText(payload.note || "").slice(0, 2000), reviewedBy: reviewer, reviewedAt, updatedAt: reviewedAt };
     // 发布是人工复核后的明确动作。资料完整性、来源等级和冲突等问题由“退回修改”处理，
     // 不在最后一步重复设置发布门禁，避免出现“能退回但永远不能发布”的断点。
-    const store = await readFallback();
-    store.knowledge = (store.knowledge || []).map((item) => item.id === id ? next : item);
-    await writeFallback(store);
+    await mutateFallback((store) => {
+      store.knowledge = (store.knowledge || []).map((item) => item.id === id ? next : item);
+      return { store };
+    });
     await updatePostgresDistilledKnowledge(next);
     if (action === "publish") {
       const postgresKnowledge = await listPostgresDistilledKnowledge(document.id, { limit: 10000, offset: 0 });
@@ -1820,8 +2900,10 @@ export const createKnowledgeService = ({ filePath, originalDir = path.join(path.
       let total = Number(document.distillationCount || 0);
       do {
         const page = await listDistilled(document.id, { limit: 500, offset });
-        total = Number(page.total || 0);
-        rows.push(...(page.knowledge || []).filter((item) => ["published", "approved", "candidate"].includes(item.publicationStatus)).map((item) => ({
+      total = Number(page.total || 0);
+        // 问题匹配只允许使用已发布知识卡片。候选卡、原始证据和条款
+        // 只能停留在蒸馏/复核阶段，不能进入问题检索语料。
+        rows.push(...(page.knowledge || []).filter((item) => item.publicationStatus === "published").map((item) => ({
           candidateType: "knowledge",
           candidateKey: `knowledge:${item.id}`,
           documentId: document.id,
@@ -1848,46 +2930,12 @@ export const createKnowledgeService = ({ filePath, originalDir = path.join(path.
           openConflictCount: document.openConflictCount || documentOpenConflictIds(document).length,
           applicableScope: item.metadata?.applicableScope || (document.applicableScope ? [document.applicableScope] : []),
           notApplicableScope: item.metadata?.notApplicableScope || [],
-          publicationStatus: item.publicationStatus || "candidate",
+          publicationStatus: "published",
         })));
         offset += page.knowledge?.length || 0;
       } while (offset < total && offset < 5000);
-      offset = 0;
-      total = Number(document.clauseCount || 0);
-      do {
-        const page = await listClauses(document.id, { limit: 500, offset });
-        total = Number(page.total || 0);
-        rows.push(...(page.clauses || []).map((item) => ({
-          candidateType: "clause",
-          candidateKey: `clause:${item.id}`,
-          documentId: document.id,
-          documentName: document.name,
-          knowledgeId: "",
-          clauseId: item.id,
-          clauseNumber: item.clauseNumber || "",
-          sectionPath: item.sectionPath || "",
-          quote: item.clauseText,
-          title: item.title || item.clauseText.slice(0, 80),
-          content: item.clauseText,
-          applicableRoles: [],
-          processes: [],
-          issueTags: [],
-          synonyms: [],
-          confidence: 1,
-          sourceCitations: [{ clauseId: item.id, clauseNumber: item.clauseNumber || "", sectionPath: item.sectionPath || "", quote: item.clauseText }],
-          sourceLevel: document.sourceLevel || "C",
-          sourceCategory: document.sourceCategory || "",
-          version: document.version || "",
-          effectiveStatus: document.effectiveStatus || "active",
-          governanceStatus: document.governanceStatus || "",
-          reviewDue: document.reviewDue || "",
-          openConflictCount: document.openConflictCount || documentOpenConflictIds(document).length,
-          applicableScope: document.applicableScope ? [document.applicableScope] : [],
-          notApplicableScope: [],
-          publicationStatus: "clause_candidate",
-        })));
-        offset += page.clauses?.length || 0;
-      } while (offset < total && offset < 5000);
+      // 原始 clauses/evidence intentionally do not enter the matching corpus.
+      // They must first be distilled into knowledge cards and published.
     }
     corpusCache = { expiresAt: Date.now() + 30000, revision: corpusRevision, rows };
     return rows;
@@ -1992,10 +3040,10 @@ export const createKnowledgeService = ({ filePath, originalDir = path.join(path.
     const requestedVersion = cleanText(issue.metadata?.version || issue.metadata?.sourceVersion || issue.metadata?.documentVersion);
     const cacheKey = `${corpusRevision}:${issue.module}:${requestedVersion}:${normalizeSearchText(`${issue.issueType || ""}${issue.issueText || ""}${terms.join("|")}`)}`;
     const activeDocumentIds = new Set((await listDocuments()).map((document) => document.id));
-    const onlyPublishedKnowledge = (items = []) => items.filter((candidate) => candidate.candidateType === "knowledge" && activeDocumentIds.has(candidate.documentId) && candidate.publicationStatus === "published");
+    const activeKnowledge = (items = []) => items.filter((candidate) => candidate.candidateType === "knowledge" && activeDocumentIds.has(candidate.documentId));
     const cached = retrievalCache.get(cacheKey);
     if (cached && cached.expiresAt > Date.now()) {
-      cached.candidates = onlyPublishedKnowledge(cached.candidates);
+      cached.candidates = activeKnowledge(cached.candidates);
       const metric = { storage: cached.storage, elapsedMs: 0, cacheHit: true, retrievedCount: cached.candidates.length, termCount: terms.length, strategy: cached.strategy };
       recordRetrievalMetric(metric);
       return { ...cached, cacheHit: true, elapsedMs: 0, terms };
@@ -2003,7 +3051,7 @@ export const createKnowledgeService = ({ filePath, originalDir = path.join(path.
     const startedAt = performance.now();
     const postgres = await searchPostgresKnowledgeCandidates({ terms, moduleTerms: issue.module === "IPQC" ? ["IPQC", "组装", "装配", "过程"] : ["DQA", "研发", "设计", "评审"], version: requestedVersion, limit: 240 });
     let candidates = postgres.available ? postgres.candidates : await loadCorpus();
-    candidates = onlyPublishedKnowledge(candidates);
+    candidates = activeKnowledge(candidates);
     let storage = postgres.available ? "postgres" : "json";
     let strategy = postgres.available ? "模块/版本/状态预过滤 → 标签/全文索引召回 → 规则评分" : "JSON索引缓存 → 模块/版本/状态过滤 → 规则评分";
     // PostgreSQL's simple Chinese text parser can legitimately return zero
@@ -2011,7 +3059,7 @@ export const createKnowledgeService = ({ filePath, originalDir = path.join(path.
     // Use the already-built local corpus only for that empty-result case so
     // matching remains available without making every request expensive.
     if (postgres.available && !candidates.some((candidate) => candidate.candidateType === "knowledge")) {
-      candidates = onlyPublishedKnowledge(await loadCorpus());
+      candidates = activeKnowledge(await loadCorpus());
       storage = "postgres+json-fallback";
       strategy = "PostgreSQL索引未召回 → 本地证据索引回退 → 规则评分";
     }
@@ -2026,21 +3074,31 @@ export const createKnowledgeService = ({ filePath, originalDir = path.join(path.
     const store = await readFallback();
     const issue = (store.issues || []).find((item) => item.id === issueId);
     if (!issue) throw new Error("质量问题不存在，请先同步问题数据");
+    const documents = await listDocuments();
+    const activeDocuments = documents.filter((document) => !["obsolete", "superseded", "expired"].includes(String(document.effectiveStatus || "").toLowerCase()) && document.governanceStatus !== "已废止");
+    const activeDocumentIds = new Set(activeDocuments.map((document) => document.id));
+    let publishedKnowledgeCount = 0;
+    for (const document of activeDocuments) {
+      const page = await listDistilled(document.id, { limit: 1000, offset: 0 });
+      publishedKnowledgeCount += (page.knowledge || []).filter((item) => item.publicationStatus === "published").length;
+    }
+    if (!publishedKnowledgeCount) {
+      throw new Error("当前尚无已发布知识卡片，不能进行问题匹配。请先完成证据生成、知识蒸馏并发布知识。");
+    }
     const retrieval = await retrieveCandidates(issue);
-    const activeDocumentIds = new Set((await listDocuments()).map((document) => document.id));
     let corpus = retrieval.candidates.filter((candidate) => candidate.candidateType === "knowledge" && activeDocumentIds.has(candidate.documentId) && candidate.publicationStatus === "published");
     if (!corpus.length) {
       corpusCache.expiresAt = 0;
       const indexedKnowledge = await loadCorpus();
       corpus = indexedKnowledge.filter((candidate) => candidate.candidateType === "knowledge" && activeDocumentIds.has(candidate.documentId) && candidate.publicationStatus === "published");
     }
-    if (!corpus.length) throw new Error("知识库尚无可检索条款，请先导入并解析规范");
+    if (!corpus.length) throw new Error("已发布知识卡片中没有与当前问题可检索的内容，请先完成知识蒸馏/发布或补充规范。");
     const generatedAt = nowIso();
     const matches = corpus.map((candidate) => {
       const eligibility = candidateEligibility(issue, candidate);
       if (!eligibility.eligible) return null;
       const result = candidateScore(issue, candidate, eligibility);
-      if (result.evidence.objectMismatch) return null;
+      if (result.evidence.objectMismatch || !hasSpecificMatchSignal(issue, result)) return null;
       return {
         id: stableId("match", `${issue.id}:${candidate.candidateKey}`),
         issueId: issue.id,
@@ -2071,7 +3129,7 @@ export const createKnowledgeService = ({ filePath, originalDir = path.join(path.
         createdAt: generatedAt,
         updatedAt: generatedAt,
       };
-    }).filter(Boolean).filter((item) => item.score >= 12).sort((left, right) => right.score - left.score || (left.candidateType === "knowledge" ? -1 : 1)).slice(0, 8);
+    }).filter(Boolean).filter((item) => item.score >= 32).sort((left, right) => right.score - left.score || (left.candidateType === "knowledge" ? -1 : 1)).slice(0, 8);
     const validCandidateKeys = new Set(matches.map((item) => item.candidateKey));
     const previous = new Map((store.matches || []).filter((item) => item.issueId === issue.id && item.candidateType === "knowledge" && activeDocumentIds.has(item.documentId) && validCandidateKeys.has(item.candidateKey)).map((item) => [item.candidateKey, item]));
     const matchAudit = {
@@ -2492,12 +3550,14 @@ export const createKnowledgeService = ({ filePath, originalDir = path.join(path.
       const document = documents.find((item) => item.id === job.documentId);
       if (document?.status === "failed" && Number(document.clauseCount || 0) > 0) await updateDocument(document.id, { status: "completed", progress: 100, message: "规范条款可用，知识蒸馏等待重新执行" });
     }
-    for (const document of documents.filter((item) => ["waiting", "parsing", "indexing"].includes(item.status))) {
-      const expectedJobType = document.contentType === "pdf" && resolveOriginalPath(document) ? "pdf_parse" : document.contentType === "image" && resolveOriginalPath(document) ? "image_parse" : document.contentType === "ppt" && resolveOriginalPath(document) ? "ppt_parse" : "parse";
+    for (const document of documents.filter((item) => item.storage !== "json" && ["waiting", "parsing", "indexing"].includes(item.status))) {
+      const distillActive = jobs.some((item) => item.documentId === document.id && item.jobType === "distill" && ["waiting", "running", "paused"].includes(item.status));
+      if (distillActive) continue;
+      const expectedJobType = document.contentType === "pdf" && resolveOriginalPath(document) ? "pdf_parse" : document.contentType === "image" && resolveOriginalPath(document) ? "image_parse" : document.contentType === "ppt" && resolveOriginalPath(document) ? "ppt_parse" : resolveOriginalPath(document) ? "source_parse" : "parse";
       const job = jobs.find((item) => item.documentId === document.id && item.jobType === expectedJobType && ["waiting", "running"].includes(item.status));
       await enqueueParse(document.id, job?.id || "");
     }
-    for (const job of jobs.filter((item) => item.jobType === "distill" && ["waiting", "running"].includes(item.status))) {
+    for (const job of jobs.filter((item) => item.storage !== "json" && item.jobType === "distill" && ["waiting", "running"].includes(item.status))) {
       if (job.status === "running") {
         const batches = (job.result?.batches || []).map((batch) => batch.status === "running" ? { ...batch, status: "pending", errorMessage: "" } : batch);
         await updateJob(job.id, { status: "waiting", message: "服务重启后继续未完成批次", result: distillationLog({ ...(job.result || {}), batches }, "服务重启，未完成批次重新排队", "warning") });
@@ -2506,7 +3566,7 @@ export const createKnowledgeService = ({ filePath, originalDir = path.join(path.
     }
   };
 
-  return { controlDistillationJob, createDocument, deleteDocument, deleteIssue, deleteJob, enqueueParse, generateMatches, getDocument, getJob, getPerformanceMetrics, getSearchMetrics, governDocument, importDistillation, listAuditLogs, listClauses, listConfirmedMatches, listConflicts, listDistilled, listDocuments, listFeedbackRecords, listIssues, listJobs, listMatches, listRecurrences, listReviewPoints, listReviewSessions, recordAudit, resume, reviewDistilledKnowledge, reviewDocument, reviewMatch, runReadBenchmark, saveConflict, saveDistillation, saveFeedbackRecord, saveRecurrenceAction, saveReviewSession, startDistillation, syncIssues, updateDocumentMetadata, updateJob };
+  return { enqueueBulkReview, bulkReviewKnowledgeCards, bulkUpdateKnowledgeCards, cleanupDataQuality, controlDistillationJob, createDocument, deleteDocument, deleteIssue, deleteJob, enqueueParse, exportKnowledgeData, generateMatches, getConsistencyReport, getDataQualityReport, getKnowledgeImpact, repairDataQuality, mergeKnowledgeCards, listKnowledgeBackups, restoreKnowledgeBackup, getDocument, getJob, getPerformanceMetrics, getSearchMetrics, governDocument, importDistillation, listAuditLogs, listClauses, listConfirmedMatches, listConflicts, listDistilled, listDocuments, listFeedbackRecords, listIssues, listJobs, listMatches, listRecurrences, listReviewPoints, listReviewSessions, recordAudit, resume, reviewDistilledKnowledge, reviewDocument, reviewMatch, runReadBenchmark, saveConflict, saveDistillation, saveFeedbackRecord, saveRecurrenceAction, saveReviewSession, startDistillation, syncIssues, updateDocumentMetadata, updateJob, updateKnowledgeClause, deleteKnowledgeClause, updateKnowledgeCard, deleteKnowledgeCard };
 };
 const documentReviewState = (document = {}, now = Date.now()) => {
   const due = dateTimestamp(document.reviewDue);
@@ -2517,3 +3577,4 @@ const documentReviewState = (document = {}, now = Date.now()) => {
 };
 const documentOpenConflictIds = (document = {}) => toArray(document.metadata?.openConflictIds);
 const decorateDocumentGovernance = (document = {}) => ({ ...document, reviewState: documentReviewState(document), accessLevel: knowledgeAccessLevels.has(document.metadata?.accessLevel) ? document.metadata.accessLevel : "internal", openConflictCount: documentOpenConflictIds(document).length });
+

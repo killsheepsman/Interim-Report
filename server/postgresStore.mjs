@@ -627,6 +627,10 @@ export const deletePostgresKnowledgeDocument = async (id) => {
   try {
     await client.query("BEGIN");
     await client.query("DELETE FROM qms_knowledge_matches WHERE document_id=$1", [documentId]);
+    await client.query("DELETE FROM qms_knowledge_conflicts WHERE left_document_id=$1 OR right_document_id=$1", [documentId]);
+    await client.query("DELETE FROM qms_distilled_knowledge WHERE document_id=$1", [documentId]);
+    await client.query("DELETE FROM qms_knowledge_clauses WHERE document_id=$1", [documentId]);
+    await client.query("DELETE FROM qms_knowledge_jobs WHERE document_id=$1", [documentId]);
     const result = await client.query("DELETE FROM qms_knowledge_documents WHERE id=$1", [documentId]);
     await client.query("COMMIT");
     return { available: true, deleted: result.rowCount > 0 };
@@ -704,6 +708,20 @@ export const listPostgresKnowledgeJobs = async (documentId = "") => {
   } catch (error) { logFailure(error); return { available: false, jobs: [] }; }
 };
 
+export const deletePostgresKnowledgeClauses = async (ids = []) => {
+  if (!(await ensureReady()) || !ids.length) return { available: false, deleted: 0 };
+  try { const result = await pool.query("DELETE FROM qms_knowledge_clauses WHERE id = ANY($1::text[])", [[...new Set(ids.map(String))]]); return { available: true, deleted: result.rowCount || 0 }; }
+  catch (error) { logFailure(error); return { available: false, deleted: 0 }; }
+};
+
+export const readPostgresKnowledgeJob = async (id) => {
+  if (!(await ensureReady())) return { available: false, found: false };
+  try {
+    const result = await pool.query("SELECT * FROM qms_knowledge_jobs WHERE id=$1 LIMIT 1", [String(id || "")]);
+    return { available: true, found: result.rows.length > 0, job: result.rows[0] ? knowledgeJobRow(result.rows[0]) : null };
+  } catch (error) { logFailure(error); return { available: false, found: false }; }
+};
+
 export const deletePostgresKnowledgeJob = async (id) => {
   if (!(await ensureReady())) return { available: false, deleted: false };
   try {
@@ -713,14 +731,15 @@ export const deletePostgresKnowledgeJob = async (id) => {
 };
 
 const distilledRow = (row = {}) => ({ id: row.id, documentId: row.document_id, clauseIds: jsonValue(row.clause_ids, []), type: row.knowledge_type, title: row.title, content: row.content, applicableRoles: jsonValue(row.applicable_roles, []), processes: jsonValue(row.processes, []), issueTags: jsonValue(row.issue_tags, []), synonyms: jsonValue(row.synonyms, []), sourceLevel: jsonValue(row.metadata, {}).sourceLevel || "C", version: jsonValue(row.metadata, {}).version || "", confidence: Number(row.confidence || 0), skillId: row.skill_id, sourceCitations: jsonValue(row.source_citations, []), reviewStatus: row.review_status, metadata: jsonValue(row.metadata, {}), publicationStatus: row.publication_status || "candidate", publicationNote: row.publication_note || "", reviewedBy: row.reviewed_by || "", reviewedAt: isoValue(row.reviewed_at), createdAt: isoValue(row.created_at), updatedAt: isoValue(row.updated_at), storage: "postgres" });
-export const replacePostgresDistilledKnowledge = async (documentId, skillId, items = []) => {
+export const replacePostgresDistilledKnowledge = async (documentId, skillId, items = [], options = {}) => {
   if (!(await ensureReady())) return { available: false };
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
     await client.query("DELETE FROM qms_distilled_knowledge WHERE document_id=$1 AND skill_id=$2", [documentId, skillId]);
     for (const item of items) await client.query(`INSERT INTO qms_distilled_knowledge (id,document_id,clause_ids,knowledge_type,title,content,applicable_roles,processes,issue_tags,synonyms,confidence,skill_id,source_citations,review_status,metadata,publication_status,publication_note,reviewed_by,reviewed_at,created_at,updated_at) VALUES ($1,$2,$3::jsonb,$4,$5,$6,$7::jsonb,$8::jsonb,$9::jsonb,$10::jsonb,$11,$12,$13::jsonb,$14,$15::jsonb,$16,$17,$18,$19,$20,$21)`, [item.id, documentId, JSON.stringify(item.clauseIds || []), item.type || "mandatory", item.title, item.content, JSON.stringify(item.applicableRoles || []), JSON.stringify(item.processes || []), JSON.stringify(item.issueTags || []), JSON.stringify(item.synonyms || []), Number(item.confidence || 0), skillId, JSON.stringify(item.sourceCitations || []), item.reviewStatus || "pending", JSON.stringify(item.metadata || {}), item.publicationStatus || "candidate", item.publicationNote || "", item.reviewedBy || "", item.reviewedAt || null, item.createdAt || new Date().toISOString(), item.updatedAt || new Date().toISOString()]);
-    await client.query("UPDATE qms_knowledge_documents SET distillation_count=$2, status='completed', governance_status='候选知识', progress=100, message=$3, updated_at=NOW() WHERE id=$1", [documentId, items.length, `已蒸馏 ${items.length} 条知识点，等待人工审核`]);
+    const finalize = options.finalize !== false;
+    if (options.updateDocument !== false) await client.query("UPDATE qms_knowledge_documents SET distillation_count=$2, status=$3, governance_status=$4, progress=$5, message=$6, updated_at=NOW() WHERE id=$1", [documentId, items.length, finalize ? "completed" : "distilling", finalize ? "候选知识" : "知识蒸馏中", finalize ? 100 : Math.min(99, Number(options.progress || 50)), finalize ? `已蒸馏 ${items.length} 条知识点，等待人工审核` : `已保存 ${items.length} 条知识候选，蒸馏任务继续执行`]);
     await client.query("COMMIT");
     return { available: true };
   } catch (error) { await client.query("ROLLBACK").catch(() => {}); logFailure(error); return { available: false }; } finally { client.release(); }
@@ -734,6 +753,12 @@ export const listPostgresDistilledKnowledge = async (documentId, { limit = 100, 
     const statusCounts = Object.fromEntries(count.rows.map((row) => [row.publication_status || "candidate", Number(row.total || 0)]));
     return { available: true, total: Object.values(statusCounts).reduce((sum, value) => sum + value, 0), statusCounts, knowledge: result.rows.map(distilledRow) };
   } catch (error) { logFailure(error); return { available: false, knowledge: [], total: 0 }; }
+};
+
+export const deletePostgresDistilledKnowledge = async (ids = []) => {
+  if (!(await ensureReady()) || !ids.length) return { available: false, deleted: 0 };
+  try { const result = await pool.query("DELETE FROM qms_distilled_knowledge WHERE id = ANY($1::text[])", [[...new Set(ids.map(String))]]); return { available: true, deleted: result.rowCount || 0 }; }
+  catch (error) { logFailure(error); return { available: false, deleted: 0 }; }
 };
 
 export const searchPostgresKnowledgeCandidates = async ({ terms = [], moduleTerms = [], version = "", limit = 160 } = {}) => {
@@ -802,7 +827,10 @@ export const searchPostgresKnowledgeCandidates = async ({ terms = [], moduleTerm
 export const updatePostgresDistilledKnowledge = async (item = {}) => {
   if (!(await ensureReady())) return { available: false, knowledge: null };
   try {
-    const result = await pool.query(`UPDATE qms_distilled_knowledge SET review_status=$2, publication_status=$3, publication_note=$4, reviewed_by=$5, reviewed_at=$6, updated_at=NOW() WHERE id=$1 RETURNING *`, [item.id, item.reviewStatus || "pending", item.publicationStatus || "candidate", item.publicationNote || "", item.reviewedBy || "", item.reviewedAt || null]);
+    // Review edits are substantive knowledge changes, not only a status change.
+    // Persist the editable card fields together with the review decision so a
+    // subsequent read from PostgreSQL cannot restore the pre-edit card.
+    const result = await pool.query(`UPDATE qms_distilled_knowledge SET knowledge_type=$2, title=$3, content=$4, applicable_roles=$5::jsonb, processes=$6::jsonb, issue_tags=$7::jsonb, synonyms=$8::jsonb, metadata=$9::jsonb, review_status=$10, publication_status=$11, publication_note=$12, reviewed_by=$13, reviewed_at=$14, updated_at=NOW() WHERE id=$1 RETURNING *`, [item.id, item.type || "mandatory", item.title || "", item.content || "", JSON.stringify(item.applicableRoles || []), JSON.stringify(item.processes || []), JSON.stringify(item.issueTags || []), JSON.stringify(item.synonyms || []), JSON.stringify(item.metadata || {}), item.reviewStatus || "pending", item.publicationStatus || "candidate", item.publicationNote || "", item.reviewedBy || "", item.reviewedAt || null]);
     return { available: true, knowledge: result.rows[0] ? distilledRow(result.rows[0]) : null };
   } catch (error) { disabledUntil = Date.now() + retryAfterMs; logFailure(error); return { available: false, knowledge: null }; }
 };

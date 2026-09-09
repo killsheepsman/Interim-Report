@@ -24,7 +24,9 @@ Transform company-controlled documents into concise quality knowledge without ch
 
 For each knowledge point, populate:
 
-- `type`: one of `mandatory`, `prohibited`, `threshold`, `evidence`, `definition`, `failure_mode`, `exam_point`.
+- `type`: one of `mandatory`, `prohibited`, `threshold`, `recommendation`, `evidence`, `definition`, `failure_mode`, `exam_point`. Use `recommendation` for advice or preferred practice that is not an explicit mandatory/prohibited requirement.
+- Classification priority: determine `atomicRule.ruleType` from the source first, then derive `type`; never let a generic model label such as `mandatory` override `RECOMMENDATION`, `PERMISSION`, `DEFINITION`, or `EVIDENCE`. `PERMISSION` is normally `recommendation` unless the source explicitly establishes a required condition; `RESTRICTION` is `threshold` only when it contains a measurable limit, otherwise `mandatory` or `failure_mode` according to the source meaning.
+- `atomicRule`: extract this structure during knowledge distillation from the cited evidence text; do not expect it to be precomputed by the evidence parser. Use `ruleType` (`REQUIREMENT|PROHIBITION|RESTRICTION|TIME_LIMIT|PERMISSION|EXCEPTION|RESPONSIBILITY|PENALTY|APPLICABILITY|RECOMMENDATION|DEFINITION|EVIDENCE`). `topic`, `subject`, `action`, and `object` are required; if the source cannot support one, do not create the card. Also populate `condition`, `timeLimit`, `requirements`, `restrictions`, `exceptions`, and `consequences` when applicable.
 - `title`: a short operational title, not a slogan.
 - `content`: one testable rule or knowledge statement. Preserve numeric values, units, conditions, exceptions, and responsibility boundaries.
 - `applicableRoles`: only roles explicitly named or unambiguously implied by the clause.
@@ -36,6 +38,7 @@ For each knowledge point, populate:
 - `originalFact`: 原文明确事实；没有则留空。
 - `correctState`: 根据原文总结“符合规范时应呈现的正确操作或设计状态”，必须能由引用原文直接证明。
 - `violationBasis`: 用于后续问题比对的判定条件，只表达偏离规范的客观条件，不生成纠正措施或责任待办。
+- For `mandatory`, `prohibited`, `threshold`, `recommendation`, and `failure_mode`, provide at least one objective `violationBasis`; definitions and pure reference facts may leave it empty.
 - `commonViolations`: 导入规范时必须返回空数组。该字段只能在真实问题与知识卡完成匹配并经人工确认后，由历史问题归纳生成。
 - `engineeringExplanation`: 兼容旧数据；新知识卡默认留空，不作为知识卡主体内容。
 - `inference`: 待核实推断；不得当作正式规则。

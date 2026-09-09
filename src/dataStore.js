@@ -739,14 +739,28 @@ const knowledgeApiJson = async (path, options = {}) => {
   const base = sharedApiBase();
   if (!base) throw new Error("当前页面未连接QMS后端，请通过项目服务地址打开");
   let response;
-  try { response = await fetch(`${base}${path}`, { headers: { "Content-Type": "application/json", ...(options.headers || {}) }, ...options }); }
-  catch { throw new Error("无法连接QMS知识库服务，请先启动或重启项目服务"); }
+  let lastError;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      response = await fetch(`${base}${path}`, { headers: { "Content-Type": "application/json", ...(options.headers || {}) }, ...options });
+      break;
+    } catch (error) {
+      lastError = error;
+      if (attempt < 2) await new Promise((resolve) => setTimeout(resolve, 400 * (attempt + 1)));
+    }
+  }
+  if (!response) throw new Error(`无法连接QMS知识库服务，请先启动或重启项目服务${lastError?.message ? `：${lastError.message}` : ""}`);
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(payload?.error || `知识库请求失败（${response.status}）`);
   return payload;
 };
 
 export const loadKnowledgeDocuments = async () => knowledgeApiJson("/knowledge/documents", { method: "GET", cache: "no-store" });
+export const loadKnowledgeConsistency = async () => knowledgeApiJson("/knowledge/consistency", { method: "GET", cache: "no-store" });
+export const loadKnowledgeDataQuality = async () => knowledgeApiJson("/knowledge/data-quality", { method: "GET", cache: "no-store" });
+export const repairKnowledgeDataQuality = async (scope = "status") => knowledgeApiJson("/knowledge/data-quality/repair", { method: "POST", body: JSON.stringify({ scope }) });
+export const cleanupKnowledgeDataQuality = async (payload = {}) => knowledgeApiJson("/knowledge/data-quality/cleanup", { method: "POST", body: JSON.stringify(payload) });
+export const mergeKnowledgeCards = async (payload = {}) => knowledgeApiJson("/knowledge/data-quality/merge", { method: "POST", body: JSON.stringify(payload) });
 export const loadKnowledgeSearchMetrics = async () => knowledgeApiJson("/knowledge/search-metrics", { method: "GET", cache: "no-store" });
 export const loadKnowledgePerformanceMetrics = async () => knowledgeApiJson("/knowledge/performance-metrics", { method: "GET", cache: "no-store" });
 export const runKnowledgePerformanceBenchmark = async ({ concurrency = 5, rounds = 3 } = {}) => knowledgeApiJson("/knowledge/performance-benchmark", { method: "POST", body: JSON.stringify({ concurrency, rounds }) });
@@ -764,7 +778,7 @@ export const uploadKnowledgeSource = async (file, { category = "未分类", sour
 export const uploadKnowledgePdf = uploadKnowledgeSource;
 export const createKnowledgeDocument = async (document) => knowledgeApiJson("/knowledge/documents", { method: "POST", body: JSON.stringify(document) });
 export const deleteKnowledgeDocument = async (documentId) => knowledgeApiJson(`/knowledge/documents/${encodeURIComponent(documentId)}`, { method: "DELETE" });
-export const reparseKnowledgeDocument = async (documentId) => knowledgeApiJson(`/knowledge/documents/${encodeURIComponent(documentId)}/parse`, { method: "POST" });
+export const reparseKnowledgeDocument = async (documentId, failedOnly = false) => knowledgeApiJson(`/knowledge/documents/${encodeURIComponent(documentId)}/parse`, { method: "POST", body: JSON.stringify({ failedOnly: Boolean(failedOnly) }) });
 export const reviewKnowledgeDocument = async (documentId, reviewStatus, reviewNote = "") => knowledgeApiJson(`/knowledge/documents/${encodeURIComponent(documentId)}/review`, { method: "PUT", body: JSON.stringify({ reviewStatus, reviewNote }) });
 export const updateKnowledgeDocumentMetadata = async (documentId, payload) => knowledgeApiJson(`/knowledge/documents/${encodeURIComponent(documentId)}`, { method: "PUT", body: JSON.stringify(payload) });
 export const governKnowledgeDocument = async (documentId, payload) => knowledgeApiJson(`/knowledge/documents/${encodeURIComponent(documentId)}/governance`, { method: "POST", body: JSON.stringify(payload) });
@@ -777,6 +791,16 @@ export const loadKnowledgeAuditLogs = async ({ entityType = "", entityId = "", a
   const params = new URLSearchParams({ entityType, entityId, action, limit: String(limit) });
   return knowledgeApiJson(`/knowledge/audit-logs?${params.toString()}`, { method: "GET", cache: "no-store" });
 };
+export const loadKnowledgeBackups = async ({ limit = 100 } = {}) => knowledgeApiJson(`/knowledge/backups?limit=${encodeURIComponent(limit)}`, { method: "GET", cache: "no-store" });
+export const restoreKnowledgeBackup = async (name) => knowledgeApiJson(`/knowledge/backups/${encodeURIComponent(name)}/restore`, { method: "POST", body: JSON.stringify({}) });
+export const updateKnowledgeClause = async (id, payload) => knowledgeApiJson(`/knowledge/clauses/${encodeURIComponent(id)}`, { method: "PUT", body: JSON.stringify(payload) });
+export const deleteKnowledgeClause = async (id) => knowledgeApiJson(`/knowledge/clauses/${encodeURIComponent(id)}`, { method: "DELETE", body: JSON.stringify({}) });
+export const updateKnowledgeCard = async (id, payload) => knowledgeApiJson(`/knowledge/cards/${encodeURIComponent(id)}`, { method: "PUT", body: JSON.stringify(payload) });
+export const bulkUpdateKnowledgeCards = async (ids, patch) => knowledgeApiJson("/knowledge/cards/bulk", { method: "PUT", body: JSON.stringify({ ids, patch }) });
+export const bulkReviewKnowledgeCards = async (ids, action) => knowledgeApiJson("/knowledge/cards/bulk-review", { method: "POST", body: JSON.stringify({ ids, action }) });
+export const deleteKnowledgeCard = async (id) => knowledgeApiJson(`/knowledge/cards/${encodeURIComponent(id)}`, { method: "DELETE", body: JSON.stringify({}) });
+export const loadKnowledgeImpact = async (kind, id) => knowledgeApiJson(`/knowledge/impact/${encodeURIComponent(kind)}/${encodeURIComponent(id)}`, { method: "GET", cache: "no-store" });
+export const exportKnowledgeData = (documentId = "") => `${sharedApiBase()}/knowledge/export?documentId=${encodeURIComponent(documentId)}`;
 export const loadKnowledgeClauses = async (documentId, { limit = 100, offset = 0, query = "" } = {}) => {
   const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
   if (query) params.set("query", query);
