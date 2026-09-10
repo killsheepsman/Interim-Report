@@ -27,6 +27,8 @@ const stateDir = path.join(dataDir, "state");
 const uploadDir = path.join(dataDir, "uploads");
 const aiReportDir = path.resolve(rootDir, "..", "outputs", "ai_saved_reports");
 const agentSkillDir = path.join(rootDir, "skills");
+let agentSkillsCache = null;
+let agentSkillsCacheAt = 0;
 const aiConfigFile = path.join(dataDir, "ai-config.json");
 const adminIpsFile = path.join(dataDir, "admin-ips.json");
 const permissionFile = path.join(dataDir, "permission-config.json");
@@ -1950,20 +1952,37 @@ const handleAi = async (req, res) => {
     return sendJson(res, 200, { tasks: tasks.slice(0, 200) });
   }
   if (pathname === "/api/ai/skills" && req.method === "GET") {
+    const requestedSkillIds = new Set(String(new URL(req.url, `http://${req.headers.host || "localhost"}`).searchParams.get("ids") || "").split(",").map((item) => item.trim()).filter(Boolean));
+    const cacheTtlMs = 5 * 60 * 1000;
+    if (!requestedSkillIds.size && agentSkillsCache && Date.now() - agentSkillsCacheAt < cacheTtlMs) {
+      const result = requestedSkillIds.size ? agentSkillsCache.filter((item) => requestedSkillIds.has(item.id)) : agentSkillsCache;
+      return sendJson(res, 200, { skills: result, cached: true });
+    }
     const skills = [];
     try {
       const entries = await fs.readdir(agentSkillDir, { withFileTypes: true });
-      for (const entry of entries.filter((item) => item.isDirectory())) {
+      const loaded = await Promise.all(entries.filter((item) => item.isDirectory() && (!requestedSkillIds.size || requestedSkillIds.has(item.name))).map(async (entry) => {
         const filePath = path.join(agentSkillDir, entry.name, "SKILL.md");
         try {
           const text = await fs.readFile(filePath, "utf8");
           const name = text.match(/^name:\s*(.+)$/m)?.[1]?.trim() || entry.name;
           const description = text.match(/^description:\s*(.+)$/m)?.[1]?.trim() || "项目 Agent 技能";
-          skills.push({ id: entry.name, name, description, content: text.slice(0, 60000) });
+          // The UI only needs a compact prompt preview; the server-side
+          // distillation runner reads the full Skill directly from disk.
+          return { id: entry.name, name, description, content: text.slice(0, 20000) };
         } catch {}
-      }
+        return null;
+      }));
+      skills.push(...loaded.filter(Boolean));
     } catch {}
-    return sendJson(res, 200, { skills: skills.sort((left, right) => left.name.localeCompare(right.name, "zh-CN")) });
+    const sortedSkills = skills.sort((left, right) => left.name.localeCompare(right.name, "zh-CN"));
+    // Never cache an empty result caused by a transient filesystem/read
+    // failure; the next request should be allowed to recover immediately.
+    if (!requestedSkillIds.size && sortedSkills.length) {
+      agentSkillsCache = sortedSkills;
+      agentSkillsCacheAt = Date.now();
+    }
+    return sendJson(res, 200, { skills: sortedSkills, cached: false });
   }
   if (pathname === "/api/ai/agent-reports" && req.method === "POST") {
     if (!user.isAdmin) return sendJson(res, 403, { error: "只有主管理员可以保存 Agent 报告到服务器" });

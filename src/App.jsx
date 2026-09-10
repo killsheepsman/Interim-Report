@@ -3197,7 +3197,7 @@ function KnowledgeBasePage({ qualitySources = [], onEnsureAgentSources, auth }) 
   const [examSkills, setExamSkills] = useState([]);
   const [knowledgeSkills, setKnowledgeSkills] = useState([]);
   const [selectedExamSkillId, setSelectedExamSkillId] = useState("");
-  const [selectedKnowledgeSkillId, setSelectedKnowledgeSkillId] = useState("");
+  const [selectedKnowledgeSkillId, setSelectedKnowledgeSkillId] = useState("quality-knowledge-distillation");
   const [examSkillStatus, setExamSkillStatus] = useState("正在读取考试题目 Skill…");
   const [knowledgeSkillStatus, setKnowledgeSkillStatus] = useState("正在读取知识蒸馏 Skill…");
   const [detail, setDetail] = useState(null);
@@ -3210,6 +3210,8 @@ function KnowledgeBasePage({ qualitySources = [], onEnsureAgentSources, auth }) 
   const [metadataEditor, setMetadataEditor] = useState(null);
   const [knowledgeWorkspace, setKnowledgeWorkspace] = useState("matching");
   const [knowledgeReviewFilter, setKnowledgeReviewFilter] = useState("all");
+  const [knowledgeFileView, setKnowledgeFileView] = useState("detail");
+  const [knowledgeFileSort, setKnowledgeFileSort] = useState("recent");
   const [issueModule, setIssueModule] = useState("IPQC");
   const [issueRows, setIssueRows] = useState([]);
   const [issueTotal, setIssueTotal] = useState(0);
@@ -3230,6 +3232,23 @@ function KnowledgeBasePage({ qualitySources = [], onEnsureAgentSources, auth }) 
     const timer = window.setInterval(() => setProcessingClock(Date.now()), 1000);
     return () => window.clearInterval(timer);
   }, []);
+  useEffect(() => {
+    const renderControls = () => {
+      const toolbar = document.querySelector(".qmdp-knowledge-exam-center-body .qmdp-question-generation-toolbar");
+      if (!toolbar) return;
+      let controls = toolbar.querySelector(".qmdp-runtime-file-controls");
+      const created = !controls;
+      if (created) { controls = document.createElement("div"); controls.className = "qmdp-runtime-file-controls"; toolbar.appendChild(controls); controls.innerHTML = `<label>排序<select data-file-sort><option value="recent">最近更新</option><option value="name">文件名</option><option value="size">文件大小</option><option value="knowledge">知识点数量</option></select></label><div class="qmdp-knowledge-view-switch"><button type="button" data-file-view="detail">详细信息</button><button type="button" data-file-view="list">简化列表</button></div>`; }
+      const sort = controls.querySelector("[data-file-sort]"); sort.value = knowledgeFileSort; sort.onchange = (event) => setKnowledgeFileSort(event.target.value);
+      controls.querySelectorAll("[data-file-view]").forEach((button) => { button.classList.toggle("active", button.dataset.fileView === knowledgeFileView); button.onclick = () => setKnowledgeFileView(button.dataset.fileView); });
+      const grid = document.querySelector(".qmdp-knowledge-exam-center-body .qmdp-card-grid");
+      if (grid) { grid.classList.toggle("qmdp-knowledge-file-view-detail", knowledgeFileView === "detail"); grid.classList.toggle("qmdp-knowledge-file-view-list", knowledgeFileView === "list"); }
+    };
+    renderControls();
+    const observer = new MutationObserver(renderControls);
+    observer.observe(document.body, { childList: true, subtree: true });
+    return () => observer.disconnect();
+  }, [knowledgeFileSort, knowledgeFileView, files.length, query, category, knowledgeReviewFilter]);
 
   const refreshDocuments = useCallback(async (silent = false) => {
     try {
@@ -3336,7 +3355,7 @@ function KnowledgeBasePage({ qualitySources = [], onEnsureAgentSources, auth }) 
   }, [selectedIssueId]);
   useEffect(() => {
     let active = true;
-    loadAgentSkills().then((response) => {
+    loadAgentSkills(["generate-qms-exam-bank", "quality-knowledge-distillation"]).then((response) => {
       if (!active) return;
       const allSkills = response?.skills || [];
       const exam = allSkills.filter((item) => {
@@ -3400,6 +3419,7 @@ function KnowledgeBasePage({ qualitySources = [], onEnsureAgentSources, auth }) 
   const normalizedQuestionCounts = { singleChoice: Math.max(0, Math.min(20, Number(questionCounts.singleChoice) || 0)), trueFalse: Math.max(0, Math.min(20, Number(questionCounts.trueFalse) || 0)) };
   const selectedExamSkill = examSkills.find((item) => item.id === selectedExamSkillId) || examSkills.find((item) => item.id === "generate-qms-exam-bank");
   const selectedKnowledgeSkill = knowledgeSkills.find((item) => item.id === selectedKnowledgeSkillId) || knowledgeSkills.find((item) => item.id === "quality-knowledge-distillation");
+  const effectiveKnowledgeSkillId = selectedKnowledgeSkillId || "quality-knowledge-distillation";
   const selectedIssue = issueRows.find((item) => item.id === selectedIssueId) || null;
   function renderIssueFilterControls() { return <select aria-label="问题筛选" value={issueFilter} onChange={(event) => { setIssueFilter(event.target.value); setIssuePage(0); }}><option value="">全部问题</option><option value="low_threshold">最高匹配度低于门限</option><option value="failed">匹配失败的问题</option><option value="rejected">驳回的问题</option><option value="confirmed">已确认的问题</option></select>; }
 
@@ -3627,8 +3647,8 @@ function KnowledgeBasePage({ qualitySources = [], onEnsureAgentSources, auth }) 
     setDistillingId(sourceFile.id);
     setStatus(`正在把“${sourceFile.name}”提交到服务端蒸馏队列…`);
     try {
-      if (!selectedKnowledgeSkill?.id) throw new Error("当前选择的知识蒸馏 Skill 不可用，请重新选择");
-      const response = await startKnowledgeDistillation(sourceFile.id, selectedKnowledgeSkill.id);
+      const skillId = selectedKnowledgeSkill?.id || effectiveKnowledgeSkillId;
+      const response = await startKnowledgeDistillation(sourceFile.id, skillId);
       setStatus(`“${sourceFile.name}”${response.job?.message?.includes("恢复") ? "已恢复上次蒸馏任务，将跳过已完成段" : "已进入服务端任务队列"}；任务 ${response.job?.id || "已创建"}`);
       await refreshDocuments(true);
       return { ok: true, count: 0, jobId: response.job?.id || "" };
@@ -3645,12 +3665,19 @@ function KnowledgeBasePage({ qualitySources = [], onEnsureAgentSources, auth }) 
     if (!normalizedQuestionCounts.singleChoice && !normalizedQuestionCounts.trueFalse) return setStatus("请至少设置一种题型的生成数量");
     await generateExamQuestionsForFile(sourceFile);
   };
-  const visible = files.filter((file) => {
+  const filteredVisible = files.filter((file) => {
     const reviewState = file.governanceStatus === "已发布" ? "published" : file.governanceStatus === "待技术评审" ? "approved" : file.metadata?.reviewStatus === "approved" ? "source-approved" : file.status === "failed" || file.status === "review_required" ? "needs-review" : "candidate";
     return (!query || `${file.name} ${file.preview}`.toLowerCase().includes(query.toLowerCase()))
       && (!category || category === "全部" || file.category === category)
       && (knowledgeReviewFilter === "all" || reviewState === knowledgeReviewFilter);
   });
+  const sortedVisible = [...filteredVisible].sort((a, b) => {
+    if (knowledgeFileSort === "name") return String(a.name || "").localeCompare(String(b.name || ""), "zh-CN");
+    if (knowledgeFileSort === "size") return Number(b.size || 0) - Number(a.size || 0);
+    if (knowledgeFileSort === "knowledge") return Number(b.distillationCount || 0) - Number(a.distillationCount || 0);
+    return String(b.updatedAt || b.createdAt || "").localeCompare(String(a.updatedAt || a.createdAt || ""));
+  });
+  const visible = sortedVisible;
   const visibleIds = visible.map((file) => file.id);
   const allVisibleChecked = visibleIds.length > 0 && visibleIds.every((id) => checkedFileIds.includes(id));
   const toggleVisibleFiles = () => setCheckedFileIds((current) => allVisibleChecked ? current.filter((id) => !visibleIds.includes(id)) : [...new Set([...current, ...visibleIds])]);

@@ -633,7 +633,11 @@ export const requestAiChat = async (messages, options = {}) => {
 export const saveAiReport = async (report) => await aiApiJson("/ai/reports", { method: "POST", body: JSON.stringify(report) });
 export const saveAgentDispatch = async (dispatch) => await aiApiJson("/ai/agent-dispatch", { method: "POST", body: JSON.stringify(dispatch) });
 export const loadAgentDispatches = async () => await aiApiJson("/ai/agent-dispatch", { method: "GET", cache: "no-store" });
-export const loadAgentSkills = async () => await aiApiJson("/ai/skills", { method: "GET", cache: "no-store" });
+export const loadAgentSkills = async (skillIds = null) => {
+  const ids = Array.isArray(skillIds) ? skillIds.map((item) => String(item || "").trim()).filter(Boolean) : [];
+  const query = ids.length ? `?ids=${encodeURIComponent(ids.join(","))}` : "";
+  return await aiApiJson(`/ai/skills${query}`, { method: "GET", cache: "no-store" });
+};
 export const loadAgentReports = async (filters = {}) => {
   const query = new URLSearchParams(Object.entries(filters).filter(([, value]) => value !== undefined && value !== null && String(value).trim()).map(([key, value]) => [key, String(value)]));
   return await aiApiJson(`/ai/agent-reports${query.size ? `?${query.toString()}` : ""}`, { method: "GET", cache: "no-store" });
