@@ -787,7 +787,7 @@ export const searchPostgresKnowledgeCandidates = async ({ terms = [], moduleTerm
           ts_rank_cd(to_tsvector('simple', k.title || ' ' || k.content), to_tsquery('simple', $3)) AS text_rank
         FROM qms_distilled_knowledge k
         JOIN qms_knowledge_documents d ON d.id=k.document_id
-        WHERE k.publication_status IN ('published','approved','candidate') AND ${documentGate}
+        WHERE k.publication_status = 'published' AND ${documentGate}
           AND (cardinality($4::text[])=0 OR LOWER(d.file_name || ' ' || d.category || ' ' || d.source_category || ' ' || k.title || ' ' || k.content || ' ' || k.applicable_roles::text || ' ' || k.processes::text) LIKE ANY($4::text[]))
           AND (k.issue_tags ?| $2::text[] OR LOWER(k.title || ' ' || k.content) LIKE ANY($1::text[]) OR to_tsvector('simple', k.title || ' ' || k.content) @@ to_tsquery('simple', $3))
         ORDER BY (CASE WHEN k.issue_tags ?| $2::text[] THEN 3 ELSE 0 END) + (SELECT COUNT(*) FROM unnest($2::text[]) term WHERE LOWER(k.title || ' ' || k.content) LIKE '%' || term || '%') + ts_rank_cd(to_tsvector('simple', k.title || ' ' || k.content), to_tsquery('simple', $3)) DESC, k.updated_at DESC
@@ -905,7 +905,15 @@ export const upsertPostgresQualityIssues = async (issues = []) => {
   } finally { client.release(); }
 };
 
-export const listPostgresQualityIssues = async ({ module = "", personName = "", query = "", status = "", threshold = 80, limit = 30, offset = 0 } = {}) => {
+export const readPostgresQualityIssue = async (id) => {
+  if (!(await ensureReady())) return { available: false, issue: null };
+  try {
+    const result = await pool.query("SELECT * FROM qms_quality_issues WHERE id=$1", [String(id || "")]);
+    return { available: true, issue: result.rows[0] ? qualityIssueRow(result.rows[0]) : null };
+  } catch (error) { logFailure(error); return { available: false, issue: null }; }
+};
+
+export const listPostgresQualityIssues = async ({ module = "", personName = "", query = "", status = "", threshold = 80, sourceFile = "", issueType = "", minScore = "", maxScore = "", minMatches = "", dateFrom = "", dateTo = "", limit = 30, offset = 0 } = {}) => {
   if (!(await ensureReady())) return { available: false, issues: [], total: 0 };
   try {
     const values = [];
@@ -913,6 +921,14 @@ export const listPostgresQualityIssues = async ({ module = "", personName = "", 
     if (module) { values.push(String(module)); where.push(`i.module=$${values.length}`); }
     if (personName) { values.push(String(personName)); where.push(`i.person_name=$${values.length}`); }
     if (query) { values.push(`%${String(query).trim()}%`); where.push(`(i.issue_text ILIKE $${values.length} OR i.issue_type ILIKE $${values.length} OR i.person_name ILIKE $${values.length})`); }
+    if (sourceFile) { values.push(`%${String(sourceFile).trim()}%`); where.push(`i.source_file ILIKE $${values.length}`); }
+    if (issueType) { values.push(`%${String(issueType).trim()}%`); where.push(`i.issue_type ILIKE $${values.length}`); }
+    if (minScore !== "" && minScore != null && Number.isFinite(Number(minScore))) { values.push(Number(minScore)); where.push(`COALESCE((SELECT MAX(m2.score) FROM qms_knowledge_matches m2 WHERE m2.issue_id=i.id),0) >= $${values.length}`); }
+    if (maxScore !== "" && maxScore != null && Number.isFinite(Number(maxScore))) { values.push(Number(maxScore)); where.push(`COALESCE((SELECT MAX(m3.score) FROM qms_knowledge_matches m3 WHERE m3.issue_id=i.id),0) <= $${values.length}`); }
+    if (minMatches !== "" && minMatches != null && Number.isFinite(Number(minMatches))) { values.push(Number(minMatches)); where.push(`(SELECT COUNT(*) FROM qms_knowledge_matches m4 WHERE m4.issue_id=i.id) >= $${values.length}`); }
+    const issueDateExpr = `CASE WHEN i.issue_date ~ '^\\d{4}-\\d{2}-\\d{2}' THEN substring(i.issue_date from '^\\d{4}-\\d{2}-\\d{2}')::date WHEN i.issue_date ~ '^[A-Za-z]{3} [A-Za-z]{3} [0-9]{1,2} [0-9]{4}' THEN (to_date(substring(i.issue_date from '^[A-Za-z]{3} [A-Za-z]{3} [0-9]{1,2} [0-9]{4}'), 'Dy Mon DD YYYY') + CASE WHEN i.issue_date LIKE '%GMT+0800%' THEN 1 ELSE 0 END)::date ELSE NULL END`;
+    if (dateFrom && /^\d{4}-\d{2}-\d{2}$/.test(String(dateFrom))) { values.push(String(dateFrom)); where.push(`(${issueDateExpr}) >= $${values.length}::date`); }
+    if (dateTo && /^\d{4}-\d{2}-\d{2}$/.test(String(dateTo))) { values.push(String(dateTo)); where.push(`(${issueDateExpr}) <= $${values.length}::date`); }
     if (status) {
       values.push(String(status));
       if (status === "unmatched" || status === "failed") where.push(`NOT EXISTS (SELECT 1 FROM qms_knowledge_matches m WHERE m.issue_id=i.id)`);
@@ -934,7 +950,14 @@ export const listPostgresQualityIssues = async ({ module = "", personName = "", 
       ORDER BY i.issue_date DESC, i.updated_at DESC, i.id
       LIMIT $${values.length - 1} OFFSET $${values.length}
     `, values);
-    return { available: true, total: Number(count.rows[0]?.total || 0), issues: result.rows.map((row) => ({ ...qualityIssueRow(row), matchCount: Number(row.match_count || 0), confirmedCount: Number(row.confirmed_count || 0) })) };
+    const facetResult = await pool.query(`
+      SELECT
+        ARRAY(SELECT DISTINCT person_name FROM qms_quality_issues WHERE module = COALESCE($1,module) AND person_name <> '' ORDER BY person_name LIMIT 200) AS persons,
+        ARRAY(SELECT DISTINCT issue_type FROM qms_quality_issues WHERE module = COALESCE($1,module) AND ($2='' OR person_name=$2) AND issue_type <> '' ORDER BY issue_type LIMIT 200) AS types,
+        ARRAY(SELECT DISTINCT source_file FROM qms_quality_issues WHERE module = COALESCE($1,module) AND ($2='' OR person_name=$2) AND ($3='' OR issue_type ILIKE '%' || $3 || '%') AND source_file <> '' ORDER BY source_file LIMIT 200) AS sources
+    `, [module || null, personName || "", issueType || ""]);
+    const facets = facetResult.rows[0] || {};
+    return { available: true, total: Number(count.rows[0]?.total || 0), facets: { personNames: facets.persons || [], issueTypes: facets.types || [], sourceFiles: facets.sources || [] }, issues: result.rows.map((row) => ({ ...qualityIssueRow(row), matchCount: Number(row.match_count || 0), confirmedCount: Number(row.confirmed_count || 0) })) };
   } catch (error) { logFailure(error); return { available: false, issues: [], total: 0 }; }
 };
 
@@ -967,7 +990,10 @@ export const replacePostgresKnowledgeMatches = async (issueId, matches = []) => 
 export const listPostgresKnowledgeMatches = async (issueId) => {
   if (!(await ensureReady())) return { available: false, matches: [] };
   try {
-    const result = await pool.query("SELECT * FROM qms_knowledge_matches WHERE issue_id=$1 ORDER BY CASE status WHEN 'confirmed' THEN 0 WHEN 'candidate' THEN 1 WHEN 'rejected' THEN 2 ELSE 3 END, score DESC, updated_at DESC", [String(issueId || "")]);
+    const normalizedIssueId = String(issueId || "");
+    const result = normalizedIssueId
+      ? await pool.query("SELECT * FROM qms_knowledge_matches WHERE issue_id=$1 ORDER BY CASE status WHEN 'confirmed' THEN 0 WHEN 'candidate' THEN 1 WHEN 'rejected' THEN 2 ELSE 3 END, score DESC, updated_at DESC", [normalizedIssueId])
+      : await pool.query("SELECT * FROM qms_knowledge_matches ORDER BY updated_at DESC LIMIT 10000");
     return { available: true, matches: result.rows.map(knowledgeMatchRow) };
   } catch (error) { logFailure(error); return { available: false, matches: [] }; }
 };

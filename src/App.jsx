@@ -7,16 +7,17 @@ import {
   Question, Rows, ShieldCheck, SidebarSimple, Sparkle, Table, Target, Trash,
   UploadSimple, User, Warning, WarningCircle, X,
 } from "@phosphor-icons/react";
-import { analyzeImported, buildDqaEngineerSupplementSource, buildOqcRuleDimensionDispersions, downloadJson, normalizeIpqcLeaderMapRows, normalizeIpqcWorkshop, parseDqaAgentRawFiles, parseDqaEngineerSupplementFiles, parseFiles, parseOqcProjectNameByRules } from "./dataEngine.js";
+import { analyzeImported, buildDqaEngineerSupplementSource, buildOqcRuleDimensionDispersions, downloadJson, isIpqcExcludedBadType, normalizeIpqcLeaderMapRows, normalizeIpqcWorkshop, parseDqaAgentRawFiles, parseDqaEngineerSupplementFiles, parseFiles, parseOqcProjectNameByRules } from "./dataEngine.js";
 import { clearDqaAgentRaw as clearDqaAgentRawState, clearDqaEngineerSupplement as clearDqaEngineerSupplementState, controlKnowledgeDistillationJob, createExamSession, createKnowledgeDocument, createSourcesSignature, createSnapshotJob, deleteKnowledgeDocument, downloadSourceFiles, generateKnowledgeMatches, governKnowledgeDocument, importKnowledgeDistillation, listSnapshotJobs, loadAgentSkills, loadAiConfig, loadAiModels, loadAppliedDateRange, loadCachedAnalysis, loadCurrentUser, loadDqaAgentRaw, loadDefaultAnalysis, loadDefaultAnnotations, loadDefaultQmsSources, loadDefaultSources, loadDistilledKnowledge, loadDqaEngineerSupplement, loadExamResults, loadExamSession, loadImportedSources, loadKnowledgeAuditLogs, loadKnowledgeClauses, loadKnowledgeConflicts, loadKnowledgeConsistency, loadKnowledgeDocuments, loadKnowledgeFeedbackRecords, loadKnowledgeIssues, loadKnowledgeJob, loadKnowledgeJobs, loadKnowledgeMatches, loadKnowledgePerformanceMetrics, loadKnowledgeRecurrences, loadKnowledgeReviewPoints, loadKnowledgeReviewSessions, loadPermissionConfig, loadProjectNameMapping, loadQualityAgentRoleSnapshotRegistry, loadQualityAgentSnapshotRegistry, loadReportQualityRules, loadSnapshotJob, mergeImportedSources, openSnapshotStorage, patchCachedAnalysis, reparseKnowledgeDocument, requestAiChat, reviewDistilledKnowledge, reviewKnowledgeDocument, reviewKnowledgeMatch, runKnowledgePerformanceBenchmark, saveAiConfig, saveAiReport, saveDqaAgentRaw, saveKnowledgeConflict, saveKnowledgeFeedbackRecord, saveKnowledgeRecurrenceAction, saveKnowledgeReviewSession, saveLocalAiReport, saveAppliedDateRange, saveCachedAnalysis, saveDqaEngineerSupplement, saveImportedSources, savePermissionConfig, saveProjectNameMapping, saveQualityAgentRoleSnapshotRegistry, saveQualityAgentSnapshotRegistry, saveReportQualityRules, sourceRowCount, startKnowledgeDistillation, submitExamSession, summarizeSources, syncKnowledgeIssues, testAiConfig, updateKnowledgeDocumentMetadata, updateSnapshotJob, uploadKnowledgeSource, uploadSourceFiles } from "./dataStore.js";
 import { bulkReviewKnowledgeCards, bulkUpdateKnowledgeCards, deleteKnowledgeCard, deleteKnowledgeClause, exportKnowledgeData, loadKnowledgeBackups, loadKnowledgeImpact, restoreKnowledgeBackup, updateKnowledgeCard, updateKnowledgeClause } from "./dataStore.js";
 import { loadOqcEquipmentRuleCache } from "./dataStore.js";
+import { DoamPage } from "./DoamPage.jsx";
 import { deleteKnowledgeJob } from "./dataStore.js";
 import { loadKnowledgeDataQuality, repairKnowledgeDataQuality } from "./dataStore.js";
 import { cleanupKnowledgeDataQuality } from "./dataStore.js";
 import { mergeKnowledgeCards } from "./dataStore.js";
 import { sampleData } from "./sampleData.js";
-import { BarCompare, Donut, EquipmentQuantityDistributionPareto, HorizontalRank, MachinedTpmCompareChart, Pareto, QmsDivisionCombo, QmsScoreCompare, QmsTpmRank, QmsTrendCombo, QuantityRateCombo, ReportBarChart, ReportStatusDonut, ScoreMonthlyCombo, ScoreYearCompare, StackedStage, WorkshopCategoryHeatmap, YearStackedCompare } from "./charts.jsx";
+import { BarCompare, Donut, EquipmentQuantityDistributionPareto, HorizontalRank, MachinedTpmCompareChart, OqcDivisionMetricCombo, OqcDivisionShipmentCombo, OqcDivisionSingleMetricCombo, OqcShipmentMetricsCombo, OqcTpmMonthlyCombo, Pareto, QmsDivisionCombo, QmsScoreCompare, QmsTpmRank, QmsTrendCombo, QuantityRateCombo, QuantityRateMultiCombo, ReportBarChart, ReportStatusDonut, ScoreMonthlyCombo, ScoreYearCompare, StackedStage, WorkshopCategoryHeatmap, YearStackedCompare, useLabelControlsVisible } from "./charts.jsx";
 import { loadAgentReport, loadAgentReports, loadLocalAgentReport, loadLocalAgentReports } from "./dataStore.js";
 import { sanitizeHumanReportContent } from "./reportSanitizer.js";
 import { buildQualityAgentSnapshot } from "./agent/qualitySnapshot.js";
@@ -61,7 +62,7 @@ class SnapshotPanelBoundary extends Component {
     return <section className="qmdp-card qmdp-page-error"><WarningCircle size={24}/><div><strong>{this.props.title}未能加载</strong><p>该区域的数据格式异常，已隔离，不影响其它快照功能。</p><small>{String(this.state.error?.message || "未知错误").slice(0, 180)}</small></div></section>;
   }
 }
-const ANALYSIS_CACHE_VERSION = "server-analysis-cache-v6-equipment-mapping";
+const ANALYSIS_CACHE_VERSION = "server-analysis-cache-v11-ipqc-type-row-count";
 const safeParse = (value, fallback) => {
   try { return value ? JSON.parse(value) : fallback; } catch { return fallback; }
 };
@@ -738,9 +739,8 @@ function ThemeToggle({ value, onChange }) {
 }
 
 const qmdpMenuGroups = [
-  { label: "质量数据", icon: ChartBar, children: ["总览", "IQC", "IPQC", "OQC", "DQA", "QMS", "数据导入"] },
+  { label: "质量数据", icon: ChartBar, children: ["总览", "IQC", "IPQC", "OQC", "DQA", "QMS", "DOAM", "数据导入"] },
   { label: "知识管理", icon: Database, children: ["知识库", "题库管理", "知识考试", "后台知识管理"] },
-  { label: "质量报告", icon: ChartBar, children: ["IPQC操作报告", "机长报告", "交付经理报告", "供应链经理报告", "研发工程师报告", "PM报告", "TPM报告", "产总报告", "董事长报告", "报告任务中心"] },
   { label: "质量分析 Agent", icon: Brain, children: ["IQC Agent", "IPQC Agent", "OQC Agent", "DQA Agent", "QMS Agent"] },
   { label: "Agent角色报告", icon: ChartBar, children: ["组装人员 Agent报告", "机长 Agent报告", "交付经理 Agent报告", "供应链经理 Agent报告", "研发工程师 Agent报告", "PM Agent报告", "TPM Agent报告", "产总 Agent报告"] },
   { label: "Agent工具", icon: Brain, children: ["Agent考试统计", "报告历史对比"] },
@@ -779,7 +779,7 @@ const clampSidebarWidth = (value) => Math.min(sidebarWidthLimits.max, Math.max(s
 function ExecutiveSidebar({ active, setActive, uiTheme, onThemeChange, collapsed, onToggleCollapsed, permissions, auth, width, onWidthChange }) {
   const [openGroups, setOpenGroups] = useState(() => {
     const saved = safeParse(localStorage.getItem("qms-qmdp-menu-open-v1"), null);
-    return saved && typeof saved === "object" ? saved : { 质量数据: true, 知识管理: true, 质量报告: true, 系统管理: true };
+    return saved && typeof saved === "object" ? saved : { 质量数据: true, 知识管理: true, 系统管理: true };
   });
   const [resizing, setResizing] = useState(false);
   useEffect(() => { localStorage.setItem("qms-qmdp-menu-open-v1", JSON.stringify(openGroups)); }, [openGroups]);
@@ -2139,6 +2139,21 @@ function OverviewKpiCards({ data }) {
     return { y2025Rate: r25, y2026Rate: r26, delta: Number((r26 - r25).toFixed(2)), y2025Qty: y25.qty, y2026Qty: y26.qty, y2025Bad: y25.bad, y2026Bad: y26.bad };
   };
   const oqcOverall = (() => {
+    const divisions = data.oqc.monthlySummary?.divisions || [];
+    const authoritative = data.oqc.monthlySummary?.overall;
+    if (divisions.length) {
+      const y2026Count = Number(authoritative?.y2026?.count) || sumRows(divisions, (row) => row.y2026Count);
+      const y2025Count = Number(authoritative?.y2025?.count) || sumRows(divisions, (row) => row.y2025Count);
+      const y2026Five = Number(authoritative?.y2026?.five) || sumRows(divisions, (row) => row.y2026Five);
+      const y2025Five = Number(authoritative?.y2025?.five) || sumRows(divisions, (row) => row.y2025Five);
+      const y2026Low = Number(authoritative?.y2026?.low) || sumRows(divisions, (row) => row.y2026Low);
+      const y2025Low = Number(authoritative?.y2025?.low) || sumRows(divisions, (row) => row.y2025Low);
+      const five = Number((y2026Five / Math.max(y2026Count, 1) * 100).toFixed(1));
+      const low = Number((y2026Low / Math.max(y2026Count, 1) * 100).toFixed(1));
+      const five25 = Number((y2025Five / Math.max(y2025Count, 1) * 100).toFixed(1));
+      const low25 = Number((y2025Low / Math.max(y2025Count, 1) * 100).toFixed(1));
+      return { five25, five, low25, low, lowCount25: y2025Low, lowCount: y2026Low, count25: y2025Count, count: y2026Count, deltaFive: Number((five - five25).toFixed(1)), deltaLow: Number((low - low25).toFixed(1)) };
+    }
     const detail = data.oqc.shipmentDetail?.overall;
     if (detail?.y2026?.count) return {
       five25: detail.y2025.fiveRate,
@@ -2152,7 +2167,6 @@ function OverviewKpiCards({ data }) {
       deltaFive: Number((detail.y2026.fiveRate - detail.y2025.fiveRate).toFixed(1)),
       deltaLow: Number((detail.y2026.lowRate - detail.y2025.lowRate).toFixed(1)),
     };
-    const divisions = data.oqc.monthlySummary?.divisions || [];
     const y2026Count = sumRows(divisions, (row) => row.y2026Count);
     const y2025Count = sumRows(divisions, (row) => row.y2025Count);
     const y2026Five = sumRows(divisions, (row) => row.y2026Five);
@@ -2245,423 +2259,6 @@ function OqcOverviewScore({ data }) {
   </div>;
 }
 
-function ManagementReportPage({ data }) {
-  const [annotations] = useAnnotations();
-  const kpis = data.kpis || [];
-  const oqc = data.oqc.shipmentDetail?.overall?.y2026;
-  const iqcWorst = ["深圳", "杭州"].flatMap((site) => (data.iqc.mainSuppliers?.[site] || []).map((row) => ({ ...row, site })))
-    .sort((a, b) => (a.y2026Rate || 0) - (b.y2026Rate || 0)).slice(0, 3);
-  const ipqcRisk = ["深圳", "杭州"].flatMap((site) => (data.ipqc.workshopsBySite?.[site] || []).map((row) => ({ ...row, site })))
-    .sort((a, b) => (b.y2026Rate || 0) - (a.y2026Rate || 0)).slice(0, 3);
-  const dqaBack = (data.dqa.divisions || []).map((row) => ({ ...row, back: (row.production || 0) + (row.onsite || 0) }))
-    .sort((a, b) => b.back - a.back);
-  const dqaTotalReview = sumRows(data.dqa.divisions || [], (row) => row.review);
-  const dqaTotalBack = sumRows(data.dqa.divisions || [], (row) => (row.production || 0) + (row.onsite || 0));
-  const reportCards = [
-    { label: "IQC批次良率", value: `${kpis[0]?.value ?? "-"}%`, delta: kpis[0]?.delta, goodWhenDown: false, note: "供应商加工件质量" },
-    { label: "IPQC异常密度", value: `${kpis[1]?.value ?? "-"}%`, delta: kpis[1]?.delta, goodWhenDown: true, note: "过程问题数量÷送检数" },
-    { label: "OQC 5分率", value: `${kpis[2]?.value ?? "-"}%`, delta: kpis[2]?.delta, goodWhenDown: false, note: `低分率 ${oqc?.lowRate ?? "-"}%` },
-    { label: "DQA后端问题", value: `${Number(dqaTotalBack || kpis[3]?.value || 0).toLocaleString()}项`, delta: kpis[3]?.delta, goodWhenDown: true, note: `评审拦截 ${dqaTotalReview.toLocaleString()}项` },
-  ];
-  const deltaClass = (item) => (item.goodWhenDown ? (item.delta <= 0 ? "good" : "bad") : (item.delta >= 0 ? "good" : "bad"));
-  const reportRows = normalizeAnnotations(annotations)
-    .filter((row) => row.include !== false && String(row.content || "").trim())
-    .sort((a, b) => {
-      const moduleA = annotationModules.indexOf(a.module);
-      const moduleB = annotationModules.indexOf(b.module);
-      const typeA = annotationTypes.indexOf(a.type);
-      const typeB = annotationTypes.indexOf(b.type);
-      return (moduleA < 0 ? 999 : moduleA) - (moduleB < 0 ? 999 : moduleB) || (typeA < 0 ? 999 : typeA) - (typeB < 0 ? 999 : typeB);
-    });
-  const rowsByTypes = (types) => reportRows.filter((row) => types.includes(row.type));
-  const groupReportRows = (rows) => {
-    const moduleOrder = [...annotationModules, ...new Set(rows.map((row) => row.module).filter((module) => !annotationModules.includes(module)))];
-    return moduleOrder.map((module) => ({ module, rows: rows.filter((row) => row.module === module) })).filter((group) => group.rows.length);
-  };
-  const conclusionRows = rowsByTypes(["\u62a5\u544a\u91cd\u70b9", "\u5206\u6790\u7ed3\u8bba"]);
-  const riskRows = rowsByTypes(["\u98ce\u9669\u5224\u65ad"]);
-  const actionRows = rowsByTypes(["\u6539\u5584\u63aa\u65bd"]);
-  const todoRows = rowsByTypes(["\u5f85\u529e\u4e8b\u9879"]);
-  const sectionMeta = [
-    { label: "\u7ba1\u7406\u5c42\u7ed3\u8bba", count: conclusionRows.length },
-    { label: "TOP\u98ce\u9669", count: riskRows.length },
-    { label: "\u6539\u5584\u63aa\u65bd", count: actionRows.length },
-    { label: "\u5f85\u529e\u4e8b\u9879", count: todoRows.length },
-  ];
-  const renderAnnotationSection = ({ title, subtitle, rows, empty, className = "" }) => {
-    const groups = groupReportRows(rows);
-    return <Panel title={title} subtitle={subtitle} className={className}>
-      <div className="management-template-section">
-        {!groups.length && <div className="management-template-empty">{empty}</div>}
-        {groups.map((group) => <section className="management-template-group" key={`${title}-${group.module}`}>
-          <h4>{group.module}</h4>
-          {group.rows.map((row) => <article key={row.id}>
-            <div><span>{row.type}</span>{row.updatedAt && <em>{String(row.updatedAt).slice(0, 10)}</em>}</div>
-            <p>{row.content}</p>
-          </article>)}
-        </section>)}
-      </div>
-    </Panel>;
-  };
-  return <div className="management-report-page">
-    <section className="management-hero">
-      <div>
-        <span>管理层汇报</span>
-        <h2>半年度质量经营摘要</h2>
-        <p>面向二级以上管理层，聚焦核心指标、TOP风险和下半年资源投入方向。量化指标随经营驾驶舱当前日期区间同步更新，文字内容自动引用“已保存的分析改善措施”。</p>
-      </div>
-      <AppliedPeriodTag data={data}/>
-    </section>
-    <div className="management-card-grid">
-      {reportCards.map((item) => <div className="management-metric-card" key={item.label}>
-        <span>{item.label}</span>
-        <strong>{item.value}</strong>
-        <em className={deltaClass(item)}>{signedText(Number(item.delta || 0), Math.abs(item.delta || 0) < 10 ? "pp" : "%", Math.abs(item.delta || 0) < 10 ? 1 : 0)}</em>
-        <p>{item.note}</p>
-      </div>)}
-    </div>
-    <div className="management-template-summary">
-      <div>
-        <strong>自动成稿模板</strong>
-        <span>已纳入 {reportRows.length} 条批注素材；只统计“进入报告”的内容。</span>
-      </div>
-      <div className="management-template-tags">
-        {sectionMeta.map((item) => <em key={item.label}>{item.label}<b>{item.count}</b></em>)}
-      </div>
-    </div>
-    <div className="management-report-grid">
-      {renderAnnotationSection({
-        title: "一、管理层结论",
-        subtitle: "来自“报告重点”和“分析结论”，用于开场摘要",
-        rows: conclusionRows,
-        empty: "暂无管理层结论素材。请在各图表页面点击“分析改善措施”，填写“报告重点”或“分析结论”。",
-        className: "span-12",
-      })}
-      <Panel title="数据识别TOP风险" subtitle="用于管理层快速判断资源投入优先级">
-        <div className="management-risk-list">
-          <div><h4>IQC供应商</h4>{iqcWorst.map((row) => <p key={`${row.site}-${row.supplier}`}><b>{row.site}</b><span>{row.supplier}</span><em>{row.y2026Rate}%</em></p>)}</div>
-          <div><h4>IPQC工坊</h4>{ipqcRisk.map((row) => <p key={`${row.site}-${row.name}`}><b>{row.site}</b><span>{row.name}</span><em>{row.y2026Rate}%</em></p>)}</div>
-          <div><h4>DQA产品部</h4>{dqaBack.slice(0, 3).map((row) => <p key={row.name}><b>{row.name}</b><span>生产+现场</span><em>{row.back.toLocaleString()}项</em></p>)}</div>
-        </div>
-      </Panel>
-      {renderAnnotationSection({
-        title: "二、风险判断",
-        subtitle: "来自“风险判断”，按模块自动分组",
-        rows: riskRows,
-        empty: "暂无风险判断素材。建议记录TOP供应商、工坊、TPM、产品部的高风险原因。",
-      })}
-      {renderAnnotationSection({
-        title: "三、下半年改善措施",
-        subtitle: "来自“改善措施”，用于形成行动主线",
-        rows: actionRows,
-        empty: "暂无改善措施素材。建议写明对象、原因、措施、验证指标和完成时间。",
-      })}
-      {renderAnnotationSection({
-        title: "四、待办与责任推进",
-        subtitle: "来自“待办事项”，后续可转为质量工作台任务",
-        rows: todoRows,
-        empty: "暂无待办素材。建议把问题严重的组装工坊、交付经理、产品部和TPM写成具体责任事项。",
-        className: "span-12",
-      })}
-    </div>
-  </div>;
-}
-
-const qmdpKnowledgeKey = "qms-qmdp-knowledge-files-v1";
-const qmdpQuestionsKey = "qms-qmdp-question-bank-v1";
-const qmdpQuestionGenerationSettingsKey = "qms-qmdp-question-generation-settings-v1";
-const qmdpExamRecordsKey = "qms-qmdp-exam-records-v1";
-const qmdpExamSessionsKey = "qms-qmdp-exam-sessions-v1";
-const qmdpSystemKey = "qms-qmdp-system-config-v1";
-const qmdpReportTasksKey = "qms-qmdp-report-tasks-v1";
-
-const decodeKnowledgeText = (buffer) => {
-  const bytes = buffer instanceof Uint8Array ? buffer : new Uint8Array(buffer);
-  const utf8 = new TextDecoder("utf-8").decode(bytes);
-  const replacementCount = (utf8.match(/\ufffd/g) || []).length;
-  if (replacementCount > 0 && typeof TextDecoder !== "undefined") {
-    try { return new TextDecoder("gb18030").decode(bytes); } catch { /* use UTF-8 fallback */ }
-  }
-  return utf8;
-};
-
-const unzipLocalEntries = async (buffer) => {
-  const bytes = new Uint8Array(buffer);
-  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-  const entries = new Map();
-  let offset = 0;
-  while (offset + 30 <= bytes.length && view.getUint32(offset, true) === 0x04034b50) {
-    const method = view.getUint16(offset + 8, true);
-    const compressedSize = view.getUint32(offset + 18, true);
-    const nameLength = view.getUint16(offset + 26, true);
-    const extraLength = view.getUint16(offset + 28, true);
-    const nameStart = offset + 30;
-    const name = new TextDecoder("utf-8").decode(bytes.subarray(nameStart, nameStart + nameLength));
-    const dataStart = nameStart + nameLength + extraLength;
-    const compressed = bytes.subarray(dataStart, dataStart + compressedSize);
-    let content = compressed;
-    if (method === 8) {
-      if (typeof DecompressionStream === "undefined") throw new Error("当前浏览器不支持 Office 文档解压，请使用最新版 Chrome/Edge");
-      const stream = new Blob([compressed]).stream().pipeThrough(new DecompressionStream("deflate-raw"));
-      content = new Uint8Array(await new Response(stream).arrayBuffer());
-    } else if (method !== 0) {
-      offset = dataStart + compressedSize;
-      continue;
-    }
-    entries.set(name, content);
-    offset = dataStart + compressedSize;
-  }
-  return entries;
-};
-
-const decodeXml = (value) => String(value || "").replace(/<[^>]+>/g, " ").replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/\s+/g, " ").trim();
-const officeParagraphs = (xml, tag = "w:p", textTag = "w:t") => (String(xml || "").match(new RegExp(`<${tag}\\b[\\s\\S]*?<\\/${tag}>`, "g")) || []).map((block) => decodeXml((block.match(new RegExp(`<${textTag}\\b[^>]*>([\\s\\S]*?)<\\/${textTag}>`, "g")) || []).map((item) => item.replace(new RegExp(`^<[\\s\\S]*?>|<\\/${textTag}>$`, "g"), "")).join(" "))).filter(Boolean);
-
-const subtitleSeconds = (value) => {
-  const parts = String(value || "").replace(",", ".").split(":").map(Number);
-  if (parts.some((part) => !Number.isFinite(part))) return 0;
-  return parts.length === 3 ? parts[0] * 3600 + parts[1] * 60 + parts[2] : parts[0] * 60 + parts[1];
-};
-
-const readSubtitleEvidence = (text, fileName) => {
-  const lines = String(text || "").replace(/^\uFEFF/, "").replace(/\r/g, "").split("\n");
-  const segments = [];
-  const segmentMetadata = [];
-  const videoId = fileName.match(/BV[\w-]+/i)?.[0] || fileName.match(/[A-Za-z0-9_-]{8,}/)?.[0] || "";
-  const videoPlatform = /BV[\w-]+/i.test(fileName) ? "B站" : /youtube|youtu\.be/i.test(fileName) ? "YouTube" : "本地视频";
-  for (let index = 0; index < lines.length; index += 1) {
-    const timing = lines[index].trim().match(/^((?:\d{1,2}:)?\d{2}:\d{2}[,.]\d{3})\s+-->\s+((?:\d{1,2}:)?\d{2}:\d{2}[,.]\d{3})/);
-    if (!timing) continue;
-    const content = [];
-    while (++index < lines.length && lines[index].trim()) content.push(lines[index].replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim());
-    const clauseText = content.filter(Boolean).join(" ");
-    if (!clauseText) continue;
-    const cueIndex = segments.length + 1;
-    const startTimestamp = timing[1].replace(",", ".");
-    const endTimestamp = timing[2].replace(",", ".");
-    segments.push(clauseText);
-    segmentMetadata.push({ locatorType: "video-timestamp", locator: `${startTimestamp}—${endTimestamp}`, startTimestamp, endTimestamp, startSeconds: subtitleSeconds(startTimestamp), endSeconds: subtitleSeconds(endTimestamp), cueIndex, videoPlatform, videoId });
-  }
-  if (!segments.length) throw new Error("字幕文件中没有识别到SRT/VTT时间轴");
-  return { contentType: "video-transcript", segments, segmentMetadata, preview: segments.join("\n").slice(0, 80000), durationSeconds: segmentMetadata.at(-1)?.endSeconds || 0 };
-};
-const formatElapsed = (stage, now = Date.now()) => {
-  if (!stage?.startedAt) return "-";
-  const end = stage.completedAt ? new Date(stage.completedAt).getTime() : now;
-  const start = new Date(stage.startedAt).getTime();
-  const seconds = Math.max(0, Math.round((end - start) / 1000));
-  if (seconds < 60) return `${seconds}s`;
-  const minutes = Math.floor(seconds / 60);
-  return `${minutes}m ${String(seconds % 60).padStart(2, "0")}s`;
-};
-const processingStageItems = [
-  ["import", "导入"],
-  ["evidence", "证据解析"],
-  ["evidenceCleanup", "证据整理"],
-  ["distillation", "知识蒸馏"],
-  ["knowledgePersistence", "知识入库"],
-];
-const processingTimingLabel = (file, now = Date.now()) => file.processingTimingText || processingStageItems
-  .filter(([key]) => file.metadata?.processingStages?.[key])
-  .map(([key, label]) => `${label} ${formatElapsed(file.metadata.processingStages[key], now)}`)
-  .join(" · ");
-
-// Legacy .doc is an OLE binary container rather than a ZIP package.  It is
-// not safe to decode the whole file as UTF-8; recover only readable Unicode
-// runs so the document can still enter the normal evidence rules.  This is a
-// fallback, not a promise of perfect layout/table recovery.
-const extractLegacyDocText = (buffer) => {
-  const bytes = new Uint8Array(buffer);
-  const runs = [];
-  const push = (value) => {
-    const text = String(value || "").replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]+/g, " ").replace(/[ \t]{2,}/g, " ").trim();
-    if (text.length >= 3 && /[\u3400-\u9fffA-Za-z0-9]/.test(text)) runs.push(text);
-  };
-  let ascii = "";
-  for (const byte of bytes) {
-    if (byte >= 0x20 && byte <= 0x7e) ascii += String.fromCharCode(byte);
-    else { push(ascii); ascii = ""; }
-  }
-  push(ascii);
-  for (let index = 0; index + 1 < bytes.length; index += 2) {
-    const code = bytes[index] | (bytes[index + 1] << 8);
-    if ((code >= 0x20 && code !== 0xfffe && code !== 0xffff) && (code <= 0x7e || (code >= 0x3400 && code <= 0x9fff))) {
-      let text = "";
-      let cursor = index;
-      while (cursor + 1 < bytes.length) {
-        const value = bytes[cursor] | (bytes[cursor + 1] << 8);
-        if (!((value >= 0x20 && value !== 0xfffe && value !== 0xffff) && (value <= 0x7e || (value >= 0x3400 && value <= 0x9fff)))) break;
-        text += String.fromCharCode(value); cursor += 2;
-      }
-      if (text.length >= 3) push(text);
-    }
-  }
-  return [...new Set(runs)].join("\n");
-};
-
-const readKnowledgeFile = async (file) => {
-  const ext = file.name.split(".").pop()?.toLowerCase();
-  if (ext === "pdf") return { contentType: "pdf", segments: [`原始PDF文件：${file.name}\n当前登记为待OCR，原件不改写。`], segmentMetadata: [{ locatorType: "pdf", locator: "待OCR" }], preview: `原始PDF文件：${file.name} · 待OCR`, registerOnly: true };
-  if (["srt", "vtt"].includes(ext)) return readSubtitleEvidence(decodeKnowledgeText(await file.arrayBuffer()), file.name);
-  if (ext === "doc") {
-    const text = extractLegacyDocText(await file.arrayBuffer());
-    if (!text) throw new Error("旧版 Word 未提取出可读文字；请另存为 DOCX 或 PDF 后再导入");
-    const segments = text.split(/\n+/).map((item) => item.trim()).filter(Boolean);
-    return { contentType: "word", segments, segmentMetadata: segments.map((_, index) => ({ locatorType: "paragraph", locator: `段落 ${index + 1}`, paragraph: index + 1, extraction: "legacy-doc-text" })), preview: segments.join("\n").slice(0, 80000), metadata: { extraction: "legacy-doc-text", layoutRecovery: "limited" } };
-  }
-  if (ext === "xmind") {
-    const entries = await unzipLocalEntries(await file.arrayBuffer());
-    const jsonEntry = entries.get("content.json");
-    const segments = [];
-    const walk = (topic, path = []) => {
-      if (!topic || typeof topic !== "object") return;
-      const title = String(topic.title || topic.topicTitle || "").trim();
-      const nextPath = title ? [...path, title] : path;
-      if (title) segments.push({ text: nextPath.join(" / "), metadata: { locatorType: "xmind-node", locator: nextPath.join(" / "), nodePath: nextPath } });
-      const children = topic.children?.attached || topic.children?.topics || topic.children || [];
-      (Array.isArray(children) ? children : []).forEach((child) => walk(child, nextPath));
-    };
-    if (jsonEntry) {
-      try {
-        const payload = JSON.parse(decodeKnowledgeText(jsonEntry));
-        (Array.isArray(payload) ? payload : payload.sheets || []).forEach((sheet) => walk(sheet.rootTopic || sheet.root || sheet));
-      } catch { /* fall through to XML */ }
-    }
-    if (!segments.length && entries.has("content.xml")) {
-      const xml = decodeKnowledgeText(entries.get("content.xml"));
-      (xml.match(/<title>([\s\S]*?)<\/title>/gi) || []).forEach((item, index) => {
-        const title = decodeXml(item.replace(/^<title>|<\/title>$/gi, ""));
-        if (title) segments.push({ text: title, metadata: { locatorType: "xmind-node", locator: `节点 ${index + 1}`, nodePath: [title] } });
-      });
-    }
-    const texts = segments.length ? segments.map((item) => item.text) : ["XMind中没有可提取的主题节点"];
-    return { contentType: "xmind", segments: texts, segmentMetadata: segments.map((item) => item.metadata), preview: texts.join("\n").slice(0, 80000) };
-  }
-  if (["docx", "pptx"].includes(ext)) {
-    const entries = await unzipLocalEntries(await file.arrayBuffer());
-    const names = [...entries.keys()].filter((name) => ext === "docx" ? name === "word/document.xml" : /^ppt\/slides\/slide\d+\.xml$/i.test(name)).sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
-    const segmented = names.flatMap((name) => officeParagraphs(decodeKnowledgeText(entries.get(name)), ext === "docx" ? "w:p" : "a:p", ext === "docx" ? "w:t" : "a:t").map((text, index) => ({ text, metadata: { locatorType: ext === "docx" ? "paragraph" : "slide", locator: ext === "docx" ? `段落 ${index + 1}` : `幻灯片 ${Number(name.match(/slide(\d+)/i)?.[1] || 0)}`, slide: ext === "pptx" ? Number(name.match(/slide(\d+)/i)?.[1] || 0) : undefined, paragraph: ext === "docx" ? index + 1 : undefined } })));
-    const segments = segmented.length ? segmented.map((item) => item.text) : ["文档中没有可提取的文本"];
-    return { contentType: ext === "docx" ? "word" : "ppt", segments, segmentMetadata: segmented.map((item) => item.metadata), preview: segments.join("\n").slice(0, 80000) };
-  }
-  if (["xlsx", "xls", "xlsm"].includes(ext)) {
-    const workbook = XLSX.read(await file.arrayBuffer(), { type: "array", cellDates: true });
-    const segmentMetadata = [];
-    const lines = workbook.SheetNames.flatMap((sheetName) => {
-      const rows = XLSX.utils.sheet_to_json(workbook.Sheets[sheetName], { header: 1, defval: "", blankrows: false });
-      return rows.map((row, rowIndex) => {
-        const values = row.map((cell) => String(cell ?? "").trim()).filter(Boolean);
-        const line = `${sheetName} | ${values.join(" | ")}`;
-        if (line.length > sheetName.length + 3) segmentMetadata.push({ locatorType: "sheet", locator: `${sheetName}!第${rowIndex + 1}行`, sheet: sheetName, row: rowIndex + 1 });
-        return line.length > sheetName.length + 3 ? line : null;
-      }).filter(Boolean);
-    });
-    return { contentType: "excel", segments: lines, segmentMetadata, preview: lines.join("\n").slice(0, 80000) };
-  }
-  const text = decodeKnowledgeText(await file.arrayBuffer()).replace(/\r/g, "").trim();
-  const segments = text ? text.match(/[\\s\\S]{1,3500}/g) || [] : [];
-  return { contentType: ext === "pdf" ? "pdf" : "text", segments, preview: text.slice(0, 80000) };
-};
-
-const knowledgeFileHash = async (file) => {
-  const buffer = await file.arrayBuffer();
-  if (globalThis.crypto?.subtle) {
-    const digest = await globalThis.crypto.subtle.digest("SHA-256", buffer);
-    return [...new Uint8Array(digest)].map((value) => value.toString(16).padStart(2, "0")).join("");
-  }
-  return `${file.name}:${file.size}:${file.lastModified}`;
-};
-
-const questionHeaderAliases = {
-  stem: ["题干", "问题", "题目", "QuestionText", "Question"], type: ["类型", "题型", "题目类型", "Type"],
-  optionA: ["选项A", "A选项", "答案A", "选项1", "OptionA"], optionB: ["选项B", "B选项", "答案B", "选项2", "OptionB"],
-  optionC: ["选项C", "C选项", "答案C", "选项3", "OptionC"], optionD: ["选项D", "D选项", "答案D", "选项4", "OptionD"],
-  options: ["选项", "备选项", "答案选项", "选项内容", "Options"], answer: ["正确答案", "正确选项", "标准答案", "答案", "CorrectAnswer", "Answer"],
-  explanation: ["解析", "说明", "Explanation"], roles: ["适用角色", "ApplicableRoles"], categories: ["问题类别", "IssueCategories"], knowledge: ["知识标题", "KnowledgeTitle"],
-};
-const normalizedHeader = (value) => String(value ?? "").trim().replace(/\s+/g, "").toLowerCase();
-const parseQuestionType = (value) => /判断|truefalse/i.test(String(value || "")) ? "TrueFalse" : /多选|multichoice/i.test(String(value || "")) ? "MultiChoice" : /简答|shortanswer/i.test(String(value || "")) ? "ShortAnswer" : "SingleChoice";
-const parseOptions = (row, header, type) => {
-  if (type === "TrueFalse") return ["正确", "错误"];
-  const direct = ["optionA", "optionB", "optionC", "optionD"].map((key) => row[header[key]]).map((value) => String(value ?? "").trim()).filter(Boolean);
-  if (direct.length) return direct;
-  const combined = String(row[header.options] ?? "").replace(/[；;|]/g, "\n");
-  return combined.split(/\r?\n/).map((value) => value.replace(/^\s*[A-DＡ-Ｄ][.．、:：)）]\s*/i, "").trim()).filter(Boolean);
-};
-const parseAnswerIndexes = (value, options, type) => {
-  const text = String(value ?? "").trim();
-  if (type === "ShortAnswer") return { answer: -1, correctAnswers: [], answerText: text };
-  const parts = type === "MultiChoice" ? text.split(/[、,，;；\s]+/).filter(Boolean) : [text];
-  const indexes = parts.map((part) => {
-    const normalized = part.replace(/^选项/, "").trim().toUpperCase();
-    if (/^[A-D]$/.test(normalized)) return normalized.charCodeAt(0) - 65;
-    if (/^\d+$/.test(normalized)) { const number = Number(normalized); return number < options.length ? number : number - 1; }
-    if (/正确|是|TRUE/i.test(normalized)) return 0;
-    if (/错误|否|FALSE/i.test(normalized)) return 1;
-    return options.findIndex((option) => option === part || option.includes(part) || part.includes(option));
-  }).filter((index) => index >= 0 && index < options.length);
-  return { answer: indexes[0] ?? -1, correctAnswers: [...new Set(indexes)], answerText: text };
-};
-
-const parseQuestionWorkbook = async (file) => {
-  const workbook = XLSX.read(await file.arrayBuffer(), { type: "array", cellDates: true });
-  const rows = XLSX.utils.sheet_to_json(workbook.Sheets[workbook.SheetNames[0]], { header: 1, defval: "", blankrows: false });
-  const headerRow = rows.findIndex((row) => row.some((cell) => questionHeaderAliases.stem.some((alias) => normalizedHeader(alias) === normalizedHeader(cell))));
-  if (headerRow < 0) throw new Error("无法识别题干列，请使用题干、问题、题目或 QuestionText 作为表头");
-  const headers = rows[headerRow].map(normalizedHeader);
-  const header = Object.fromEntries(Object.entries(questionHeaderAliases).map(([key, aliases]) => [key, headers.findIndex((cell) => aliases.some((alias) => normalizedHeader(alias) === cell))]).filter(([, index]) => index >= 0));
-  return rows.slice(headerRow + 1).map((row, index) => {
-    const stem = String(row[header.stem] ?? "").trim();
-    if (!stem) return null;
-    const type = parseQuestionType(row[header.type]);
-    const options = parseOptions(row, header, type);
-    const answer = parseAnswerIndexes(row[header.answer], options, type);
-    if (type !== "ShortAnswer" && (!options.length || answer.answer < 0)) return null;
-    return { id: `${file.name}-${Date.now()}-${index}`, stem, type, options, answer: answer.answer, correctAnswers: answer.correctAnswers, answerText: answer.answerText, explanation: String(row[header.explanation] ?? "").trim(), roles: String(row[header.roles] ?? "").trim(), categories: String(row[header.categories] ?? "").trim(), knowledge: String(row[header.knowledge] ?? "").trim(), sourceFileName: file.name };
-  }).filter(Boolean);
-};
-
-const parseGeneratedQuestionJson = (content) => {
-  const text = String(content || "").trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/i, "");
-  let value;
-  try { value = JSON.parse(text); } catch {
-    const match = text.match(/\{[\s\S]*\}|\[[\s\S]*\]/);
-    if (!match) throw new Error("模型没有返回可识别的题目 JSON");
-    try { value = JSON.parse(match[0]); } catch { throw new Error("题目 JSON 格式无效，请重新生成"); }
-  }
-  const rows = Array.isArray(value) ? value : value.questions || value.rows || value.items || [];
-  if (!Array.isArray(rows)) throw new Error("题目结果不是数组");
-  return rows;
-};
-
-const normalizeGeneratedQuestions = (rows, sourceFile, skill = {}) => rows.map((item, index) => {
-  const stem = String(item.stem || item.question || item.题干 || item.问题 || "").trim();
-  if (!stem) return null;
-  const type = parseQuestionType(item.type || item.questionType || item.类型 || item.题型);
-  const directOptions = [item.optionA || item.选项A, item.optionB || item.选项B, item.optionC || item.选项C, item.optionD || item.选项D].map((value) => String(value ?? "").trim()).filter(Boolean);
-  const options = type === "TrueFalse" ? ["正确", "错误"] : (Array.isArray(item.options) ? item.options : directOptions).map((value) => String(value ?? "").trim()).filter(Boolean).slice(0, 4);
-  const answerValue = item.answer ?? item.correctAnswer ?? item.correct ?? item.正确答案 ?? item.答案 ?? "";
-  const answer = parseAnswerIndexes(answerValue, options, type);
-  if (type !== "ShortAnswer" && (!options.length || answer.answer < 0)) return null;
-  return {
-    id: `knowledge-${sourceFile.id}-${Date.now()}-${index}`,
-    stem,
-    type,
-    options,
-    answer: answer.answer,
-    correctAnswers: answer.correctAnswers,
-    answerText: answer.answerText,
-    explanation: String(item.explanation || item.解析 || item.reason || "").trim(),
-    roles: String(item.roles || item.applicableRoles || item.适用角色 || "").trim(),
-    categories: String(item.categories || item.category || item.issueCategory || item.问题类别 || sourceFile.category || "知识文档").trim(),
-    knowledge: String(item.knowledge || item.knowledgeTitle || item.知识标题 || sourceFile.name).trim(),
-    sourceFileName: sourceFile.name,
-    sourceKnowledgeId: sourceFile.id,
-    generatedBySkill: String(skill.name || skill.id || "generate-qms-exam-bank"),
-    generatedBySkillId: String(skill.id || "generate-qms-exam-bank"),
-    generatedAt: new Date().toISOString(),
-  };
-}).filter(Boolean);
 
 function QmdpPageHeader({ icon: Icon = Database, eyebrow, title, description, action }) {
   return <div className="qmdp-page-header"><div className="qmdp-page-title"><span className="qmdp-page-icon"><Icon size={23}/></span><div><small>{eyebrow}</small><h2>{title}</h2><p>{description}</p></div></div>{action}</div>;
@@ -2677,6 +2274,22 @@ const knowledgeCell = (row, keys) => {
     if (value != null && String(value).trim()) return String(value).trim();
   }
   return "";
+};
+const normalizeKnowledgeIssueDate = (value) => {
+  if (value == null || value === "") return "";
+  if (value instanceof Date && !Number.isNaN(value.getTime())) return `${value.getFullYear()}-${String(value.getMonth() + 1).padStart(2, "0")}-${String(value.getDate()).padStart(2, "0")}`;
+  const raw = String(value).trim();
+  const iso = raw.match(/^(\d{4})[-\/](\d{1,2})[-\/](\d{1,2})/);
+  if (iso) return `${iso[1]}-${String(iso[2]).padStart(2, "0")}-${String(iso[3]).padStart(2, "0")}`;
+  const legacy = raw.match(/^(?:\w{3})\s+(\w{3})\s+(\d{1,2})\s+(\d{4})\s+(\d{2}):(\d{2}):(\d{2})/);
+  if (legacy) {
+    const months = { Jan: 0, Feb: 1, Mar: 2, Apr: 3, May: 4, Jun: 5, Jul: 6, Aug: 7, Sep: 8, Oct: 9, Nov: 10, Dec: 11 };
+    const date = new Date(Number(legacy[4]), months[legacy[1]] ?? 0, Number(legacy[2]), Number(legacy[5]), Number(legacy[6]), Number(legacy[7]));
+    if (raw.includes("GMT+0800") && Number(legacy[5]) >= 23 && Number(legacy[6]) >= 50) date.setDate(date.getDate() + 1);
+    return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+  }
+  const parsed = new Date(raw);
+  return Number.isNaN(parsed.getTime()) ? raw : `${parsed.getFullYear()}-${String(parsed.getMonth() + 1).padStart(2, "0")}-${String(parsed.getDate()).padStart(2, "0")}`;
 };
 const knowledgeFieldAudit = (row = {}) => {
   const metadata = row.metadata || {};
@@ -2761,7 +2374,7 @@ const buildKnowledgeIssuePayloads = (sources = [], module) => knowledgeIssueSour
   const issueType = knowledgeCell(row, module === "IPQC" ? ["不良类型", "问题类型", "问题分类"] : ["问题类型", "问题分类", "问题类别", "类别", "阶段", "问题来源"]);
   const issueText = knowledgeCell(row, module === "IPQC" ? ["不良内容", "问题描述", "问题内容"] : ["问题描述", "问题内容", "问题", "不良内容", "变更原因", "问题类型"]);
   if (!personName || (!issueType && !issueText)) return null;
-  const issueDate = knowledgeCell(row, ["日期", "检验日期", "送检日期", "发生日期", "申请日期", "更新日期", "创建日期", "问题日期", "反馈日期", "关闭日期"]);
+  const issueDate = normalizeKnowledgeIssueDate(knowledgeCell(row, ["日期", "检验日期", "送检日期", "发生日期", "申请日期", "更新日期", "创建日期", "问题日期", "反馈日期", "关闭日期"]));
   const sourceFile = String(source.name || source.fileName || "未命名数据源");
   const sourceIdentity = String(source.relativePath || source.uploadedName || sourceFile);
   return {
@@ -3214,14 +2827,20 @@ function KnowledgeBasePage({ qualitySources = [], onEnsureAgentSources, auth }) 
   const [knowledgeFileSort, setKnowledgeFileSort] = useState("recent");
   const [issueModule, setIssueModule] = useState("IPQC");
   const [issueRows, setIssueRows] = useState([]);
+  const [issueFacets, setIssueFacets] = useState({ personNames: [], issueTypes: [], sourceFiles: [] });
   const [issueTotal, setIssueTotal] = useState(0);
   const [issuePage, setIssuePage] = useState(0);
   const [issueQuery, setIssueQuery] = useState("");
   const [issueSearchQuery, setIssueSearchQuery] = useState("");
   const [issueFilter, setIssueFilter] = useState("");
+  const [issueAdvanced, setIssueAdvanced] = useState({ personName: "", sourceFile: "", issueType: "", minScore: "", maxScore: "", minMatches: "", datePreset: "", dateFrom: "", dateTo: "" });
+  const [issueAppliedAdvanced, setIssueAppliedAdvanced] = useState({ personName: "", sourceFile: "", issueType: "", minScore: "", maxScore: "", minMatches: "", datePreset: "", dateFrom: "", dateTo: "" });
+  const [selectedIssueIds, setSelectedIssueIds] = useState([]);
   const [selectedIssueId, setSelectedIssueId] = useState("");
   const [issueMatches, setIssueMatches] = useState([]);
   const [issueMatchState, setIssueMatchState] = useState({ status: "idle", message: "先同步质量问题，再生成候选规范" });
+  const [issueListLoading, setIssueListLoading] = useState(false);
+  const issueRequestSeqRef = useRef(0);
   const [batchMatchProgress, setBatchMatchProgress] = useState(null);
   const batchMatchStopRef = useRef(false);
   const [matchThreshold, setMatchThreshold] = useState(() => Number(localStorage.getItem("qmdp-knowledge-match-threshold") || 80));
@@ -3334,19 +2953,85 @@ function KnowledgeBasePage({ qualitySources = [], onEnsureAgentSources, auth }) 
   useEffect(() => { localStorage.setItem(qmdpQuestionGenerationSettingsKey, JSON.stringify(questionCounts)); }, [questionCounts]);
   useEffect(() => { setCheckedFileIds((current) => current.filter((id) => files.some((file) => file.id === id))); }, [files]);
   const refreshIssues = useCallback(async (silent = false) => {
+    const requestSeq = ++issueRequestSeqRef.current;
+    setIssueListLoading(true);
     try {
-      const response = await loadKnowledgeIssues({ module: issueModule, query: issueSearchQuery, status: issueFilter, threshold: matchThreshold, limit: issuePageSize, offset: issuePage * issuePageSize });
+      const response = await loadKnowledgeIssues({ module: issueModule, query: issueSearchQuery, status: issueFilter, threshold: matchThreshold, ...issueAppliedAdvanced, limit: issuePageSize, offset: issuePage * issuePageSize });
+      if (requestSeq !== issueRequestSeqRef.current) return;
       const rows = response?.issues || [];
       setIssueRows(rows);
+      setIssueFacets(response?.facets || { personNames: [], issueTypes: [], sourceFiles: [] });
       setIssueTotal(Number(response?.total || 0));
       setSelectedIssueId((current) => rows.some((item) => item.id === current) ? current : rows[0]?.id || "");
       if (!silent) setIssueMatchState({ status: "done", message: rows.length ? `已读取 ${response.total} 条${issueModule}问题` : `暂无${issueModule}问题，请先同步原始数据` });
     } catch (error) {
+      if (requestSeq !== issueRequestSeqRef.current) return;
       if (!silent) setIssueMatchState({ status: "error", message: `问题清单读取失败：${error?.message || "知识库服务不可用"}` });
+    } finally {
+      if (requestSeq === issueRequestSeqRef.current) setIssueListLoading(false);
     }
-  }, [issueModule, issueSearchQuery, issueFilter, issuePage, matchThreshold]);
+  }, [issueModule, issueSearchQuery, issueFilter, issuePage, matchThreshold, issueAppliedAdvanced]);
   useEffect(() => { refreshIssues(false); }, [refreshIssues]);
-  useEffect(() => { setIssuePage(0); setIssueRows([]); setIssueTotal(0); setSelectedIssueId(""); setIssueMatches([]); issueSyncAttemptRef.current.delete(issueModule); }, [issueModule, issueFilter]);
+  useEffect(() => { setIssuePage(0); setIssueRows([]); setIssueTotal(0); setSelectedIssueId(""); setSelectedIssueIds([]); setIssueMatches([]); }, [issueModule, issueFilter, issueAppliedAdvanced]);
+  useEffect(() => { issueSyncAttemptRef.current.delete(issueModule); }, [issueModule]);
+  useEffect(() => { if (selectedIssueId) setSelectedIssueIds((ids) => ids.includes(selectedIssueId) ? ids : [...ids, selectedIssueId]); }, [selectedIssueId]);
+  useEffect(() => {
+    const aside = document.querySelector('.qmdp-issue-match-body>aside');
+    if (!aside) return;
+    aside.querySelectorAll(':scope>button').forEach((button, index) => {
+      const item = issueRows[index];
+      if (!item || button.querySelector('.qmdp-issue-row-check')) return;
+      const check = document.createElement('input'); check.type = 'checkbox'; check.className = 'qmdp-issue-row-check'; check.checked = selectedIssueIds.includes(item.id); check.setAttribute('aria-label', `选择问题 ${item.id}`);
+      check.addEventListener('click', (event) => event.stopPropagation());
+      check.addEventListener('change', () => setSelectedIssueIds((ids) => ids.includes(item.id) ? ids.filter((id) => id !== item.id) : [...ids, item.id]));
+      button.prepend(check);
+    });
+  }, [issueRows, selectedIssueIds]);
+  useEffect(() => {
+    const toolbarCount = document.querySelector('.qmdp-issue-search-count');
+    if (toolbarCount) toolbarCount.textContent = `筛选结果 ${issueTotal} 条 · 已选 ${selectedIssueIds.length} 条`;
+    const review = document.querySelector('.qmdp-match-review');
+    const threshold = review?.querySelector('.qmdp-match-threshold');
+    if (review && threshold) {
+      let actions = review.querySelector('.qmdp-issue-selection-actions');
+      if (!actions) {
+        actions = document.createElement('div');
+        actions.className = 'qmdp-issue-selection-actions';
+        threshold.parentNode.insertBefore(actions, threshold);
+      }
+      actions.innerHTML = '';
+      const selectPage = document.createElement('button');
+      selectPage.type = 'button';
+      selectPage.className = 'qmdp-secondary-btn';
+      selectPage.textContent = `选择当前页（${issueRows.length}）`;
+      selectPage.onclick = () => setSelectedIssueIds((ids) => [...new Set([...ids, ...issueRows.map((row) => row.id)])]);
+      const clear = document.createElement('button');
+      clear.type = 'button';
+      clear.className = 'qmdp-secondary-btn';
+      clear.textContent = '清空选择';
+      clear.onclick = () => setSelectedIssueIds([]);
+      const info = document.createElement('span');
+      info.textContent = `匹配范围：已选 ${selectedIssueIds.length} 条；筛选结果 ${issueTotal} 条`;
+      actions.append(selectPage, clear, info);
+    }
+    const matchButton = Array.from(document.querySelectorAll('.qmdp-selected-issue .qmdp-primary-btn')).find((button) => button.textContent.includes('匹配'));
+    if (matchButton) {
+      matchButton.textContent = `匹配已选 ${selectedIssueIds.length} 条`;
+      matchButton.disabled = issueMatchState.status === 'running' || selectedIssueIds.length === 0;
+    }
+  }, [issueRows, issueTotal, selectedIssueIds, issueMatchState.status]);
+  useEffect(() => {
+    const moveIssueToolbar = () => {
+      const panel = document.querySelector('.qmdp-issue-match-panel');
+      const body = panel?.querySelector('.qmdp-issue-match-body');
+      const toolbar = body?.querySelector('.qmdp-issue-match-toolbar');
+      if (panel && body && toolbar && toolbar.parentElement !== panel) panel.insertBefore(toolbar, body);
+    };
+    moveIssueToolbar();
+    const observer = new MutationObserver(moveIssueToolbar);
+    observer.observe(document.body, { childList: true, subtree: true });
+    return () => observer.disconnect();
+  }, [knowledgeWorkspace, issueRows.length]);
   useEffect(() => {
     let active = true;
     if (!selectedIssueId) { setIssueMatches([]); return () => { active = false; }; }
@@ -3421,7 +3106,13 @@ function KnowledgeBasePage({ qualitySources = [], onEnsureAgentSources, auth }) 
   const selectedKnowledgeSkill = knowledgeSkills.find((item) => item.id === selectedKnowledgeSkillId) || knowledgeSkills.find((item) => item.id === "quality-knowledge-distillation");
   const effectiveKnowledgeSkillId = selectedKnowledgeSkillId || "quality-knowledge-distillation";
   const selectedIssue = issueRows.find((item) => item.id === selectedIssueId) || null;
-  function renderIssueFilterControls() { return <select aria-label="问题筛选" value={issueFilter} onChange={(event) => { setIssueFilter(event.target.value); setIssuePage(0); }}><option value="">全部问题</option><option value="low_threshold">最高匹配度低于门限</option><option value="failed">匹配失败的问题</option><option value="rejected">驳回的问题</option><option value="confirmed">已确认的问题</option></select>; }
+  function renderIssueFilterControls() {
+    const selectFacet = (label, key, values) => { const choose = (value) => { setIssueAdvanced((current) => ({ ...current, [key]: value })); setIssueSearchQuery(""); setIssueQuery(""); setIssuePage(0); }; return <div className="qmdp-facet-combo"><input aria-label={label} placeholder={`输入或选择${label}`} value={issueAdvanced[key]} onChange={(event) => choose(event.target.value)}/><select aria-label={`${label}候选`} value="" onChange={(event) => choose(event.target.value)}><option value="">⌄</option>{values.map((value) => <option key={value} value={value}>{value}</option>)}</select></div>; };
+    const formatDate = (date) => { const year = date.getFullYear(); const month = String(date.getMonth() + 1).padStart(2, "0"); const day = String(date.getDate()).padStart(2, "0"); return `${year}-${month}-${day}`; };
+    const dateRangeFor = (preset) => { const now = new Date(); const today = new Date(now.getFullYear(), now.getMonth(), now.getDate()); const start = new Date(today); const end = new Date(today); if (preset === "today") end.setDate(end.getDate() + 1); else if (preset === "yesterday") { start.setDate(start.getDate() - 1); } else if (preset === "last_week") { const day = today.getDay() || 7; start.setDate(start.getDate() - day - 6); end.setTime(start.getTime()); end.setDate(end.getDate() + 7); } else if (["last_7", "last_30"].includes(preset)) { start.setDate(start.getDate() - (preset === "last_7" ? 6 : 29)); end.setDate(end.getDate() + 1); } else if (preset === "last_month") { start.setMonth(start.getMonth() - 1, 1); end.setDate(1); } else if (["last_3_months", "last_12_months"].includes(preset)) { start.setMonth(start.getMonth() - (preset === "last_3_months" ? 3 : 12), 1); end.setDate(1); } else return { dateFrom: "", dateTo: "" }; return { dateFrom: formatDate(start), dateTo: formatDate(new Date(end.getTime() - 86400000)) }; };
+    const onDatePreset = (event) => { const datePreset = event.target.value; const range = dateRangeFor(datePreset); setIssueAdvanced((current) => ({ ...current, datePreset, ...range })); setIssuePage(0); };
+    const dateLabel = issueAdvanced.datePreset === "custom" ? (issueAdvanced.dateFrom || issueAdvanced.dateTo ? `${issueAdvanced.dateFrom || "开始"} 至 ${issueAdvanced.dateTo || "结束"}` : "固定日期范围") : ({ today: "今天", yesterday: "昨天", last_week: "上一周", last_7: "前7天", last_30: "前30天", last_month: "上个月", last_3_months: "前3个月", last_12_months: "前12个月" }[issueAdvanced.datePreset] || "问题发生时间");
+    return <><select aria-label="问题筛选" value={issueFilter} onChange={(event) => { setIssueFilter(event.target.value); setIssuePage(0); }}><option value="">全部问题</option><option value="low_threshold">最高匹配度低于门限</option><option value="failed">匹配失败的问题</option><option value="rejected">驳回的问题</option><option value="confirmed">已确认的问题</option><option value="unmatched">未匹配知识卡</option></select><button type="button" className="qmdp-secondary-btn" onClick={() => setIssueAdvanced((current) => ({ ...current, open: !current.open }))}>高级筛选</button>{issueAdvanced.open && <div className="qmdp-issue-advanced-filter">{selectFacet("责任人", "personName", issueFacets.personNames)}{selectFacet("问题类型", "issueType", issueFacets.issueTypes)}{selectFacet("来源文件", "sourceFile", issueFacets.sourceFiles)}<input type="number" placeholder="最低匹配度" value={issueAdvanced.minScore} onChange={(e) => setIssueAdvanced((s) => ({ ...s, minScore: e.target.value }))}/><input type="number" placeholder="最高匹配度" value={issueAdvanced.maxScore} onChange={(e) => setIssueAdvanced((s) => ({ ...s, maxScore: e.target.value }))}/><input type="number" min="0" placeholder="最少候选数" value={issueAdvanced.minMatches} onChange={(e) => setIssueAdvanced((s) => ({ ...s, minMatches: e.target.value }))}/><select aria-label="问题发生时间" value={issueAdvanced.datePreset} onChange={onDatePreset}><option value="">问题发生时间</option><option value="today">今天</option><option value="yesterday">昨天</option><option value="last_week">上一周</option><option value="last_7">前7天</option><option value="last_30">前30天</option><option value="last_month">上个月</option><option value="last_3_months">前3个月</option><option value="last_12_months">前12个月</option><option value="custom">固定日期范围</option><option value="none">不包括日期</option></select>{issueAdvanced.datePreset === "custom" && <><input aria-label="问题发生开始日期" type="date" value={issueAdvanced.dateFrom} onChange={(e) => setIssueAdvanced((s) => ({ ...s, dateFrom: e.target.value }))}/><input aria-label="问题发生结束日期" type="date" value={issueAdvanced.dateTo} onChange={(e) => setIssueAdvanced((s) => ({ ...s, dateTo: e.target.value }))}/></>}<span className="qmdp-issue-date-summary">{dateLabel}</span></div>}</>; }
 
   const syncQualityIssues = async () => {
     setIssueMatchState({ status: "running", message: `正在加载${issueModule}原始问题数据…` });
@@ -3452,14 +3143,9 @@ function KnowledgeBasePage({ qualitySources = [], onEnsureAgentSources, auth }) 
       return false;
     }
   };
-  useEffect(() => {
-    if (knowledgeWorkspace !== "matching" || issueQuery || issueFilter || issueRows.length || issueSyncAttemptRef.current.has(issueModule)) return undefined;
-    issueSyncAttemptRef.current.add(issueModule);
-    const timer = window.setTimeout(() => {
-      syncQualityIssues().then((ok) => { if (!ok) issueSyncAttemptRef.current.delete(issueModule); });
-    }, 350);
-    return () => window.clearTimeout(timer);
-  }, [knowledgeWorkspace, issueModule, issueQuery, issueFilter, issueRows.length]);
+  // Do not auto-sync the entire source workbook when entering the page. Sync
+  // is an explicit user action; filtering/searching must operate on the
+  // already synchronized issue index and remain responsive.
   const buildIssueMatches = async () => {
     // Re检索 is a workspace-wide operation: refresh every issue in the
     // current module/filter rather than only the selected row.
@@ -3488,9 +3174,37 @@ function KnowledgeBasePage({ qualitySources = [], onEnsureAgentSources, auth }) 
       return;
     }
     batchMatchStopRef.current = false;
-    setIssueMatchState({ status: "running", message: `正在读取全部${issueModule === "IPQC" ? "组装" : "研发"}问题…` });
+    setIssueMatchState({ status: "running", message: selectedIssueIds.length ? `正在读取已选 ${selectedIssueIds.length} 条问题…` : `请先勾选要匹配的问题（当前筛选结果 ${issueTotal} 条）` });
+    if (!selectedIssueIds.length) return;
     try {
       const allIssues = [];
+      if (selectedIssueIds.length) {
+        const wanted = new Set(selectedIssueIds);
+        for (let offset = 0; wanted.size && offset < issueTotal; offset += 200) {
+          const page = await loadKnowledgeIssues({ module: issueModule, query: issueSearchQuery, status: issueFilter, threshold: matchThreshold, ...issueAdvanced, limit: 200, offset });
+          const byId = new Map((page?.issues || []).map((row) => [row.id, row]));
+          selectedIssueIds.forEach((id) => { if (wanted.has(id) && byId.has(id)) { allIssues.push(byId.get(id)); wanted.delete(id); } });
+        }
+      }
+      if (selectedIssueIds.length && !allIssues.length) throw new Error("已选问题不在当前筛选结果中，请重新筛选后再试");
+      if (selectedIssueIds.length) {
+        // The selected IDs are the authoritative match scope; do not scan all pages.
+        let completed = 0;
+        let autoConfirmed = 0;
+        let failed = 0;
+        const failureReasons = [];
+        setBatchMatchProgress({ current: 0, total: allIssues.length });
+        let cursor = 0;
+        const processIssue = async (issue) => {
+          if (batchMatchStopRef.current) return;
+          try { const response = await generateKnowledgeMatches(issue.id); const matches = response?.matches || []; for (const item of matches.filter((m) => m.candidateType === "knowledge" && Number(m.score || 0) >= matchThreshold && m.status !== "confirmed")) { await reviewKnowledgeMatch(item.id, "confirmed"); autoConfirmed += 1; } } catch (error) { failed += 1; if (failureReasons.length < 3) failureReasons.push(error?.message || String(error)); }
+          completed += 1; setBatchMatchProgress({ current: completed, total: allIssues.length });
+        };
+        await Promise.all(Array.from({ length: Math.min(6, allIssues.length) }, async () => { while (cursor < allIssues.length && !batchMatchStopRef.current) { const issue = allIssues[cursor++]; await processIssue(issue); } }));
+        setBatchMatchProgress(null); await refreshIssues(true);
+        setIssueMatchState({ status: batchMatchStopRef.current ? "idle" : "done", message: `已处理 ${completed} / ${allIssues.length} 条${failed ? `，失败 ${failed}（${failureReasons.join("；")}）` : ""}，自动确认 ${autoConfirmed} 张知识卡片` });
+        return;
+      }
       let offset = 0;
       let total = 0;
       do {
@@ -3505,6 +3219,7 @@ function KnowledgeBasePage({ qualitySources = [], onEnsureAgentSources, auth }) 
       let completed = 0;
       let autoConfirmed = 0;
       let failed = 0;
+      const failureReasons = [];
       setBatchMatchProgress({ current: 0, total: allIssues.length });
       let cursor = 0;
       const processIssue = async (issue) => {
@@ -3519,6 +3234,7 @@ function KnowledgeBasePage({ qualitySources = [], onEnsureAgentSources, auth }) 
           }
         } catch (error) {
           failed += 1;
+          if (failureReasons.length < 3) failureReasons.push(error?.message || String(error));
         }
         completed += 1;
         setBatchMatchProgress({ current: completed, total: allIssues.length });
@@ -3540,7 +3256,7 @@ function KnowledgeBasePage({ qualitySources = [], onEnsureAgentSources, auth }) 
         const selectedMatches = await loadKnowledgeMatches(selectedIssueId).catch(() => null);
         if (selectedMatches) setIssueMatches(selectedMatches.matches || []);
       }
-      setIssueMatchState({ status: stopped ? "idle" : "done", message: stopped ? `已停止批量匹配：已处理 ${completed} / 总计 ${allIssues.length}` : `${issueModule === "IPQC" ? "组装" : "研发"}问题匹配完成：已处理 ${completed} / 总计 ${allIssues.length}${failed ? `，失败 ${failed}` : ""}，自动确认 ${autoConfirmed} 张知识卡片` });
+      setIssueMatchState({ status: stopped ? "idle" : "done", message: stopped ? `已停止批量匹配：已处理 ${completed} / 总计 ${allIssues.length}` : `${issueModule === "IPQC" ? "组装" : "研发"}问题匹配完成：已处理 ${completed} / 总计 ${allIssues.length}${failed ? `，失败 ${failed}（${failureReasons.join("；")}）` : ""}，自动确认 ${autoConfirmed} 张知识卡片` });
     } catch (error) {
       setBatchMatchProgress(null);
       setIssueMatchState({ status: "error", message: `批量生成失败：${error?.message || error}` });
@@ -3907,7 +3623,7 @@ function KnowledgeBasePage({ qualitySources = [], onEnsureAgentSources, auth }) 
     <section className="qmdp-issue-match-panel"><header><div><small>问题与规范闭环</small><h3>{knowledgeWorkspace === "matching" ? "质量问题 → 候选条款 → 人工确认" : knowledgeWorkspace === "recurrence" ? "重复问题 → 改善措施 → 有效性验证" : knowledgeWorkspace === "governance" ? "版本替代 → 冲突评审 → 发布治理" : knowledgeWorkspace === "performance" ? "索引轻载 → 分层检索 → 性能验证" : "问题匹配规则"}</h3><p>{knowledgeWorkspace === "matching" ? "只同步问题摘要；原始问题和规范原文均不改写，只有已确认匹配可进入角色报告和考试。" : knowledgeWorkspace === "recurrence" ? "同一人员与同一已确认规范形成复发分组；考试通过不等于关闭，观察期和验证证据共同决定措施是否有效。" : knowledgeWorkspace === "governance" ? "原始规范是正式依据；发布、替代、废止和冲突关闭均保留责任人、期限与审计证据。" : knowledgeWorkspace === "performance" ? "只执行只读访问测试，记录列表、分页详情和候选检索延迟，不触发报告重算或业务写入。" : "配置问题与知识卡片的匹配逻辑和自动确认门限。"}</p></div><div className="qmdp-issue-module-tabs">{["matching", "recurrence"].includes(knowledgeWorkspace) && <><button className={issueModule === "IPQC" ? "active" : ""} onClick={() => setIssueModule("IPQC")}>组装 / IPQC</button><button className={issueModule === "DQA" ? "active" : ""} onClick={() => setIssueModule("DQA")}>研发 / DQA</button></>}{knowledgeWorkspace === "matching" && <button className="qmdp-primary-btn" onClick={syncQualityIssues} disabled={issueMatchState.status === "running"}><ArrowsClockwise size={15}/>同步问题数据</button>}</div></header>
       <div className="qmdp-knowledge-workspace-tabs" role="tablist" aria-label="知识闭环工作区"><button role="tab" aria-selected={knowledgeWorkspace === "matching"} className={knowledgeWorkspace === "matching" ? "active" : ""} onClick={() => setKnowledgeWorkspace("matching")}><Target size={15}/>问题匹配</button><button role="tab" aria-selected={knowledgeWorkspace === "recurrence"} className={knowledgeWorkspace === "recurrence" ? "active" : ""} onClick={() => setKnowledgeWorkspace("recurrence")}><ArrowsClockwise size={15}/>复发闭环</button><button role="tab" aria-selected={knowledgeWorkspace === "governance"} className={knowledgeWorkspace === "governance" ? "active" : ""} onClick={() => setKnowledgeWorkspace("governance")}><ShieldCheck size={15}/>版本与治理</button><button role="tab" aria-selected={knowledgeWorkspace === "performance"} className={knowledgeWorkspace === "performance" ? "active" : ""} onClick={() => setKnowledgeWorkspace("performance")}><Pulse size={15}/>检索性能</button><button role="tab" aria-selected={knowledgeWorkspace === "matching-rules"} className={knowledgeWorkspace === "matching-rules" ? "active" : ""} onClick={() => setKnowledgeWorkspace("matching-rules")}><ListChecks size={15}/>匹配规则</button></div>
       {knowledgeWorkspace === "matching-rules" && <KnowledgeMatchingRules threshold={matchThreshold} onThresholdChange={setMatchThreshold}/>}<div className="qmdp-issue-match-body" style={knowledgeWorkspace === "matching-rules" ? { display: "none" } : undefined}>
-      {knowledgeWorkspace === "matching" ? <><aside aria-label="质量问题列表"><div className="qmdp-issue-match-toolbar"><input value={issueQuery} onChange={(event) => setIssueQuery(event.target.value)} placeholder="搜索人员、问题类型或问题内容"/>{renderIssueFilterControls()}<button className="qmdp-primary-btn" onClick={() => { setIssueSearchQuery(issueQuery); setIssuePage(0); refreshIssues(false); }} disabled={issueMatchState.status === "running"}><MagnifyingGlass size={14}/>搜索</button><span className="qmdp-issue-search-count">共 {issueTotal} 条</span></div>{issueRows.map((item) => <button key={item.id} className={item.id === selectedIssueId ? "selected" : ""} onClick={() => setSelectedIssueId(item.id)}><span><b>{item.module || issueModule} · {item.issueKind || "质量问题"}</b><em className={Number(item.confirmedCount || 0) > 0 ? "confirmed" : ""}>{Number(item.confirmedCount || 0) > 0 ? "已匹配" : "待匹配"}</em></span><strong>{item.personName || "责任人待确认"}</strong><small>{item.issueType || "未分类问题"}</small><i>{item.issueText || "暂无问题描述"}</i></button>)}{!issueRows.length && <div className="qmdp-empty compact">暂无问题记录，请先同步原始问题数据。</div>}<footer><button className="qmdp-secondary-btn" disabled={issuePage <= 0} onClick={() => setIssuePage((page) => page - 1)}>上一页</button><span>{issueTotal ? `${issuePage * issuePageSize + 1}-${Math.min((issuePage + 1) * issuePageSize, issueTotal)} / ${issueTotal}` : "0 条"}</span><button className="qmdp-secondary-btn" disabled={(issuePage + 1) * issuePageSize >= issueTotal} onClick={() => setIssuePage((page) => page + 1)}>下一页</button></footer></aside><div className="qmdp-match-review"><div className="qmdp-match-threshold"><label>自动确认门限 <input type="number" min="0" max="100" value={matchThreshold} onChange={(event) => setMatchThreshold(Math.max(0, Math.min(100, Number(event.target.value) || 0)))} />%</label><span>{hasPublishedKnowledge ? issueMatchState.message : "当前尚无已发布知识卡片；请先完成证据生成、知识蒸馏并发布知识。"}</span></div>
+      {knowledgeWorkspace === "matching" ? <><aside aria-label="质量问题列表"><div className="qmdp-issue-match-toolbar"><input value={issueQuery} onChange={(event) => setIssueQuery(event.target.value)} placeholder="搜索人员、问题类型或问题内容"/>{renderIssueFilterControls()}<button className="qmdp-primary-btn" onClick={() => { setIssueSearchQuery(issueQuery); setIssueAppliedAdvanced({ ...issueAdvanced }); setIssuePage(0); }} disabled={issueListLoading || issueMatchState.status === "running"}><MagnifyingGlass size={14}/>{issueListLoading ? "筛选中…" : "搜索"}</button><span className={`qmdp-issue-search-count${issueListLoading ? " loading" : ""}`}>{issueListLoading ? "正在筛选问题，请稍候…" : `共 ${issueTotal} 条`}</span></div>{issueRows.map((item) => <button key={item.id} className={item.id === selectedIssueId ? "selected" : ""} onClick={() => setSelectedIssueId(item.id)}><span><b>{item.module || issueModule} · {item.issueKind || "质量问题"}</b><em className={Number(item.confirmedCount || 0) > 0 ? "confirmed" : ""}>{Number(item.confirmedCount || 0) > 0 ? "已匹配" : "待匹配"}</em></span><strong>{item.personName || "责任人待确认"}</strong><small>{item.issueType || "未分类问题"}</small><i>{item.issueText || "暂无问题描述"}</i></button>)}{!issueRows.length && !issueListLoading && <div className="qmdp-empty compact">暂无问题记录，请先同步原始问题数据。</div>}<footer><button className="qmdp-secondary-btn" disabled={issuePage <= 0 || issueListLoading} onClick={() => setIssuePage((page) => page - 1)}>上一页</button><span>{issueListLoading ? "正在更新…" : issueTotal ? `${issuePage * issuePageSize + 1}-${Math.min((issuePage + 1) * issuePageSize, issueTotal)} / ${issueTotal}` : "0 条"}</span><button className="qmdp-secondary-btn" disabled={issueListLoading || (issuePage + 1) * issuePageSize >= issueTotal} onClick={() => setIssuePage((page) => page + 1)}>下一页</button></footer></aside><div className="qmdp-match-review"><div className="qmdp-match-threshold"><label>自动确认门限 <input type="number" min="0" max="100" value={matchThreshold} onChange={(event) => setMatchThreshold(Math.max(0, Math.min(100, Number(event.target.value) || 0)))} />%</label><span>{hasPublishedKnowledge ? issueMatchState.message : "当前尚无已发布知识卡片；请先完成证据生成、知识蒸馏并发布知识。"}</span></div>
           {selectedIssue ? <><div className="qmdp-selected-issue"><div><small>{selectedIssue.module} · {selectedIssue.issueKind}</small><h4>{selectedIssue.personName || "责任人待确认"} · {selectedIssue.issueType}</h4><p>{selectedIssue.issueText}</p><span>{selectedIssue.sourceFile}{selectedIssue.issueDate ? ` · ${selectedIssue.issueDate}` : ""}</span></div><button className="qmdp-primary-btn" onClick={batchBuildIssueMatches} disabled={issueMatchState.status === "running"}><Sparkle size={15}/>匹配知识卡</button></div><div className="qmdp-match-list">{issueMatches.map((match) => <article key={match.id} className={`qmdp-match-candidate ${match.status}`}><header><div><span className="qmdp-match-score">{Math.round(match.score)}%</span><div><b>{match.evidence?.candidateTitle || "规范条款"}</b><small>{match.evidence?.documentName || "来源规范"}{match.evidence?.clauseNumber ? ` · ${match.evidence.clauseNumber}` : ""}</small></div></div><em>{match.status === "confirmed" ? "已确认" : match.status === "rejected" ? "已驳回" : match.status === "superseded" ? "已替换" : "候选"}</em></header><p>{match.evidence?.candidateContent || match.evidence?.quote}</p><blockquote>{match.evidence?.quote || "暂无引用"}</blockquote><small className="qmdp-match-reason">{match.evidence?.reason || "等待审核"}</small><footer><button className="qmdp-secondary-btn" onClick={() => setMatchReview(match.id, "rejected")} disabled={issueMatchState.status === "running" || match.status === "rejected"}><X size={14}/>驳回</button><button className="qmdp-primary-btn" onClick={() => setMatchReview(match.id, "confirmed")} disabled={issueMatchState.status === "running" || match.status === "confirmed"}><CheckCircle size={14}/>确认采用</button></footer></article>)}{!issueMatches.length && <div className="qmdp-empty"><Rows size={28}/><strong>尚未生成候选规范</strong><span>系统会同时检索蒸馏知识和原始条款，并展示分数、命中术语与逐字引用。</span></div>}</div></> : <div className="qmdp-empty"><Target size={30}/><strong>选择一条质量问题</strong><span>审核确认后，报告和题库才会正式调用该规范。</span></div>}</div>
         </> : knowledgeWorkspace === "recurrence" ? <KnowledgeRecurrenceWorkspace module={issueModule}/> : knowledgeWorkspace === "governance" ? <KnowledgeGovernanceWorkspace files={files} isAdmin={auth?.isAdmin === true} onRefreshDocuments={refreshDocuments}/> : knowledgeWorkspace === "performance" ? <KnowledgePerformanceWorkspace isAdmin={auth?.isAdmin === true}/> : null}
       </div>
@@ -4728,8 +4444,7 @@ const reportIpqcOperators = (files, dateRange) => {
     if (!name || ["未填写", "无", "-"].includes(name)) return;
     const item = byName.get(name) || { name, qty: 0, issues: 0, site: row.__reportSite, workshop: String(row["产品工坊"] || row["工坊"] || "未分工坊").trim(), leaders: new Set(), categories: new Map() };
     const qty = reportNumber(row["送检数"] ?? row["送检数量"] ?? row["治具数量"] ?? row["检验数量"] ?? 1);
-    const issueText = row["不良内容"] || row["异常内容"] || row["异常原因"] || row["不良描述"] || "";
-    const issue = String(issueText).trim() ? 1 : 0;
+    const issue = String(row["不良类型"] || "").trim() && !isIpqcExcludedBadType(row) ? 1 : 0;
     item.qty += qty; item.issues += issue;
     if (row["机长"]) item.leaders.add(String(row["机长"]).trim());
     if (issue) { const category = String(row["不良类型"] || row["异常类型"] || "未分类").trim() || "未分类"; item.categories.set(category, (item.categories.get(category) || 0) + 1); }
@@ -5991,17 +5706,158 @@ function ReportHistoryComparePage() {
   return <div className="qmdp-page report-history-compare-page"><QmdpPageHeader icon={ArrowsClockwise} eyebrow="Agent工具 / Comparison" title="报告历史对比" description="选择两份已保存报告，对比指标、风险和改善内容的变化。" action={<div className="qmdp-header-actions"><button className="qmdp-secondary-btn" disabled={!ready} onClick={() => downloadFile(markdown, `${exportName}.md`, "text/markdown;charset=utf-8")}>导出 Markdown</button><button className="qmdp-secondary-btn" disabled={!ready} onClick={() => downloadFile(`<!doctype html><html><head><meta charset=\"utf-8\"><title>报告历史对比</title></head><body>${html}</body></html>`, `${exportName}.html`, "text/html;charset=utf-8")}>导出 HTML</button><button className="qmdp-primary-btn" disabled={!ready} onClick={exportPdf}>导出 PDF</button></div>}/><section className="qmdp-card report-compare-controls"><label>报告 A<select value={leftKey} onChange={(event) => setLeftKey(event.target.value)}><option value="">请选择报告</option>{reports.map((item) => <option key={`a-${item.fileName}`} value={item.fileName}>{item.fileName}</option>)}</select></label><label>报告 B<select value={rightKey} onChange={(event) => setRightKey(event.target.value)}><option value="">请选择报告</option>{reports.map((item) => <option key={`b-${item.fileName}`} value={item.fileName}>{item.fileName}</option>)}</select></label><span>{loading ? "正在读取报告内容…" : `报告库共 ${reports.length} 份`}</span></section>{left && right ? <div ref={compareRef}><section className="qmdp-card report-compare-summary"><h3>版本信息</h3><div><span>A：{reportLabel(leftKey)}</span><span>B：{reportLabel(rightKey)}</span></div></section><section className="qmdp-card report-compare-metrics"><header><h3>核心指标对比</h3><span>当前版本以报告 B 为准</span></header><div className="report-compare-metric-grid">{[...new Map([...metricA, ...metricB].map((item) => [item.label, item])).values()].slice(0, 12).map((item) => <article key={item.label}><small>{item.label}</small><div><b>{metricA.find((row) => row.label === item.label)?.value || "-"}</b><i>→</i><strong>{metricB.find((row) => row.label === item.label)?.value || "-"}</strong></div></article>)}</div></section><section className="qmdp-card report-compare-structured"><div><h3>风险变化</h3><p className="compare-subtitle">报告 B 新增或保留的风险重点</p>{riskB.length ? riskB.map((line, index) => <p key={`rb-${index}`} className={riskA.includes(line) ? "" : "diff-added"}>{line}</p>) : <p>未识别到风险章节</p>}</div><div><h3>改善措施变化</h3><p className="compare-subtitle">报告 B 新增或保留的改善动作</p>{actionB.length ? actionB.map((line, index) => <p key={`ab-${index}`} className={actionA.includes(line) ? "" : "diff-added"}>{line}</p>) : <p>未识别到改善措施章节</p>}</div></section><section className="qmdp-card report-compare-quality"><header><h3>报告质量校验</h3><span className={`quality-status-${qualityB.status}`}>报告 B：{qualityB.status === "ok" ? "通过" : qualityB.status === "warning" ? "有警告" : "需修正"}</span></header><div className="report-quality-compare-grid"><div><strong>报告 A</strong>{qualityA.failed.length ? qualityA.failed.map((rule) => <p key={`qa-${rule.id}`} className={`quality-rule-${rule.severity}`}>未通过：{rule.label}<small>{reportQualityAdvice(rule)}</small></p>) : <p className="quality-rule-ok">全部规则通过</p>}</div><div><strong>报告 B</strong>{qualityB.failed.length ? qualityB.failed.map((rule) => <p key={`qb-${rule.id}`} className={`quality-rule-${rule.severity}`}>{qualityDelta.some((item) => item.id === rule.id) ? "新增问题：" : "未通过："}{rule.label}<small>{reportQualityAdvice(rule)}</small></p>) : <p className="quality-rule-ok">全部规则通过</p>}</div></div></section><section className="qmdp-card report-compare-diff"><header><h3>内容变化</h3><span>以报告 B 相对报告 A 展示</span></header><div className="report-compare-columns"><article><strong>新增内容</strong>{added.length ? added.map((line, index) => <p className="diff-added" key={`a-${index}`}>{line}</p>) : <p>无明显新增行</p>}</article><article><strong>减少内容</strong>{removed.length ? removed.map((line, index) => <p className="diff-removed" key={`r-${index}`}>{line}</p>) : <p>无明显减少行</p>}</article></div></section></div> : <div className="qmdp-empty">请选择两份报告开始对比。</div>}</div>;
 }
 
+
+function buildOqcOverallMonthlyRows(summary) {
+  if (!summary) return [];
+  const hasData = (rows = []) => rows.some((row) => (Number(row.y2025Count) || 0) + (Number(row.y2026Count) || 0) > 0);
+  if (hasData(summary.overallMonthly)) return summary.overallMonthly;
+  const byMonth = new Map();
+  Object.values(summary.divisionMonthly || {}).flat().forEach((row) => {
+    const current = byMonth.get(row.month) || { month: row.month, y2025Count: 0, y2026Count: 0, y2025Five: 0, y2026Five: 0 };
+    current.y2025Count += Number(row.y2025Count || 0);
+    current.y2026Count += Number(row.y2026Count || 0);
+    current.y2025Five += Number(row.y2025Five || 0);
+    current.y2026Five += Number(row.y2026Five || 0);
+    byMonth.set(row.month, current);
+  });
+  return [...byMonth.values()].map((row) => ({
+    ...row,
+    y2025FiveRate: Number((row.y2025Five / Math.max(row.y2025Count, 1) * 100).toFixed(1)),
+    y2026FiveRate: Number((row.y2026Five / Math.max(row.y2026Count, 1) * 100).toFixed(1)),
+  }));
+}
+
+function QualityOverviewPage({ data }) {
+  const [iqcSite, setIqcSite] = useState("全公司");
+  const [iqcSpecialAsBad, setIqcSpecialAsBad] = useState(false);
+  const [ipqcSite, setIpqcSite] = useState("全公司");
+  const [oqcScopeKey, setOqcScopeKey] = useState("overall");
+  const iqcMode = iqcSpecialAsBad ? data.iqc.qualityModes?.rejected : data.iqc.qualityModes?.accepted;
+  const iqcData = iqcMode || data.iqc;
+  const iqcMonthly = iqcData.siteMonthly?.[iqcSite] || [];
+  const iqcTotals = iqcMonthly.reduce((acc, row) => ({
+    y2025Qty: acc.y2025Qty + (row.y2025Qty || 0),
+    y2026Qty: acc.y2026Qty + (row.y2026Qty || 0),
+  }), { y2025Qty: 0, y2026Qty: 0 });
+  const iqcWeightedRate = (year) => {
+    const qty = iqcTotals[`y${year}Qty`];
+    return qty ? iqcMonthly.reduce((sum, row) => sum + (row[`y${year}Qty`] || 0) * (row[`y${year}Rate`] || 0), 0) / qty : 0;
+  };
+  const iqcRate25 = iqcWeightedRate(2025);
+  const iqcRate26 = iqcWeightedRate(2026);
+  const ipqcMonthly = data.ipqc.siteMonthly?.[ipqcSite] || [];
+  const oqcSummary = data.oqc.monthlySummary;
+  const oqcMonthlyRows = buildOqcOverallMonthlyRows(oqcSummary);
+  const dispersion = data.oqc.equipmentDispersion;
+  const oqcScope = dispersion?.scopes?.find((item) => item.key === oqcScopeKey) || dispersion?.scopes?.[0];
+  const y2025 = oqcScope?.y2025;
+  const y2026 = oqcScope?.y2026;
+  const dqaCompare = data.dqa.yearCompare;
+  const baseEcn = data.dqa.ecn;
+  const ecnReasons = baseEcn?.allReasonValues || baseEcn?.reasonValues || [];
+  const ecn = baseEcn ? filterEcnByReasons(baseEcn, ecnReasons.filter((reason) => reason !== "分批下单/多人协作下单")) : null;
+  const machined = data.dqa.machinedParts;
+  const emptyNote = (title, detail) => <div className="summary-note compact"><strong>{title}</strong><p>{detail}</p></div>;
+  return <div className="overview-upgrade-page">
+    <OverviewKpiCards data={data}/>
+    <div className="overview-stack">
+      <section className="overview-block">
+        <div className="iqc-section-title">
+          <div><span className="section-number">1</span><div><h2>供应商加工件同比分析</h2><p>按检验批次计算数量和批次良率，可切换全公司、深圳、杭州</p></div></div>
+          <div className="iqc-title-actions"><label className={`special-toggle ${iqcSpecialAsBad ? "active" : ""}`}><input type="checkbox" checked={iqcSpecialAsBad} onChange={(event) => setIqcSpecialAsBad(event.target.checked)}/><span>计入特采</span></label><div className="site-tabs"><button className={iqcSite === "全公司" ? "active" : ""} onClick={() => setIqcSite("全公司")}>全公司</button><button className={iqcSite === "深圳" ? "active" : ""} onClick={() => setIqcSite("深圳")}>深圳</button><button className={iqcSite === "杭州" ? "active" : ""} onClick={() => setIqcSite("杭州")}>杭州</button></div></div>
+        </div>
+        <div className="iqc-summary-strip">
+          <div><span>{iqcSite} 2025检验批次</span><strong>{iqcTotals.y2025Qty.toLocaleString()}</strong></div>
+          <div><span>{iqcSite} 2026检验批次</span><strong>{iqcTotals.y2026Qty.toLocaleString()}</strong></div>
+          <div><span>2025批次良率</span><strong>{iqcRate25.toFixed(1)}%</strong></div>
+          <div><span>2026批次良率</span><strong className={iqcRate26 < iqcRate25 ? "red" : "green"}>{iqcRate26.toFixed(1)}%</strong></div>
+          <div><span>同比变化</span><strong className={iqcRate26 < iqcRate25 ? "red" : "green"}>{iqcRate26 - iqcRate25 >= 0 ? "↑" : "↓"} {Math.abs(iqcRate26 - iqcRate25).toFixed(1)}pp</strong></div>
+        </div>
+        <AxisControlledPanel title="1. 供应商良率趋势" subtitle={`${iqcSite} · 按月同比 · 柱形为检验总数/不合格数，折线为批次良率`} className="iqc-wide" axisKey={`overview-iqc-${iqcSite}-${iqcSpecialAsBad ? "special-bad" : "special-good"}-monthly-axis-v1`} defaults={{ min: 80, max: 100 }}>
+          {(axis) => iqcMonthly.length ? <QuantityRateCombo rows={iqcMonthly} labelKey="month" height={360} rateAxisOverride={axis.effective} hideRateAxisControl/> : emptyNote("待导入IQC数据", "请先导入深圳、杭州来料检验数据。")}
+        </AxisControlledPanel>
+      </section>
+      <section className="overview-block">
+        <div className="iqc-section-title">
+          <div><span className="section-number">2</span><div><h2>交付质量趋势</h2><p>{ipqcSite} · 柱形为送检数/问题数量，折线为异常密度（问题数量÷送检数）</p></div></div>
+          <div className="site-tabs"><button className={ipqcSite === "全公司" ? "active" : ""} onClick={() => setIpqcSite("全公司")}>全公司</button><button className={ipqcSite === "深圳" ? "active" : ""} onClick={() => setIpqcSite("深圳")}>深圳</button><button className={ipqcSite === "杭州" ? "active" : ""} onClick={() => setIpqcSite("杭州")}>杭州</button></div>
+        </div>
+        <AxisControlledPanel title="2.1 组装月度趋势" subtitle={`${ipqcSite} · 柱形为送检数/问题数量，折线为异常密度`} className="iqc-wide" axisKey={`overview-ipqc-${ipqcSite}-monthly-axis-v1`} defaults={{ min: 0, max: 40 }}>
+          {(axis) => ipqcMonthly.length ? <QuantityRateCombo rows={ipqcMonthly} labelKey="month" rateLabel="异常密度" qtyLabel="送检数/问题数量" height={390} rateAxisOverride={axis.effective} hideRateAxisControl/> : emptyNote("待导入IPQC数据", "请先导入过程检验数据。")}
+        </AxisControlledPanel>
+      </section>
+      <section className="overview-block">
+        <Panel title="2.2 5分出货月度趋势" subtitle="柱形为5分机台数量和总数量，折线为5分比例" className="iqc-wide">
+          {oqcMonthlyRows.length ? <ScoreMonthlyCombo rows={oqcMonthlyRows} metric="FiveRate" label="5分比例" numeratorKey="Five" numeratorName="5分机台数量" denominatorName="总数量" percent max={100} chartKey="overview-oqc-overall-monthly-five"/> : emptyNote("待导入OQC月度汇总", "请导入“2025年-2026年评分按月汇总.xlsx”。")}
+        </Panel>
+      </section>
+      <section className="overview-block">
+        <div className="oqc-section-heading"><span className="section-number">2.3</span><div><h2>三大产品部总体对比</h2><p>半导体&北美、产品五部、FPC事业部按评分数量加权计算</p></div></div>
+        {oqcSummary?.divisions?.length ? <div className="oqc-three-grid">
+          <Panel title="平均分同期对比"><OqcDivisionMetricCombo rows={oqcSummary.divisions} metric="Avg" label="平均分" max={5} chartKey="overview-oqc-division-avg"/></Panel>
+          <Panel title="5分比例同期对比"><OqcDivisionMetricCombo rows={oqcSummary.divisions} metric="FiveRate" label="5分比例" percent max={100} chartKey="overview-oqc-division-five-rate"/></Panel>
+          <Panel title="低分（≤3分）比例同期对比"><OqcDivisionMetricCombo rows={oqcSummary.divisions} metric="LowRate" label="低分比例" percent max={100} chartKey="overview-oqc-division-low-rate"/></Panel>
+        </div> : emptyNote("待导入OQC月度汇总", "三大产品部对比需要评分按月汇总数据。")}
+      </section>
+      <section className="overview-block">
+        <div className="oqc-section-heading"><span className="section-number">2.4</span><div><h2>设备离散分析</h2><p>以治具名称为项目名，按机台数量汇总</p></div>
+          {dispersion?.scopes?.length ? <div className="site-tabs">{dispersion.scopes.map((item) => <button key={item.key} className={oqcScope?.key === item.key ? "active" : ""} onClick={() => setOqcScopeKey(item.key)}>{item.name}</button>)}</div> : null}
+        </div>
+        {oqcScope ? <>
+          <div className="oqc-dispersion-kpi-grid">
+            <OqcDispersionMetricCard label="项目数" value={oqcDispersionNumber(y2026.projectCount)} unit="个" baseline={oqcDispersionNumber(y2025.projectCount)} detail={`${oqcScope.deltaProjectCount >= 0 ? "较2025 +" : "较2025 "}${Math.abs(oqcScope.deltaProjectCount).toLocaleString()}个`}/>
+            <OqcDispersionMetricCard label="出货机台数" value={oqcDispersionNumber(y2026.machineCount)} unit="台" baseline={oqcDispersionNumber(y2025.machineCount)} detail={`${oqcScope.deltaMachineCount >= 0 ? "较2025 +" : "较2025 "}${Math.abs(oqcScope.deltaMachineCount).toLocaleString()}台`}/>
+            <OqcDispersionMetricCard label="项目离散指数" value={oqcDispersionNumber(y2026.dispersionIndex * 100, 1)} unit="%" baseline={oqcDispersionNumber(y2025.dispersionIndex * 100, 1)} detail={`${oqcScope.deltaDispersionIndex >= 0 ? "较2025 +" : "较2025 "}${Math.abs(oqcScope.deltaDispersionIndex * 100).toFixed(1)}pp`}/>
+            <OqcDispersionMetricCard label="单台项目占比" value={oqcDispersionNumber(y2026.singleProjectShare, 1)} unit="%" baseline={oqcDispersionNumber(y2025.singleProjectShare, 1)} detail={`${oqcScope.deltaSingleProjectShare >= 0 ? "较2025 +" : "较2025 "}${Math.abs(oqcScope.deltaSingleProjectShare).toFixed(1)}pp`}/>
+            <OqcDispersionMetricCard label="平均每项目机台数" value={oqcDispersionNumber(y2026.avgMachinesPerProject, 2)} unit="台" baseline={oqcDispersionNumber(y2025.avgMachinesPerProject, 2)} detail={`有效项目数：${oqcDispersionNumber(y2026.effectiveProjectCount, 1)}`}/>
+          </div>
+          <Panel title="总体项目与设备同比" subtitle="柱形为数量，折线为占总体百分比。先判断结构变化来自治具还是自动化" className="iqc-wide">
+            <div className="oqc-dispersion-chart-grid">
+              <QuantityRateCombo rows={buildOqcDispersionShareRows(dispersion.scopes, "projectCount")} showBad={false} qtyLabel="项目数" rateLabel="占总体" height={340} chartKey="overview-oqc-dispersion-project-count"/>
+              <QuantityRateCombo rows={buildOqcDispersionShareRows(dispersion.scopes, "machineCount")} showBad={false} qtyLabel="机台数" rateLabel="占总体" height={340} chartKey="overview-oqc-dispersion-machine-count"/>
+            </div>
+          </Panel>
+        </> : emptyNote("待导入出货明细", "请导入包含治具名称、机台分类、机台数量的出货汇总文件。")}
+      </section>
+      <section className="overview-block">
+        <div className="dqa-module-title"><span className="section-number">3</span><div><h2>研发质量状态</h2><p>阶段、异常分类和学科均按产品部展示2025/2026两条堆叠柱</p></div></div>
+        {dqaCompare?.byDivision?.stages?.length
+          ? <Panel title="3.1 研发问题评审/生产/现场占比" subtitle="评审问题按评审问题数加权；生产与现场问题每条明细计1项" className="iqc-wide">
+              <YearStackedCompare rows={dqaCompare.byDivision.stages} values={dqaCompare.stageValues} height={Math.max(360, dqaCompare.byDivision.stages.length * 72 + 90)} chartKey="overview-dqa-division-stages"/>
+            </Panel>
+          : emptyNote("待导入DQA数据", "请确认已导入2025、2026年DQA研发问题数据。")}
+      </section>
+      <section className="overview-block">
+        <AxisControlledPanel title="3.2 ECN率月度趋势" subtitle="柱形图为物料款数与ECN条数，折线为ECN率" className="iqc-wide" axisKey="overview-dqa-ecn-monthly-axis-v1" defaults={{ min: 0, max: 10 }}>
+          {(axis) => ecn?.monthly?.length ? <QuantityRateCombo rows={ecn.monthly} qtyLabel="物料款数" badLabel="ECN条数" rateLabel="ECN率" height={390} chartKey="overview-dqa-ecn-monthly" rateAxisOverride={axis.effective} hideRateAxisControl/> : emptyNote("待导入ECN数据", "请导入“2025-2026年ECN汇总.xlsx”。")}
+        </AxisControlledPanel>
+      </section>
+      <section className="overview-block">
+        <AxisControlledPanel title="3.3 ECN加工件月度同期趋势" subtitle="柱形图为加工件总数与对应加工件数量，折线为加工件占比" className="iqc-wide" axisKey="overview-dqa-machined-ecn-monthly-axis-v1" defaults={{ min: 0, max: 25 }}>
+          {(axis) => machined?.ecn?.monthly?.length ? <QuantityRateCombo rows={machined.ecn.monthly} qtyLabel="加工件总数" badLabel="加工件数量" rateLabel="加工件占比" height={390} chartKey="overview-dqa-machined-ecn-monthly" rateAxisOverride={axis.effective} hideRateAxisControl/> : emptyNote("待导入加工件数据", "请导入ECN加工件数量比例文件。")}
+        </AxisControlledPanel>
+      </section>
+      <section className="overview-block">
+        <AxisControlledPanel title="3.4 非BOM加工件月度同期趋势" subtitle="柱形图为加工件总数与对应加工件数量，折线为加工件占比" className="iqc-wide" axisKey="overview-dqa-machined-nonbom-monthly-axis-v1" defaults={{ min: 0, max: 25 }}>
+          {(axis) => machined?.nonBom?.monthly?.length ? <QuantityRateCombo rows={machined.nonBom.monthly} qtyLabel="加工件总数" badLabel="加工件数量" rateLabel="加工件占比" height={390} chartKey="overview-dqa-machined-nonbom-monthly" rateAxisOverride={axis.effective} hideRateAxisControl/> : emptyNote("待导入加工件数据", "请导入非BOM加工件数量比例文件。")}
+        </AxisControlledPanel>
+      </section>
+    </div>
+  </div>;
+}
+
 function ExecutiveDashboard({ data, files, dqaEngineerSupplement, dqaAgentRaw, onLoadDqaAgentRaw, onSaveDqaAgentRaw, onImport, onDeleteSource, onSourcesChanged, onImportDqaEngineerSupplement, onClearDqaEngineerSupplement, onDeleteDqaEngineerSupplementFile, onImportDqaAgentRaw, onClearDqaAgentRaw, onDeleteDqaAgentRawFile, onEnsureAgentSources, onClearAgentSources, view, onViewChange, dateRange, teamDefaultRange, lastServerSavedAt, serverSyncStatus, onDateRange, onRefreshDate, dateRefreshStatus, refreshProgress, fontSize, onFontSize, analysisKey, labelControlsVisible, onToggleLabelControls, uiTheme, onThemeChange, sidebarCollapsed, onToggleSidebar, auth, permissions, onPermissionsChanged }) {
   const [active, setActive] = useState(() => examTokenFromUrl() ? "知识考试" : qualityAgentMenuFromUrl() || "总览");
   const [sidebarWidth, setSidebarWidth] = useState(() => clampSidebarWidth(localStorage.getItem("qms-sidebar-width") || sidebarWidthLimits.default));
-  const moduleView = ["IQC", "IPQC", "OQC", "DQA", "QMS"].includes(active) ? active : null;
+  const moduleView = ["IQC", "IPQC", "OQC", "DQA", "QMS", "DOAM"].includes(active) ? active : null;
+  const doamView = active === "DOAM";
   const qmdpKnowledgeView = ["知识库", "题库管理", "知识考试", "后台知识管理"].includes(active);
   const qmdpReportView = ["IPQC操作报告", "机长报告", "交付经理报告", "供应链经理报告", "研发工程师报告", "PM报告", "TPM报告", "产总报告", "董事长报告", "报告任务中心"].includes(active);
   const qmdpSystemView = ["研发组织映射", "供应链映射", "项目名称映射", "研发项目映射", "后台快照", "Agent配置", "员工信息", "评分权重", "企业微信", "操作日志"].includes(active);
   const qualityAgentView = qualityAgentMenuItems.includes(active);
   const agentRoleReportView = agentRoleMenuItems.includes(active);
   const agentExamStatsView = agentUtilityMenuItems.includes(active);
-  const qmdpView = qmdpKnowledgeView || qmdpReportView || qmdpSystemView || qualityAgentView || agentRoleReportView || agentExamStatsView;
+  const qmdpView = doamView || qmdpKnowledgeView || qmdpReportView || qmdpSystemView || qualityAgentView || agentRoleReportView || agentExamStatsView;
   const activeMenuGroup = qmdpMenuGroups.find((group) => group.children.includes(active));
   const menuDenied = activeMenuGroup ? !canUseMenu(auth, permissions, activeMenuGroup.label, active) : ["AI分析", "AI接口", "权限设置"].includes(active) && !canUseMenu(auth, permissions, active);
   const allowImport = canUseFeature(auth, permissions, "dataImport");
@@ -6015,7 +5871,7 @@ function ExecutiveDashboard({ data, files, dqaEngineerSupplement, dqaAgentRaw, o
     return source ? [...files, source] : files;
   }, [files, dqaEngineerSupplement, dateRange]);
   useEffect(() => {
-    if (menuDenied || (active === "数据导入" && !allowImport) || (active === "AI分析" && !canUseFeature(auth, permissions, "aiAnalysis")) || ([...qualityAgentMenuItems, ...agentRoleMenuItems, ...agentUtilityMenuItems].includes(active) && !canUseFeature(auth, permissions, "qualityAgent")) || (active === "AI接口" && !canUseFeature(auth, permissions, "aiInterface")) || (active === "权限设置" && !auth?.isAdmin)) setActive("总览");
+    if (menuDenied || qmdpReportView || (active === "数据导入" && !allowImport) || (active === "AI分析" && !canUseFeature(auth, permissions, "aiAnalysis")) || ([...qualityAgentMenuItems, ...agentRoleMenuItems, ...agentUtilityMenuItems].includes(active) && !canUseFeature(auth, permissions, "qualityAgent")) || (active === "AI接口" && !canUseFeature(auth, permissions, "aiInterface")) || (active === "权限设置" && !auth?.isAdmin)) setActive("总览");
   }, [active, allowImport, auth, menuDenied, permissions]);
   useEffect(() => {
     if (!qualityAgentView && !agentRoleReportView) onClearAgentSources?.();
@@ -6026,20 +5882,13 @@ function ExecutiveDashboard({ data, files, dqaEngineerSupplement, dqaAgentRaw, o
     <ExecutiveSidebar active={active} setActive={setActive} uiTheme={uiTheme} onThemeChange={onThemeChange} collapsed={sidebarCollapsed} onToggleCollapsed={onToggleSidebar} permissions={permissions} auth={auth} width={sidebarWidth} onWidthChange={changeSidebarWidth} />
     <main className="executive-main">
       <header className="executive-topbar">
-        <div><h1>{moduleView ? `${moduleView} 专题分析` : qmdpView ? active : active === "AI分析" ? "AI质量经营分析" : active === "AI接口" ? "AI接口配置" : active === "数据导入" ? "数据源管理" : "经营驾驶舱"}</h1><p>{moduleView ? "从原始数据下钻到TOP问题与责任对象" : qmdpKnowledgeView ? "知识文件、题库与考试" : qmdpReportView ? "按角色和管理范围生成质量报告" : qualityAgentView ? "独立的质量分析 Agent 工作流，不改变现有统计和报告" : qmdpSystemView ? "组织、人员、评分与发送配置" : active === "AI分析" ? "展示 generate-quality-review-report 正式审核版结论" : active === "AI接口" ? "配置本机第三方模型网关并验证调用" : "全局质量运营总览"}</p></div>
+        <div><h1>{moduleView === "DOAM" ? "DOAM 告警质量分析" : moduleView ? `${moduleView} 专题分析` : qmdpView ? active : active === "AI分析" ? "AI质量经营分析" : active === "AI接口" ? "AI接口配置" : active === "数据导入" ? "数据源管理" : "经营驾驶舱"}</h1><p>{moduleView === "DOAM" ? "按日期、班次和去重机台计算告警质量指标" : moduleView ? "从原始数据下钻到TOP问题与责任对象" : qmdpKnowledgeView ? "知识文件、题库与考试" : qmdpReportView ? "按角色和管理范围生成质量报告" : qualityAgentView ? "独立的质量分析 Agent 工作流，不改变现有统计和报告" : qmdpSystemView ? "组织、人员、评分与发送配置" : active === "AI分析" ? "展示 generate-quality-review-report 正式审核版结论" : active === "AI接口" ? "AI接口配置" : "全局质量运营总览"}</p></div>
         <div className="top-actions"><ServerSyncBadge value={serverSyncStatus}/><Switcher view={view} onChange={onViewChange} canWorkspace={allowWorkspace} />{allowAnnotationEdit && <AnnotationEditButton defaultModule={moduleView || "\u603b\u89c8"} />}{allowAnnotationView && <AnnotationViewButton />}{allowExport && <ExportReportButton />}<button className={`label-controls-toggle ${labelControlsVisible ? "active" : ""}`} onClick={onToggleLabelControls}>{labelControlsVisible ? "隐藏数值设置" : "显示数值设置"}</button>{allowImport && <button className="import-btn" onClick={() => onImport(null)}><UploadSimple size={17} />导入数据</button>}</div>
       </header>
       {!qmdpView && <DateRangeFilter value={dateRange} teamDefaultRange={teamDefaultRange} lastServerSavedAt={lastServerSavedAt} onChange={onDateRange} onRefresh={onRefreshDate} refreshStatus={dateRefreshStatus} refreshProgress={refreshProgress} canRefresh={allowTemporaryRefresh} fontSize={fontSize} onFontSize={onFontSize}/>}
       <PageErrorBoundary pageKey={active} onRecover={() => setActive("总览")}>
       {active === "权限设置" && auth?.isAdmin ? <PermissionSettingsPage auth={auth} permissions={permissions} onPermissionsChanged={onPermissionsChanged}/> : qmdpKnowledgeView ? <KnowledgeManagementPage active={active} qualitySources={agentFiles} onEnsureAgentSources={onEnsureAgentSources} auth={auth}/> : qmdpReportView ? <QualityReportsPage active={active} data={data} files={files} dateRange={dateRange} onRoleChange={setActive}/> : qualityAgentView && canUseFeature(auth, permissions, "qualityAgent") ? <Suspense fallback={<div className="qmdp-empty">正在加载质量分析 Agent…</div>}><QualityAgentPage key={active} data={data} files={files} dateRange={dateRange} module={qualityAgentMenuModules[active]} onEnsureAgentSources={onEnsureAgentSources} canStart={canUseFeature(auth, permissions, "qualityAgentStart")} canSaveToServer={auth?.isAdmin === true}/></Suspense> : agentRoleReportView && canUseFeature(auth, permissions, "qualityAgent") ? <Suspense fallback={<div className="qmdp-empty">正在加载角色报告…</div>}><AgentRoleReportPage key={active} initialRole={agentRoleMenuRoles[active]} data={data} files={agentFiles} dateRange={dateRange} onEnsureAgentSources={onEnsureAgentSources} canGenerate={canUseFeature(auth, permissions, "agentRoleReportGenerate")} canSaveToServer={auth?.isAdmin === true}/></Suspense> : active === "报告历史对比" && canUseFeature(auth, permissions, "qualityAgent") ? <ReportHistoryComparePage/> : agentExamStatsView && canUseFeature(auth, permissions, "qualityAgent") ? <Suspense fallback={<div className="qmdp-empty">正在加载知识考试…</div>}><AgentExamStatsPage/></Suspense> : qmdpSystemView ? <SystemManagementPage key={active} active={active} data={data} auth={auth} files={agentFiles} dateRange={dateRange} onEnsureAgentSources={onEnsureAgentSources} dqaAgentRaw={dqaAgentRaw} onLoadDqaAgentRaw={onLoadDqaAgentRaw} onSaveDqaAgentRaw={onSaveDqaAgentRaw}/> : active === "AI接口" && canUseFeature(auth, permissions, "aiInterface") ? <AiInterfacePage canSaveToServer={auth?.isAdmin === true}/> : active === "数据导入" && allowImport ? <DataSourcePage files={files} onImportModule={onImport} onDelete={onDeleteSource} onSourcesChanged={onSourcesChanged} dqaEngineerSupplement={dqaEngineerSupplement} onImportDqaEngineerSupplement={onImportDqaEngineerSupplement} onClearDqaEngineerSupplement={onClearDqaEngineerSupplement} onDeleteDqaEngineerSupplementFile={onDeleteDqaEngineerSupplementFile} dqaAgentRaw={dqaAgentRaw} onLoadDqaAgentRaw={onLoadDqaAgentRaw} onImportDqaAgentRaw={onImportDqaAgentRaw} onClearDqaAgentRaw={onClearDqaAgentRaw} onDeleteDqaAgentRawFile={onDeleteDqaAgentRawFile}/> : active === "AI分析" && canUseFeature(auth, permissions, "aiAnalysis") ? <AiAnalysisPage data={data} dateRange={dateRange} analysisKey={analysisKey} canSaveToServer={auth?.isAdmin === true}/> : moduleView ? <ModuleDetail key={`${moduleView}-${analysisKey}`} module={moduleView} data={data} files={files} /> : <>
-        <OverviewKpiCards data={data}/>
-        <div className="dashboard-grid">
-          <MainSupplierOverview data={data}/>
-          <Panel title="TOP 风险供应商（人工选择）" subtitle="不再由系统按良率自动生成；选择结果保存在当前电脑" className="span-12"><ManualRiskSuppliers data={data}/></Panel>
-          <Panel title="IPQC 工坊风险 TOP5" subtitle="默认展示异常密度最高的5个工坊，其余工坊可展开查看" className="span-12"><IpqcWorkshopRisk data={data}/></Panel>
-          <Panel title="OQC 出货评分总览" subtitle="基于月度汇总源数据，按当前日期区间同步更新" className="span-7"><OqcOverviewScore data={data}/></Panel>
-          <Panel title="DQA 阶段质量问题分布" subtitle="按当前日期区间同步更新" className="span-5"><StackedStage rows={data.dqa.divisions} height={252} /></Panel>
-        </div>
+        <QualityOverviewPage data={data}/>
       </>}
       </PageErrorBoundary>
       <footer className="page-foot">数据更新时间：{data.updatedAt}<span>{files.length ? `已导入 ${files.length} 个文件` : "当前展示内置半年报样例数据"}</span></footer>
@@ -6686,7 +6535,7 @@ function IpqcAnalysis({ data }) {
   return <div className="module-page iqc-supplier-page ipqc-page">
     <FloatingTabs options={["全公司", "深圳", "杭州"]} active={site} onChange={setSite}/>
     <div className="iqc-section-title">
-      <div><span className="section-number">2</span><div><h2>IPQC过程质量同比分析</h2><p>异常密度＝问题数量÷送检数；不良内容非空的一行计1个问题</p></div></div>
+      <div><span className="section-number">2</span><div><h2>IPQC过程质量同比分析</h2><p>异常密度＝有效异常数量÷送检数；不良类型非空的一行计1个异常，排除3D、研发、设计、资料、来料及仓库发料问题</p></div></div>
       <div className="module-heading-actions sticky-switch-bar"><AppliedPeriodTag data={data}/></div>
     </div>
     <div className="dqa-sub-tabs ipqc-sub-tabs">
@@ -6705,7 +6554,7 @@ function IpqcAnalysis({ data }) {
     </div>
     <div className="ipqc-insight"><strong>重点结论</strong><span>{top ? `${site}${top.workshop}的“${top.category}”为当前TOP问题，2026年占比${top.share}%，建议由${top.owner}牵头改善。` : "导入IPQC原始数据后自动生成重点结论。"}</span></div>
     <div className="iqc-analysis-grid">
-      <AxisControlledPanel title="2.1 总体质量趋势" subtitle={`${site} · 柱形为送检数/问题数量，折线为异常密度（问题数量÷送检数）`} axisKey={`ipqc-${site}-monthly-axis-v1`} defaults={{ min: 0, max: 20 }}>
+      <AxisControlledPanel title="2 交付质量趋势" subtitle={`${site} · 柱形为送检数/问题数量，折线为异常密度（问题数量÷送检数）`} axisKey={`ipqc-${site}-monthly-axis-v1`} defaults={{ min: 0, max: 20 }}>
         {(axis) => <QuantityRateCombo rows={monthly} labelKey="month" rateLabel="异常密度" qtyLabel="送检数/问题数量" height={390} rateAxisOverride={axis.effective} hideRateAxisControl/>}
       </AxisControlledPanel>
       <Panel title="2.2 工坊质量表现" subtitle="可勾选工坊；表头点击后按对应指标升降序排列">
@@ -6747,16 +6596,16 @@ function OqcScoreTable({ rows }) {
   </div>;
 }
 
-const buildOqcOverallMetrics = (rows = []) => {
+const buildOqcOverallMetrics = (rows = [], overall = null) => {
   const total = (key) => rows.reduce((sum, row) => sum + (Number(row[key]) || 0), 0);
-  const count2025 = total("y2025Count");
-  const count2026 = total("y2026Count");
-  const score2025 = total("y2025ScoreTotal");
-  const score2026 = total("y2026ScoreTotal");
-  const five2025 = total("y2025Five");
-  const five2026 = total("y2026Five");
-  const low2025 = total("y2025Low");
-  const low2026 = total("y2026Low");
+  const count2025 = Number(overall?.y2025?.count) || total("y2025Count");
+  const count2026 = Number(overall?.y2026?.count) || total("y2026Count");
+  const score2025 = Number(overall?.y2025?.scoreTotal) || total("y2025ScoreTotal");
+  const score2026 = Number(overall?.y2026?.scoreTotal) || total("y2026ScoreTotal");
+  const five2025 = Number(overall?.y2025?.five) || total("y2025Five");
+  const five2026 = Number(overall?.y2026?.five) || total("y2026Five");
+  const low2025 = Number(overall?.y2025?.low) || total("y2025Low");
+  const low2026 = Number(overall?.y2026?.low) || total("y2026Low");
   return {
     avg: {
       label: "平均分",
@@ -6931,15 +6780,31 @@ function OqcShipmentDetailAnalysis({ data }) {
   const scoreStructureAxis = useMachinedAxisRange("oqc-shipment-score-structure-axis-v1", { min: 0, max: 100 });
   const shareAxis = useMachinedAxisRange("oqc-shipment-share-axis-v1", { min: 0, max: 60 });
   if (!detail) return <div className="summary-note"><strong>待导入出货明细</strong><p>请导入“2025年出货汇总.xlsx”和“2026年出货汇总.xlsx”生成明细分析。</p></div>;
+  // The monthly summary workbook is the authoritative scoring population.
+  // Detail files may overlap by month, so use the summary totals for the
+  // headline card while retaining detail rows for drill-down diagnostics.
+  const summaryDivisions = data.oqc.monthlySummary?.divisions || [];
+  const summaryOverall = data.oqc.monthlySummary?.overall;
+  const summaryCount = summaryDivisions.length ? {
+    y2025: Number(summaryOverall?.y2025?.count || 0) || summaryDivisions.reduce((sum, row) => sum + Number(row.y2025Count || 0), 0),
+    y2026: Number(summaryOverall?.y2026?.count || 0) || summaryDivisions.reduce((sum, row) => sum + Number(row.y2026Count || 0), 0),
+  } : null;
+  const summaryMetric = (key, fallback) => ({
+    y2025: Number(summaryOverall?.y2025?.[key] ?? fallback.y2025),
+    y2026: Number(summaryOverall?.y2026?.[key] ?? fallback.y2026),
+  });
+  const averageMetric = summaryMetric("avg", { y2025: detail.overall.y2025.avg, y2026: detail.overall.y2026.avg });
+  const fiveRateMetric = summaryMetric("fiveRate", { y2025: detail.overall.y2025.fiveRate, y2026: detail.overall.y2026.fiveRate });
+  const lowRateMetric = summaryMetric("lowRate", { y2025: detail.overall.y2025.lowRate, y2026: detail.overall.y2026.lowRate });
   const tpmRows = tpmDivision === "全公司" ? detail.tpmRows : detail.tpmRows.filter((row) => row.division === tpmDivision);
   const topTpmRows = tpmRows.slice(0, 12);
   const scoreValues = ["5分", "4分", "3分", "2分", "1分"];
   return <div className="oqc-shipment-analysis">
     <div className="iqc-summary-strip oqc-summary">
-      <OqcSummaryCountCard y2025={detail.overall.y2025.count} y2026={detail.overall.y2026.count} />
-      <OqcSummaryMetricCard item={{ label: "平均分", y2025: detail.overall.y2025.avg, y2026: detail.overall.y2026.avg, suffix: "", digits: 2, goodWhenDown: false }} />
-      <OqcSummaryMetricCard item={{ label: "5分比例", y2025: detail.overall.y2025.fiveRate, y2026: detail.overall.y2026.fiveRate, suffix: "%", digits: 1, goodWhenDown: false }} />
-      <OqcSummaryMetricCard item={{ label: "低分比例", y2025: detail.overall.y2025.lowRate, y2026: detail.overall.y2026.lowRate, suffix: "%", digits: 1, goodWhenDown: true }} />
+      <OqcSummaryCountCard y2025={summaryCount?.y2025 ?? detail.overall.y2025.count} y2026={summaryCount?.y2026 ?? detail.overall.y2026.count} />
+      <OqcSummaryMetricCard item={{ label: "平均分", ...averageMetric, suffix: "", digits: 2, goodWhenDown: false }} />
+      <OqcSummaryMetricCard item={{ label: "5分比例", ...fiveRateMetric, suffix: "%", digits: 1, goodWhenDown: false }} />
+      <OqcSummaryMetricCard item={{ label: "低分比例", ...lowRateMetric, suffix: "%", digits: 1, goodWhenDown: true }} />
       <OqcSummaryFocusCard row={detail.tpmRows[0]} />
     </div>
     <div className="iqc-analysis-grid">
@@ -6976,6 +6841,29 @@ function OqcShipmentDetailAnalysis({ data }) {
     </div>
   </div>;
 }
+
+
+const buildOqcDispersionShareRows = (scopes = [], valueKey) => {
+  const qty = (scope, year) => Number(scope?.[`y${year}`]?.[valueKey]) || 0;
+  const fixture = scopes.find((item) => item.key === "fixture");
+  const automation = scopes.find((item) => item.key === "automation");
+  const base2025 = qty(fixture, 2025) + qty(automation, 2025);
+  const base2026 = qty(fixture, 2026) + qty(automation, 2026);
+  const share = (value, base) => Number(((Number(value) || 0) / Math.max(base, 1) * 100).toFixed(1));
+  const fixtureShare2025 = share(qty(fixture, 2025), base2025);
+  const fixtureShare2026 = share(qty(fixture, 2026), base2026);
+  return scopes.map((item) => {
+    const isOverall = item.key === "overall";
+    const isAutomation = item.key === "automation";
+    return {
+      name: item.name,
+      y2025Qty: isOverall ? base2025 : qty(item, 2025),
+      y2026Qty: isOverall ? base2026 : qty(item, 2026),
+      y2025Rate: isOverall ? 100 : isAutomation ? Number((100 - fixtureShare2025).toFixed(1)) : share(qty(item, 2025), base2025),
+      y2026Rate: isOverall ? 100 : isAutomation ? Number((100 - fixtureShare2026).toFixed(1)) : share(qty(item, 2026), base2026),
+    };
+  });
+};
 
 const oqcDispersionNumber = (value, digits = 0) => Number(value || 0).toLocaleString("zh-CN", {
   minimumFractionDigits: digits,
@@ -7046,10 +6934,10 @@ function OqcEquipmentDispersionAnalysis({ data, dispersionOverride }) {
       <OqcDispersionMetricCard label="平均每项目机台数" value={oqcDispersionNumber(y2026.avgMachinesPerProject, 2)} unit="台" baseline={oqcDispersionNumber(y2025.avgMachinesPerProject, 2)} detail={`有效项目数：${oqcDispersionNumber(y2026.effectiveProjectCount, 1)}`}/>
     </div>
     <div className="iqc-analysis-grid">
-      <Panel title="总体项目与设备同比" subtitle="全部分类同步对比，先判断项目结构变化来自治具还是自动化" className="iqc-wide">
+      <Panel title="总体项目与设备同比" subtitle="柱形为数量，折线为占总体百分比。先判断结构变化来自治具还是自动化" className="iqc-wide">
         <div className="oqc-dispersion-chart-grid">
-          <BarCompare labels={allScopeLabels} first={dispersion.scopes.map((item) => item.y2025.projectCount)} second={dispersion.scopes.map((item) => item.y2026.projectCount)} names={["2025项目数", "2026项目数"]} percent={false} chartKey="oqc-dispersion-project-count"/>
-          <BarCompare labels={allScopeLabels} first={dispersion.scopes.map((item) => item.y2025.machineCount)} second={dispersion.scopes.map((item) => item.y2026.machineCount)} names={["2025机台数", "2026机台数"]} percent={false} chartKey="oqc-dispersion-machine-count"/>
+          <QuantityRateCombo rows={buildOqcDispersionShareRows(dispersion.scopes, "projectCount")} showBad={false} qtyLabel="项目数" rateLabel="占总体" height={340} chartKey="oqc-dispersion-project-count"/>
+          <QuantityRateCombo rows={buildOqcDispersionShareRows(dispersion.scopes, "machineCount")} showBad={false} qtyLabel="机台数" rateLabel="占总体" height={340} chartKey="oqc-dispersion-machine-count"/>
         </div>
       </Panel>
       <div className="oqc-section-heading"><span className="section-number">3.E1</span><div><h2>{scope.name}项目批量结构</h2><p>单台项目越多、平均每项目机台数越低，非标化特征通常越强。</p></div></div>
@@ -7066,9 +6954,10 @@ function OqcSummaryAnalysis({ data, summary }) {
   const [focusDivision, setFocusDivision] = useState("FPC事业部");
   if (!summary) return <div className="module-summary"><KpiCard item={data.kpis[2]} /><div className="summary-note"><strong>待导入月度汇总表</strong><p>请导入“2025年-2026年评分按月汇总.xlsx”生成同期评分分析。</p></div></div>;
   const monthly = summary.divisionMonthly?.[focusDivision] || summary.fpcMonthly || [];
-  const overallMetrics = buildOqcOverallMetrics(summary.divisions);
-  const total2025 = summary.divisions.reduce((sum, row) => sum + (Number(row.y2025Count) || 0), 0);
-  const total2026 = summary.divisions.reduce((sum, row) => sum + (Number(row.y2026Count) || 0), 0);
+  const overallMonthlyRows = buildOqcOverallMonthlyRows(summary);
+  const overallMetrics = buildOqcOverallMetrics(summary.divisions, summary.overall);
+  const total2025 = Number(summary.overall?.y2025?.count || 0) || summary.divisions.reduce((sum, row) => sum + (Number(row.y2025Count) || 0), 0);
+  const total2026 = Number(summary.overall?.y2026?.count || 0) || summary.divisions.reduce((sum, row) => sum + (Number(row.y2026Count) || 0), 0);
   const fpcWorst = [...(summary.fpcTpm || [])].sort((a,b) => (b.y2026LowRate || 0) - (a.y2026LowRate || 0))[0];
   const avgAxis = useMachinedAxisRange(`oqc-${focusDivision}-avg-axis-v1`, { min: 0, max: 5 });
   const fiveAxis = useMachinedAxisRange(`oqc-${focusDivision}-five-axis-v1`, { min: 0, max: 100 });
@@ -7082,12 +6971,15 @@ function OqcSummaryAnalysis({ data, summary }) {
       <OqcSummaryMetricCard item={overallMetrics.lowRate} />
       <OqcSummaryFocusCard row={fpcWorst} />
     </div>
+    <Panel title="月度趋势" subtitle="柱形为5分机台数量和总数量，折线为5分比例" className="span-12">
+      <ScoreMonthlyCombo rows={overallMonthlyRows} metric="FiveRate" label="5分比例" numeratorKey="Five" numeratorName="5分机台数量" denominatorName="总数量" percent max={100} chartKey="oqc-overall-monthly-five"/>
+    </Panel>
     <div className="iqc-analysis-grid">
-      <div className="oqc-section-heading"><span className="section-number">3.1</span><div><h2>三大产品部总体对比</h2><p>半导体&北美、产品五部、FPC事业部按评分数量加权计算</p></div></div>
+      <div className="oqc-section-heading"><span className="section-number">2.3</span><div><h2>三大产品部总体对比</h2><p>半导体&北美、产品五部、FPC事业部按评分数量加权计算</p></div></div>
       <div className="oqc-three-grid">
-        <Panel title="平均分同期对比"><ScoreYearCompare rows={summary.divisions} metric="Avg" label="平均分" max={5}/></Panel>
-        <Panel title="5分比例同期对比"><ScoreYearCompare rows={summary.divisions} metric="FiveRate" label="5分比例" percent max={100}/></Panel>
-        <Panel title="低分（≤3分）比例同期对比"><ScoreYearCompare rows={summary.divisions} metric="LowRate" label="低分比例" percent max={100}/></Panel>
+        <Panel title="平均分同期对比"><OqcDivisionMetricCombo rows={summary.divisions} metric="Avg" label="平均分" max={5} chartKey="oqc-division-avg"/></Panel>
+        <Panel title="5分比例同期对比"><OqcDivisionMetricCombo rows={summary.divisions} metric="FiveRate" label="5分比例" percent max={100} chartKey="oqc-division-five-rate"/></Panel>
+        <Panel title="低分（≤3分）比例同期对比"><OqcDivisionMetricCombo rows={summary.divisions} metric="LowRate" label="低分比例" percent max={100} chartKey="oqc-division-low-rate"/></Panel>
       </div>
       <Panel title="产品部指标明细" subtitle="点击表头可按评分数、平均分、5分率或低分率排序"><OqcScoreTable rows={summary.divisions}/></Panel>
 
@@ -7101,7 +6993,7 @@ function OqcSummaryAnalysis({ data, summary }) {
         <Panel title={`${focusDivision === "产品一部" ? "半导体&北美" : focusDivision}低分率月度趋势`}><ScoreMonthlyCombo rows={monthly} metric="LowRate" label="低分比例" numeratorKey="Low" numeratorName="≤3分数量" denominatorName="评分总数量" percent max={100} rateAxisOverride={lowAxis.effective} hideRateAxisControl/></Panel>
       </div>
 
-      <div className="oqc-section-heading"><span className="section-number">3.3</span><div><h2>FPC事业部TPM对比</h2><p>刘波、王辉、罗超、林秋秋、朱慧慧同期评分表现</p></div></div>
+      <div className="oqc-section-heading"><span className="section-number">3.3</span><div><h2>FPC事业部TPM对比</h2><p>按月度汇总表中的 TPM 名称展示同期评分表现</p></div></div>
       <div className="oqc-three-grid">
         <Panel title="FPC TPM平均分"><ScoreYearCompare rows={summary.fpcTpm} metric="Avg" label="平均分" max={5}/></Panel>
         <Panel title="FPC TPM 5分比例"><ScoreYearCompare rows={summary.fpcTpm} metric="FiveRate" label="5分比例" percent max={100}/></Panel>
@@ -7535,14 +7427,22 @@ function useMachinedAxisRange(storageKey, defaults = { min: 0, max: 20 }) {
   return { range, effective: { min: safeMin, max: safeMax }, update, commit };
 }
 
+function ChartAxisControls({ children }) {
+  const visible = useLabelControlsVisible();
+  if (!visible) return null;
+  return children;
+}
+
 function MachinedAxisPanelControl({ axis }) {
-  return <div className="machined-axis-group machined-panel-axis">
+  return <ChartAxisControls><div className="machined-axis-group machined-panel-axis">
     <label className="machined-axis-control">比例轴最小值<input type="number" min="0" step="0.1" value={axis.range.min} onChange={(event) => axis.update("min", event.target.value)} onBlur={axis.commit}/><span>%</span></label>
     <label className="machined-axis-control">比例轴最大值<input type="number" min="0.1" step="0.1" value={axis.range.max} onChange={(event) => axis.update("max", event.target.value)} onBlur={axis.commit}/><span>%</span></label>
-  </div>;
+  </div></ChartAxisControls>;
 }
 
 function OqcMonthlyAxisControl({ scoreAxis, fiveAxis, lowAxis }) {
+  const visible = useLabelControlsVisible();
+  if (!visible) return null;
   const axisItems = [
     { label: "平均分轴", axis: scoreAxis, unit: "分", step: "0.1" },
     { label: "5分比例轴", axis: fiveAxis, unit: "%", step: "0.1" },
@@ -7691,10 +7591,10 @@ function MachinedTpmPanel({ part, kindLabel = "ECN加工件", storagePrefix = "e
         {MACHINED_TPM_DIVISIONS.map((item) => <button key={item} className={division === item ? "active" : ""} onClick={() => setDivision(item)}>{item}</button>)}
       </div>
       <button className="machined-filter-toggle" onClick={() => setShowTpmFilter((current) => !current)}>{showTpmFilter ? "隐藏TPM筛选" : "显示TPM筛选"}</button>
-      <div className="machined-axis-group">
+      <ChartAxisControls><div className="machined-axis-group">
         <label className="machined-axis-control">比例轴最小值<input type="number" min="0" step="0.1" value={rateMin} onChange={(event) => setRateMin(event.target.value)} onBlur={() => setRateMin(safeRateMin)}/><span>%</span></label>
         <label className="machined-axis-control">比例轴最大值<input type="number" min="0.1" step="0.1" value={rateMax} onChange={(event) => setRateMax(event.target.value)} onBlur={() => setRateMax(safeRateMax)}/><span>%</span></label>
-      </div>
+      </div></ChartAxisControls>
     </div>
     {showTpmFilter && <div className="machined-tpm-check-row">
         <div><strong>当前TPM</strong><span>默认全选，取消后总图、表格、月度趋势同步隐藏</span></div>
@@ -7717,10 +7617,10 @@ function MachinedTpmPanel({ part, kindLabel = "ECN加工件", storagePrefix = "e
         <div className="site-tabs machined-division-tabs">
           {MACHINED_TPM_DIVISIONS.map((item) => <button key={item} className={monthlyDivision === item ? "active" : ""} onClick={() => setMonthlyDivision(item)}>{item}</button>)}
         </div>
-        <div className="machined-axis-group">
+        <ChartAxisControls><div className="machined-axis-group">
           <label className="machined-axis-control">比例轴最小值<input type="number" min="0" step="0.1" value={monthlyRateMin} onChange={(event) => setMonthlyRateMin(event.target.value)} onBlur={() => setMonthlyRateMin(safeMonthlyRateMin)}/><span>%</span></label>
           <label className="machined-axis-control">比例轴最大值<input type="number" min="0.1" step="0.1" value={monthlyRateMax} onChange={(event) => setMonthlyRateMax(event.target.value)} onBlur={() => setMonthlyRateMax(safeMonthlyRateMax)}/><span>%</span></label>
-        </div>
+        </div></ChartAxisControls>
       </div>
       <div className="machined-monthly-grid">
         {monthlyRows.map((row) => {
@@ -8059,6 +7959,7 @@ function QmsAnalysis({ data }) {
 }
 
 function ModuleDetail({ module, data, files }) {
+  if (module === "DOAM") return <DoamPage/>;
   if (module === "IQC") return <IqcSupplierAnalysis data={data} />;
   if (module === "IPQC") return <IpqcAnalysis data={data} />;
   if (module === "OQC") return <OqcAnalysis data={data} files={files} />;
@@ -8351,7 +8252,7 @@ function IqcInternalAnalysis({ data, site, specialAsBad }) {
 
 function IqcSupplierAnalysis({ data }) {
   const uiTheme = useUiTheme();
-  const [site, setSite] = useState("深圳");
+  const [site, setSite] = useState("全公司");
   const [specialAsBad, setSpecialAsBad] = useState(false);
   const mode = specialAsBad ? data.iqc.qualityModes?.rejected : data.iqc.qualityModes?.accepted;
   const iqcData = mode || data.iqc;
@@ -8369,10 +8270,10 @@ function IqcSupplierAnalysis({ data }) {
     return qty ? monthly.reduce((sum, row) => sum + row[`y${year}Qty`] * row[`y${year}Rate`], 0) / qty : 0;
   };
   return <div className={`module-page iqc-supplier-page ${uiTheme === "apple" ? "iqc-apple-page" : ""}`}>
-    <FloatingTabs options={["深圳", "杭州"]} active={site} onChange={setSite}/>
+    <FloatingTabs options={["全公司", "深圳", "杭州"]} active={site} onChange={setSite}/>
     <div className="iqc-section-title">
-      <div><span className="section-number">1.2</span><div><h2>供应商加工件同比分析</h2><p>按检验批次计算数量和批次良率，深圳、杭州独立分析</p></div></div>
-      <div className="iqc-title-actions sticky-switch-bar"><label className={`special-toggle ${specialAsBad ? "active" : ""}`}><input type="checkbox" checked={specialAsBad} onChange={(event) => setSpecialAsBad(event.target.checked)}/><span>计入特采</span></label><div className="site-tabs"><button className={site==="深圳"?"active":""} onClick={()=>preserveScrollPosition(() => setSite("深圳"))}>深圳</button><button className={site==="杭州"?"active":""} onClick={()=>preserveScrollPosition(() => setSite("杭州"))}>杭州</button></div></div>
+      <div><span className="section-number">1</span><div><h2>供应商加工件同比分析</h2><p>按检验批次计算数量和批次良率，可切换全公司、深圳、杭州</p></div></div>
+      <div className="iqc-title-actions sticky-switch-bar"><label className={`special-toggle ${specialAsBad ? "active" : ""}`}><input type="checkbox" checked={specialAsBad} onChange={(event) => setSpecialAsBad(event.target.checked)}/><span>计入特采</span></label><div className="site-tabs"><button className={site==="全公司"?"active":""} onClick={()=>preserveScrollPosition(() => setSite("全公司"))}>全公司</button><button className={site==="深圳"?"active":""} onClick={()=>preserveScrollPosition(() => setSite("深圳"))}>深圳</button><button className={site==="杭州"?"active":""} onClick={()=>preserveScrollPosition(() => setSite("杭州"))}>杭州</button></div></div>
     </div>
     <div className="iqc-summary-strip">
       <div><span>{site} 2025检验批次</span><strong>{totals.y2025Qty.toLocaleString()}</strong></div>
@@ -8382,7 +8283,7 @@ function IqcSupplierAnalysis({ data }) {
       <div><span>同比变化</span><strong className={weightedRate(2026) < weightedRate(2025) ? "red" : "green"}>{weightedRate(2026)-weightedRate(2025)>=0?"↑":"↓"} {Math.abs(weightedRate(2026)-weightedRate(2025)).toFixed(1)}pp</strong></div>
     </div>
     <div className="iqc-analysis-grid">
-      <AxisControlledPanel title="1.2.3 总体供应商良率趋势" subtitle={`${site} · 按月同比 · 柱形为检验总数/不合格数，折线为批次良率`} className="iqc-wide" axisKey={`iqc-${site}-${specialAsBad ? "special-bad" : "special-good"}-monthly-axis-v1`} defaults={{ min: 80, max: 100 }}>
+      <AxisControlledPanel title="1.供应商良率趋势" subtitle={`${site} · 按月同比 · 柱形为检验总数/不合格数，折线为批次良率`} className="iqc-wide" axisKey={`iqc-${site}-${specialAsBad ? "special-bad" : "special-good"}-monthly-axis-v1`} defaults={{ min: 80, max: 100 }}>
         {(axis) => <QuantityRateCombo rows={monthly} labelKey="month" height={360} rateAxisOverride={axis.effective} hideRateAxisControl />}
       </AxisControlledPanel>
       <AxisControlledPanel title="1.2.1 加工件异常类型" subtitle={`${site} · 仅统计质检结果=不合格；特采进入专项分析，不重复计数`} className="iqc-wide" axisKey={`iqc-${site}-${specialAsBad ? "special-bad" : "special-good"}-issues-axis-v1`} defaults={{ min: 0, max: 80 }}>
@@ -8408,8 +8309,8 @@ export function App() {
   const oqcShipmentSourceVersion = "20260630-oqc-shipment-detail-v1";
   const defaultSourceVersion = "20260701-overview-kpi-refresh-v3";
   const defaultDateRange = {
-    start2025: "2025-01-01", end2025: "2025-05-31",
-    start2026: "2026-01-01", end2026: "2026-05-31",
+    start2025: "2025-01-01", end2025: "2025-08-31",
+    start2026: "2026-01-01", end2026: "2026-08-31",
   };
   const isSameDateRange = (left, right) => left?.start2025 === right?.start2025
     && left?.end2025 === right?.end2025
@@ -8425,8 +8326,10 @@ export function App() {
   let initialDateRange = defaultDateRange;
   try {
     const storedDateRange = JSON.parse(localStorage.getItem("qms-date-range-v202605") || "null");
-    const wasOldDefault = storedDateRange?.start2025 === "2025-01-01" && storedDateRange?.end2025 === "2025-06-30"
-      && storedDateRange?.start2026 === "2026-01-01" && (storedDateRange?.end2026 === "2026-06-30" || storedDateRange?.end2026 === "2026-05-31");
+    const wasOldDefault = storedDateRange?.start2025 === "2025-01-01"
+      && ["2025-05-31", "2025-06-30"].includes(storedDateRange?.end2025)
+      && storedDateRange?.start2026 === "2026-01-01"
+      && ["2026-05-31", "2026-06-30"].includes(storedDateRange?.end2026);
     initialDateRange = storedDateRange && !wasOldDefault ? storedDateRange : defaultDateRange;
   } catch { initialDateRange = defaultDateRange; }
   const [view, setView] = useState(() => location.hash.includes("workspace") ? "workspace" : "executive");
@@ -8606,6 +8509,11 @@ export function App() {
     document.documentElement.dataset.uiTheme = theme;
     localStorage.setItem("qms-ui-theme", theme);
   }, [uiTheme]);
+  useEffect(() => {
+    const sync = () => setUiTheme(localStorage.getItem("qms-ui-theme") === "apple" ? "apple" : "classic");
+    window.addEventListener("qms-ui-theme-change", sync);
+    return () => window.removeEventListener("qms-ui-theme-change", sync);
+  }, []);
   useEffect(() => { localStorage.setItem("qms-sidebar-collapsed", sidebarCollapsed ? "true" : "false"); }, [sidebarCollapsed]);
   useEffect(() => { seedDefaultAnnotations(); }, []);
   useEffect(() => {
@@ -8841,28 +8749,25 @@ export function App() {
     onProgress({ state: "loading", label: "正在保存数据源清单" });
     setServerSyncStatus({ state: "saving", label: "正在保存到服务器" });
     const savedSources = await saveImportedSources(sources);
-    if (!savedSources) {
-      setServerSyncStatus({ state: "error", label: "服务器保存失败" });
-      throw new Error("Failed to save imported sources to server");
-    }
+    const serverSaved = savedSources?._serverSaved !== false;
+    if (!serverSaved) setServerSyncStatus({ state: "warning", label: "已保存在本机，等待服务器同步" });
     localStorage.setItem("qms-user-imported-sources-v2", "true");
     onProgress({ state: "loading", label: "正在生成分析图表" });
     const nextData = await applyAnalyzedData(sources, appliedDateRange);
     onProgress({ state: "loading", label: "正在保存分析结果" });
     const savedCache = await saveAnalysisCacheFor(sources, appliedDateRange, nextData);
     if (!savedCache) {
-      setServerSyncStatus({ state: "error", label: "服务器保存失败" });
-      throw new Error("Failed to save analysis cache to server");
+      setServerSyncStatus({ state: "warning", label: "数据已保存在本机，分析缓存等待服务器同步" });
     }
     const savedAt = savedCache.savedAt || new Date().toISOString();
     setLastServerSavedAt(savedAt);
     setTeamDefaultRange(appliedDateRange);
-    setServerSyncStatus({ state: "success", label: `服务器已同步 · ${formatSyncDateTime(savedAt)}` });
+    setServerSyncStatus({ state: serverSaved ? "success" : "warning", label: serverSaved ? `服务器已同步 · ${formatSyncDateTime(savedAt)}` : "已保存在本机，等待服务器同步" });
     const parts = [];
     if (result.added?.length) parts.push(`新增${result.added.length}个`);
     if (result.replaced?.length) parts.push(`替换${result.replaced.length}个`);
     if (result.rejected?.length) parts.push(`拒绝${result.rejected.length}个模块不匹配文件`);
-    setSourceNotice(parts.length ? `数据源已保存：${parts.join("，")}` : "本地数据源已更新");
+    setSourceNotice(parts.length ? `数据源已保存：${parts.join("，")}${serverSaved ? "" : "；服务器暂未同步"}` : (serverSaved ? "数据源已更新" : "数据源已保存在本机，等待服务器同步"));
     setTimeout(() => setSourceNotice(""), 3200);
   };
   const deleteSource = async (source) => {
@@ -9057,8 +8962,3 @@ export function App() {
     {sourceNotice && <div className="toast"><Database size={19}/>{sourceNotice}</div>}
   </UiThemeContext.Provider>;
 }
-
-
-
-
-

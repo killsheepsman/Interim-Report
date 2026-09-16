@@ -686,6 +686,13 @@ const handleKnowledge = async (req, res) => {
         personName: requestUrl.searchParams.get("personName") || "",
         query: requestUrl.searchParams.get("query") || "",
         status: requestUrl.searchParams.get("status") || "",
+        sourceFile: requestUrl.searchParams.get("sourceFile") || "",
+        issueType: requestUrl.searchParams.get("issueType") || "",
+        minScore: requestUrl.searchParams.get("minScore") || "",
+        maxScore: requestUrl.searchParams.get("maxScore") || "",
+        minMatches: requestUrl.searchParams.get("minMatches") || "",
+        dateFrom: requestUrl.searchParams.get("dateFrom") || "",
+        dateTo: requestUrl.searchParams.get("dateTo") || "",
         threshold: requestUrl.searchParams.get("threshold") || 80,
         limit: requestUrl.searchParams.get("limit"),
         offset: requestUrl.searchParams.get("offset"),
@@ -894,10 +901,11 @@ const handleKnowledge = async (req, res) => {
     const distillJobMatch = pathname.match(/^\/api\/knowledge\/documents\/([^/]+)\/distillation-jobs$/);
     if (distillJobMatch && req.method === "POST") {
       const payload = await jsonBody();
-      const config = user.isAdmin && payload.config ? await configFromPayload(payload) : await loadAiConfig();
-      try { await completeKnowledgeAi({ messages: [{ role: "user", content: "只输出纯JSON：{\"knowledge\":[]}" }], maxTokens: 256, config }); }
-      catch (error) { throw new Error(`知识蒸馏AI预检失败：${error?.message || error}`); }
-      if (user.isAdmin && payload.config) await saveAiConfig(config);
+      // Do not make a separate AI request before queueing. The old preflight
+      // made the button fail on a transient/network error and left no job to
+      // retry. The worker owns the real request, retries each batch, and
+      // persists its error/progress state for resume and failed-batch retry.
+      if (user.isAdmin && payload.config) await saveAiConfig(await configFromPayload(payload));
       const job = await knowledgeService.startDistillation(decodeURIComponent(distillJobMatch[1]), payload.skillId, { batchChars: payload.batchChars, maxBatchClauses: payload.maxBatchClauses, maxRetries: payload.maxRetries });
       return sendJson(res, 202, { job });
     }

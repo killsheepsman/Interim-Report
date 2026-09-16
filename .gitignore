@@ -24,3 +24,7 @@ pnpm-debug.log*
 .DS_Store
 Thumbs.db
 启动 QMS 网页版.lnk
+
+.tmp-chrome-snapshot-debug/
+.tmp-chrome-snapshot-debug-9333/
+

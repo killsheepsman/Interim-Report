@@ -24,6 +24,7 @@ import {
   listPostgresRecurrenceActions,
   searchPostgresKnowledgeCandidates,
   readPostgresKnowledgeDocument,
+  readPostgresQualityIssue,
   replacePostgresKnowledgeMatches,
   replacePostgresDistilledKnowledge,
   updatePostgresDistilledKnowledge,
@@ -860,7 +861,10 @@ const candidateEligibility = (issue, candidate) => {
   const scopeStatus = !applicable.length ? "unknown" : applicable.some((scope) => rawIssue.includes(normalizeSearchText(scope))) ? "matched" : "unknown";
   const moduleTerms = issue.module === "IPQC" ? ["组装", "装配", "ipqc", "过程", "送检", "首件", "巡检"] : ["研发", "设计", "dqa", "评审", "ecn", "变更", "bom", "非bom"];
   const moduleMatched = moduleTerms.some((term) => normalizeSearchText(candidateText(candidate)).includes(normalizeSearchText(term))) || (candidate.sourceCategory || "").toUpperCase().includes(issue.module);
-  if (!moduleMatched && candidate.candidateType === "knowledge") return { eligible: false, reason: `未命中${issue.module}模块范围` };
+  // Module labels are often absent from otherwise applicable cards (for
+  // example an electrical wiring rule may not literally say “IPQC”). Keep
+  // moduleMatched as a score signal instead of discarding the card outright;
+  // concrete object/defect signals below provide the precision gate.
   return { eligible: true, scopeStatus, moduleMatched, sourceLevel: String(candidate.sourceLevel || "C").toUpperCase(), sourceKind: candidate.publicationStatus === "published" ? "已发布知识" : "原始条款候选" };
 };
 const candidateScore = (issue, candidate, eligibility = {}) => {
@@ -874,7 +878,12 @@ const candidateScore = (issue, candidate, eligibility = {}) => {
   const roleMatch = roleTermsForIssue(issue).some((term) => normalizeSearchText(`${(candidate.applicableRoles || []).join(" ")} ${candidateText(candidate)}`).includes(normalizeSearchText(term)));
   const processMatch = processTermsForIssue(issue).some((term) => normalizeSearchText(`${(candidate.processes || []).join(" ")} ${candidateText(candidate)}`).includes(normalizeSearchText(term)));
   const typeMatch = issue.issueType && issue.issueType !== "未分类" && normalizedCandidate.includes(normalizeSearchText(issue.issueType));
-  const issueObjectTerms = matchingTermGroups.object.filter((term) => normalizeSearchText(issueText).includes(normalizeSearchText(term)));
+  // Issue type labels such as “接线问题” are broad categories, not proof
+  // that the affected object is a wire. Prefer the concrete issue text when
+  // deciding whether a candidate targets the wrong object.
+  const concreteIssueText = String(issue.issueText || "");
+  const concreteObjectTerms = matchingTermGroups.object.filter((term) => normalizeSearchText(concreteIssueText).includes(normalizeSearchText(term)));
+  const issueObjectTerms = concreteObjectTerms;
   // Ignore incidental mentions inside long source quotations when detecting
   // the affected object; use explicit card metadata as the object anchor.
   const candidateObjectAnchor = normalizeSearchText(`${candidate.title || ""} ${(candidate.issueTags || []).join(" ")} ${(candidate.processes || []).join(" ")} ${(candidate.synonyms || []).join(" ")} ${(candidate.applicableRoles || []).join(" ")}`);
@@ -2865,6 +2874,15 @@ export const createKnowledgeService = ({ filePath, originalDir = path.join(path.
     const personName = String(options.personName || "");
     const query = String(options.query || "").trim().toLowerCase();
     const status = String(options.status || "");
+    const sourceFile = String(options.sourceFile || "").trim().toLowerCase();
+    const issueType = String(options.issueType || "").trim().toLowerCase();
+    const minScore = options.minScore === "" || options.minScore == null ? null : Number(options.minScore);
+    const maxScoreFilter = options.maxScore === "" || options.maxScore == null ? null : Number(options.maxScore);
+    const minMatches = options.minMatches === "" || options.minMatches == null ? null : Number(options.minMatches);
+    const dateFrom = String(options.dateFrom || "").trim();
+    const dateTo = String(options.dateTo || "").trim();
+    const dateFromTs = dateFrom ? Date.parse(`${dateFrom}T00:00:00`) : null;
+    const dateToTs = dateTo ? Date.parse(`${dateTo}T23:59:59.999`) : null;
     const threshold = Number(options.threshold || 80);
     const confirmedIssueIds = new Set((store.matches || []).filter((item) => item.status === "confirmed").map((item) => item.issueId));
     const matchedIssueIds = new Set((store.matches || []).filter((item) => item.status === status).map((item) => item.issueId));
@@ -2872,10 +2890,21 @@ export const createKnowledgeService = ({ filePath, originalDir = path.join(path.
       if (module && item.module !== module) return false;
       if (personName && item.personName !== personName) return false;
       if (query && !`${item.issueText} ${item.issueType} ${item.personName}`.toLowerCase().includes(query)) return false;
+      if (sourceFile && !String(item.sourceFile || "").toLowerCase().includes(sourceFile)) return false;
+      if (issueType && !String(item.issueType || "").toLowerCase().includes(issueType)) return false;
+      if (dateFrom || dateTo) {
+        const issueTs = Date.parse(String(item.issueDate || ""));
+        if (!Number.isFinite(issueTs)) return false;
+        if (dateFromTs != null && issueTs < dateFromTs) return false;
+        if (dateToTs != null && issueTs > dateToTs) return false;
+      }
       const issueMatches = (store.matches || []).filter((match) => match.issueId === item.id);
-      const maxScore = issueMatches.reduce((max, match) => Math.max(max, Number(match.score || 0)), 0);
+      const highestScore = issueMatches.reduce((max, match) => Math.max(max, Number(match.score || 0)), 0);
+      if (minScore != null && highestScore < minScore) return false;
+      if (maxScoreFilter != null && highestScore > maxScoreFilter) return false;
+      if (minMatches != null && issueMatches.length < minMatches) return false;
       if (status === "failed" && issueMatches.length) return false;
-      if (status === "low_threshold" && maxScore >= threshold) return false;
+      if (status === "low_threshold" && highestScore >= threshold) return false;
       if (status === "rejected" && !issueMatches.some((match) => match.status === "rejected")) return false;
       if (status === "confirmed" && !confirmedIssueIds.has(item.id)) return false;
       return true;
@@ -2889,7 +2918,10 @@ export const createKnowledgeService = ({ filePath, originalDir = path.join(path.
       if (item.status === "confirmed") current.confirmedCount += 1;
       matchesByIssue.set(item.issueId, current);
     });
-    return { total: all.length, issues: all.slice(offset, offset + limit).map((item) => ({ ...item, ...(matchesByIssue.get(item.id) || { matchCount: 0, confirmedCount: 0 }), storage: "json" })), storage: "json" };
+    const facetSource = (store.issues || []).filter((item) => (!module || item.module === module) && (!personName || item.personName === personName));
+    const unique = (rows, key) => [...new Set(rows.map((item) => cleanText(item[key])).filter(Boolean))].sort((a, b) => a.localeCompare(b, "zh-CN")).slice(0, 200);
+    const facetTypeSource = issueType ? facetSource.filter((item) => String(item.issueType || "").toLowerCase().includes(issueType)) : facetSource;
+    return { total: all.length, facets: { personNames: unique(facetSource, "personName"), issueTypes: unique(facetSource, "issueType"), sourceFiles: unique(facetTypeSource, "sourceFile") }, issues: all.slice(offset, offset + limit).map((item) => ({ ...item, ...(matchesByIssue.get(item.id) || { matchCount: 0, confirmedCount: 0 }), storage: "json" })), storage: "json" };
   };
   const loadCorpus = async () => {
     if (corpusCache.revision === corpusRevision && corpusCache.expiresAt > Date.now()) return corpusCache.rows;
@@ -3040,7 +3072,7 @@ export const createKnowledgeService = ({ filePath, originalDir = path.join(path.
     const requestedVersion = cleanText(issue.metadata?.version || issue.metadata?.sourceVersion || issue.metadata?.documentVersion);
     const cacheKey = `${corpusRevision}:${issue.module}:${requestedVersion}:${normalizeSearchText(`${issue.issueType || ""}${issue.issueText || ""}${terms.join("|")}`)}`;
     const activeDocumentIds = new Set((await listDocuments()).map((document) => document.id));
-    const activeKnowledge = (items = []) => items.filter((candidate) => candidate.candidateType === "knowledge" && activeDocumentIds.has(candidate.documentId));
+    const activeKnowledge = (items = []) => items.filter((candidate) => candidate.candidateType === "knowledge" && candidate.publicationStatus === "published" && activeDocumentIds.has(candidate.documentId));
     const cached = retrievalCache.get(cacheKey);
     if (cached && cached.expiresAt > Date.now()) {
       cached.candidates = activeKnowledge(cached.candidates);
@@ -3050,18 +3082,24 @@ export const createKnowledgeService = ({ filePath, originalDir = path.join(path.
     }
     const startedAt = performance.now();
     const postgres = await searchPostgresKnowledgeCandidates({ terms, moduleTerms: issue.module === "IPQC" ? ["IPQC", "组装", "装配", "过程"] : ["DQA", "研发", "设计", "评审"], version: requestedVersion, limit: 240 });
-    let candidates = postgres.available ? postgres.candidates : await loadCorpus();
-    candidates = activeKnowledge(candidates);
+    const postgresCandidates = postgres.available ? activeKnowledge(postgres.candidates) : [];
+    const localCandidates = activeKnowledge(await loadCorpus());
+    // PostgreSQL full-text recall is intentionally narrow for Chinese text.
+    // Merge it with the cached local evidence index so a partial DB recall
+    // cannot hide a relevant published card that has different wording.
+    const candidates = [...new Map([...postgresCandidates, ...localCandidates].map((candidate) => [candidate.candidateKey, candidate])).values()];
     let storage = postgres.available ? "postgres" : "json";
     let strategy = postgres.available ? "模块/版本/状态预过滤 → 标签/全文索引召回 → 规则评分" : "JSON索引缓存 → 模块/版本/状态过滤 → 规则评分";
     // PostgreSQL's simple Chinese text parser can legitimately return zero
     // rows for a valid issue even when the local evidence corpus has matches.
     // Use the already-built local corpus only for that empty-result case so
     // matching remains available without making every request expensive.
-    if (postgres.available && !candidates.some((candidate) => candidate.candidateType === "knowledge")) {
-      candidates = activeKnowledge(await loadCorpus());
+    if (postgres.available && !postgresCandidates.some((candidate) => candidate.candidateType === "knowledge")) {
       storage = "postgres+json-fallback";
-      strategy = "PostgreSQL索引未召回 → 本地证据索引回退 → 规则评分";
+      strategy = "PostgreSQL索引未完整召回 → 本地证据索引补充 → 规则评分";
+    } else if (postgres.available && localCandidates.length > postgresCandidates.length) {
+      storage = "postgres+json-merge";
+      strategy = "PostgreSQL索引召回 → 本地证据索引补充 → 规则评分";
     }
     const elapsedMs = Math.round(performance.now() - startedAt);
     const entry = { candidates, storage, strategy, expiresAt: Date.now() + 60000 };
@@ -3072,7 +3110,9 @@ export const createKnowledgeService = ({ filePath, originalDir = path.join(path.
   };
   const generateMatches = async (issueId) => {
     const store = await readFallback();
-    const issue = (store.issues || []).find((item) => item.id === issueId);
+    const localIssue = (store.issues || []).find((item) => item.id === issueId);
+    const postgresIssue = localIssue ? null : await readPostgresQualityIssue(issueId);
+    const issue = postgresIssue?.issue || localIssue;
     if (!issue) throw new Error("质量问题不存在，请先同步问题数据");
     const documents = await listDocuments();
     const activeDocuments = documents.filter((document) => !["obsolete", "superseded", "expired"].includes(String(document.effectiveStatus || "").toLowerCase()) && document.governanceStatus !== "已废止");
@@ -3113,6 +3153,9 @@ export const createKnowledgeService = ({ filePath, originalDir = path.join(path.
           documentName: candidate.documentName,
           candidateTitle: candidate.title,
           candidateContent: candidate.content,
+          violationBasis: Array.isArray(candidate.violationBasis) ? candidate.violationBasis : [],
+          correctState: candidate.correctState || "",
+          atomicRule: candidate.atomicRule || null,
           clauseNumber: candidate.clauseNumber,
           sectionPath: candidate.sectionPath,
           quote: candidate.quote,
@@ -3129,7 +3172,21 @@ export const createKnowledgeService = ({ filePath, originalDir = path.join(path.
         createdAt: generatedAt,
         updatedAt: generatedAt,
       };
-    }).filter(Boolean).filter((item) => item.score >= 32).sort((left, right) => right.score - left.score || (left.candidateType === "knowledge" ? -1 : 1)).slice(0, 8);
+    }).filter(Boolean).filter((item) => item.score >= 32)
+      .sort((left, right) => right.score - left.score || (left.candidateType === "knowledge" ? -1 : 1))
+      // Some imported workbooks contain duplicate cards. Keep one candidate
+      // for the same knowledge id, or for identical title/content when ids
+      // differ, so the reviewer sees distinct rules only.
+      .filter((item, index, rows) => rows.findIndex((other) => {
+        const otherTitle = normalizeSearchText(other.evidence?.candidateTitle || "");
+        const otherContent = normalizeSearchText(other.evidence?.candidateContent || "");
+        const title = normalizeSearchText(item.evidence?.candidateTitle || "");
+        const content = normalizeSearchText(item.evidence?.candidateContent || "");
+        const otherKey = otherTitle || otherContent ? `${otherTitle}|${otherContent}` : other.knowledgeId;
+        const itemKey = title || content ? `${title}|${content}` : item.knowledgeId;
+        return otherKey === itemKey;
+      }) === index)
+      .slice(0, 8);
     const validCandidateKeys = new Set(matches.map((item) => item.candidateKey));
     const previous = new Map((store.matches || []).filter((item) => item.issueId === issue.id && item.candidateType === "knowledge" && activeDocumentIds.has(item.documentId) && validCandidateKeys.has(item.candidateKey)).map((item) => [item.candidateKey, item]));
     const matchAudit = {
@@ -3163,11 +3220,15 @@ export const createKnowledgeService = ({ filePath, originalDir = path.join(path.
     const allowed = new Set(["candidate", "confirmed", "rejected"]);
     const status = allowed.has(payload.status) ? payload.status : "candidate";
     const store = await readFallback();
-    const current = (store.matches || []).find((item) => item.id === id);
+    const localCurrent = (store.matches || []).find((item) => item.id === id);
+    const postgresCurrent = localCurrent ? null : await listPostgresKnowledgeMatches("").then((result) => result.available ? result.matches.find((item) => item.id === id) : null);
+    const current = localCurrent || postgresCurrent;
     if (!current) return null;
     if (status === "confirmed") {
       if (current.candidateType !== "knowledge" || !current.knowledgeId) throw new Error("原始条款只能作为候选证据，必须先蒸馏、审核并发布知识卡后才能正式采用");
-      const knowledge = (store.knowledge || []).find((item) => item.id === current.knowledgeId) || (await listDistilled(current.documentId, { limit: 1000, offset: 0 })).knowledge.find((item) => item.id === current.knowledgeId);
+      const knowledgePage = await listDistilled(current.documentId, { limit: 1000, offset: 0 });
+      const knowledge = knowledgePage.knowledge?.find((item) => item.id === current.knowledgeId)
+        || (knowledgePage.storage === "json" ? (store.knowledge || []).find((item) => item.id === current.knowledgeId) : null);
       const document = await getDocument(current.documentId);
       if (!knowledge || knowledge.publicationStatus !== "published") throw new Error("只有已发布知识卡可以进入正式纠偏");
       if (!document || ["obsolete", "superseded", "expired"].includes(String(document.effectiveStatus || "").toLowerCase()) || document.governanceStatus === "已废止") throw new Error("知识来源版本已失效");
@@ -3175,9 +3236,11 @@ export const createKnowledgeService = ({ filePath, originalDir = path.join(path.
       if (document.reviewState === "overdue") throw new Error("知识来源已超过复审日期，暂时不能正式采用");
     }
     const reviewedAt = nowIso();
-    if (status === "confirmed") store.matches = store.matches.map((item) => item.issueId === current.issueId && item.status === "confirmed" && item.id !== id ? { ...item, status: "superseded", updatedAt: reviewedAt } : item);
+    if (status === "confirmed") store.matches = (store.matches || []).map((item) => item.issueId === current.issueId && item.status === "confirmed" && item.id !== id ? { ...item, status: "superseded", updatedAt: reviewedAt } : item);
     const next = { ...current, status, reviewer: cleanText(payload.reviewer), reviewedAt, updatedAt: reviewedAt };
-    store.matches = store.matches.map((item) => item.id === id ? next : item);
+    store.matches = localCurrent
+      ? (store.matches || []).map((item) => item.id === id ? next : item)
+      : [...(store.matches || []), next];
     await writeFallback(store);
     const postgres = await reviewPostgresKnowledgeMatch(id, { status, reviewer: next.reviewer });
     return postgres.available ? postgres.match : next;

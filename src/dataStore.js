@@ -356,10 +356,17 @@ export const saveImportedSources = async (sources) => {
   // The web/server runtime can rehydrate rows from uploaded Excel files. Keep
   // only the lightweight index in IndexedDB so deleting one source does not
   // clone every imported row on the browser main thread.
-  await saveImportedSourcesLocal(sharedApiBase() ? remoteSources : sources);
+  // Keep complete parsed rows locally as a recovery queue. The server still
+  // receives only the lightweight summary, but a temporary outage must not
+  // discard rows needed by issue synchronization.
+  await saveImportedSourcesLocal(sources);
   const remoteSaved = await saveRemoteState(REMOTE_SOURCES_KEY, remoteSources);
-  if (!sharedApiBase()) return remoteSources;
-  return Array.isArray(remoteSaved) ? remoteSaved : null;
+  // Keep the local source index authoritative when the server is temporarily
+  // unavailable. The next refresh can reconcile it without forcing re-import.
+  if (!sharedApiBase()) return sources;
+  const result = Array.isArray(remoteSaved) ? remoteSaved : sources;
+  try { Object.defineProperty(result, "_serverSaved", { value: Array.isArray(remoteSaved), enumerable: false }); } catch {}
+  return result;
 };
 
 export const patchCachedAnalysis = async (patch = {}) => {
@@ -828,8 +835,8 @@ export const importKnowledgeDistillation = async (documentId, payload) => knowle
 export const reviewDistilledKnowledge = async (knowledgeId, payload) => knowledgeApiJson(`/knowledge/distillations/${encodeURIComponent(knowledgeId)}/review`, { method: "PUT", body: JSON.stringify(payload) });
 export const loadDistilledKnowledge = async (documentId, { limit = 100, offset = 0 } = {}) => knowledgeApiJson(`/knowledge/documents/${encodeURIComponent(documentId)}/distillations?limit=${encodeURIComponent(limit)}&offset=${encodeURIComponent(offset)}`, { method: "GET", cache: "no-store" });
 export const syncKnowledgeIssues = async (issues) => knowledgeApiJson("/knowledge/issues", { method: "POST", body: JSON.stringify({ issues }) });
-export const loadKnowledgeIssues = async ({ module = "", personName = "", query = "", status = "", threshold = 80, limit = 30, offset = 0 } = {}) => {
-  const params = new URLSearchParams({ module, personName, query, status, threshold: String(threshold), limit: String(limit), offset: String(offset) });
+export const loadKnowledgeIssues = async ({ module = "", personName = "", query = "", status = "", threshold = 80, sourceFile = "", issueType = "", minScore = "", maxScore = "", minMatches = "", dateFrom = "", dateTo = "", limit = 30, offset = 0 } = {}) => {
+  const params = new URLSearchParams({ module, personName, query, status, sourceFile, issueType, minScore: String(minScore), maxScore: String(maxScore), minMatches: String(minMatches), dateFrom, dateTo, threshold: String(threshold), limit: String(limit), offset: String(offset) });
   return knowledgeApiJson(`/knowledge/issues?${params.toString()}`, { method: "GET", cache: "no-store" });
 };
 export const generateKnowledgeMatches = async (issueId) => knowledgeApiJson(`/knowledge/issues/${encodeURIComponent(issueId)}/matches`, { method: "POST", body: "{}" });

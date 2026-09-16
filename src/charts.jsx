@@ -56,7 +56,7 @@ const useChartFontScale = () => {
   }, []);
   return scale;
 };
-function ScaledChart({ option, ...props }) {
+export function ScaledChart({ option, ...props }) {
   const scale = useChartFontScale();
   const themedOption = isAppleTheme() ? applyAppleChartTheme(option) : option;
   const optimizedOption = optimizeChartOption(themedOption);
@@ -78,7 +78,7 @@ const themeSeries = (series, index) => {
     const originalColor = next.itemStyle?.color;
     const themedColor = typeof originalColor === "function" ? originalColor : color;
     next.barMaxWidth = next.barMaxWidth || 22;
-    next.itemStyle = { ...(next.itemStyle || {}), borderRadius: next.stack ? [0, 0, 0, 0] : [8, 8, 0, 0], color: themedColor, shadowBlur: 7, shadowColor: "rgba(15,23,42,.08)" };
+    next.itemStyle = { ...(next.itemStyle || {}), borderRadius: next.itemStyle?.borderRadius ?? (next.stack ? [0, 0, 0, 0] : [8, 8, 0, 0]), color: themedColor, shadowBlur: 7, shadowColor: "rgba(15,23,42,.08)" };
   }
   if (next.type === "line") {
     next.symbolSize = next.symbolSize || 8;
@@ -104,7 +104,9 @@ const applyAppleChartTheme = (option) => ({
   ...option,
   tooltip: { trigger: "axis", ...(option.tooltip || {}), backgroundColor: "rgba(255,255,255,.96)", borderColor: "#E2E8F0", borderWidth: 1, textStyle: { color: "#1F2937", ...(option.tooltip?.textStyle || {}) }, extraCssText: `box-shadow:0 12px 30px rgba(16,24,40,.12);border-radius:12px;${option.tooltip?.extraCssText || ""}` },
   legend: option.legend ? { itemWidth: 13, itemHeight: 8, ...(option.legend || {}), textStyle: { color: "#526174", fontWeight: 700, fontSize: 12, ...(option.legend?.textStyle || {}) } } : option.legend,
-  grid: option.grid ? { containLabel: true, ...themeGrid(option.grid || {}, option.legend) } : option.grid,
+  grid: Array.isArray(option.grid)
+    ? option.grid.map((item) => themeGrid(item, option.legend))
+    : option.grid ? { containLabel: true, ...themeGrid(option.grid || {}, option.legend) } : option.grid,
   xAxis: Array.isArray(option.xAxis) ? option.xAxis.map(themeAxis) : option.xAxis ? themeAxis(option.xAxis) : option.xAxis,
   yAxis: Array.isArray(option.yAxis) ? option.yAxis.map(themeAxis) : option.yAxis ? themeAxis(option.yAxis) : option.yAxis,
   visualMap: option.visualMap ? { ...(option.visualMap || {}), inRange: { color: ["#EFF6FF", "#BFDBFE", "#FDBA74", "#FB7185"], ...(option.visualMap?.inRange || {}) } } : option.visualMap,
@@ -142,7 +144,7 @@ const usePersistentAxisRange = (type, key, defaults) => {
   }, [type, key, range.min, range.max, JSON.stringify(defaults)]);
   return [range, setRange];
 };
-const useLabelControlsVisible = () => {
+export const useLabelControlsVisible = () => {
   const [visible, setVisible] = useState(() => localStorage.getItem("qms-chart-label-controls-visible-v2") === "true");
   useEffect(() => {
     const update = (event) => setVisible(event.detail);
@@ -562,7 +564,7 @@ export function QuantityRateCombo({
       valueFormatter: (value) => typeof value === "number" ? value.toLocaleString() : value,
     },
     legend: apple ? { type: "scroll", left: 8, right: 8, top: 0, itemWidth: 13, itemHeight: 8, borderRadius: 6, textStyle: { color: applePalette.text, fontWeight: 700, fontSize: 12 } } : { top: 0, right: 8 },
-    grid: { left: apple ? 64 : 58, right: apple ? 64 : 58, top: apple ? 82 : 78, bottom: axisBottom, containLabel: true },
+    grid: { left: apple ? 64 : 58, right: apple ? 82 : 82, top: apple ? 82 : 78, bottom: axisBottom, containLabel: true },
     xAxis: {
       type: "category", data: labels,
       axisLabel: { interval: 0, rotate: axisAngle, margin: axisAngle ? 12 : 8, color: apple ? applePalette.text : "#596273", fontWeight: apple ? 600 : undefined, hideOverlap: axisAngle === 0 },
@@ -571,7 +573,7 @@ export function QuantityRateCombo({
     },
     yAxis: [
       { type: "value", name: qtyLabel, nameTextStyle: { color: apple ? applePalette.muted : "#718096", fontWeight: apple ? 700 : undefined }, axisLabel: { color: apple ? applePalette.muted : undefined }, splitLine: { lineStyle: { color: apple ? applePalette.grid : "#eef1f5", type: apple ? "dashed" : "solid" } } },
-      { type: "value", name: rateLabel, min: Number(effectiveRateAxis.min) || 0, max: Math.max(Number(effectiveRateAxis.max) || 100, (Number(effectiveRateAxis.min) || 0) + 0.1), nameTextStyle: apple ? { color: applePalette.muted, fontWeight: 700 } : undefined, axisLabel: { formatter: "{value}%", color: apple ? applePalette.muted : undefined }, splitLine: { show: false } },
+      { type: "value", name: rateLabel, position: "right", min: Number(effectiveRateAxis.min) || 0, max: Math.max(Number(effectiveRateAxis.max) || 100, (Number(effectiveRateAxis.min) || 0) + 0.1), nameTextStyle: apple ? { color: applePalette.muted, fontWeight: 700 } : { color: "#b42318" }, axisLine: { show: true, lineStyle: { color: apple ? applePalette.rate26 : "#d94f4f", width: 1.2 } }, axisTick: { show: true, lineStyle: { color: apple ? applePalette.rate26 : "#d94f4f" } }, axisLabel: { formatter: "{value}%", color: apple ? applePalette.muted : "#b42318", margin: 10 }, splitLine: { show: false } },
     ],
     series: [
       ...themedBarSeries,
@@ -692,6 +694,113 @@ export function ScoreYearCompare({ rows, metric, label, percent = false, max, he
     series: [
       { name: "2025同期", type: "bar", data: rows.map((row) => row[`y2025${metric}`] || 0), barMaxWidth: 32, label: { show: labelVisible(positions["2025同期"]), position: labelPosition(positions["2025同期"]), distance: isAppleTheme() ? 8 : undefined, formatter: `{c}${suffix}`, fontSize: 10 }, labelLayout: { hideOverlap: false, moveOverlap: "shiftY" }, itemStyle: { color: "#78aee8", borderRadius: [4,4,0,0] } },
       { name: "2026本期", type: "bar", data: rows.map((row) => row[`y2026${metric}`] || 0), barMaxWidth: 32, label: { show: labelVisible(positions["2026本期"]), position: labelPosition(positions["2026本期"]), distance: isAppleTheme() ? 8 : undefined, formatter: `{c}${suffix}`, fontSize: 10 }, labelLayout: { hideOverlap: false, moveOverlap: "shiftY" }, itemStyle: { color: "#f39a50", borderRadius: [4,4,0,0] } },
+    ],
+  }} /></div>;
+}
+
+export function QuantityRateMultiCombo({ rows = [], height = 340, chartKey = "quantity-rate-multi", rateAxisOverride = null, hideRateAxisControl = false }) {
+  const [positions, setPositions] = usePersistentPositions("quantity-rate-multi", chartKey, { "2025送检数量": "top", "2025问题数量": "top", "2026送检数量": "top", "2026问题数量": "top", "2025异常密度": "top", "2026异常密度": "bottom" });
+  const [rateAxis, setRateAxis] = usePersistentAxisRange("quantity-rate-multi", chartKey, { min: 0, max: 10 });
+  const effective = rateAxisOverride || rateAxis;
+  const labels = Object.keys(positions);
+  const label = (name, color) => ({ show: labelVisible(positions[name]), position: labelPosition(positions[name]), formatter: ({ value }) => `${Number(value || 0).toLocaleString()}${name.includes("异常密度") ? "%" : ""}`, color, fontSize: 9, backgroundColor: "rgba(255,255,255,.9)", padding: [1, 3] });
+  return <div className="chart-config-wrap"><div className="chart-control-row">{!hideRateAxisControl && <RateAxisControl range={rateAxis} onChange={setRateAxis}/>}<LabelPositionControl positions={positions} onChange={(name, value) => setPositions((current) => ({ ...current, [name]: value }))}/></div><ScaledChart style={{ height }} option={{
+    tooltip: { trigger: "axis", axisPointer: { type: "cross" } }, legend: topLegend(8), grid: { left: 64, right: 70, top: isAppleTheme() ? 92 : 72, bottom: 44, containLabel: true },
+    xAxis: { type: "category", data: rows.map((row) => row.month), axisLine: { lineStyle: { color: "#d8dee7" } } },
+    yAxis: [{ type: "value", name: "数量", min: 0, axisLine: { show: true, lineStyle: { color: "#d8dee7" } }, axisTick: { show: true }, splitLine: { lineStyle: { color: "#eef1f5" } } }, { type: "value", name: "异常密度", position: "right", min: Number(effective.min) || 0, max: Math.max(Number(effective.max) || 10, (Number(effective.min) || 0) + 0.1), axisLine: { show: true, lineStyle: { color: "#d94f4f" } }, axisTick: { show: true }, axisLabel: { formatter: "{value}%", color: "#b42318", margin: 10 }, splitLine: { show: false } }],
+    series: [
+      { name: "2025送检数量", type: "bar", data: rows.map((row) => row.y2025Qty || 0), barWidth: 10, itemStyle: { color: "#9fc5eb", borderRadius: [3,3,0,0] }, label: label("2025送检数量", "#41678c") },
+      { name: "2025问题数量", type: "bar", data: rows.map((row) => row.y2025Bad || 0), barWidth: 10, itemStyle: { color: "#f3b778", borderRadius: [3,3,0,0] }, label: label("2025问题数量", "#9a5a22") },
+      { name: "2026送检数量", type: "bar", data: rows.map((row) => row.y2026Qty || 0), barWidth: 10, itemStyle: { color: "#438fd8", borderRadius: [3,3,0,0] }, label: label("2026送检数量", "#174f84") },
+      { name: "2026问题数量", type: "bar", data: rows.map((row) => row.y2026Bad || 0), barWidth: 10, itemStyle: { color: "#e8752e", borderRadius: [3,3,0,0] }, label: label("2026问题数量", "#91400f") },
+      { name: "2025异常密度", type: "line", yAxisIndex: 1, data: rows.map((row) => row.y2025Rate || 0), smooth: true, symbolSize: 7, lineStyle: { width: 2.4, color: "#6f63c4" }, itemStyle: { color: "#6f63c4" }, label: label("2025异常密度", "#5c4fa8") },
+      { name: "2026异常密度", type: "line", yAxisIndex: 1, data: rows.map((row) => row.y2026Rate || 0), smooth: true, symbolSize: 7, lineStyle: { width: 2.6, color: "#d94f4f" }, itemStyle: { color: "#d94f4f" }, label: label("2026异常密度", "#b42318") },
+    ],
+  }} /></div>;
+}
+
+export function OqcShipmentMetricsCombo({ rows = [], height = 360, chartKey = "oqc-shipment-metrics", rateAxisOverride = null, hideRateAxisControl = false }) {
+  const [axis, setAxis] = usePersistentAxisRange("oqc-shipment-metrics", chartKey, { min: 0, max: 100 });
+  const effective = rateAxisOverride || axis;
+  const [positions, setPositions] = usePersistentPositions("oqc-shipment-metrics", chartKey, { 出货台数: "top", 五分数量: "top", 低分数量: "top", 五分比例: "top", 低分比例: "bottom" });
+  const bar = (name, key, color) => ({ name, type: "bar", data: rows.map((r) => r[key] || 0), barMaxWidth: 16, itemStyle: { color, borderRadius: [3,3,0,0] }, label: { show: labelVisible(positions[name]), position: labelPosition(positions[name]), formatter: "{c}", fontSize: 9 } });
+  const line = (name, key, color) => ({ name, type: "line", yAxisIndex: 1, data: rows.map((r) => r[key] || 0), smooth: true, symbolSize: 7, lineStyle: { width: 2.5, color }, itemStyle: { color }, label: { show: labelVisible(positions[name]), position: labelPosition(positions[name]), formatter: "{c}%", fontSize: 9 } });
+  return <div className="chart-config-wrap"><div className="chart-control-row">{!hideRateAxisControl && <RateAxisControl range={axis} onChange={setAxis}/>}<LabelPositionControl positions={positions} onChange={(name, value) => setPositions((current) => ({ ...current, [name]: value }))}/></div><ScaledChart style={{ height }} option={{ tooltip: { trigger: "axis", axisPointer: { type: "cross" } }, legend: topLegend(8), grid: { left: 62, right: 68, top: 72, bottom: 44, containLabel: true }, xAxis: { type: "category", data: rows.map((r) => r.month) }, yAxis: [{ type: "value", name: "数量", min: 0 }, { type: "value", name: "比例", min: Number(effective.min) || 0, max: Math.max(Number(effective.max) || 100, 1), axisLabel: { formatter: "{value}%" }, splitLine: { show: false } }], series: [bar("出货台数", "count", "#438fd8"), bar("五分数量", "five", "#50ad68"), bar("低分数量", "low", "#e8752e"), line("五分比例", "fiveRate", "#6f63c4"), line("低分比例", "lowRate", "#d94f4f")] }} /></div>;
+}
+
+export function OqcDivisionShipmentCombo({ rows = [], height = 380, chartKey = "oqc-division-shipment" }) {
+  const [rateAxis, setRateAxis] = usePersistentAxisRange("oqc-division-shipment", chartKey, { min: 0, max: 100 });
+  const [positions, setPositions] = usePersistentPositions("oqc-division-shipment", chartKey, { "2025出货台数": "top", "2026出货台数": "top", "2025五分数量": "top", "2026五分数量": "top", "2025低分数量": "top", "2026低分数量": "top", "2025五分比例": "top", "2026五分比例": "bottom", "2025低分比例": "top", "2026低分比例": "bottom" });
+  const bar = (name, key, color) => ({ name, type: "bar", data: rows.map((r) => r[key] || 0), barMaxWidth: 12, itemStyle: { color }, label: { show: labelVisible(positions[name]), position: labelPosition(positions[name]), formatter: "{c}", fontSize: 8 } });
+  const line = (name, key, color) => ({ name, type: "line", yAxisIndex: 1, data: rows.map((r) => r[key] || 0), smooth: true, symbolSize: 7, lineStyle: { width: 2.2, color }, itemStyle: { color }, label: { show: labelVisible(positions[name]), position: labelPosition(positions[name]), formatter: "{c}%", fontSize: 8 } });
+  return <div className="chart-config-wrap"><div className="chart-control-row"><RateAxisControl range={rateAxis} onChange={setRateAxis}/><LabelPositionControl positions={positions} onChange={(name, value) => setPositions((current) => ({ ...current, [name]: value }))}/></div><ScaledChart style={{ height }} option={{ tooltip: { trigger: "axis", axisPointer: { type: "cross" } }, legend: topLegend(8), grid: { left: 72, right: 78, top: 92, bottom: 58, containLabel: true }, xAxis: { type: "category", data: rows.map((r) => displayLabel(r.name)), axisLabel: { interval: 0, rotate: rows.length > 4 ? 18 : 0, margin: 12 } }, yAxis: [{ type: "value", name: "数量", min: 0, splitLine: { lineStyle: { color: "#eef1f5" } } }, { type: "value", name: "比例", min: Number(rateAxis.min) || 0, max: Math.max(Number(rateAxis.max) || 100, 1), axisLabel: { formatter: "{value}%" }, splitLine: { show: false } }], series: [bar("2025出货台数", "y2025Count", "#9fc5eb"), bar("2026出货台数", "y2026Count", "#438fd8"), bar("2025五分数量", "y2025Five", "#9ad5aa"), bar("2026五分数量", "y2026Five", "#50ad68"), bar("2025低分数量", "y2025Low", "#f3b778"), bar("2026低分数量", "y2026Low", "#e8752e"), line("2025五分比例", "y2025FiveRate", "#6f63c4"), line("2026五分比例", "y2026FiveRate", "#3b82f6"), line("2025低分比例", "y2025LowRate", "#c46a00"), line("2026低分比例", "y2026LowRate", "#d94f4f")] }} /></div>;
+}
+
+export function OqcDivisionSingleMetricCombo({ rows = [], metric = "Count", label = "出货量", percent = false, height = 300, chartKey = "oqc-division-single" }) {
+  const [axis, setAxis] = usePersistentAxisRange("oqc-division-single", chartKey, { min: 0, max: percent ? 100 : 100 });
+  const hasRate = metric !== "Count";
+  const countKey = metric === "Five" ? "Five" : metric === "Low" ? "Low" : "Count";
+  const rateKey = metric === "Five" ? "FiveRate" : "LowRate";
+  const [positions, setPositions] = usePersistentPositions("oqc-division-single", chartKey, { "2025数量": "top", "2026数量": "top", "2025比例": "top", "2026比例": "bottom" });
+  const bar = (name, key, color) => ({ name, type: "bar", data: rows.map((r) => r[key] || 0), barMaxWidth: 30, itemStyle: { color, borderRadius: [4,4,0,0] }, label: { show: labelVisible(positions[name]), position: labelPosition(positions[name]), formatter: "{c}", fontSize: 9 } });
+  const line = (name, key, color) => ({ name, type: "line", yAxisIndex: 1, data: rows.map((r) => r[key] || 0), smooth: true, symbolSize: 8, lineStyle: { width: 2.5, color }, itemStyle: { color }, label: { show: labelVisible(positions[name]), position: labelPosition(positions[name]), formatter: "{c}%", fontSize: 9 } });
+  const maxValue = percent ? Math.max(Number(axis.max) || 100, 1) : undefined;
+  return <div className="chart-config-wrap"><div className="chart-control-row">{hasRate && <RateAxisControl range={axis} onChange={setAxis}/>}<LabelPositionControl positions={positions} onChange={(name, value) => setPositions((current) => ({ ...current, [name]: value }))}/></div><ScaledChart style={{ height }} option={{ tooltip: { trigger: "axis", axisPointer: { type: "cross" } }, legend: topLegend(8), grid: { left: 62, right: hasRate ? 66 : 28, top: 72, bottom: 48, containLabel: true }, xAxis: { type: "category", data: rows.map((r) => displayLabel(r.name)), axisLabel: { interval: 0 } }, yAxis: [{ type: "value", name: label, min: 0 }, ...(hasRate ? [{ type: "value", name: "比例", min: Number(axis.min) || 0, max: maxValue, axisLabel: { formatter: "{value}%" }, splitLine: { show: false } }] : [])], series: [bar("2025数量", `y2025${countKey}`, "#9fc5eb"), bar("2026数量", `y2026${countKey}`, "#438fd8"), ...(hasRate ? [line("2025比例", `y2025${rateKey}`, "#6f63c4"), line("2026比例", `y2026${rateKey}`, "#d94f4f")] : [])] }} /></div>;
+}
+
+// TPM drill-down chart: quantities use the left axis, score ratios use the
+// independently configurable right axis so low/high rates remain legible.
+export function OqcTpmMonthlyCombo({ rows = [], height = 300, chartKey = "oqc-tpm-monthly" }) {
+  const [rateAxis, setRateAxis] = usePersistentAxisRange("oqc-tpm-monthly", chartKey, { min: 0, max: 100 });
+  const [positions, setPositions] = usePersistentPositions("oqc-tpm-monthly", chartKey, { "2025出货量": "top", "2026出货量": "top", "2025五分数量": "top", "2026五分数量": "top", "2025低分数量": "top", "2026低分数量": "top", "2025五分比例": "top", "2026五分比例": "bottom", "2025低分比例": "top", "2026低分比例": "bottom" });
+  const bar = (name, key, color) => ({ name, type: "bar", data: rows.map((r) => r[key] || 0), barMaxWidth: 12, itemStyle: { color, borderRadius: [3,3,0,0] }, label: { show: labelVisible(positions[name]), position: labelPosition(positions[name]), formatter: "{c}", fontSize: 8 } });
+  const line = (name, key, color) => ({ name, type: "line", yAxisIndex: 1, data: rows.map((r) => r[key] || 0), smooth: true, symbolSize: 6, lineStyle: { width: 2.2, color }, itemStyle: { color }, label: { show: labelVisible(positions[name]), position: labelPosition(positions[name]), formatter: "{c}%", fontSize: 8 } });
+  return <div className="chart-config-wrap"><div className="chart-control-row"><RateAxisControl range={rateAxis} onChange={setRateAxis}/><LabelPositionControl positions={positions} onChange={(name, value) => setPositions((current) => ({ ...current, [name]: value }))}/></div><ScaledChart style={{ height }} option={{ tooltip: { trigger: "axis", axisPointer: { type: "cross" } }, legend: topLegend(8), grid: { left: 58, right: 66, top: 86, bottom: 42, containLabel: true }, xAxis: { type: "category", data: rows.map((r) => r.month), axisLabel: { interval: 0 } }, yAxis: [{ type: "value", name: "数量", min: 0 }, { type: "value", name: "比例", min: Number(rateAxis.min) || 0, max: Math.max(Number(rateAxis.max) || 100, 1), axisLabel: { formatter: "{value}%" }, splitLine: { show: false } }], series: [bar("2025出货量", "y2025Count", "#9fc5eb"), bar("2026出货量", "y2026Count", "#438fd8"), bar("2025五分数量", "y2025Five", "#9ad5aa"), bar("2026五分数量", "y2026Five", "#50ad68"), bar("2025低分数量", "y2025Low", "#f3b778"), bar("2026低分数量", "y2026Low", "#e8752e"), line("2025五分比例", "y2025FiveRate", "#6f63c4"), line("2026五分比例", "y2026FiveRate", "#3b82f6"), line("2025低分比例", "y2025LowRate", "#c46a00"), line("2026低分比例", "y2026LowRate", "#d94f4f")] }} /></div>;
+}
+
+export function OqcDivisionMetricCombo({ rows = [], metric = "Avg", label = "平均分", percent = false, max, height = 330, chartKey = `oqc-division-${metric}` }) {
+  if (metric === "FiveRate" && chartKey.includes("management-oqc-division")) return <OqcDivisionShipmentCombo rows={rows} height={height} chartKey={chartKey}/>;
+  const suffix = percent ? "%" : "";
+  const names = ["2025机台数量", "2026机台数量", `2025${label}`, `2026${label}`];
+  const [positions, setPositions] = usePersistentPositions("oqc-division-combo", chartKey, Object.fromEntries(names.map((name, index) => [name, index < 2 ? "top" : "top"])));
+  const changePosition = (name, value) => setPositions((current) => ({ ...current, [name]: value }));
+  const metricValue = (row, year) => Number(row?.[`y${year}${metric}`] || 0);
+  const countValue = (row, year) => Number(row?.[`y${year}Count`] || 0);
+  const valueLabel = (name, formatter, color) => ({
+    show: labelVisible(positions[name]),
+    position: labelPosition(positions[name]),
+    distance: 8,
+    formatter,
+    color,
+    fontSize: 9,
+    backgroundColor: "rgba(255,255,255,.9)",
+    padding: [1, 3],
+  });
+  return <div className="chart-config-wrap"><div className="chart-control-row"><LabelPositionControl positions={positions} onChange={changePosition}/></div><ScaledChart style={{ height }} option={{
+    tooltip: {
+      trigger: "axis",
+      axisPointer: { type: "cross" },
+      formatter: (params) => {
+        const row = rows[params?.[0]?.dataIndex] || {};
+        return [displayLabel(row.name), ...params.map((item) => {
+          const isCount = item.seriesName.includes("机台数量");
+          const value = isCount ? Number(item.value || 0).toLocaleString() : `${Number(item.value || 0).toFixed(percent ? 1 : 2)}${suffix}`;
+          return `${item.marker}${item.seriesName}：${value}`;
+        })].join("<br/>");
+      },
+    },
+    legend: topLegend(8),
+    grid: { left: 58, right: 64, top: isAppleTheme() ? 76 : 60, bottom: 48, containLabel: true },
+    xAxis: { type: "category", data: rows.map((row) => displayLabel(row.name)), axisLabel: { interval: 0 }, axisLine: { lineStyle: { color: "#d8dee7" } } },
+    yAxis: [
+      { type: "value", name: "机台数量", min: 0, minInterval: 1, axisLabel: { formatter: "{value}" }, splitLine: { lineStyle: { color: "#eef1f5" } } },
+      { type: "value", name: percent ? "比例" : label, min: 0, max: max || (percent ? 100 : 5), interval: percent ? 20 : 1, axisLabel: { formatter: `{value}${suffix}` }, splitLine: { show: false } },
+    ],
+    series: [
+      { name: names[0], type: "bar", data: rows.map((row) => countValue(row, 2025)), barMaxWidth: 24, itemStyle: { color: "#2f7ee6", borderRadius: [5, 5, 0, 0] }, label: valueLabel(names[0], ({ value }) => Number(value || 0).toLocaleString(), "#245a9a"), labelLayout: { hideOverlap: false, moveOverlap: "shiftY" } },
+      { name: names[1], type: "bar", data: rows.map((row) => countValue(row, 2026)), barMaxWidth: 24, itemStyle: { color: "#f5822a", borderRadius: [5, 5, 0, 0] }, label: valueLabel(names[1], ({ value }) => Number(value || 0).toLocaleString(), "#a95018"), labelLayout: { hideOverlap: false, moveOverlap: "shiftY" } },
+      { name: names[2], type: "line", yAxisIndex: 1, data: rows.map((row) => metricValue(row, 2025)), smooth: true, symbolSize: 8, lineStyle: { width: 2.5, color: "#6f63c4" }, itemStyle: { color: "#6f63c4" }, label: valueLabel(names[2], ({ value }) => `${Number(value || 0).toFixed(percent ? 1 : 2)}${suffix}`, "#5c4fa8"), labelLayout: { hideOverlap: false, moveOverlap: "shiftY" } },
+      { name: names[3], type: "line", yAxisIndex: 1, data: rows.map((row) => metricValue(row, 2026)), smooth: true, symbolSize: 8, lineStyle: { width: 2.5, color: "#50ad68" }, itemStyle: { color: "#50ad68" }, label: valueLabel(names[3], ({ value }) => `${Number(value || 0).toFixed(percent ? 1 : 2)}${suffix}`, "#31834a"), labelLayout: { hideOverlap: false, moveOverlap: "shiftY" } },
     ],
   }} /></div>;
 }

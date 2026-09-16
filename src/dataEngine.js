@@ -36,9 +36,27 @@ const normalizeDqaEcnReason = (value) => {
   if (reason.includes("未填写")) return "未填写";
   return reason.replace(/\+/g, "");
 };
-const ipqcQty = (row) => number(row["送检数"] ?? row["治具数量"]);
-// IPQC异常按“不良内容”记录行数统计：内容非空的一行计1条。
-const ipqcBad = (row) => text(row["不良内容"]) ? 1 : 0;
+// IPQC denominator is always the sum of the source workbook's 送检数 column.
+// Do not substitute a defect/fixture count when that column is blank.
+const ipqcQty = (row) => number(row["送检数"]);
+// These categories describe upstream/design causes rather than assembly
+// process abnormalities. Keep the source rows, but exclude them from all
+// IPQC issue counts and density calculations.
+export const IPQC_EXCLUDED_BAD_TYPES = [
+  "3D问题",
+  "研发问题",
+  "设计问题",
+  "资料问题",
+  "来料问题",
+  "仓库发料问题",
+];
+export const isIpqcExcludedBadType = (row) => {
+  const type = text(row?.["不良类型"]).replace(/\s/g, "");
+  return IPQC_EXCLUDED_BAD_TYPES.some((keyword) => type.includes(keyword));
+};
+// One non-empty 不良类型 row counts as one issue unless it is an explicitly
+// excluded upstream/design category. The 不良内容 column is not the counter.
+const ipqcBad = (row) => text(row?.["不良类型"]) && !isIpqcExcludedBadType(row) ? 1 : 0;
 const businessDate = (value) => {
   const raw = value instanceof Date ? value : new Date(value);
   if (Number.isNaN(raw.getTime())) return null;
@@ -225,9 +243,13 @@ const ecnRows = (workbook) => {
 };
 
 const oqcMonthlySummaryRows = (workbook) => {
+  const allowedDivisions = ["产品一部", "产品五部", "FPC事业部"];
   const rows = [];
   workbook.SheetNames.forEach((name) => {
-    const matrix = sheetMatrix(workbook.Sheets[name]);
+    // Keep the spacer rows between the 2025 and 2026 blocks. The generic
+    // parser intentionally removes blank rows, but these fixed-format OQC
+    // blocks rely on their original worksheet row numbers.
+    const matrix = XLSX.utils.sheet_to_json(workbook.Sheets[name], { header: 1, defval: "", blankrows: true });
     const blocks = [
       { year: 2025, monthRow: 1, scoreRow: 2, startRow: 3, endRow: 13 },
       { year: 2026, monthRow: 18, scoreRow: 19, startRow: 20, endRow: 30 },
@@ -236,9 +258,18 @@ const oqcMonthlySummaryRows = (workbook) => {
       let division = "";
       for (let rowIndex = block.startRow; rowIndex <= block.endRow && rowIndex < matrix.length; rowIndex += 1) {
         const source = matrix[rowIndex] || [];
-        if (text(source[0])) division = text(source[0]);
+        const sourceDivision = text(source[0]);
+        const sourceTpm = text(source[1]);
+        const isTotal = sourceDivision === "总计" || sourceTpm === "总计";
+        // A non-empty department cell starts a new group. Unsupported
+        // departments must clear the previous group instead of inheriting it.
+        if (sourceDivision) division = (allowedDivisions.includes(sourceDivision) || sourceDivision === "亚太开发部" || sourceDivision === "产品三部") ? sourceDivision : "";
+        if (isTotal) division = "__总计__";
         const tpm = text(source[1]);
-        if (!tpm || ["FPC汇总", "总计", "/"].includes(tpm) || division === "总计") continue;
+        if (isTotal) {
+          // Keep the source total row for the authoritative overall metric.
+          // It is intentionally excluded from normal division/TPM rows.
+        } else if (!tpm || ["FPC汇总", "/"].includes(tpm) || !division) continue;
         for (let col = 2; col < source.length; col += 1) {
           let month = text(matrix[block.monthRow]?.[col]);
           if (!month) {
@@ -250,7 +281,7 @@ const oqcMonthlySummaryRows = (workbook) => {
           const count = number(source[col]);
           if (!monthNumber || !score || count <= 0) continue;
           rows.push({
-            产品部: division, TPM: tpm, 年份: block.year, 月份: monthNumber,
+            产品部: isTotal ? "__总计__" : division, TPM: isTotal ? "__总计__" : tpm, 年份: block.year, 月份: monthNumber,
             评分档位: score, 数量: count, 日期: new Date(block.year, monthNumber - 1, 1),
           });
         }
@@ -1095,6 +1126,52 @@ const iqcSpecialEvidence = (row) => {
   return { category: "证据不足/其他", level: "低", evidence: "现有描述不足以区分设计要求与制造偏差" };
 };
 
+const mergeIqcMonthly = (left = [], right = [], rateMode = "good") => {
+  const order = (left.length ? left : right).map((row) => row.month);
+  return order.map((month) => {
+    const a = left.find((row) => row.month === month) || {};
+    const b = right.find((row) => row.month === month) || {};
+    const result = { month };
+    [2025, 2026].forEach((year) => {
+      const qty = Number(a[`y${year}Qty`] || 0) + Number(b[`y${year}Qty`] || 0);
+      const bad = Number(a[`y${year}Bad`] || 0) + Number(b[`y${year}Bad`] || 0);
+      result[`y${year}Qty`] = qty;
+      result[`y${year}Bad`] = bad;
+      const value = rateMode === "bad" ? bad : Math.max(qty - bad, 0);
+      result[`y${year}Rate`] = qty ? Number((value / qty * 100).toFixed(rateMode === "bad" ? 2 : 1)) : 0;
+    });
+    return result;
+  });
+};
+const mergeIqcNamedCounts = (left = [], right = [], limit) => {
+  const map = new Map();
+  [...left, ...right].forEach((row) => {
+    const current = map.get(row.name) || { name: row.name, y2025Count: 0, y2026Count: 0, y2025Qty: 0, y2026Qty: 0, y2025Bad: 0, y2026Bad: 0 };
+    current.y2025Count += Number(row.y2025Count || 0);
+    current.y2026Count += Number(row.y2026Count || 0);
+    current.y2025Qty += Number(row.y2025Qty || 0);
+    current.y2026Qty += Number(row.y2026Qty || 0);
+    current.y2025Bad += Number(row.y2025Bad || 0);
+    current.y2026Bad += Number(row.y2026Bad || 0);
+    map.set(row.name, current);
+  });
+  const rows = [...map.values()];
+  const t25 = rows.reduce((sum, row) => sum + (row.y2025Count || row.y2025Qty || 0), 0);
+  const t26 = rows.reduce((sum, row) => sum + (row.y2026Count || row.y2026Qty || 0), 0);
+  const merged = rows.map((row) => {
+    const qty25 = row.y2025Qty || 0;
+    const qty26 = row.y2026Qty || 0;
+    return {
+      ...row,
+      y2025Share: Number(((row.y2025Count || 0) / Math.max(t25, 1) * 100).toFixed(1)),
+      y2026Share: Number(((row.y2026Count || 0) / Math.max(t26, 1) * 100).toFixed(1)),
+      y2025Rate: qty25 ? Number(((qty25 - (row.y2025Bad || 0)) / qty25 * 100).toFixed(1)) : (row.y2025Rate || 0),
+      y2026Rate: qty26 ? Number(((qty26 - (row.y2026Bad || 0)) / qty26 * 100).toFixed(1)) : (row.y2026Rate || 0),
+    };
+  }).sort((a, b) => (b.y2026Count || b.y2026Qty || 0) - (a.y2026Count || a.y2026Qty || 0));
+  return limit ? merged.slice(0, limit) : merged;
+};
+
 const buildIqcDetails = (iqcFiles, dateRange, specialAsBad = false) => {
   const siteRows = { 深圳: [], 杭州: [] };
   iqcFiles.forEach((file) => {
@@ -1188,6 +1265,9 @@ const buildIqcDetails = (iqcFiles, dateRange, specialAsBad = false) => {
       .filter((row) => row.y2025Qty + row.y2026Qty > 0)
       .sort((a, b) => (b.y2025Qty + b.y2026Qty) - (a.y2025Qty + a.y2026Qty));
   });
+  siteMonthly["全公司"] = mergeIqcMonthly(siteMonthly["深圳"] || [], siteMonthly["杭州"] || []);
+  issueBySite["全公司"] = mergeIqcNamedCounts(issueBySite["深圳"] || [], issueBySite["杭州"] || [], 10);
+  materialBySite["全公司"] = mergeIqcNamedCounts(materialBySite["深圳"] || [], materialBySite["杭州"] || []);
   return { siteMonthly, issueBySite, materialBySite, mainSuppliers, supplierCandidates };
 };
 
@@ -1328,6 +1408,15 @@ const buildIqcSpecialAnalysis = (iqcFiles, dateRange) => {
       highDesignEvidenceTotal: allDesignEvidence.filter((row) => row.level === "高").length,
     };
   });
+  bySite["全公司"] = {
+    monthly: mergeIqcMonthly(bySite["深圳"]?.monthly || [], bySite["杭州"]?.monthly || [], "bad"),
+    materials: mergeIqcNamedCounts(bySite["深圳"]?.materials || [], bySite["杭州"]?.materials || []),
+    suppliers: mergeIqcNamedCounts(bySite["深圳"]?.suppliers || [], bySite["杭州"]?.suppliers || [], 15),
+    evidence: mergeIqcNamedCounts(bySite["深圳"]?.evidence || [], bySite["杭州"]?.evidence || []),
+    designEvidence: [...(bySite["深圳"]?.designEvidence || []), ...(bySite["杭州"]?.designEvidence || [])].slice(0, 50),
+    designEvidenceTotal: Number(bySite["深圳"]?.designEvidenceTotal || 0) + Number(bySite["杭州"]?.designEvidenceTotal || 0),
+    highDesignEvidenceTotal: Number(bySite["深圳"]?.highDesignEvidenceTotal || 0) + Number(bySite["杭州"]?.highDesignEvidenceTotal || 0),
+  };
   return bySite;
 };
 
@@ -1376,6 +1465,11 @@ const buildIqcInternalAnalysis = (iqcFiles, dateRange, specialAsBad = false) => 
     }).filter((row) => row.y2025Qty + row.y2026Qty > 0).sort((a, b) => b.y2026Qty - a.y2026Qty);
     bySite[site] = { monthly, issues, materials };
   });
+  bySite["全公司"] = {
+    monthly: mergeIqcMonthly(bySite["深圳"]?.monthly || [], bySite["杭州"]?.monthly || []),
+    issues: mergeIqcNamedCounts(bySite["深圳"]?.issues || [], bySite["杭州"]?.issues || [], 10),
+    materials: mergeIqcNamedCounts(bySite["深圳"]?.materials || [], bySite["杭州"]?.materials || []),
+  };
   return bySite;
 };
 
@@ -1521,7 +1615,10 @@ const buildIpqcDetails = (ipqcFiles, dateRange) => {
 
 const buildOqcMonthlySummary = (rows, dateRange) => {
   const allowedDivisions = ["产品一部", "产品五部", "FPC事业部"];
-  const fpcTpms = ["刘波", "王辉", "罗超", "林秋秋", "朱慧慧"];
+  const allowedMonths = new Set(comparisonMonths(dateRange));
+  const scopedRows = rows.filter((row) => allowedMonths.has(number(row["月份"])));
+  const fpcTpms = [...new Set(scopedRows.filter((row) => text(row["产品部"]) === "FPC事业部").map((row) => text(row.TPM)).filter(Boolean))]
+    .sort((left, right) => left.localeCompare(right, "zh-CN"));
   const metrics = (source) => {
     const count = source.reduce((sum, row) => sum + number(row["数量"]), 0);
     const scoreTotal = source.reduce((sum, row) => sum + number(row["评分档位"]) * number(row["数量"]), 0);
@@ -1540,7 +1637,7 @@ const buildOqcMonthlySummary = (rows, dateRange) => {
   const compareRows = (names, field) => names.map((name) => {
     const result = { name };
     [2025, 2026].forEach((year) => {
-      const value = metrics(rows.filter((row) => text(row[field]) === name && number(row["年份"]) === year));
+      const value = metrics(scopedRows.filter((row) => text(row[field]) === name && number(row["年份"]) === year));
       result[`y${year}Count`] = value.count;
       result[`y${year}ScoreTotal`] = value.scoreTotal;
       result[`y${year}Five`] = value.five;
@@ -1554,7 +1651,7 @@ const buildOqcMonthlySummary = (rows, dateRange) => {
   const monthly = (filter) => comparisonMonths(dateRange).map((month) => {
     const result = { month: `${month}月` };
     [2025, 2026].forEach((year) => {
-      const value = metrics(rows.filter((row) => filter(row) && number(row["年份"]) === year && number(row["月份"]) === month));
+      const value = metrics(scopedRows.filter((row) => filter(row) && number(row["年份"]) === year && number(row["月份"]) === month));
       result[`y${year}Count`] = value.count;
       result[`y${year}ScoreTotal`] = value.scoreTotal;
       result[`y${year}Five`] = value.five;
@@ -1567,10 +1664,28 @@ const buildOqcMonthlySummary = (rows, dateRange) => {
   });
   const divisions = compareRows(allowedDivisions, "产品部");
   const fpcTpm = compareRows(fpcTpms, "TPM");
+  const overallRows = scopedRows.filter((row) => text(row["产品部"]) === "__总计__");
+  const overall = {};
+  [2025, 2026].forEach((year) => {
+    const authoritative = overallRows.filter((row) => number(row.年份) === year);
+    const fallback = scopedRows.filter((row) => number(row.年份) === year && allowedDivisions.includes(text(row["产品部"])));
+    overall[`y${year}`] = metrics(authoritative.length ? authoritative : fallback);
+  });
   return {
+    overall,
     divisions,
     fpcTpm,
     divisionMonthly: Object.fromEntries(allowedDivisions.map((division) => [division, monthly((row) => text(row["产品部"]) === division)])),
+    overallMonthly: (() => {
+      const totalMonthly = monthly((row) => text(row["产品部"]) === "__总计__");
+      const summedMonthly = monthly((row) => {
+        const division = text(row["产品部"]);
+        const tpm = text(row.TPM);
+        return division && division !== "__总计__" && tpm !== "FPC汇总";
+      });
+      const hasData = (rows) => rows.some((row) => (Number(row.y2025Count) || 0) + (Number(row.y2026Count) || 0) > 0);
+      return hasData(totalMonthly) ? totalMonthly : summedMonthly;
+    })(),
     fpcMonthly: monthly((row) => text(row["产品部"]) === "FPC事业部"),
   };
 };
@@ -1651,7 +1766,19 @@ const buildOqcShipmentDetail = (rows, dateRange) => {
   const tpmRows = compareRows(tpmNames, (name) => (row) => row.tpm === name)
     .map((row) => {
       const current = records.find((item) => item.year === 2026 && item.tpm === row.name) || records.find((item) => item.tpm === row.name);
-      return { ...row, division: current?.division || "未分类" };
+      const monthly = comparisonMonths(dateRange).map((month) => {
+        const result = { month: `${month}月` };
+        [2025, 2026].forEach((year) => {
+          const value = metric(records.filter((item) => item.year === year && item.month === month && item.tpm === row.name));
+          result[`y${year}Count`] = value.count;
+          result[`y${year}Five`] = value.five;
+          result[`y${year}Low`] = value.low;
+          result[`y${year}FiveRate`] = value.fiveRate;
+          result[`y${year}LowRate`] = value.lowRate;
+        });
+        return result;
+      });
+      return { ...row, division: current?.division || "未分类", monthly };
     })
     .sort((a, b) => (b.y2026LowRate - a.y2026LowRate) || (b.y2026Low - a.y2026Low) || (b.y2026Count - a.y2026Count));
 
@@ -2787,8 +2914,7 @@ export function analyzeImported(files, dateRange) {
       const all2026 = next.oqc.monthlySummary.divisions.reduce((sum, row) => sum + row.y2026Count, 0);
       const all2025 = next.oqc.monthlySummary.divisions.reduce((sum, row) => sum + row.y2025Count, 0);
       const five2025 = next.oqc.monthlySummary.divisions.reduce((sum, row) => sum + row.y2025Five, 0);
-      const five2026 = monthlySummaryRows.filter((row) => ["产品一部", "产品五部", "FPC事业部"].includes(text(row["产品部"])) && number(row["年份"]) === 2026 && number(row["评分档位"]) === 5)
-        .reduce((sum, row) => sum + number(row["数量"]), 0);
+      const five2026 = next.oqc.monthlySummary.divisions.reduce((sum, row) => sum + number(row.y2026Five), 0);
       const oqcRate25 = Number((five2025 / Math.max(all2025, 1) * 100).toFixed(1));
       const oqcRate26 = Number((five2026 / Math.max(all2026, 1) * 100).toFixed(1));
       next.kpis[2].value = oqcRate26;
@@ -2798,11 +2924,20 @@ export function analyzeImported(files, dateRange) {
     if (shipmentDetailRows.length) {
       next.oqc.shipmentDetail = buildOqcShipmentDetail(shipmentDetailRows, dateRange);
       next.oqc.equipmentDispersion = buildOqcEquipmentDispersion(shipmentDetailRows);
-      if (next.oqc.shipmentDetail.monthlySummary) next.oqc.monthlySummary = next.oqc.shipmentDetail.monthlySummary;
+      // The monthly summary workbook is the authoritative scoring population.
+      // Shipment-detail workbooks are also imported for drill-down, but their
+      // monthly files can overlap (for example a full-period file plus a
+      // June/July/August supplement). Do not overwrite the de-duplicated
+      // summary with the additive detail total.
+      if (!monthlySummaryRows.length && next.oqc.shipmentDetail.monthlySummary) {
+        next.oqc.monthlySummary = next.oqc.shipmentDetail.monthlySummary;
+      }
       const y2025 = next.oqc.shipmentDetail.overall?.y2025 || {};
       const y2026 = next.oqc.shipmentDetail.overall?.y2026 || {};
-      next.kpis[2].value = Number(y2026.fiveRate || 0);
-      next.kpis[2].delta = Number(((y2026.fiveRate || 0) - (y2025.fiveRate || 0)).toFixed(1));
+      if (!monthlySummaryRows.length) {
+        next.kpis[2].value = Number(y2026.fiveRate || 0);
+        next.kpis[2].delta = Number(((y2026.fiveRate || 0) - (y2025.fiveRate || 0)).toFixed(1));
+      }
     }
     const unique = new Map();
     const detailRows = oqc.filter((row) => row["评分档位"] == null && row["最终评分"] == null);

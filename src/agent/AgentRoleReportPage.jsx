@@ -795,7 +795,12 @@ const previousExamResultMarkdown = (result) => {
 };
 const confirmedKnowledgeMarkdown = (matches = []) => {
   if (!matches.length) return "\n\n## 已确认规范依据\n- 当前问题尚未完成人工规范匹配，暂不推送考试题目。";
-  const rows = matches.slice(0, 5).map((match) => `- **${match.evidence?.documentName || "规范"}${match.evidence?.clauseNumber ? ` · ${match.evidence.clauseNumber}` : ""}**：${match.evidence?.candidateTitle || match.evidence?.quote || "已确认条款"}`);
+  const rows = matches.slice(0, 5).map((match) => {
+    const evidence = match.evidence || {};
+    const violation = Array.isArray(evidence.violationBasis) && evidence.violationBasis.length ? `；违反依据：${evidence.violationBasis.join("；")}` : "";
+    const correct = evidence.correctState ? `；正确做法：${evidence.correctState}` : "";
+    return `- **${evidence.documentName || "规范"}${evidence.clauseNumber ? ` · ${evidence.clauseNumber}` : ""}**：${evidence.candidateTitle || evidence.quote || "已确认条款"}${violation}${correct}`;
+  });
   return `\n\n## 已确认规范依据\n${rows.join("\n")}`;
 };
 const createAgentExamLink = async (role, recipient, evidence, confirmedMatches = null) => {
