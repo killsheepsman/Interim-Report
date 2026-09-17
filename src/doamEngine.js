@@ -1,3 +1,4 @@
+import { expandDoamDataset } from "./doamCompact.js";
 const CATEGORY_RULES = [
   ["真空/吸附", ["真空", "吸盘", "吸附", "负压"]],
   ["测试/NG", ["ng", "测试", "不良", "测量"]],
@@ -134,7 +135,7 @@ export const buildDoamQuality = (rows, files = []) => {
 
 export const buildDoamDataset = (rows, files = []) => ({ ...summarizeRows(rows), quality: buildDoamQuality(rows, files), files });
 
-export const hydrateDoamDefault = (payload) => ({ units: payload?.units || [], categories: payload?.categories || [], quality: { ...(payload?.quality || {}), files: payload?.quality?.files || payload?.files || [] }, files: payload?.files || [] });
+export const hydrateDoamDefault = (payload) => expandDoamDataset(payload);
 
 export const mergeDoamDatasets = (base, additions = []) => {
   const units = new Map();
@@ -185,6 +186,36 @@ const filteredUnits = (units, filter = {}, except) => (units || []).filter((row)
   return true;
 });
 
+export const doamUnitsByCategory = (units, categories, category) => {
+  if (!category) return units || [];
+  const buckets = (categories || []).filter((row) => (row.c || "其他") === category);
+  if (!buckets.length) return [];
+  const allocated = new Map();
+  const keyOf = (row) => [row.y, row.d, row.s, row.m].join("|");
+  buckets.forEach((bucket) => {
+    const machineSet = new Set(bucket.ms || []);
+    const dateSet = new Set(bucket.ds || []);
+    const matches = (units || []).filter((row) => {
+      if (row.y !== bucket.y) return false;
+      if (fieldValue(row, "t") !== fieldValue(bucket, "t")) return false;
+      if (fieldValue(row, "e") !== fieldValue(bucket, "e")) return false;
+      if (machineSet.size && !machineSet.has(row.m)) return false;
+      if (dateSet.size && !dateSet.has(row.d)) return false;
+      return true;
+    });
+    if (!matches.length) return;
+    const total = matches.reduce((sum, row) => sum + Number(row.a || 0), 0);
+    matches.forEach((row) => {
+      const share = total > 0 ? Number(row.a || 0) / total : 1 / matches.length;
+      const key = keyOf(row);
+      const current = allocated.get(key) || { ...row, a: 0 };
+      current.a += Number(bucket.a || 0) * share;
+      allocated.set(key, current);
+    });
+  });
+  return [...allocated.values()].map((row) => ({ ...row, a: Number(Number(row.a).toFixed(4)) }));
+};
+
 const meanTypeAverages = (rows) => {
   const types = new Map();
   rows.forEach((row) => {
@@ -229,6 +260,13 @@ export const doamMonthlyTrend = (units, filter) => {
   }));
 };
 
+const yearBucketStats = (rows) => ({
+  average: meanTypeAverages(rows),
+  shifts: rows.length,
+  alarms: Number(rows.reduce((sum, row) => sum + Number(row.a || 0), 0).toFixed(2)),
+  machines: new Set(rows.map((row) => row.m)).size,
+});
+
 export const doamYearSplitAverages = (units, filter, field, except) => {
   const groups = new Map();
   filteredUnits(units, filter, except || field).forEach((row) => {
@@ -238,11 +276,21 @@ export const doamYearSplitAverages = (units, filter, field, except) => {
     if (row.y === 2026) current.y2026.push(row);
     groups.set(name, current);
   });
-  return [...groups.values()].map((row) => ({
-    name: row.name,
-    y2025: meanTypeAverages(row.y2025),
-    y2026: meanTypeAverages(row.y2026),
-  })).sort((a, b) => (b.y2026 || 0) - (a.y2026 || 0) || (b.y2025 || 0) - (a.y2025 || 0) || String(a.name).localeCompare(String(b.name), "zh"));
+  return [...groups.values()].map((row) => {
+    const y2025 = yearBucketStats(row.y2025);
+    const y2026 = yearBucketStats(row.y2026);
+    return {
+      name: row.name,
+      y2025: y2025.average,
+      y2026: y2026.average,
+      shifts2025: y2025.shifts,
+      shifts2026: y2026.shifts,
+      alarms2025: y2025.alarms,
+      alarms2026: y2026.alarms,
+      machines2025: y2025.machines,
+      machines2026: y2026.machines,
+    };
+  }).sort((a, b) => (b.y2026 || 0) - (a.y2026 || 0) || (b.y2025 || 0) - (a.y2025 || 0) || String(a.name).localeCompare(String(b.name), "zh"));
 };
 
 export const doamTpmAverages = (units, filter) => doamYearSplitAverages(units, filter, "t", "t");
@@ -258,30 +306,72 @@ export const doamDeviceAverages = (units, filter) => {
     if (row.y === 2026) current.y2026.push(row);
     groups.set(name, current);
   });
-  return [...groups.values()].map((row) => ({
-    name: row.name,
-    y2025: typeAverage(row.y2025),
-    y2026: typeAverage(row.y2026),
-  })).sort((a, b) => ((b.y2026 || 0) + (b.y2025 || 0)) - ((a.y2026 || 0) + (a.y2025 || 0)) || String(a.name).localeCompare(String(b.name), "zh"));
+  return [...groups.values()].map((row) => {
+    const y2025 = yearBucketStats(row.y2025);
+    const y2026 = yearBucketStats(row.y2026);
+    return {
+      name: row.name,
+      y2025: typeAverage(row.y2025),
+      y2026: typeAverage(row.y2026),
+      shifts2025: y2025.shifts,
+      shifts2026: y2026.shifts,
+      alarms2025: y2025.alarms,
+      alarms2026: y2026.alarms,
+      machines2025: y2025.machines,
+      machines2026: y2026.machines,
+    };
+  }).sort((a, b) => ((b.y2026 || 0) + (b.y2025 || 0)) - ((a.y2026 || 0) + (a.y2025 || 0)) || String(a.name).localeCompare(String(b.name), "zh"));
+};
+
+export const doamMonthlyTrendLabeled = (units, filter) => {
+  const nested = doamMonthlyTrend(units, filter);
+  return [2025, 2026].flatMap((year, yearIndex) => (nested[yearIndex] || []).map((row, monthIndex) => ({
+    year,
+    month: monthIndex + 1,
+    label: year + "-" + String(monthIndex + 1).padStart(2, "0"),
+    alarm: row.alarm,
+    machines: row.machines,
+    shifts: row.shifts,
+    average: row.average,
+  })).filter((row) => row.shifts > 0 || row.alarm != null));
+};
+
+const alarmTotalsBy = (rows, field) => {
+  const map = new Map();
+  (rows || []).forEach((row) => {
+    const name = fieldValue(row, field);
+    map.set(name, Number(((map.get(name) || 0) + Number(row.a || 0)).toFixed(2)));
+  });
+  return [...map.entries()].map(([name, value]) => ({ name, value })).sort((a, b) => b.value - a.value);
 };
 
 export const doamCategoryTop = (categories, filter = {}, units = []) => {
-  const categoryFilter = { tpm: filter.tpm, device: filter.device };
-  const scopedUnits = filteredUnits(units, categoryFilter);
+  const scopedUnits = filteredUnits(units, filter, "c");
   const typeShifts = new Map();
   scopedUnits.forEach((row) => {
     const typeKey = `${row.y}|${row.e || "未填写"}`;
     typeShifts.set(typeKey, (typeShifts.get(typeKey) || 0) + 1);
   });
+  const scopedKey = new Set(scopedUnits.map((row) => [row.y, row.d, row.s, row.m].join("|")));
   const catType = new Map();
   (categories || []).filter((row) => {
     if (filter.tpm && fieldValue(row, "t") !== filter.tpm) return false;
     if (filter.device && fieldValue(row, "e") !== filter.device) return false;
     return true;
   }).forEach((row) => {
+    const machineSet = new Set(row.ms || []);
+    const dateSet = new Set(row.ds || []);
+    const inBucket = (item) => item.y === row.y && fieldValue(item, "t") === fieldValue(row, "t") && fieldValue(item, "e") === fieldValue(row, "e") && (!machineSet.size || machineSet.has(item.m)) && (!dateSet.size || dateSet.has(item.d));
+    const all = (units || []).filter(inBucket);
+    const scoped = all.filter((item) => scopedKey.has([item.y, item.d, item.s, item.m].join("|")));
+    const hasScope = Boolean(filter.customer || filter.product || filter.month);
+    if (hasScope && !scoped.length) return;
+    const allAlarms = all.reduce((sum, item) => sum + Number(item.a || 0), 0);
+    const scopedAlarms = scoped.reduce((sum, item) => sum + Number(item.a || 0), 0);
+    const share = !hasScope ? 1 : allAlarms > 0 ? scopedAlarms / allAlarms : scoped.length / Math.max(all.length, 1);
     const type = row.e || "未填写";
-    const key = `${row.c}|${row.y}|${type}`;
-    catType.set(key, (catType.get(key) || 0) + Number(row.a || 0));
+    const key = [row.c, row.y, type].join("|");
+    catType.set(key, (catType.get(key) || 0) + Number(row.a || 0) * share);
   });
   const names = [...new Set([...catType.keys()].map((key) => key.split("|")[0]))];
   const averageOf = (name, year) => {
@@ -302,3 +392,170 @@ export const doamCategoryTop = (categories, filter = {}, units = []) => {
 };
 
 export const doamKeyWords = CATEGORY_RULES.map(([name, words]) => ({ name, words: words.join("、") }));
+
+export const buildDoamAgentSnapshotData = (dataset = {}, period = {}) => {
+  const inRange = (row) => {
+    if (row.y === 2026) {
+      if (period.start2026 && row.d && row.d < period.start2026) return false;
+      if (period.end2026 && row.d && row.d > period.end2026) return false;
+      return true;
+    }
+    if (row.y === 2025) {
+      if (period.start2025 && row.d && row.d < period.start2025) return false;
+      if (period.end2025 && row.d && row.d > period.end2025) return false;
+      return true;
+    }
+    return false;
+  };
+  const units = (dataset.units || []).filter(inRange);
+  const categories = (dataset.categories || []).filter((row) => row.y === 2025 || row.y === 2026);
+  const quality = dataset.quality || {};
+  const y2025 = units.filter((row) => row.y === 2025);
+  const y2026 = units.filter((row) => row.y === 2026);
+  const alarmSum = (rows) => rows.reduce((sum, row) => sum + Number(row.a || 0), 0);
+  const typeCount = (rows) => new Set(rows.map((row) => row.e || "未填写")).size;
+  const monthsOf = (rows) => [...new Set(rows.map((row) => Number(row.o)).filter(Boolean))].sort((a, b) => a - b);
+  const volume = (rows) => rows.length ? Number((alarmSum(rows) / rows.length).toFixed(2)) : null;
+  const compactSplit = (rows, limit = 10) => (rows || []).slice(0, limit).map((row) => ({
+    name: row.name,
+    y2025: row.y2025,
+    y2026: row.y2026,
+    shifts2025: row.shifts2025 || 0,
+    shifts2026: row.shifts2026 || 0,
+    alarms2025: row.alarms2025 || 0,
+    alarms2026: row.alarms2026 || 0,
+    machines2025: row.machines2025 || 0,
+    machines2026: row.machines2026 || 0,
+  }));
+  const devices = doamDeviceAverages(units, {});
+  const categoryRows = doamCategoryTop(categories, {}, units).map((row) => {
+    const alarms2025 = categories.filter((item) => item.c === row.name && item.y === 2025).reduce((sum, item) => sum + Number(item.a || 0), 0);
+    const alarms2026 = categories.filter((item) => item.c === row.name && item.y === 2026).reduce((sum, item) => sum + Number(item.a || 0), 0);
+    return {
+      ...row,
+      alarms2025,
+      alarms2026,
+      volume2025: y2025.length ? Number((alarms2025 / y2025.length).toFixed(2)) : null,
+      volume2026: y2026.length ? Number((alarms2026 / y2026.length).toFixed(2)) : null,
+      direction: row.y2025 == null || row.y2026 == null ? "单年" : row.y2026 > row.y2025 ? "升高" : row.y2026 < row.y2025 ? "下降" : "持平",
+    };
+  });
+  const bothDevices = devices.filter((row) => row.y2025 != null && row.y2026 != null).map((row) => ({
+    name: row.name,
+    y2025: row.y2025,
+    y2026: row.y2026,
+    delta: Number((row.y2026 - row.y2025).toFixed(2)),
+    shifts2025: row.shifts2025 || 0,
+    shifts2026: row.shifts2026 || 0,
+  }));
+  const months2025 = monthsOf(y2025);
+  const months2026 = monthsOf(y2026);
+  const overlapMonths = months2025.filter((month) => months2026.includes(month));
+  const y2026Overlap = y2026.filter((row) => overlapMonths.includes(Number(row.o)));
+  const y2025Overlap = y2025.filter((row) => overlapMonths.includes(Number(row.o)));
+  const newTypeNames = new Set(devices.filter((row) => row.y2026 != null && row.y2025 == null).map((row) => row.name));
+  const commonTypeNames = new Set(devices.filter((row) => row.y2026 != null && row.y2025 != null).map((row) => row.name));
+  const topTpm = alarmTotalsBy(y2026, "t")[0]?.name || "";
+  const y2026ExcludeTopTpm = topTpm ? y2026.filter((row) => (row.t || "未填写") !== topTpm) : y2026;
+  const y2026ExcludeNewTypes = y2026.filter((row) => !newTypeNames.has(row.e || "未填写"));
+  const y2026CommonTypes = y2026.filter((row) => commonTypeNames.has(row.e || "未填写"));
+  const otherAlarms2026 = categories.filter((row) => row.y === 2026 && (row.c || "其他") === "其他").reduce((sum, row) => sum + Number(row.a || 0), 0);
+  const alarms2026 = Number(alarmSum(y2026).toFixed(2));
+  const organizationAlarmTotals = alarmTotalsBy(y2026, "t");
+  const productAlarmTotals = alarmTotalsBy(y2026, "p");
+  const customerAlarmTotals = alarmTotalsBy(y2026, "k");
+  const mechanismAlarmTotals = alarmTotalsBy(categories.filter((row) => row.y === 2026).map((row) => ({ ...row, a: row.a, e: row.c })), "e");
+  const machineTotals = alarmTotalsBy(y2026, "m").slice(0, 8).map((row) => {
+    const rows = y2026.filter((item) => (item.m || "未填写") === row.name);
+    return { name: row.name, alarms2026: row.value, shifts2026: rows.length, average2026: rows.length ? Number((row.value / rows.length).toFixed(2)) : null, tpm: rows[0]?.t || "", deviceType: rows[0]?.e || "", customer: rows[0]?.k || "", product: rows[0]?.p || "" };
+  });
+  const deviceCategoryCross = (() => {
+    const map = new Map();
+    categories.filter((row) => row.y === 2026).forEach((row) => {
+      const key = (row.e || "未填写机型") + "\u0001" + (row.c || "其他");
+      map.set(key, (map.get(key) || 0) + Number(row.a || 0));
+    });
+    return [...map.entries()].map(([key, value]) => {
+      const parts = key.split("\u0001");
+      return { organization: parts[0], mechanism: parts.slice(1).join("\u0001"), value: Number(value.toFixed(2)) };
+    }).sort((a, b) => b.value - a.value).slice(0, 8);
+  })();
+  return {
+    metrics: {
+      average2025: meanTypeAverages(y2025),
+      average2026: meanTypeAverages(y2026),
+      volumeAverage2025: volume(y2025),
+      volumeAverage2026: volume(y2026),
+      shifts2025: y2025.length,
+      shifts2026: y2026.length,
+      alarms2025: Number(alarmSum(y2025).toFixed(2)),
+      alarms2026,
+      types2025: typeCount(y2025),
+      types2026: typeCount(y2026),
+      machineCount: quality.machineCount || new Set(units.map((row) => row.m)).size,
+      months2025,
+      months2026,
+      overlapMonths,
+      comparableAverage2025: meanTypeAverages(y2025Overlap),
+      comparableAverage2026: meanTypeAverages(y2026Overlap),
+      comparableVolume2025: volume(y2025Overlap),
+      comparableVolume2026: volume(y2026Overlap),
+      comparableShifts2025: y2025Overlap.length,
+      comparableShifts2026: y2026Overlap.length,
+      residualVolumeExcludeTopTpm: volume(y2026ExcludeTopTpm),
+      residualShiftsExcludeTopTpm: y2026ExcludeTopTpm.length,
+      residualVolumeExcludeNewTypes: volume(y2026ExcludeNewTypes),
+      residualVolumeCommonTypes: volume(y2026CommonTypes),
+      otherAlarms2026: Number(otherAlarms2026.toFixed(2)),
+      otherShare2026: alarms2026 ? Number((otherAlarms2026 / alarms2026 * 100).toFixed(1)) : null,
+      topTpm2026: topTpm,
+      monthlyTrend: doamMonthlyTrendLabeled(units, {}),
+      dateMin: quality.dateMin || "",
+      dateMax: quality.dateMax || "",
+    },
+    organization: {
+      divisions: compactSplit(doamProductAverages(units, {})),
+      owners: compactSplit(doamTpmAverages(units, {})),
+      customers: compactSplit(doamCustomerAverages(units, {})),
+    },
+    evidence: {
+      categories: categoryRows,
+      risingCategories: categoryRows.filter((row) => row.direction === "升高"),
+      fallingCategories: categoryRows.filter((row) => row.direction === "下降"),
+      devices: compactSplit(devices, 16),
+      newTypes2026: devices.filter((row) => row.y2026 != null && row.y2025 == null).slice(0, 10).map((row) => ({ name: row.name, y2026: row.y2026, shifts2026: row.shifts2026 || 0, alarms2026: row.alarms2026 || 0, machines2026: row.machines2026 || 0 })),
+      retiredTypes2025: devices.filter((row) => row.y2025 != null && row.y2026 == null).slice(0, 8).map((row) => ({ name: row.name, y2025: row.y2025, shifts2025: row.shifts2025 || 0, alarms2025: row.alarms2025 || 0 })),
+      bothWorsenedDevices: bothDevices.filter((row) => row.delta > 0).sort((a, b) => b.delta - a.delta).slice(0, 8),
+      bothImprovedDevices: bothDevices.filter((row) => row.delta < 0).sort((a, b) => a.delta - b.delta).slice(0, 8),
+      trends: doamMonthlyTrendLabeled(units, {}),
+      organizationAlarmTotals,
+      productAlarmTotals,
+      customerAlarmTotals,
+      mechanismAlarmTotals,
+      topMachines: machineTotals,
+      deviceCategoryCross,
+      crossThemes: (() => {
+        const map = new Map();
+        categories.filter((row) => row.y === 2026).forEach((row) => {
+          const key = (row.t || "未填写TPM") + "|" + (row.c || "其他");
+          map.set(key, (map.get(key) || 0) + Number(row.a || 0));
+        });
+        return [...map.entries()].map(([key, value]) => {
+          const parts = key.split("|");
+          return { organization: parts[0], mechanism: parts.slice(1).join("|"), value: Number(value.toFixed(2)) };
+        }).sort((a, b) => b.value - a.value);
+      })(),
+      keywordRules: doamKeyWords,
+    },
+    quality: {
+      rowCount: quality.rowCount || 0,
+      blankDate: quality.blankDate || 0,
+      blankMachine: quality.blankMachine || 0,
+      blankShift: quality.blankShift || 0,
+      blankInfo: quality.blankInfo || 0,
+      files: quality.files || dataset.files || [],
+      tpmCount: quality.tpmCount || 0,
+      deviceTypeCount: quality.deviceTypeCount || 0,
+    },
+  };
+};

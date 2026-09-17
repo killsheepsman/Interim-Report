@@ -1,0 +1,4 @@
+interface:
+  display_name: "DOAM机台稳定性分析"
+  short_description: "先比重叠月份，再打当前瓶颈；必须带班次分母和单一责任人"
+  default_prompt: "Use $quality-analysis-doam to analyze the fixed DOAM snapshot. Do not treat a short overlap as a full-year improvement. Require shift denominators, labeled monthly trend, residual averages, and one owner per action."

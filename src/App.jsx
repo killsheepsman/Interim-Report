@@ -12,6 +12,8 @@ import { clearDqaAgentRaw as clearDqaAgentRawState, clearDqaEngineerSupplement a
 import { bulkReviewKnowledgeCards, bulkUpdateKnowledgeCards, deleteKnowledgeCard, deleteKnowledgeClause, exportKnowledgeData, loadKnowledgeBackups, loadKnowledgeImpact, restoreKnowledgeBackup, updateKnowledgeCard, updateKnowledgeClause } from "./dataStore.js";
 import { loadOqcEquipmentRuleCache } from "./dataStore.js";
 import { DoamPage } from "./DoamPage.jsx";
+import { buildDoamDataset, decodeDoamFile } from "./doamEngine.js";
+import { clearDoamPack, removeDoamFile, upsertDoamFiles } from "./doamStore.js";
 import { deleteKnowledgeJob } from "./dataStore.js";
 import { loadKnowledgeDataQuality, repairKnowledgeDataQuality } from "./dataStore.js";
 import { cleanupKnowledgeDataQuality } from "./dataStore.js";
@@ -49,9 +51,10 @@ class PageErrorBoundary extends Component {
   constructor(props) { super(props); this.state = { error: null, pageKey: props.pageKey }; }
   static getDerivedStateFromError(error) { return { error }; }
   static getDerivedStateFromProps(props, state) { return props.pageKey !== state.pageKey ? { error: null, pageKey: props.pageKey } : null; }
+  componentDidCatch(error) { console.error("页面加载失败", this.props.pageKey, error); }
   render() {
     if (!this.state.error) return this.props.children;
-    return <section className="qmdp-card qmdp-page-error"><WarningCircle size={30}/><div><strong>当前页面未能完成加载</strong><p>数据或历史缓存格式不完整。可返回总览后重新进入；不会影响已导入数据和已保存报告。</p><small>{String(this.state.error?.message || "未知页面错误").slice(0, 180)}</small></div><button className="qmdp-primary-btn" onClick={this.props.onRecover}>返回总览</button></section>;
+    return <section className="qmdp-card qmdp-page-error"><WarningCircle size={30}/><div><strong>当前页面未能完成加载</strong><p>这一页渲染时出错。可先重新打开本页；不会影响已导入数据和已保存报告。</p><small>{String(this.state.error?.message || "未知页面错误").slice(0, 240)}</small></div><div className="qmdp-report-actions"><button className="qmdp-secondary-btn" onClick={() => this.setState({ error: null })}>重新打开本页</button><button className="qmdp-primary-btn" onClick={this.props.onRecover}>返回总览</button></div></section>;
   }
 }
 class SnapshotPanelBoundary extends Component {
@@ -741,7 +744,7 @@ function ThemeToggle({ value, onChange }) {
 const qmdpMenuGroups = [
   { label: "质量数据", icon: ChartBar, children: ["总览", "IQC", "IPQC", "OQC", "DQA", "QMS", "DOAM", "数据导入"] },
   { label: "知识管理", icon: Database, children: ["知识库", "题库管理", "知识考试", "后台知识管理"] },
-  { label: "质量分析 Agent", icon: Brain, children: ["IQC Agent", "IPQC Agent", "OQC Agent", "DQA Agent", "QMS Agent"] },
+  { label: "质量分析 Agent", icon: Brain, children: ["IQC Agent", "IPQC Agent", "OQC Agent", "DQA Agent", "QMS Agent", "DOAM Agent"] },
   { label: "Agent角色报告", icon: ChartBar, children: ["组装人员 Agent报告", "机长 Agent报告", "交付经理 Agent报告", "供应链经理 Agent报告", "研发工程师 Agent报告", "PM Agent报告", "TPM Agent报告", "产总 Agent报告"] },
   { label: "Agent工具", icon: Brain, children: ["Agent考试统计", "报告历史对比"] },
   { label: "系统管理", icon: GearSix, children: ["研发组织映射", "供应链映射", "项目名称映射", "研发项目映射", "后台快照", "Agent配置", "员工信息", "评分权重", "企业微信", "操作日志"] },
@@ -767,7 +770,7 @@ const canUseMenu = (auth, permissions, parent, child = "") => {
   return !childRule || childRule[roleKey] !== false;
 };
 
-const qualityAgentMenuModules = { "IQC Agent": "IQC", "IPQC Agent": "IPQC", "OQC Agent": "OQC", "DQA Agent": "DQA", "QMS Agent": "QMS" };
+const qualityAgentMenuModules = { "IQC Agent": "IQC", "IPQC Agent": "IPQC", "OQC Agent": "OQC", "DQA Agent": "DQA", "QMS Agent": "QMS", "DOAM Agent": "DOAM" };
 const agentRoleMenuRoles = { "组装人员 Agent报告": "组装人员", "机长 Agent报告": "机长", "交付经理 Agent报告": "交付经理", "供应链经理 Agent报告": "供应链经理", "研发工程师 Agent报告": "研发工程师", "PM Agent报告": "PM", "TPM Agent报告": "TPM", "产总 Agent报告": "产总" };
 const qualityAgentMenuItems = Object.keys(qualityAgentMenuModules);
 const agentRoleMenuItems = Object.keys(agentRoleMenuRoles);
@@ -922,7 +925,7 @@ function IpqcMappingSettings({ files, onImportModule, onSourcesChanged }) {
     XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(sheetRows), "映射表");
     XLSX.writeFile(wb, "工坊交付经理机长映射表.xlsx");
   };
-  return <section className="ipqc-map-settings">
+  return <section className={`ipqc-map-settings ${collapsed ? "is-collapsed" : "is-open"}`}>
     <header>
       <div><h3>{ipqcMapText.title}</h3><p>{ipqcMapText.desc}</p></div>
       <div className="ipqc-map-actions">
@@ -1769,8 +1772,7 @@ function DqaEngineerSupplementImport({ supplement, onImport, onClear, onDeleteFi
   const files = supplement?.files || [];
   const decodeDisplayText = (value) => String(value || "").replace(/\\u([0-9a-fA-F]{4})/g, (_, code) => String.fromCharCode(parseInt(code, 16)));
   const updatedAt = supplement?.updatedAt ? new Date(supplement.updatedAt).toLocaleString("zh-CN", { hour12: false }) : "-";
-  return <section className="data-source-module data-source-engineer-supplement">
-    <header><span className="dataset-icon amber"><ClipboardText size={22}/></span><div><h3>研发· ECN/非BOM/评审</h3><p>{files.length ? `${files.length}个数据源 · 持续追加` : "尚未导入数据"}</p></div><button onClick={() => inputRef.current?.click()} disabled={busy}><UploadSimple size={16}/>{busy ? "解析中..." : "导入数据"}</button><input ref={inputRef} type="file" accept=".xlsx,.xls,.xlsm" multiple hidden onChange={handleChange}/></header>
+  return <FoldableSourceModule className="data-source-engineer-supplement" header={<><span className="dataset-icon amber"><ClipboardText size={22}/></span><div><h3>研发· ECN/非BOM/评审</h3><p>{files.length ? `${files.length}个数据源 · 持续追加` : "尚未导入数据"}</p></div><button type="button" onClick={() => inputRef.current?.click()} disabled={busy}><UploadSimple size={16}/>{busy ? "解析中..." : "导入数据"}</button><input ref={inputRef} type="file" accept=".xlsx,.xls,.xlsm" multiple hidden onChange={handleChange}/></>}>
     <div className="engineer-supplement-body">
       <div className="engineer-supplement-rules"><span>统计规则</span><p>数据按导入文件持续追加，不覆盖已有来源；同一文件重复导入不会重复计数。ECN 按创建人、变更原因、物料代码统计；非BOM 按申请人统计 35 开头加工件；评审成员每个项目计 1 次，提出人按人次计数。</p></div>
       <div className="engineer-supplement-stats"><div><b>{supplement?.ecnRecords?.length || 0}</b><span>ECN 记录</span></div><div><b>{supplement?.ecnRecords?.filter((row) => row.isMachined).length || 0}</b><span>ECN 加工件</span></div><div><b>{supplement?.nonBomRecords?.filter((row) => row.isMachined).length || 0}</b><span>非BOM 加工件</span></div><div><b>{supplement?.reviewRecords?.length || 0}</b><span>评审项目</span></div></div>
@@ -1781,13 +1783,73 @@ function DqaEngineerSupplementImport({ supplement, onImport, onClear, onDeleteFi
       </div>
       <div className="engineer-supplement-foot">{message && <span className="qmdp-inline-status"><CheckCircle size={15}/>{message}</span>}{supplement && <button className="qmdp-danger-btn" onClick={onClear} disabled={busy}><Trash size={14}/>清除独立明细</button>}</div>
     </div>
-  </section>;
+  </FoldableSourceModule>;
 }
 
 function DqaAgentRawImport({ raw, onImport, onClear, onDeleteFile }) {
   const inputRef = useRef(null); const [busy, setBusy] = useState(false); const [message, setMessage] = useState("");
   const handleChange = async (event) => { const selected = [...(event.target.files || [])]; event.target.value = ""; if (!selected.length) return; setBusy(true); setMessage("正在解析 Agent 原始明细…"); try { const value = await onImport(selected); setMessage(`已追加：ECN ${value.ecnRecords?.length || 0} 行，非BOM ${value.nonBomRecords?.length || 0} 行，项目映射 ${value.projectMappings?.length || 0} 行`); } catch (error) { setMessage(`导入失败：${error.message}`); } finally { setBusy(false); } };
-  return <section className="data-source-module data-source-engineer-supplement"><header><span className="dataset-icon amber"><ClipboardText size={22}/></span><div><h3>研发·ECN/非BOM Agent原始数据</h3><p>{raw?.files?.length ? `${raw.files.length} 个数据源 · 与质量数据-DQA隔离` : "尚未导入 Agent 原始数据"}</p></div><button onClick={() => inputRef.current?.click()} disabled={busy}><UploadSimple size={16}/>{busy ? "解析中…" : "导入原始数据"}</button><input ref={inputRef} type="file" accept=".xlsx,.xls,.xlsm" multiple hidden onChange={handleChange}/></header><div className="engineer-supplement-body"><div className="engineer-supplement-rules"><span>统计口径</span><p>ECN按行计数；项目名称去重；35开头物料代码为加工件；ECN比例使用去重项目的 BOM物料总款数，项目映射用于非BOM的 PM/TPM 归属。</p></div><div className="engineer-supplement-stats"><div><b>{raw?.ecnRecords?.length || 0}</b><span>ECN行</span></div><div><b>{raw?.nonBomRecords?.length || 0}</b><span>非BOM行</span></div><div><b>{raw?.projectMappings?.length || 0}</b><span>项目映射</span></div></div><div className="source-file-table"><div className="source-file-row source-file-head"><span>文件名</span><span>行数</span><span>类型</span><span>导入时间</span><span>操作</span></div>{(raw?.files || []).map((file) => <div className="source-file-row" key={file.sourceId}><strong><FileXls size={16}/>{file.name}</strong><span>{(file.rowCount || 0).toLocaleString()}</span><span>{file.kind}</span><span>{new Date(file.importedAt).toLocaleString("zh-CN", { hour12: false })}</span><button className="delete-source" onClick={() => onDeleteFile(file)} disabled={busy}><Trash size={15}/>删除</button></div>)}</div>{raw && <button className="qmdp-danger-btn" onClick={onClear} disabled={busy}><Trash size={14}/>清除 Agent 原始明细</button>}{message && <span className="qmdp-inline-status"><CheckCircle size={15}/>{message}</span>}</div></section>;
+  return <FoldableSourceModule className="data-source-engineer-supplement" header={<><span className="dataset-icon amber"><ClipboardText size={22}/></span><div><h3>研发·ECN/非BOM Agent原始数据</h3><p>{raw?.files?.length ? `${raw.files.length} 个数据源 · 与质量数据-DQA隔离` : "尚未导入 Agent 原始数据"}</p></div><button type="button" onClick={() => inputRef.current?.click()} disabled={busy}><UploadSimple size={16}/>{busy ? "解析中…" : "导入原始数据"}</button><input ref={inputRef} type="file" accept=".xlsx,.xls,.xlsm" multiple hidden onChange={handleChange}/></>}><div className="engineer-supplement-body"><div className="engineer-supplement-rules"><span>统计口径</span><p>ECN按行计数；项目名称去重；35开头物料代码为加工件；ECN比例使用去重项目的 BOM物料总款数，项目映射用于非BOM的 PM/TPM 归属。</p></div><div className="engineer-supplement-stats"><div><b>{raw?.ecnRecords?.length || 0}</b><span>ECN行</span></div><div><b>{raw?.nonBomRecords?.length || 0}</b><span>非BOM行</span></div><div><b>{raw?.projectMappings?.length || 0}</b><span>项目映射</span></div></div><div className="source-file-table"><div className="source-file-row source-file-head"><span>文件名</span><span>行数</span><span>类型</span><span>导入时间</span><span>操作</span></div>{(raw?.files || []).map((file) => <div className="source-file-row" key={file.sourceId}><strong><FileXls size={16}/>{file.name}</strong><span>{(file.rowCount || 0).toLocaleString()}</span><span>{file.kind}</span><span>{new Date(file.importedAt).toLocaleString("zh-CN", { hour12: false })}</span><button className="delete-source" onClick={() => onDeleteFile(file)} disabled={busy}><Trash size={15}/>删除</button></div>)}</div>{raw && <button className="qmdp-danger-btn" onClick={onClear} disabled={busy}><Trash size={14}/>清除 Agent 原始明细</button>}{message && <span className="qmdp-inline-status"><CheckCircle size={15}/>{message}</span>}</div></FoldableSourceModule>;
+}
+
+
+
+function FoldableSourceModule({ className = "", header, children }) {
+  const [open, setOpen] = useState(false);
+  const toggle = () => setOpen((current) => !current);
+  const onHeaderClick = (event) => {
+    if (event.target.closest("button, input, a, label, select")) return;
+    toggle();
+  };
+  return <section className={`data-source-module ${className} ${open ? "is-open" : "is-collapsed"}`}>
+    <header onClick={onHeaderClick}>
+      <button type="button" className="data-source-fold-toggle" onClick={toggle} aria-expanded={open} aria-label={open ? "收起模块" : "展开模块"}>
+        <CaretDown size={16} className={open ? "rotate" : ""}/>
+      </button>
+      {header}
+    </header>
+    {open ? children : null}
+  </section>;
+}
+
+function DoamStabilityImport({ files = [], onSourcesChanged }) {
+  const inputRef = useRef(null);
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState("");
+  const packItems = (files || []).filter((item) => item.module === "DOAM" && item.kind !== "DOAM_COMPACT");
+  const handleChange = async (event) => {
+    const selected = [...(event.target.files || [])];
+    event.target.value = "";
+    if (!selected.length) return;
+    setBusy(true);
+    setMessage("正在解析 DOAM CSV…");
+    try {
+      const parsed = await Promise.all(selected.map(async (file) => {
+        const result = await decodeDoamFile(file);
+        return { dataset: { ...buildDoamDataset(result.rows, [file.name]), files: [file.name] }, file };
+      }));
+      const next = await upsertDoamFiles(parsed);
+      if (onSourcesChanged) await onSourcesChanged(next.sources, { added: (next.items || []).map((item) => item.name), skipAnalysis: true });
+      setMessage(`已导入 ${parsed.length} 个文件，共 ${parsed.reduce((sum, item) => sum + Number(item.dataset?.quality?.rowCount || 0), 0).toLocaleString()} 行。文件已保存到服务器 uploads/DOAM。`);
+    } catch (error) {
+      setMessage(`导入失败：${error?.message || "CSV 无法解析"}`);
+    } finally { setBusy(false); }
+  };
+  const rows = packItems;
+  return <FoldableSourceModule header={<><span className="dataset-icon blue"><Pulse size={22}/></span><div><h3>DOAM机台稳定性</h3><p>{rows.length ? `${rows.length} 个数据源 · 与其它模块一样保存在服务器 uploads/DOAM` : "尚未导入告警明细 CSV"}</p></div><button type="button" onClick={() => inputRef.current?.click()} disabled={busy}><UploadSimple size={16}/>{busy ? "解析中..." : "导入 CSV"}</button><input ref={inputRef} type="file" accept=".csv,text/csv" multiple hidden onChange={handleChange}/></>}>
+    <div className="source-file-table">
+      <div className="source-file-row source-file-head"><span>文件名</span><span>数据行数</span><span>工作表</span><span>导入时间</span><span>操作</span></div>
+      {rows.map((file) => <div className="source-file-row" key={file.name}>
+        <strong><FileXls size={16}/>{file.name}</strong>
+        <span>{Number(file.rowCount || 0).toLocaleString()}</span>
+        <span>CSV</span>
+        <span>{file.importedAt ? new Date(file.importedAt).toLocaleString("zh-CN", { hour12: false }) : "—"}</span>
+        <button className="delete-source" onClick={async () => { setBusy(true); try { const next = await removeDoamFile(file.name); if (onSourcesChanged) await onSourcesChanged(next.sources, { replaced: [file.name], skipAnalysis: true }); setMessage(`已删除 ${file.name}`); } finally { setBusy(false); } }} disabled={busy}><Trash size={15}/>删除</button>
+      </div>)}
+      {!rows.length && <div className="source-empty">请导入含 产品部、客户、设备类型、TPM、机台编号、班次日期、班次、告警次数、告警信息 的 CSV。文件保存位置与 IQC/OQC 相同：服务器 uploads/DOAM。</div>}
+    </div>
+    <div className="engineer-supplement-foot">{message && <span className="qmdp-inline-status">{message}</span>}{!!rows.length && <button className="qmdp-danger-btn" onClick={async () => { setBusy(true); try { const next = await clearDoamPack(); if (onSourcesChanged) await onSourcesChanged(next.sources || files.filter((item) => item.module !== "DOAM"), { replaced: rows.map((item) => item.name), skipAnalysis: true }); setMessage("已恢复为默认数据"); } finally { setBusy(false); } }} disabled={busy}><Trash size={14}/>清除并恢复默认</button>}</div>
+  </FoldableSourceModule>;
 }
 
 function DataSourcePage({ files, onImportModule, onDelete, onSourcesChanged, dqaEngineerSupplement, onImportDqaEngineerSupplement, onClearDqaEngineerSupplement, onDeleteDqaEngineerSupplementFile, dqaAgentRaw, onLoadDqaAgentRaw, onImportDqaAgentRaw, onClearDqaAgentRaw, onDeleteDqaAgentRawFile }) {
@@ -1802,8 +1864,7 @@ function DataSourcePage({ files, onImportModule, onDelete, onSourcesChanged, dqa
       {modules.map((module) => {
         const Icon = moduleIcons[module];
         const rows = files.filter((file) => file.module === module);
-        return <section className="data-source-module" key={module}>
-          <header><span className={`dataset-icon ${moduleColor[module]}`}><Icon size={22}/></span><div><h3>{module} · {moduleLabels[module]}</h3><p>{rows.length}个数据源</p></div><button onClick={() => onImportModule(module)}><UploadSimple size={16}/>导入/替换</button></header>
+        return <FoldableSourceModule key={module} header={<><span className={`dataset-icon ${moduleColor[module]}`}><Icon size={22}/></span><div><h3>{module} · {moduleLabels[module]}</h3><p>{rows.length}个数据源</p></div><button type="button" onClick={() => onImportModule(module)}><UploadSimple size={16}/>导入/替换</button></>}>
           <div className="source-file-table">
             <div className="source-file-row source-file-head"><span>文件名</span><span>数据行数</span><span>工作表</span><span>导入时间</span><span>操作</span></div>
             {rows.map((file) => <div className="source-file-row" key={`${file.module}-${file.name}`}>
@@ -1813,16 +1874,17 @@ function DataSourcePage({ files, onImportModule, onDelete, onSourcesChanged, dqa
             </div>)}
             {!rows.length && <div className="source-empty">尚未导入{module}数据</div>}
           </div>
-        </section>;
+        </FoldableSourceModule>;
       })}
-    </div>
-    <DqaEngineerSupplementImport
+      <DoamStabilityImport files={files} onSourcesChanged={onSourcesChanged}/>
+      <DqaEngineerSupplementImport
       supplement={dqaEngineerSupplement}
       onImport={onImportDqaEngineerSupplement}
       onClear={onClearDqaEngineerSupplement}
       onDeleteFile={onDeleteDqaEngineerSupplementFile}
     />
-    <DqaAgentRawImport raw={dqaAgentRaw} onImport={onImportDqaAgentRaw} onClear={onClearDqaAgentRaw} onDeleteFile={onDeleteDqaAgentRawFile}/>
+      <DqaAgentRawImport raw={dqaAgentRaw} onImport={onImportDqaAgentRaw} onClear={onClearDqaAgentRaw} onDeleteFile={onDeleteDqaAgentRawFile}/>
+    </div>
   </div>;
 }
 
@@ -2259,6 +2321,14 @@ function OqcOverviewScore({ data }) {
   </div>;
 }
 
+
+const qmdpKnowledgeKey = "qms-qmdp-knowledge-files-v1";
+const qmdpQuestionsKey = "qms-qmdp-question-bank-v1";
+const qmdpQuestionGenerationSettingsKey = "qms-qmdp-question-generation-settings-v1";
+const qmdpExamRecordsKey = "qms-qmdp-exam-records-v1";
+const qmdpExamSessionsKey = "qms-qmdp-exam-sessions-v1";
+const qmdpSystemKey = "qms-qmdp-system-config-v1";
+const qmdpReportTasksKey = "qms-qmdp-report-tasks-v1";
 
 function QmdpPageHeader({ icon: Icon = Database, eyebrow, title, description, action }) {
   return <div className="qmdp-page-header"><div className="qmdp-page-title"><span className="qmdp-page-icon"><Icon size={23}/></span><div><small>{eyebrow}</small><h2>{title}</h2><p>{description}</p></div></div>{action}</div>;
@@ -2793,6 +2863,294 @@ function KnowledgeTaskCenter({ files = [], onRefreshDocuments }) {
   const knowledgeStatusMessage = knowledgeCardsError || (detail?.status === "failed" ? "知识蒸馏未完成：当前批次没有成功写入知识卡。" : knowledgeCardsLoading ? "正在读取已生成知识卡…" : knowledgeCardTotal > 0 ? `已生成 ${knowledgeCardTotal} 条知识卡：已发布 ${Number(knowledgeCardStatusCounts.published || 0)} 条，待确认 ${Number(knowledgeCardStatusCounts.candidate || 0) + Number(knowledgeCardStatusCounts.approved || 0)} 条。` : detail?.status === "completed" ? "任务已完成，但未生成知识卡。" : "任务尚未完成，知识卡将在批次成功后显示。");
   return <section className={`qmdp-knowledge-task-center ${open ? "is-open" : "is-collapsed"}`}><header><button onClick={() => setOpen((value) => !value)} aria-expanded={open}><CaretDown size={15} className={open ? "rotate" : ""}/><div><small>阶段 6 · Server Task Center</small><strong>知识任务中心</strong><span>只负责监控、重试和查看结果；启动操作在文档卡片中完成</span></div></button><div className="qmdp-task-center-summary"><span>等待 {jobs.filter((item) => item.status === "waiting").length}</span><span>运行 {jobs.filter((item) => item.status === "running").length}</span><span>失败 {jobs.filter((item) => item.status === "failed").length}</span><span>完成 {jobs.filter((item) => item.status === "completed").length}</span></div></header>{open && <><div className="qmdp-task-center-toolbar"><div className="qmdp-task-center-filters" role="tablist" aria-label="任务流程筛选"><button className={filter === "all" ? "active" : ""} onClick={() => setFilter("all")} role="tab" aria-selected={filter === "all"}>全部任务 <small>{jobs.length}</small></button><button className={filter === "parse" ? "active" : ""} onClick={() => setFilter("parse")} role="tab" aria-selected={filter === "parse"}>条款解析 <small>{jobs.filter((item) => item.jobType === "parse").length}</small></button><button className={filter === "pdf_parse" ? "active" : ""} onClick={() => setFilter("pdf_parse")} role="tab" aria-selected={filter === "pdf_parse"}>PDF解析 <small>{jobs.filter((item) => item.jobType === "pdf_parse").length}</small></button><button className={filter === "image_parse" ? "active" : ""} onClick={() => setFilter("image_parse")} role="tab" aria-selected={filter === "image_parse"}>图片OCR <small>{jobs.filter((item) => item.jobType === "image_parse").length}</small></button><button className={filter === "ppt_parse" ? "active" : ""} onClick={() => setFilter("ppt_parse")} role="tab" aria-selected={filter === "ppt_parse"}>PPT解析 <small>{jobs.filter((item) => item.jobType === "ppt_parse").length}</small></button><button className={filter === "distill" ? "active" : ""} onClick={() => setFilter("distill")} role="tab" aria-selected={filter === "distill"}>知识蒸馏 <small>{jobs.filter((item) => item.jobType === "distill").length}</small></button></div><button className="qmdp-secondary-btn" onClick={() => refresh(false)}><ArrowsClockwise size={14}/>刷新</button><span>{message}</span></div><div className="qmdp-task-center-manage"><label><input type="checkbox" checked={invalidVisibleIds.length > 0 && invalidVisibleIds.every((id) => checkedJobIds.includes(id))} onChange={() => setCheckedJobIds(invalidVisibleIds.every((id) => checkedJobIds.includes(id)) ? [] : invalidVisibleIds)} disabled={!invalidVisibleIds.length}/>全选失效任务（{invalidVisibleIds.length}）</label><button className="qmdp-danger-btn" onClick={removeCheckedJobs} disabled={!checkedInvalidIds.length}><Trash size={14}/>删除选中（{checkedInvalidIds.length}）</button><span>每条任务均可单独删除；运行中任务需先停止</span></div><div className="qmdp-task-center-layout"><aside>{visible.map((job) => <div key={job.id} className={`qmdp-task-job-row ${job.id === selectedId ? "selected" : ""}`}><label className="qmdp-task-job-check">{["failed", "cancelled"].includes(job.status) && <input type="checkbox" checked={checkedJobIds.includes(job.id)} onChange={() => setCheckedJobIds((current) => current.includes(job.id) ? current.filter((id) => id !== job.id) : [...current, job.id])} aria-label={`选择失效任务：${fileNames.get(job.documentId) || job.documentId}`}/>}</label><button className="qmdp-task-job-open" onClick={() => openJob(job)}><span><strong>{fileNames.get(job.documentId) || job.documentId}</strong><em className={`job-${job.status}`}>{knowledgeJobStatusText[job.status] || job.status}</em></span><small>{knowledgeJobTypeText[job.jobType] || job.jobType} · {job.skillId || "无Skill"}</small><i><b style={{ width: `${job.progress || 0}%` }}/></i><footer><span>{job.progress || 0}%</span><span>{job.message}</span></footer></button><button className="qmdp-task-job-delete" onClick={() => removeJob(job)} disabled={job.status === "running"} title={job.status === "running" ? "请先停止运行中的任务" : "删除任务记录"} aria-label={`删除任务：${fileNames.get(job.documentId) || job.documentId}`}><Trash size={14}/></button></div>)}{!visible.length && <div className="qmdp-empty compact">当前筛选条件下没有任务。</div>}</aside><div className="qmdp-task-center-detail">{detail ? <><header><div><small>{knowledgeJobTypeText[detail.jobType] || detail.jobType} · {detail.skillId || "无Skill"}</small><h4>{fileNames.get(detail.documentId) || detail.documentId}</h4><p>{detail.message}</p></div><em className={`job-${detail.status}`}>{knowledgeJobStatusText[detail.status] || detail.status}</em></header><div className="qmdp-task-progress"><i><b style={{ width: `${detail.progress || 0}%` }}/></i><strong>{detail.progress || 0}%</strong><span>{detail.result?.model ? `模型：${detail.result.model}` : "等待模型信息"}</span></div>{detail.jobType === "distill" && <div className="qmdp-distill-settings"><span>条款 {detail.result?.totalClauses || 0}</span><span>蒸馏知识点 {knowledgeCardTotal || detail.result?.knowledgeCount || 0}</span><span>批次 {detail.result?.totalBatches || batchRows.length}</span><span>每批字符 {detail.result?.batchChars || "默认"}</span><span>每批条款 {detail.result?.maxBatchClauses || "默认"}</span><span>失败重试 {detail.result?.maxRetries ?? "默认"}</span></div>}{detail.jobType === "distill" && <div className={`qmdp-task-knowledge-status ${detail.status === "failed" ? "failed" : knowledgeCardTotal > 0 ? "has-cards" : detail.status === "completed" ? "empty" : "pending"}`}><strong>{knowledgeCardsError || (detail.status === "failed" ? "知识蒸馏未完成：当前批次没有成功写入知识卡。请修复 AI 接口后点击“只重试失败批次”。" : knowledgeCardsLoading ? "正在读取已生成知识卡…" : knowledgeCardTotal > 0 ? `已生成 ${knowledgeCardTotal} 条知识卡，等待人工复核。` : detail.status === "completed" ? "任务已完成，但未生成知识卡。请检查模型返回格式、原文引用校验和蒸馏 Skill。" : "任务尚未完成，知识卡将在批次成功后显示。")}</strong></div>}{<div className="qmdp-distill-batches" aria-label="蒸馏批次进度">{batchRows.map((batch) => <span key={batch.id} className={`batch-${batch.status}`} title={`第${batch.index + 1}批 · ${knowledgeJobStatusText[batch.status] || batch.status}${batch.errorMessage ? ` · ${batch.errorMessage}` : ""}`}>{batch.index + 1}</span>)}</div>}{detail.errorMessage && <div className="qmdp-task-error">{detail.errorMessage}</div>}{detail.jobType === "distill" && knowledgeCardTotal > 0 && <section className="qmdp-task-knowledge-cards"><header><strong>蒸馏知识卡片</strong><span>共 {knowledgeCardTotal} 条 · 第 {knowledgeCardPage + 1} / {Math.max(1, Math.ceil(knowledgeCardTotal / knowledgeCardPageSize))} 页</span></header>{knowledgeCardsLoading ? <div className="qmdp-empty compact">正在读取知识卡…</div> : knowledgeCardsError ? <div className="qmdp-empty compact">{knowledgeCardsError}</div> : <div className="qmdp-task-knowledge-card-grid">{knowledgeCards.map((row) => <article className="qmdp-task-knowledge-card" key={row.id}><header><div><strong>{row.title || "未命名知识点"}</strong><span>{row.type || "未分类"} · {row.publicationStatus === "published" ? "已发布" : row.publicationStatus === "approved" ? "已初审" : row.publicationStatus === "rejected" ? "已退回" : "候选待复核"}</span></div><b>{row.sourceLevel || "C"}级 · {Math.round(Number(row.confidence || 0) * 100)}%</b></header><section><small>知识内容</small><p>{row.content || "未填写"}</p></section><section><small>原文事实</small><p>{row.metadata?.originalFact || "未填写"}</p></section><section><small>适用范围</small><p>{Array.isArray(row.metadata?.applicableScope) ? row.metadata.applicableScope.join("；") : row.metadata?.applicableScope || "未填写"}</p></section><footer>{(row.sourceCitations || []).slice(0, 2).map((item, index) => <span key={`${item.clauseId || item.clauseNumber || index}`}>{item.clauseNumber || "原文"}：{item.quote || ""}</span>)}</footer></article>)}</div>}{knowledgeCardTotal > knowledgeCardPageSize && <footer className="qmdp-task-knowledge-pagination"><button className="qmdp-secondary-btn" disabled={knowledgeCardPage <= 0 || knowledgeCardsLoading} onClick={() => readKnowledgeCards(detail, knowledgeCardPage - 1)}>上一页</button><span>第 {knowledgeCardPage + 1} / {Math.max(1, Math.ceil(knowledgeCardTotal / knowledgeCardPageSize))} 页</span><button className="qmdp-secondary-btn" disabled={(knowledgeCardPage + 1) * knowledgeCardPageSize >= knowledgeCardTotal || knowledgeCardsLoading} onClick={() => readKnowledgeCards(detail, knowledgeCardPage + 1)}>下一页</button></footer>}</section>}{detail.errorMessage && <div className="qmdp-task-error">{detail.errorMessage}</div>}<section className="qmdp-task-log"><header><strong>任务日志</strong><span>{detail.result?.logs?.length || 0} 条</span></header>{(detail.result?.logs || []).slice().reverse().map((log, index) => <div key={`${log.at}-${index}`} className={log.level || "info"}><time>{formatSyncDateTime(log.at)}</time><span>{log.message}</span></div>)}{!detail.result?.logs?.length && <div className="qmdp-empty compact">暂无任务日志。</div>}</section>{["waiting", "running"].includes(detail.status) && <footer className="qmdp-inline-actions"><button className="qmdp-danger-btn" onClick={() => control("pause")}><Pause size={14}/>暂停任务</button></footer>}{detail.status === "paused" && <footer className="qmdp-inline-actions"><button className="qmdp-primary-btn" onClick={() => control("resume")}><ArrowRight size={14}/>继续任务</button></footer>}{detail.jobType === "distill" && <footer className="qmdp-inline-actions">{detail.status === "paused" && <button className="qmdp-primary-btn" onClick={() => control("resume")}><ArrowRight size={14}/>继续任务</button>}{detail.status === "failed" && (batchRows.some((item) => item.status === "failed") ? <button className="qmdp-primary-btn" onClick={() => control("retry_failed")}><ArrowsClockwise size={14}/>只重试失败批次</button> : <button className="qmdp-primary-btn" onClick={() => control("resume")}><ArrowsClockwise size={14}/>重新执行</button>)}</footer>}</> : <div className="qmdp-empty"><Kanban size={28}/><strong>选择一条任务</strong><span>批次结果、错误和日志只在选择后按需读取。</span></div>}</div></div></>}</section>;
 }
+
+const decodeKnowledgeText = (buffer) => {
+  const bytes = buffer instanceof Uint8Array ? buffer : new Uint8Array(buffer);
+  const utf8 = new TextDecoder("utf-8").decode(bytes);
+  const replacementCount = (utf8.match(/\ufffd/g) || []).length;
+  if (replacementCount > 0 && typeof TextDecoder !== "undefined") {
+    try { return new TextDecoder("gb18030").decode(bytes); } catch { /* use UTF-8 fallback */ }
+  }
+  return utf8;
+};
+
+const unzipLocalEntries = async (buffer) => {
+  const bytes = new Uint8Array(buffer);
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const entries = new Map();
+  let offset = 0;
+  while (offset + 30 <= bytes.length && view.getUint32(offset, true) === 0x04034b50) {
+    const method = view.getUint16(offset + 8, true);
+    const compressedSize = view.getUint32(offset + 18, true);
+    const nameLength = view.getUint16(offset + 26, true);
+    const extraLength = view.getUint16(offset + 28, true);
+    const nameStart = offset + 30;
+    const name = new TextDecoder("utf-8").decode(bytes.subarray(nameStart, nameStart + nameLength));
+    const dataStart = nameStart + nameLength + extraLength;
+    const compressed = bytes.subarray(dataStart, dataStart + compressedSize);
+    let content = compressed;
+    if (method === 8) {
+      if (typeof DecompressionStream === "undefined") throw new Error("当前浏览器不支持 Office 文档解压，请使用最新版 Chrome/Edge");
+      const stream = new Blob([compressed]).stream().pipeThrough(new DecompressionStream("deflate-raw"));
+      content = new Uint8Array(await new Response(stream).arrayBuffer());
+    } else if (method !== 0) {
+      offset = dataStart + compressedSize;
+      continue;
+    }
+    entries.set(name, content);
+    offset = dataStart + compressedSize;
+  }
+  return entries;
+};
+
+const decodeXml = (value) => String(value || "").replace(/<[^>]+>/g, " ").replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/\s+/g, " ").trim();
+const officeParagraphs = (xml, tag = "w:p", textTag = "w:t") => (String(xml || "").match(new RegExp(`<${tag}\\b[\\s\\S]*?<\\/${tag}>`, "g")) || []).map((block) => decodeXml((block.match(new RegExp(`<${textTag}\\b[^>]*>([\\s\\S]*?)<\\/${textTag}>`, "g")) || []).map((item) => item.replace(new RegExp(`^<[\\s\\S]*?>|<\\/${textTag}>$`, "g"), "")).join(" "))).filter(Boolean);
+
+const subtitleSeconds = (value) => {
+  const parts = String(value || "").replace(",", ".").split(":").map(Number);
+  if (parts.some((part) => !Number.isFinite(part))) return 0;
+  return parts.length === 3 ? parts[0] * 3600 + parts[1] * 60 + parts[2] : parts[0] * 60 + parts[1];
+};
+
+const readSubtitleEvidence = (text, fileName) => {
+  const lines = String(text || "").replace(/^\uFEFF/, "").replace(/\r/g, "").split("\n");
+  const segments = [];
+  const segmentMetadata = [];
+  const videoId = fileName.match(/BV[\w-]+/i)?.[0] || fileName.match(/[A-Za-z0-9_-]{8,}/)?.[0] || "";
+  const videoPlatform = /BV[\w-]+/i.test(fileName) ? "B站" : /youtube|youtu\.be/i.test(fileName) ? "YouTube" : "本地视频";
+  for (let index = 0; index < lines.length; index += 1) {
+    const timing = lines[index].trim().match(/^((?:\d{1,2}:)?\d{2}:\d{2}[,.]\d{3})\s+-->\s+((?:\d{1,2}:)?\d{2}:\d{2}[,.]\d{3})/);
+    if (!timing) continue;
+    const content = [];
+    while (++index < lines.length && lines[index].trim()) content.push(lines[index].replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim());
+    const clauseText = content.filter(Boolean).join(" ");
+    if (!clauseText) continue;
+    const cueIndex = segments.length + 1;
+    const startTimestamp = timing[1].replace(",", ".");
+    const endTimestamp = timing[2].replace(",", ".");
+    segments.push(clauseText);
+    segmentMetadata.push({ locatorType: "video-timestamp", locator: `${startTimestamp}—${endTimestamp}`, startTimestamp, endTimestamp, startSeconds: subtitleSeconds(startTimestamp), endSeconds: subtitleSeconds(endTimestamp), cueIndex, videoPlatform, videoId });
+  }
+  if (!segments.length) throw new Error("字幕文件中没有识别到SRT/VTT时间轴");
+  return { contentType: "video-transcript", segments, segmentMetadata, preview: segments.join("\n").slice(0, 80000), durationSeconds: segmentMetadata.at(-1)?.endSeconds || 0 };
+};
+const formatElapsed = (stage, now = Date.now()) => {
+  if (!stage?.startedAt) return "-";
+  const end = stage.completedAt ? new Date(stage.completedAt).getTime() : now;
+  const start = new Date(stage.startedAt).getTime();
+  const seconds = Math.max(0, Math.round((end - start) / 1000));
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  return `${minutes}m ${String(seconds % 60).padStart(2, "0")}s`;
+};
+const processingStageItems = [
+  ["import", "导入"],
+  ["evidence", "证据解析"],
+  ["evidenceCleanup", "证据整理"],
+  ["distillation", "知识蒸馏"],
+  ["knowledgePersistence", "知识入库"],
+];
+const processingTimingLabel = (file, now = Date.now()) => file.processingTimingText || processingStageItems
+  .filter(([key]) => file.metadata?.processingStages?.[key])
+  .map(([key, label]) => `${label} ${formatElapsed(file.metadata.processingStages[key], now)}`)
+  .join(" · ");
+
+// Legacy .doc is an OLE binary container rather than a ZIP package.  It is
+// not safe to decode the whole file as UTF-8; recover only readable Unicode
+// runs so the document can still enter the normal evidence rules.  This is a
+// fallback, not a promise of perfect layout/table recovery.
+const extractLegacyDocText = (buffer) => {
+  const bytes = new Uint8Array(buffer);
+  const runs = [];
+  const push = (value) => {
+    const text = String(value || "").replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]+/g, " ").replace(/[ \t]{2,}/g, " ").trim();
+    if (text.length >= 3 && /[\u3400-\u9fffA-Za-z0-9]/.test(text)) runs.push(text);
+  };
+  let ascii = "";
+  for (const byte of bytes) {
+    if (byte >= 0x20 && byte <= 0x7e) ascii += String.fromCharCode(byte);
+    else { push(ascii); ascii = ""; }
+  }
+  push(ascii);
+  for (let index = 0; index + 1 < bytes.length; index += 2) {
+    const code = bytes[index] | (bytes[index + 1] << 8);
+    if ((code >= 0x20 && code !== 0xfffe && code !== 0xffff) && (code <= 0x7e || (code >= 0x3400 && code <= 0x9fff))) {
+      let text = "";
+      let cursor = index;
+      while (cursor + 1 < bytes.length) {
+        const value = bytes[cursor] | (bytes[cursor + 1] << 8);
+        if (!((value >= 0x20 && value !== 0xfffe && value !== 0xffff) && (value <= 0x7e || (value >= 0x3400 && value <= 0x9fff)))) break;
+        text += String.fromCharCode(value); cursor += 2;
+      }
+      if (text.length >= 3) push(text);
+    }
+  }
+  return [...new Set(runs)].join("\n");
+};
+
+const readKnowledgeFile = async (file) => {
+  const ext = file.name.split(".").pop()?.toLowerCase();
+  if (ext === "pdf") return { contentType: "pdf", segments: [`原始PDF文件：${file.name}\n当前登记为待OCR，原件不改写。`], segmentMetadata: [{ locatorType: "pdf", locator: "待OCR" }], preview: `原始PDF文件：${file.name} · 待OCR`, registerOnly: true };
+  if (["srt", "vtt"].includes(ext)) return readSubtitleEvidence(decodeKnowledgeText(await file.arrayBuffer()), file.name);
+  if (ext === "doc") {
+    const text = extractLegacyDocText(await file.arrayBuffer());
+    if (!text) throw new Error("旧版 Word 未提取出可读文字；请另存为 DOCX 或 PDF 后再导入");
+    const segments = text.split(/\n+/).map((item) => item.trim()).filter(Boolean);
+    return { contentType: "word", segments, segmentMetadata: segments.map((_, index) => ({ locatorType: "paragraph", locator: `段落 ${index + 1}`, paragraph: index + 1, extraction: "legacy-doc-text" })), preview: segments.join("\n").slice(0, 80000), metadata: { extraction: "legacy-doc-text", layoutRecovery: "limited" } };
+  }
+  if (ext === "xmind") {
+    const entries = await unzipLocalEntries(await file.arrayBuffer());
+    const jsonEntry = entries.get("content.json");
+    const segments = [];
+    const walk = (topic, path = []) => {
+      if (!topic || typeof topic !== "object") return;
+      const title = String(topic.title || topic.topicTitle || "").trim();
+      const nextPath = title ? [...path, title] : path;
+      if (title) segments.push({ text: nextPath.join(" / "), metadata: { locatorType: "xmind-node", locator: nextPath.join(" / "), nodePath: nextPath } });
+      const children = topic.children?.attached || topic.children?.topics || topic.children || [];
+      (Array.isArray(children) ? children : []).forEach((child) => walk(child, nextPath));
+    };
+    if (jsonEntry) {
+      try {
+        const payload = JSON.parse(decodeKnowledgeText(jsonEntry));
+        (Array.isArray(payload) ? payload : payload.sheets || []).forEach((sheet) => walk(sheet.rootTopic || sheet.root || sheet));
+      } catch { /* fall through to XML */ }
+    }
+    if (!segments.length && entries.has("content.xml")) {
+      const xml = decodeKnowledgeText(entries.get("content.xml"));
+      (xml.match(/<title>([\s\S]*?)<\/title>/gi) || []).forEach((item, index) => {
+        const title = decodeXml(item.replace(/^<title>|<\/title>$/gi, ""));
+        if (title) segments.push({ text: title, metadata: { locatorType: "xmind-node", locator: `节点 ${index + 1}`, nodePath: [title] } });
+      });
+    }
+    const texts = segments.length ? segments.map((item) => item.text) : ["XMind中没有可提取的主题节点"];
+    return { contentType: "xmind", segments: texts, segmentMetadata: segments.map((item) => item.metadata), preview: texts.join("\n").slice(0, 80000) };
+  }
+  if (["docx", "pptx"].includes(ext)) {
+    const entries = await unzipLocalEntries(await file.arrayBuffer());
+    const names = [...entries.keys()].filter((name) => ext === "docx" ? name === "word/document.xml" : /^ppt\/slides\/slide\d+\.xml$/i.test(name)).sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+    const segmented = names.flatMap((name) => officeParagraphs(decodeKnowledgeText(entries.get(name)), ext === "docx" ? "w:p" : "a:p", ext === "docx" ? "w:t" : "a:t").map((text, index) => ({ text, metadata: { locatorType: ext === "docx" ? "paragraph" : "slide", locator: ext === "docx" ? `段落 ${index + 1}` : `幻灯片 ${Number(name.match(/slide(\d+)/i)?.[1] || 0)}`, slide: ext === "pptx" ? Number(name.match(/slide(\d+)/i)?.[1] || 0) : undefined, paragraph: ext === "docx" ? index + 1 : undefined } })));
+    const segments = segmented.length ? segmented.map((item) => item.text) : ["文档中没有可提取的文本"];
+    return { contentType: ext === "docx" ? "word" : "ppt", segments, segmentMetadata: segmented.map((item) => item.metadata), preview: segments.join("\n").slice(0, 80000) };
+  }
+  if (["xlsx", "xls", "xlsm"].includes(ext)) {
+    const workbook = XLSX.read(await file.arrayBuffer(), { type: "array", cellDates: true });
+    const segmentMetadata = [];
+    const lines = workbook.SheetNames.flatMap((sheetName) => {
+      const rows = XLSX.utils.sheet_to_json(workbook.Sheets[sheetName], { header: 1, defval: "", blankrows: false });
+      return rows.map((row, rowIndex) => {
+        const values = row.map((cell) => String(cell ?? "").trim()).filter(Boolean);
+        const line = `${sheetName} | ${values.join(" | ")}`;
+        if (line.length > sheetName.length + 3) segmentMetadata.push({ locatorType: "sheet", locator: `${sheetName}!第${rowIndex + 1}行`, sheet: sheetName, row: rowIndex + 1 });
+        return line.length > sheetName.length + 3 ? line : null;
+      }).filter(Boolean);
+    });
+    return { contentType: "excel", segments: lines, segmentMetadata, preview: lines.join("\n").slice(0, 80000) };
+  }
+  const text = decodeKnowledgeText(await file.arrayBuffer()).replace(/\r/g, "").trim();
+  const segments = text ? text.match(/[\\s\\S]{1,3500}/g) || [] : [];
+  return { contentType: ext === "pdf" ? "pdf" : "text", segments, preview: text.slice(0, 80000) };
+};
+
+const knowledgeFileHash = async (file) => {
+  const buffer = await file.arrayBuffer();
+  if (globalThis.crypto?.subtle) {
+    const digest = await globalThis.crypto.subtle.digest("SHA-256", buffer);
+    return [...new Uint8Array(digest)].map((value) => value.toString(16).padStart(2, "0")).join("");
+  }
+  return `${file.name}:${file.size}:${file.lastModified}`;
+};
+
+const questionHeaderAliases = {
+  stem: ["题干", "问题", "题目", "QuestionText", "Question"], type: ["类型", "题型", "题目类型", "Type"],
+  optionA: ["选项A", "A选项", "答案A", "选项1", "OptionA"], optionB: ["选项B", "B选项", "答案B", "选项2", "OptionB"],
+  optionC: ["选项C", "C选项", "答案C", "选项3", "OptionC"], optionD: ["选项D", "D选项", "答案D", "选项4", "OptionD"],
+  options: ["选项", "备选项", "答案选项", "选项内容", "Options"], answer: ["正确答案", "正确选项", "标准答案", "答案", "CorrectAnswer", "Answer"],
+  explanation: ["解析", "说明", "Explanation"], roles: ["适用角色", "ApplicableRoles"], categories: ["问题类别", "IssueCategories"], knowledge: ["知识标题", "KnowledgeTitle"],
+};
+const normalizedHeader = (value) => String(value ?? "").trim().replace(/\s+/g, "").toLowerCase();
+const parseQuestionType = (value) => /判断|truefalse/i.test(String(value || "")) ? "TrueFalse" : /多选|multichoice/i.test(String(value || "")) ? "MultiChoice" : /简答|shortanswer/i.test(String(value || "")) ? "ShortAnswer" : "SingleChoice";
+const parseOptions = (row, header, type) => {
+  if (type === "TrueFalse") return ["正确", "错误"];
+  const direct = ["optionA", "optionB", "optionC", "optionD"].map((key) => row[header[key]]).map((value) => String(value ?? "").trim()).filter(Boolean);
+  if (direct.length) return direct;
+  const combined = String(row[header.options] ?? "").replace(/[；;|]/g, "\n");
+  return combined.split(/\r?\n/).map((value) => value.replace(/^\s*[A-DＡ-Ｄ][.．、:：)）]\s*/i, "").trim()).filter(Boolean);
+};
+const parseAnswerIndexes = (value, options, type) => {
+  const text = String(value ?? "").trim();
+  if (type === "ShortAnswer") return { answer: -1, correctAnswers: [], answerText: text };
+  const parts = type === "MultiChoice" ? text.split(/[、,，;；\s]+/).filter(Boolean) : [text];
+  const indexes = parts.map((part) => {
+    const normalized = part.replace(/^选项/, "").trim().toUpperCase();
+    if (/^[A-D]$/.test(normalized)) return normalized.charCodeAt(0) - 65;
+    if (/^\d+$/.test(normalized)) { const number = Number(normalized); return number < options.length ? number : number - 1; }
+    if (/正确|是|TRUE/i.test(normalized)) return 0;
+    if (/错误|否|FALSE/i.test(normalized)) return 1;
+    return options.findIndex((option) => option === part || option.includes(part) || part.includes(option));
+  }).filter((index) => index >= 0 && index < options.length);
+  return { answer: indexes[0] ?? -1, correctAnswers: [...new Set(indexes)], answerText: text };
+};
+
+const parseQuestionWorkbook = async (file) => {
+  const workbook = XLSX.read(await file.arrayBuffer(), { type: "array", cellDates: true });
+  const rows = XLSX.utils.sheet_to_json(workbook.Sheets[workbook.SheetNames[0]], { header: 1, defval: "", blankrows: false });
+  const headerRow = rows.findIndex((row) => row.some((cell) => questionHeaderAliases.stem.some((alias) => normalizedHeader(alias) === normalizedHeader(cell))));
+  if (headerRow < 0) throw new Error("无法识别题干列，请使用题干、问题、题目或 QuestionText 作为表头");
+  const headers = rows[headerRow].map(normalizedHeader);
+  const header = Object.fromEntries(Object.entries(questionHeaderAliases).map(([key, aliases]) => [key, headers.findIndex((cell) => aliases.some((alias) => normalizedHeader(alias) === cell))]).filter(([, index]) => index >= 0));
+  return rows.slice(headerRow + 1).map((row, index) => {
+    const stem = String(row[header.stem] ?? "").trim();
+    if (!stem) return null;
+    const type = parseQuestionType(row[header.type]);
+    const options = parseOptions(row, header, type);
+    const answer = parseAnswerIndexes(row[header.answer], options, type);
+    if (type !== "ShortAnswer" && (!options.length || answer.answer < 0)) return null;
+    return { id: `${file.name}-${Date.now()}-${index}`, stem, type, options, answer: answer.answer, correctAnswers: answer.correctAnswers, answerText: answer.answerText, explanation: String(row[header.explanation] ?? "").trim(), roles: String(row[header.roles] ?? "").trim(), categories: String(row[header.categories] ?? "").trim(), knowledge: String(row[header.knowledge] ?? "").trim(), sourceFileName: file.name };
+  }).filter(Boolean);
+};
+
+const parseGeneratedQuestionJson = (content) => {
+  const text = String(content || "").trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/i, "");
+  let value;
+  try { value = JSON.parse(text); } catch {
+    const match = text.match(/\{[\s\S]*\}|\[[\s\S]*\]/);
+    if (!match) throw new Error("模型没有返回可识别的题目 JSON");
+    try { value = JSON.parse(match[0]); } catch { throw new Error("题目 JSON 格式无效，请重新生成"); }
+  }
+  const rows = Array.isArray(value) ? value : value.questions || value.rows || value.items || [];
+  if (!Array.isArray(rows)) throw new Error("题目结果不是数组");
+  return rows;
+};
+
+const normalizeGeneratedQuestions = (rows, sourceFile, skill = {}) => rows.map((item, index) => {
+  const stem = String(item.stem || item.question || item.题干 || item.问题 || "").trim();
+  if (!stem) return null;
+  const type = parseQuestionType(item.type || item.questionType || item.类型 || item.题型);
+  const directOptions = [item.optionA || item.选项A, item.optionB || item.选项B, item.optionC || item.选项C, item.optionD || item.选项D].map((value) => String(value ?? "").trim()).filter(Boolean);
+  const options = type === "TrueFalse" ? ["正确", "错误"] : (Array.isArray(item.options) ? item.options : directOptions).map((value) => String(value ?? "").trim()).filter(Boolean).slice(0, 4);
+  const answerValue = item.answer ?? item.correctAnswer ?? item.correct ?? item.正确答案 ?? item.答案 ?? "";
+  const answer = parseAnswerIndexes(answerValue, options, type);
+  if (type !== "ShortAnswer" && (!options.length || answer.answer < 0)) return null;
+  return {
+    id: `knowledge-${sourceFile.id}-${Date.now()}-${index}`,
+    stem,
+    type,
+    options,
+    answer: answer.answer,
+    correctAnswers: answer.correctAnswers,
+    answerText: answer.answerText,
+    explanation: String(item.explanation || item.解析 || item.reason || "").trim(),
+    roles: String(item.roles || item.applicableRoles || item.适用角色 || "").trim(),
+    categories: String(item.categories || item.category || item.issueCategory || item.问题类别 || sourceFile.category || "知识文档").trim(),
+    knowledge: String(item.knowledge || item.knowledgeTitle || item.知识标题 || sourceFile.name).trim(),
+    sourceFileName: sourceFile.name,
+    sourceKnowledgeId: sourceFile.id,
+    generatedBySkill: String(skill.name || skill.id || "generate-qms-exam-bank"),
+    generatedBySkillId: String(skill.id || "generate-qms-exam-bank"),
+    generatedAt: new Date().toISOString(),
+  };
+}).filter(Boolean);
 
 function KnowledgeBasePage({ qualitySources = [], onEnsureAgentSources, auth }) {
   const [files, setFiles] = useState(() => safeParse(localStorage.getItem(qmdpKnowledgeKey), []));
@@ -3760,7 +4118,7 @@ const examTokenFromUrl = () => typeof window === "undefined" ? "" : new URLSearc
 const qualityAgentMenuFromUrl = () => {
   if (typeof window === "undefined") return "";
   const module = String(new URLSearchParams(window.location.search).get("qualityAgent") || "").toUpperCase();
-  return ["IQC", "IPQC", "OQC", "DQA", "QMS"].includes(module) ? `${module} Agent` : "";
+  return ["IQC", "IPQC", "OQC", "DQA", "QMS", "DOAM"].includes(module) ? `${module} Agent` : "";
 };
 
 const normalizeExamResultRecord = (item = {}) => {
@@ -5138,7 +5496,7 @@ function BackgroundSnapshotPage({ data = {}, files = [], dateRange = {}, auth, o
     return { ...next, history: next.history.map((entry) => keep.has(entry.key) ? entry : { ...entry, active: false, status: "archived" }) };
   };
   const filteredModuleHistory = useMemo(() => registry.history.filter((entry) => {
-    const key = `${entry.module} ${entry.moduleLabel} ${entry.skillName} ${entry.layoutProfileId}`.toLowerCase();
+    const key = `${entry.module} ${entry.moduleLabel} ${entry.ruleLabel} ${entry.skillName} ${entry.layoutProfileId} ${entry.batchId} ${entry.dateRange?.periodKey || ""}`.toLowerCase();
     return (snapshotFilter.kind === "全部" || entry.module === snapshotFilter.kind) && (!snapshotFilter.keyword || key.includes(snapshotFilter.keyword.toLowerCase())) && (snapshotFilter.period === "全部" || snapshotFilter.period === "全部周期" || (snapshotFilter.period === "总周期" ? entry.dateRange?.granularity === "range" : entry.dateRange?.granularity === snapshotFilter.period)) && (snapshotFilter.active === "全部" || (snapshotFilter.active === "有效" ? entry.active !== false : entry.active === false));
   }), [registry.history, snapshotFilter]);
   const filteredRoleHistory = useMemo(() => roleRegistry.history.filter((entry) => {
@@ -5306,7 +5664,7 @@ function BackgroundSnapshotPage({ data = {}, files = [], dateRange = {}, auth, o
     setStatus("已点击生成快照，正在提交服务端任务…");
     setRunning(true);
     try {
-      const job = await createSnapshotJob({ kind: "module", ruleIds: ids, dateRange: { start2026: period.start2026, end2026: period.end2026 }, retryItems: retryItems || null });
+      const job = await createSnapshotJob({ kind: "module", ruleIds: ids, dateRange: { start2025: dateRange.start2025 || "", end2025: dateRange.end2025 || "", start2026: period.start2026, end2026: period.end2026 }, retryItems: retryItems || null });
       setSnapshotTask({ kind: "模块", total: 0, done: 0, failed: 0, current: "任务已提交，等待服务端执行", status: "queued", jobId: job?.job?.id || job?.id });
       await watchSnapshotJob(job?.job?.id || job?.id, "模块");
     } catch (error) {
@@ -5372,7 +5730,7 @@ function BackgroundSnapshotPage({ data = {}, files = [], dateRange = {}, auth, o
                     <strong>{rule.label}</strong>
                     <small>{rule.description}</small>
                     <em>{preview.focus.join(" · ")}</em>
-                    <small>Skill：{rule.selectedSkill || rule.defaultSkill} · Profile：{rule.layoutProfileId} · 历史：{historyCount} 条</small>
+                    <small>Skill：{rule.selectedSkill || rule.defaultSkill} · Profile：{rule.layoutProfileId} · 历史：{historyCount} 条</small>{rule.module === "DOAM" && <small>DOAM 直接使用数据导入中的告警明细，无需在此生成后台快照</small>}
                     <div className="qmdp-form-grid qmdp-snapshot-rule-fields">
                       <label>
                         <span>启用</span>
@@ -5495,7 +5853,7 @@ function DqaAgentProjectMappingPanel({ raw, editable, onSave }) {
   return <Panel title="研发项目映射" subtitle="用于非BOM的研发工程师、PM、TPM责任归属；独立于质量数据-DQA和OQC项目名称映射。"><div className="qmdp-toolbar"><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索成本对象、项目名称、PM或TPM"/><span>共 {rows.length.toLocaleString()} 条 · 当前显示 {visible.length} 条</span></div><div className="qmdp-admin-table"><div className="qmdp-admin-row head"><span>成本对象</span><span>项目名称</span><span>PM</span><span>TPM</span><span>操作</span></div>{visible.map((row) => <div className="qmdp-admin-row" key={row.recordId}><span>{row.costObject}</span><span>{row.projectName}</span><input value={row.pm || ""} disabled={!editable || selected?.recordId !== row.recordId} onChange={(event) => setSelected((current) => ({ ...(current || row), pm: event.target.value }))}/><input value={row.tpm || ""} disabled={!editable || selected?.recordId !== row.recordId} onChange={(event) => setSelected((current) => ({ ...(current || row), tpm: event.target.value }))}/><span>{selected?.recordId === row.recordId ? <button className="qmdp-primary-btn" onClick={saveRow}>保存</button> : <button className="qmdp-secondary-btn" onClick={() => setSelected({ ...row })}>编辑</button>}</span></div>)}</div>{!rows.length && <div className="qmdp-empty compact">尚未导入项目映射表。</div>}</Panel>;
 }
 
-function SystemManagementPage({ active, data, auth, files = [], dateRange = {}, onEnsureAgentSources, dqaAgentRaw, onLoadDqaAgentRaw, onSaveDqaAgentRaw }) {
+function SystemManagementPage({ active, onNavigate, data, auth, files = [], dateRange = {}, onEnsureAgentSources, dqaAgentRaw, onLoadDqaAgentRaw, onSaveDqaAgentRaw }) {
   const [tab, setTab] = useState(active);
   const [config, setConfig] = useState(() => ({ ...defaultQmdpSystemConfig, ...safeParse(localStorage.getItem(qmdpSystemKey), {}) }));
   const [qualityRules, setQualityRules] = useState(DEFAULT_REPORT_QUALITY_RULES);
@@ -5654,7 +6012,7 @@ function SystemManagementPage({ active, data, auth, files = [], dateRange = {}, 
   };
   const importActions = (kind, section) => <div style={{ display: "flex", gap: 8, alignItems: "center" }}><button className="qmdp-secondary-btn" disabled={!editable || importingKind === kind} onClick={() => openMappingImport(kind)}><UploadSimple size={15}/>{importingKind === kind ? "解析中…" : "导入 Excel"}</button><span style={{ color: "#8190a2", fontSize: 10 }}>{config.importMeta?.[kind]?.name ? `最近导入：${config.importMeta[kind].name}（${config.importMeta[kind].count} 条）` : `支持 ${kind === "org" ? "产品部 / 产总 / TPM / PM" : "厂区 / 工坊 / 交付经理 / 机长"} 表头`}</span></div>;
   const content = tab === "Agent配置" ? <Panel title="Agent配置 · 报告质量校验" subtitle="管理员配置 Agent 报告生成后的结构、数据、图表和闭环检查。"><div className="qmdp-admin-table"><div className="qmdp-admin-row head"><span>启用</span><span>规则</span><span>分组</span><span>级别</span></div>{qualityRules.map((rule) => <div className="qmdp-admin-row" key={rule.id}><input type="checkbox" checked={rule.enabled !== false} disabled={!editable} onChange={(event) => updateQualityRule(rule.id, { enabled: event.target.checked })}/><strong>{rule.label}</strong><span>{rule.group}</span><select value={rule.severity} disabled={!editable} onChange={(event) => updateQualityRule(rule.id, { severity: event.target.value })}><option value="block">阻断</option><option value="warn">警告</option><option value="info">提示</option></select></div>)}</div><div className="qmdp-note"><Database size={15}/>阻断项会标记报告质量校验失败；警告项允许查看报告但提示管理员；提示项只记录不阻断。</div><button className="qmdp-primary-btn" disabled={!editable} onClick={saveQualityRuleConfig}><FloppyDisk size={15}/>保存校验规则</button></Panel> : tab === "后台快照" ? <BackgroundSnapshotPage data={data} files={files} dateRange={dateRange} auth={auth} onEnsureAgentSources={onEnsureAgentSources}/> : tab === "研发项目映射" ? <DqaAgentProjectMappingPanel raw={dqaAgentRaw} editable={editable} onSave={onSaveDqaAgentRaw}/> : tab === "研发组织映射" ? <><Panel title="研发组织映射维护" subtitle="产品部、产总、TPM、PM 的责任关系" action={importActions("org", "orgMappings")}>{renderMapping()}<button className="qmdp-secondary-btn" disabled={!editable} onClick={() => addRow("orgMappings", { productDept: "新产品部", productionDirector: "", tpm: "", pm: "", active: true })}><Plus size={15}/>新增映射</button></Panel></> : tab === "供应链映射" ? <><Panel title="供应商/供应链人员映射" subtitle="厂区、工坊、交付经理与机长" action={importActions("supply", "supplyMappings")}>{renderSupply()}<button className="qmdp-secondary-btn" disabled={!editable} onClick={() => addRow("supplyMappings", { site: "深圳", workshop: "", manager: "", leader: "", active: true })}><Plus size={15}/>新增映射</button></Panel></> : tab === "项目名称映射" ? renderProjectNameMapping() : tab === "员工信息" ? <><Panel title="员工信息 / 企业微信 userid">{renderEmployees()}<button className="qmdp-secondary-btn" disabled={!editable} onClick={() => addRow("employees", { id: "", name: "", dept: "", role: "", wecom: "" })}><Plus size={15}/>新增员工</button></Panel></> : tab === "评分权重" ? <Panel title="质量风险评分权重" subtitle="权重总和应为 100"><div className="qmdp-weight-grid">{[["ecn", "ECN个人占比"], ["issue", "研发问题数量"], ["severity", "高严重度问题"], ["review", "设计评审问题占比"], ["nonBom", "非BOM加工件比例"], ["open", "未关闭问题数量"]].map(([key, label]) => <label key={key}><span>{label}</span><input type="number" min="0" max="100" value={config.weights?.[key] ?? 0} disabled={!editable} onChange={(event) => setConfig((current) => ({ ...current, weights: { ...current.weights, [key]: Number(event.target.value) } }))}/></label>)}</div><div className="qmdp-weight-total">当前权重合计：<strong>{Object.values(config.weights || {}).reduce((sum, value) => sum + Number(value || 0), 0)}%</strong><button className="qmdp-primary-btn" disabled={!editable} onClick={() => saveMessage("质量评分权重已保存")}>保存权重</button></div></Panel> : tab === "企业微信" ? <Panel title="企业微信应用配置" subtitle="用于报告发送，密钥只保存在本机状态"><div className="qmdp-form-grid">{[["corpId", "CorpId"], ["agentId", "AgentId"], ["secret", "Secret"]].map(([key, label]) => <label key={key}><span>{label}</span><input type={key === "secret" ? "password" : "text"} value={config.wecom?.[key] || ""} disabled={!editable} onChange={(event) => setConfig((current) => ({ ...current, wecom: { ...current.wecom, [key]: event.target.value } }))}/></label>)}</div><button className="qmdp-primary-btn" disabled={!editable} onClick={() => saveMessage("企业微信配置已保存")}>保存配置</button></Panel> : <Panel title="操作日志" subtitle="记录映射、权重与发送配置的变更"><div className="qmdp-log-list">{(config.logs || []).map((item) => <div key={item.id}><span>{formatSyncDateTime(item.at)}</span><strong>{item.message}</strong></div>)}{!(config.logs || []).length && <div className="qmdp-empty compact">暂无操作日志。</div>}</div></Panel>;
-  return <div className="qmdp-page"><input ref={mappingInputRef} type="file" accept=".xlsx,.xls,.xlsm" hidden onChange={(event) => importMapping(event, mappingInputRef.current?.getAttribute("data-kind") || "supply")}/><QmdpPageHeader icon={GearSix} eyebrow="系统管理 / Administration" title={tab} description={editable ? "副管理员和主管理员可维护映射、权重与发送配置。" : "当前账号仅可查看系统配置。"} action={status && <span className="qmdp-inline-status"><CheckCircle size={15}/>{status}</span>}/><div className="qmdp-admin-tabs">{qmdpMenuGroups.find((group) => group.label === "系统管理").children.map((item) => <button key={item} className={tab === item ? "active" : ""} onClick={() => setTab(item)}>{item}</button>)}</div>{content}<div className="qmdp-note"><Database size={15}/>系统管理数据与现有数据导入、IPQC过程管控、研发质量分析相互隔离。</div></div>;
+  return <div className="qmdp-page"><input ref={mappingInputRef} type="file" accept=".xlsx,.xls,.xlsm" hidden onChange={(event) => importMapping(event, mappingInputRef.current?.getAttribute("data-kind") || "supply")}/><QmdpPageHeader icon={GearSix} eyebrow="系统管理 / Administration" title={tab} description={editable ? "副管理员和主管理员可维护映射、权重与发送配置。" : "当前账号仅可查看系统配置。"} action={status && <span className="qmdp-inline-status"><CheckCircle size={15}/>{status}</span>}/><div className="qmdp-admin-tabs">{qmdpMenuGroups.find((group) => group.label === "系统管理").children.map((item) => <button key={item} className={tab === item ? "active" : ""} onClick={() => { setTab(item); onNavigate?.(item); }}>{item}</button>)}</div>{content}<div className="qmdp-note"><Database size={15}/>系统管理数据与现有数据导入、IPQC过程管控、研发质量分析相互隔离。</div></div>;
 }
 
 function ReportHistoryComparePage() {
@@ -5732,6 +6090,7 @@ function QualityOverviewPage({ data }) {
   const [iqcSpecialAsBad, setIqcSpecialAsBad] = useState(false);
   const [ipqcSite, setIpqcSite] = useState("全公司");
   const [oqcScopeKey, setOqcScopeKey] = useState("overall");
+  if (!data?.iqc || !data?.ipqc || !data?.oqc || !data?.dqa) return <div className="qmdp-empty">质量总览数据尚未准备好，请稍后刷新。</div>;
   const iqcMode = iqcSpecialAsBad ? data.iqc.qualityModes?.rejected : data.iqc.qualityModes?.accepted;
   const iqcData = iqcMode || data.iqc;
   const iqcMonthly = iqcData.siteMonthly?.[iqcSite] || [];
@@ -5758,12 +6117,13 @@ function QualityOverviewPage({ data }) {
   const ecn = baseEcn ? filterEcnByReasons(baseEcn, ecnReasons.filter((reason) => reason !== "分批下单/多人协作下单")) : null;
   const machined = data.dqa.machinedParts;
   const emptyNote = (title, detail) => <div className="summary-note compact"><strong>{title}</strong><p>{detail}</p></div>;
+  if (!data?.iqc || !data?.ipqc || !data?.oqc || !data?.dqa) return <div className="qmdp-empty">质量总览数据尚未准备好，请稍后刷新。</div>;
   return <div className="overview-upgrade-page">
     <OverviewKpiCards data={data}/>
     <div className="overview-stack">
       <section className="overview-block">
         <div className="iqc-section-title">
-          <div><span className="section-number">1</span><div><h2>供应商加工件同比分析</h2><p>按检验批次计算数量和批次良率，可切换全公司、深圳、杭州</p></div></div>
+          <div><span className="section-number">1</span><div><h2>供应商来料同比分析</h2><p>按检验批次计算数量和批次良率，可切换全公司、深圳、杭州</p></div></div>
           <div className="iqc-title-actions"><label className={`special-toggle ${iqcSpecialAsBad ? "active" : ""}`}><input type="checkbox" checked={iqcSpecialAsBad} onChange={(event) => setIqcSpecialAsBad(event.target.checked)}/><span>计入特采</span></label><div className="site-tabs"><button className={iqcSite === "全公司" ? "active" : ""} onClick={() => setIqcSite("全公司")}>全公司</button><button className={iqcSite === "深圳" ? "active" : ""} onClick={() => setIqcSite("深圳")}>深圳</button><button className={iqcSite === "杭州" ? "active" : ""} onClick={() => setIqcSite("杭州")}>杭州</button></div></div>
         </div>
         <div className="iqc-summary-strip">
@@ -5887,7 +6247,7 @@ function ExecutiveDashboard({ data, files, dqaEngineerSupplement, dqaAgentRaw, o
       </header>
       {!qmdpView && <DateRangeFilter value={dateRange} teamDefaultRange={teamDefaultRange} lastServerSavedAt={lastServerSavedAt} onChange={onDateRange} onRefresh={onRefreshDate} refreshStatus={dateRefreshStatus} refreshProgress={refreshProgress} canRefresh={allowTemporaryRefresh} fontSize={fontSize} onFontSize={onFontSize}/>}
       <PageErrorBoundary pageKey={active} onRecover={() => setActive("总览")}>
-      {active === "权限设置" && auth?.isAdmin ? <PermissionSettingsPage auth={auth} permissions={permissions} onPermissionsChanged={onPermissionsChanged}/> : qmdpKnowledgeView ? <KnowledgeManagementPage active={active} qualitySources={agentFiles} onEnsureAgentSources={onEnsureAgentSources} auth={auth}/> : qmdpReportView ? <QualityReportsPage active={active} data={data} files={files} dateRange={dateRange} onRoleChange={setActive}/> : qualityAgentView && canUseFeature(auth, permissions, "qualityAgent") ? <Suspense fallback={<div className="qmdp-empty">正在加载质量分析 Agent…</div>}><QualityAgentPage key={active} data={data} files={files} dateRange={dateRange} module={qualityAgentMenuModules[active]} onEnsureAgentSources={onEnsureAgentSources} canStart={canUseFeature(auth, permissions, "qualityAgentStart")} canSaveToServer={auth?.isAdmin === true}/></Suspense> : agentRoleReportView && canUseFeature(auth, permissions, "qualityAgent") ? <Suspense fallback={<div className="qmdp-empty">正在加载角色报告…</div>}><AgentRoleReportPage key={active} initialRole={agentRoleMenuRoles[active]} data={data} files={agentFiles} dateRange={dateRange} onEnsureAgentSources={onEnsureAgentSources} canGenerate={canUseFeature(auth, permissions, "agentRoleReportGenerate")} canSaveToServer={auth?.isAdmin === true}/></Suspense> : active === "报告历史对比" && canUseFeature(auth, permissions, "qualityAgent") ? <ReportHistoryComparePage/> : agentExamStatsView && canUseFeature(auth, permissions, "qualityAgent") ? <Suspense fallback={<div className="qmdp-empty">正在加载知识考试…</div>}><AgentExamStatsPage/></Suspense> : qmdpSystemView ? <SystemManagementPage key={active} active={active} data={data} auth={auth} files={agentFiles} dateRange={dateRange} onEnsureAgentSources={onEnsureAgentSources} dqaAgentRaw={dqaAgentRaw} onLoadDqaAgentRaw={onLoadDqaAgentRaw} onSaveDqaAgentRaw={onSaveDqaAgentRaw}/> : active === "AI接口" && canUseFeature(auth, permissions, "aiInterface") ? <AiInterfacePage canSaveToServer={auth?.isAdmin === true}/> : active === "数据导入" && allowImport ? <DataSourcePage files={files} onImportModule={onImport} onDelete={onDeleteSource} onSourcesChanged={onSourcesChanged} dqaEngineerSupplement={dqaEngineerSupplement} onImportDqaEngineerSupplement={onImportDqaEngineerSupplement} onClearDqaEngineerSupplement={onClearDqaEngineerSupplement} onDeleteDqaEngineerSupplementFile={onDeleteDqaEngineerSupplementFile} dqaAgentRaw={dqaAgentRaw} onLoadDqaAgentRaw={onLoadDqaAgentRaw} onImportDqaAgentRaw={onImportDqaAgentRaw} onClearDqaAgentRaw={onClearDqaAgentRaw} onDeleteDqaAgentRawFile={onDeleteDqaAgentRawFile}/> : active === "AI分析" && canUseFeature(auth, permissions, "aiAnalysis") ? <AiAnalysisPage data={data} dateRange={dateRange} analysisKey={analysisKey} canSaveToServer={auth?.isAdmin === true}/> : moduleView ? <ModuleDetail key={`${moduleView}-${analysisKey}`} module={moduleView} data={data} files={files} /> : <>
+      {active === "权限设置" && auth?.isAdmin ? <PermissionSettingsPage auth={auth} permissions={permissions} onPermissionsChanged={onPermissionsChanged}/> : qmdpKnowledgeView ? <KnowledgeManagementPage active={active} qualitySources={agentFiles} onEnsureAgentSources={onEnsureAgentSources} auth={auth}/> : qmdpReportView ? <QualityReportsPage active={active} data={data} files={files} dateRange={dateRange} onRoleChange={setActive}/> : qualityAgentView && canUseFeature(auth, permissions, "qualityAgent") ? <Suspense fallback={<div className="qmdp-empty">正在加载质量分析 Agent…</div>}><QualityAgentPage key={active} data={data} files={files} dateRange={dateRange} module={qualityAgentMenuModules[active]} onEnsureAgentSources={onEnsureAgentSources} canStart={canUseFeature(auth, permissions, "qualityAgentStart")} canSaveToServer={auth?.isAdmin === true}/></Suspense> : agentRoleReportView && canUseFeature(auth, permissions, "qualityAgent") ? <Suspense fallback={<div className="qmdp-empty">正在加载角色报告…</div>}><AgentRoleReportPage key={active} initialRole={agentRoleMenuRoles[active]} data={data} files={agentFiles} dateRange={dateRange} onEnsureAgentSources={onEnsureAgentSources} canGenerate={canUseFeature(auth, permissions, "agentRoleReportGenerate")} canSaveToServer={auth?.isAdmin === true}/></Suspense> : active === "报告历史对比" && canUseFeature(auth, permissions, "qualityAgent") ? <ReportHistoryComparePage/> : agentExamStatsView && canUseFeature(auth, permissions, "qualityAgent") ? <Suspense fallback={<div className="qmdp-empty">正在加载知识考试…</div>}><AgentExamStatsPage/></Suspense> : qmdpSystemView ? <SystemManagementPage key="system-management" active={active} onNavigate={setActive} data={data} auth={auth} files={agentFiles} dateRange={dateRange} onEnsureAgentSources={onEnsureAgentSources} dqaAgentRaw={dqaAgentRaw} onLoadDqaAgentRaw={onLoadDqaAgentRaw} onSaveDqaAgentRaw={onSaveDqaAgentRaw}/> : active === "AI接口" && canUseFeature(auth, permissions, "aiInterface") ? <AiInterfacePage canSaveToServer={auth?.isAdmin === true}/> : active === "数据导入" && allowImport ? <DataSourcePage files={files} onImportModule={onImport} onDelete={onDeleteSource} onSourcesChanged={onSourcesChanged} dqaEngineerSupplement={dqaEngineerSupplement} onImportDqaEngineerSupplement={onImportDqaEngineerSupplement} onClearDqaEngineerSupplement={onClearDqaEngineerSupplement} onDeleteDqaEngineerSupplementFile={onDeleteDqaEngineerSupplementFile} dqaAgentRaw={dqaAgentRaw} onLoadDqaAgentRaw={onLoadDqaAgentRaw} onImportDqaAgentRaw={onImportDqaAgentRaw} onClearDqaAgentRaw={onClearDqaAgentRaw} onDeleteDqaAgentRawFile={onDeleteDqaAgentRawFile}/> : active === "AI分析" && canUseFeature(auth, permissions, "aiAnalysis") ? <AiAnalysisPage data={data} dateRange={dateRange} analysisKey={analysisKey} canSaveToServer={auth?.isAdmin === true}/> : moduleView ? <ModuleDetail key={`${moduleView}-${analysisKey}`} module={moduleView} data={data} files={files} /> : <>
         <QualityOverviewPage data={data}/>
       </>}
       </PageErrorBoundary>
@@ -7962,7 +8322,7 @@ function ModuleDetail({ module, data, files }) {
   if (module === "DOAM") return <DoamPage/>;
   if (module === "IQC") return <IqcSupplierAnalysis data={data} />;
   if (module === "IPQC") return <IpqcAnalysis data={data} />;
-  if (module === "OQC") return <OqcAnalysis data={data} files={files} />;
+  if (module === "OQC") return <OqcAnalysis data={data} files={(files || []).filter((file) => file.module !== "DOAM")} />;
   if (module === "DQA") return <DqaAnalysis data={data}/>;
   if (module === "QMS") return <QmsAnalysis data={data}/>;
   return null;
@@ -8254,6 +8614,7 @@ function IqcSupplierAnalysis({ data }) {
   const uiTheme = useUiTheme();
   const [site, setSite] = useState("全公司");
   const [specialAsBad, setSpecialAsBad] = useState(false);
+  if (!data?.iqc) return <div className="qmdp-empty">IQC 数据尚未准备好，请稍后刷新。</div>;
   const mode = specialAsBad ? data.iqc.qualityModes?.rejected : data.iqc.qualityModes?.accepted;
   const iqcData = mode || data.iqc;
   const monthly = iqcData.siteMonthly?.[site] || [];
@@ -8393,7 +8754,7 @@ export function App() {
     return qmsDefaults.length ? [...sources, ...qmsDefaults] : sources;
   }, []);
   const prepareSourcesForAnalysis = useCallback(async (sources, onProgress = () => {}, requestedModules = null) => {
-    sources = cleanPrimarySources(sources);
+    sources = cleanPrimarySources(sources).filter((source) => source.module !== "DOAM");
     const moduleSet = Array.isArray(requestedModules) && requestedModules.length ? new Set(requestedModules) : null;
     if (moduleSet) sources = sources.filter((source) => moduleSet.has(source.module));
     if (!sources?.length || sources.every((source) => Array.isArray(source.rows) && source.rows.length)) return sources;
@@ -8752,14 +9113,25 @@ export function App() {
     const serverSaved = savedSources?._serverSaved !== false;
     if (!serverSaved) setServerSyncStatus({ state: "warning", label: "已保存在本机，等待服务器同步" });
     localStorage.setItem("qms-user-imported-sources-v2", "true");
+    if (result.skipAnalysis) {
+      const savedAt = new Date().toISOString();
+      setLastServerSavedAt(savedAt);
+      setServerSyncStatus({ state: serverSaved ? "success" : "warning", label: serverSaved ? `服务器已同步 · ${formatSyncDateTime(savedAt)}` : "已保存在本机，等待服务器同步" });
+      const skipParts = [];
+      if (result.added?.length) skipParts.push(`新增${result.added.length}个`);
+      if (result.replaced?.length) skipParts.push(`替换${result.replaced.length}个`);
+      setSourceNotice(skipParts.length ? `数据源已保存：${skipParts.join("，")}${serverSaved ? "" : "；服务器暂未同步"}` : (serverSaved ? "数据源已更新" : "数据源已保存在本机，等待服务器同步"));
+      setTimeout(() => setSourceNotice(""), 3200);
+      return;
+    }
     onProgress({ state: "loading", label: "正在生成分析图表" });
-    const nextData = await applyAnalyzedData(sources, appliedDateRange);
+    const nextData = await applyAnalyzedData(sources.filter((source) => source.module !== "DOAM"), appliedDateRange);
     onProgress({ state: "loading", label: "正在保存分析结果" });
-    const savedCache = await saveAnalysisCacheFor(sources, appliedDateRange, nextData);
+    const savedCache = await saveAnalysisCacheFor(sources.filter((source) => source.module !== "DOAM"), appliedDateRange, nextData);
     if (!savedCache) {
       setServerSyncStatus({ state: "warning", label: "数据已保存在本机，分析缓存等待服务器同步" });
     }
-    const savedAt = savedCache.savedAt || new Date().toISOString();
+    const savedAt = savedCache?.savedAt || new Date().toISOString();
     setLastServerSavedAt(savedAt);
     setTeamDefaultRange(appliedDateRange);
     setServerSyncStatus({ state: serverSaved ? "success" : "warning", label: serverSaved ? `服务器已同步 · ${formatSyncDateTime(savedAt)}` : "已保存在本机，等待服务器同步" });

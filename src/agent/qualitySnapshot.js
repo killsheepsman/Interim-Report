@@ -1,3 +1,4 @@
+import { buildDoamAgentSnapshotData } from "../doamEngine.js";
 const number = (value) => {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : 0;
@@ -43,6 +44,33 @@ const buildMappingAudit = (data, module) => {
   return { dimension: module === "IQC" ? "供应商" : "组织责任归属", total, mapped, unmapped: Math.max(total - mapped, 0), rate: total ? Number((mapped / total * 100).toFixed(1)) : null };
 };
 const buildSourceAudit = (data, files, module, period) => {
+  if (module === "DOAM") {
+    const quality = data?.doam?.quality || {};
+    const fileNames = (quality.files || data?.doam?.files || []).map((item) => typeof item === "string" ? item : item?.name).filter(Boolean);
+    const manifest = fileNames.map((name) => ({ name, kind: "DOAM_CSV", size: 0, rowCount: number(quality.rowCount), importedAt: "" }));
+    const dateMin = quality.dateMin || data?.doam?.metrics?.dateMin || "";
+    const dateMax = quality.dateMax || data?.doam?.metrics?.dateMax || "";
+    return {
+      sourceFileCount: manifest.length,
+      mappingFileCount: 0,
+      totalRows: number(quality.rowCount),
+      loadedRows: number(data?.doam?.metrics?.shifts2025) + number(data?.doam?.metrics?.shifts2026),
+      emptyFiles: [],
+      duplicateFiles: [],
+      dateCoverage: {
+        available: Boolean(dateMin || dateMax),
+        rowsChecked: number(quality.rowCount),
+        rowsWithDate: Math.max(number(quality.rowCount) - number(quality.blankDate), 0),
+        missingDateRows: number(quality.blankDate),
+        rate: quality.rowCount ? Number(((Math.max(number(quality.rowCount) - number(quality.blankDate), 0) / number(quality.rowCount)) * 100).toFixed(1)) : null,
+        earliest: dateMin,
+        latest: dateMax,
+      },
+      period,
+      mapping: { dimension: "TPM/设备类型/客户/产品部", total: number(quality.tpmCount) + number(quality.deviceTypeCount), mapped: number(quality.tpmCount) + number(quality.deviceTypeCount), unmapped: 0, rate: (quality.tpmCount || quality.deviceTypeCount) ? 100 : null },
+      files: manifest.slice(0, 40),
+    };
+  }
   const moduleFiles = files.filter((file) => file.module === module);
   const dataFiles = moduleFiles.filter((file) => file.kind !== "IPQC_LEADER_MAP");
   const manifest = moduleFiles.map((file) => ({
@@ -179,7 +207,47 @@ const addParetoEvent = (state, organization, mechanism, weight = 1) => {
 const buildLocalPareto = (data, files, module, period) => {
   const state = { eventCount: 0, totalWeight: 0, organization: new Map(), mechanism: new Map(), cross: new Map(), rowsChecked: 0, rowsInPeriod: 0, missingDateRows: 0 };
   const moduleFiles = files.filter((file) => file.module === module && file.kind !== "IPQC_LEADER_MAP" && file.subKind !== "DQA_ENGINEER_SUPPLEMENT" && file.kind !== "DQA_MACHINED_PARTS");
-  if (module === "QMS") {
+  if (module === "DOAM") {
+    const metrics = data?.doam?.metrics || {};
+    const evidence = data?.doam?.evidence || {};
+    const companyAlarms = number(metrics.alarms2026);
+    const orgRows = evidence.organizationAlarmTotals || [];
+    const mechRows = evidence.mechanismAlarmTotals || [];
+    const crossRows = evidence.crossThemes || [];
+    if (!orgRows.length && !mechRows.length && crossRows.length) {
+      crossRows.forEach((row) => {
+        const alarms = number(row.value || row.a);
+        if (!alarms) return;
+        addParetoEvent(state, clean(row.organization || "未填写TPM"), clean(row.mechanism || "其他"), alarms);
+      });
+    } else {
+    orgRows.forEach((row) => {
+      const alarms = number(row.value);
+      if (!alarms) return;
+      state.organization.set(clean(row.name || "未填写TPM"), (state.organization.get(clean(row.name || "未填写TPM")) || 0) + alarms);
+    });
+    mechRows.forEach((row) => {
+      const alarms = number(row.value);
+      if (!alarms) return;
+      state.mechanism.set(clean(row.name || "其他"), (state.mechanism.get(clean(row.name || "其他")) || 0) + alarms);
+    });
+    crossRows.forEach((row) => {
+      const alarms = number(row.value || row.a);
+      if (!alarms) return;
+      state.rowsChecked += 1;
+      state.rowsInPeriod += 1;
+      const org = clean(row.organization || "未填写TPM");
+      const cause = clean(row.mechanism || "其他");
+      state.cross.set(org + "\u0001" + cause, (state.cross.get(org + "\u0001" + cause) || 0) + alarms);
+    });
+    const orgSum = [...state.organization.values()].reduce((sum, value) => sum + Number(value || 0), 0);
+    const mechSum = [...state.mechanism.values()].reduce((sum, value) => sum + Number(value || 0), 0);
+    state.totalWeight = companyAlarms || Math.max(orgSum, mechSum);
+    state.eventCount = crossRows.length || orgRows.length || mechRows.length;
+    state.rowsChecked = number(metrics.shifts2026) || state.rowsChecked;
+    state.rowsInPeriod = number(metrics.shifts2026) || state.rowsInPeriod;
+    }
+  } else if (module === "QMS") {
     const currentPeriod = clean(data?.qms?.current?.period);
     (data?.qms?.risks || []).filter((row) => !currentPeriod || clean(row.period) === currentPeriod).forEach((row) => {
       state.rowsChecked += 1;
@@ -226,18 +294,25 @@ const buildLocalPareto = (data, files, module, period) => {
       }
     }));
   }
+  const coverageRate = module === "DOAM" && state.totalWeight
+    ? Number((Math.min(
+      [...state.organization.values()].reduce((sum, value) => sum + Number(value || 0), 0),
+      [...state.mechanism.values()].reduce((sum, value) => sum + Number(value || 0), 0),
+      state.totalWeight
+    ) / state.totalWeight * 100).toFixed(1))
+    : null;
   return {
     engine: "本地固定统计引擎",
-    definition: "问题贡献集中度，不等同于人员或组织绩效排名",
-    unit: { IQC: "不合格批次", IPQC: "异常记录", OQC: "低评分机台/现场问题项", DQA: "研发/评审问题项", QMS: "低分或带意见评价" }[module] || "问题项",
+    definition: module === "DOAM" ? "问题贡献集中度，不等同于人员或组织绩效排名；分母为2026告警总次数" : "问题贡献集中度，不等同于人员或组织绩效排名",
+    unit: { IQC: "不合格批次", IPQC: "异常记录", OQC: "低评分机台/现场问题项", DQA: "研发/评审问题项", QMS: "低分或带意见评价", DOAM: "告警次数" }[module] || "问题项",
     period: { start: period?.start2026 || "", end: period?.end2026 || "" },
     eventCount: state.eventCount,
     totalWeight: state.totalWeight,
     organizationPareto: paretoRows(state.organization, state.totalWeight),
     mechanismPareto: paretoRows(state.mechanism, state.totalWeight),
     crossThemes: paretoCrossRows(state.cross, state.totalWeight),
-    coverage: { sourceFiles: moduleFiles.length, rowsChecked: state.rowsChecked, rowsInPeriod: state.rowsInPeriod, missingDateRows: state.missingDateRows },
-    limitations: state.totalWeight ? [] : ["当前周期没有形成可用于问题贡献Pareto的事件；不得由模型自行补排。"],
+    coverage: { sourceFiles: module === "DOAM" ? 1 : moduleFiles.length, rowsChecked: state.rowsChecked, rowsInPeriod: state.rowsInPeriod, missingDateRows: state.missingDateRows, sourceAlarms: module === "DOAM" ? state.totalWeight : undefined, rate: coverageRate },
+    limitations: state.totalWeight ? (module === "DOAM" && coverageRate != null && coverageRate < 95 ? ["Pareto组织/机制加总与2026告警总次数覆盖率" + coverageRate + "%，不得把截断交叉当作全量"] : []) : ["当前周期没有形成可用于问题贡献Pareto的事件；不得由模型自行补排。"],
   };
 };
 
@@ -290,6 +365,7 @@ const moduleLabels = {
   OQC: "出货质量",
   DQA: "研发质量",
   QMS: "客户质量",
+  DOAM: "机台稳定性",
 };
 const moduleRules = {
   IQC: "以供应商/厂区为组织主线，分析来料良率、批次暴露、缺陷类型、供应商集中度和供应商改善闭环；不得把来料批次不良直接等同于生产损失。",
@@ -297,6 +373,7 @@ const moduleRules = {
   OQC: "以产品部→TPM/项目为组织主线，分析出货样本量、5分率、低分率、趋势、客户/现场风险和发货门禁；样本不足时不得进行强排名。",
   DQA: "以产品部→TPM为组织主线，综合研发问题、设计评审、ECN和非BOM证据，区分研发源头、后端暴露和责任闭环。",
   QMS: "以客户声音→产品部→TPM/项目为组织主线，分析总体得分、低分率、客户意见主题、严重度、重复性、责任归属和关闭证据；客户文字意见不能被平均分替代。",
+  DOAM: "以产品部→客户→TPM→设备类型为组织主线。先报有数月份和重叠月份，再解释2026窗口结构；重叠不足3个月不得把总体同比写成年度改善或恶化。必须同时看等权、加权、班次分母、新机型和剔除局部后的加权。",
 };
 
 const dqaSnapshot = (data = {}, target = {}, files = []) => {
@@ -487,6 +564,15 @@ const genericSnapshot = (data = {}, module, files = []) => {
       roleEvidence: { research: buildRoleEvidence(data, files).research },
     };
   }
+  if (module === "DOAM") {
+    const view = data.doam?.metrics ? data.doam : buildDoamAgentSnapshotData(data.doam || {}, {});
+    return {
+      metrics: view.metrics || {},
+      organization: view.organization || { sites: [], divisions: [], owners: [] },
+      evidence: view.evidence || {},
+      quality: view.quality || {},
+    };
+  }
   return {
     metrics: source.metrics || data.kpis || {},
     organization: { sites: source.siteMonthly ? Object.keys(source.siteMonthly) : [], divisions: source.divisionCompare || source.divisions || [], owners: source.tpm || source.tpmRows || source.suppliers || [] },
@@ -500,6 +586,7 @@ const METRIC_LABELS = {
   OQC: { overall2026: ["2026出货质量总体", "组合指标"], fiveRate2026: ["2026五分率", "%"], sampleCount2026: ["2026评价样本量", "台"], lowRate2026: ["2026低分率", "%"] },
   DQA: { backendIssues2026: ["2026生产及现场问题", "项"], reviewIssues2026: ["2026评审问题", "项"], totalIssues2026: ["2026研发问题总数", "项"], ecn2026: ["2026 ECN数量", "项"], ecnRate2026: ["2026 ECN加工件比例", "%"], nonBomQuantity2026: ["2026非BOM数量", "项"] },
   QMS: { currentPeriod: ["当前客户满意度周期", "周期指标"], riskCount: ["客户风险记录", "条"], suggestionCount: ["客户意见数量", "条"] },
+  DOAM: { average2026: ["2026等权机型平均报警", "次/班次"], volumeAverage2026: ["2026加权平均报警", "次/班次"], shifts2026: ["2026班次数", "班次"], alarms2026: ["2026告警总次数", "次"], types2026: ["2026设备类型数", "类"], average2025: ["2025等权机型平均报警", "次/班次"], volumeAverage2025: ["2025加权平均报警", "次/班次"], overlapMonths: ["两年重叠月份", "月"], comparableVolume2026: ["重叠月份2026加权平均", "次/班次"], residualVolumeExcludeTopTpm: ["剔除TOP TPM后加权平均", "次/班次"], residualVolumeExcludeNewTypes: ["剔除新机型后加权平均", "次/班次"], otherShare2026: ["其他分类占比", "%"] },
 };
 const evidenceDisplayValue = (value) => {
   if (value && typeof value === "object" && "value" in value) return `${value.value}${value.unit || ""}`;
@@ -535,7 +622,7 @@ const buildEvidenceCatalog = (module, period, metrics, sourceAudit, localPareto)
   };
 };
 
-export const QUALITY_AGENT_MODULES = ["IQC", "IPQC", "OQC", "DQA", "QMS"];
+export const QUALITY_AGENT_MODULES = ["IQC", "IPQC", "OQC", "DQA", "QMS", "DOAM"];
 
 export const buildQualityAgentSnapshot = ({ data = {}, files = [], dateRange = {}, module = "DQA", role = "公司级", recipient = "" } = {}) => {
   const period = {
@@ -544,9 +631,11 @@ export const buildQualityAgentSnapshot = ({ data = {}, files = [], dateRange = {
     start2026: dateRange.start2026 || "",
     end2026: dateRange.end2026 || "",
   };
-  const base = module === "DQA" ? dqaSnapshot(data, { role, recipient }, files) : genericSnapshot(data, module, files);
-  const sourceAudit = buildSourceAudit(data, files, module, period);
-  const localPareto = buildLocalPareto(data, files, module, { start2026: period.start2026, end2026: period.end2026 });
+  const doamView = module === "DOAM" ? buildDoamAgentSnapshotData(data.doam || {}, period) : null;
+  const snapshotData = module === "DOAM" ? { ...data, doam: doamView } : data;
+  const base = module === "DQA" ? dqaSnapshot(data, { role, recipient }, files) : genericSnapshot(snapshotData, module, files);
+  const sourceAudit = buildSourceAudit(snapshotData, files, module, period);
+  const localPareto = buildLocalPareto(snapshotData, files, module, { start2026: period.start2026, end2026: period.end2026 });
   return {
     schemaVersion: "quality-agent-snapshot-v3",
     agentTitle: "质量分析 Agent",

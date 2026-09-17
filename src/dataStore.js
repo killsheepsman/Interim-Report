@@ -155,6 +155,14 @@ const requestSharedApi = async (path, options = {}) => {
   }
 };
 
+export const fetchUploadedJson = async (serverFile) => {
+  if (!serverFile) return null;
+  const pathName = String(serverFile).startsWith("/api") ? String(serverFile).slice(4) : String(serverFile);
+  const response = await requestSharedApi(pathName, { method: "GET", cache: "no-store" });
+  if (!response) return null;
+  try { return await response.json(); } catch { return null; }
+};
+
 const openDatabase = () => new Promise((resolve, reject) => {
   const request = indexedDB.open(DB_NAME, DB_VERSION);
   request.onupgradeneeded = () => {
@@ -212,8 +220,9 @@ const stableHash = (value) => {
 
 export const sourceRowCount = (source) => Array.isArray(source?.rows) ? source.rows.length : Number(source?.rowCount || 0);
 
-export const createSourcesSignature = (sources = []) => {
+export const createSourcesSignature = (sources = [], options = {}) => {
   const payload = sources
+    .filter((source) => options.includeDoam || (source.module !== "DOAM" && source.kind !== "DOAM_COMPACT"))
     .map((source) => ({
       module: source.module || "",
       name: String(source.name || "").trim().toLowerCase(),
@@ -229,7 +238,7 @@ export const createSourcesSignature = (sources = []) => {
   return `sources-v1:${stableHash(JSON.stringify(payload))}`;
 };
 
-export const summarizeSources = (sources = []) => sources.map(({ rows, ...source }) => ({
+export const summarizeSources = (sources = []) => sources.map(({ rows, doamCompact, ...source }) => ({
   ...source,
   rowCount: sourceRowCount({ rows, ...source }),
   rows: [],

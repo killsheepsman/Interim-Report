@@ -2,7 +2,7 @@ import { DEFAULT_REPORT_PRESENTATION_PROFILE, normalizeReportPresentationProfile
 
 export const QUALITY_SNAPSHOT_REGISTRY_KEY = "quality-agent-snapshot-registry";
 export const QUALITY_SNAPSHOT_REGISTRY_SCHEMA = "quality-agent-snapshot-registry-v1";
-export const QUALITY_SNAPSHOT_MODULES = ["IQC", "IPQC", "OQC", "DQA", "QMS"];
+export const QUALITY_SNAPSHOT_MODULES = ["IQC", "IPQC", "OQC", "DQA", "QMS", "DOAM"];
 
 const DEFAULT_SKILL_BY_MODULE = {
   IQC: "quality-analysis-iqc",
@@ -10,6 +10,7 @@ const DEFAULT_SKILL_BY_MODULE = {
   OQC: "quality-analysis-oqc",
   DQA: "quality-analysis-dqa",
   QMS: "quality-analysis-qms",
+  DOAM: "quality-analysis-doam",
 };
 
 const RULE_LIBRARY = {
@@ -18,6 +19,7 @@ const RULE_LIBRARY = {
   OQC: { id: "oqc", module: "OQC", label: "OQC 出货快照", description: "出货数量、评分、项目离散、机台分布、治具/自动化", sourceModules: ["OQC"], sourceKinds: ["出货汇总", "出货明细"], focus: ["项目数量", "机台数量", "离散度", "评分", "项目分类"] },
   DQA: { id: "dqa", module: "DQA", label: "DQA 研发快照", description: "研发问题、ECN、非BOM、评审、工程师责任和闭环", sourceModules: ["DQA"], sourceKinds: ["研发问题", "ECN", "非BOM", "评审"], focus: ["研发问题", "ECN", "非BOM", "评审", "工程师"] },
   QMS: { id: "qms", module: "QMS", label: "QMS 客诉快照", description: "客户意见、分公司/事业部、严重度、复发、整改动作", sourceModules: ["QMS"], sourceKinds: ["客户意见", "质量反馈"], focus: ["客户意见", "严重度", "复发", "整改", "趋势"] },
+  DOAM: { id: "doam", module: "DOAM", label: "DOAM 机台稳定性快照", description: "告警次数、班次分母、设备类型平均、告警分类、TPM/客户/产品部", sourceModules: ["DOAM"], sourceKinds: ["告警明细"], focus: ["等权平均", "加权平均", "告警分类", "机型结构", "TPM"] },
 };
 
 const nowIso = () => new Date().toISOString();
@@ -145,10 +147,16 @@ export const normalizeQualitySnapshotRegistry = (value) => {
     const normalized = normalizeHistoryEntry(entry);
     return [normalized.id, normalized];
   })).values()]
-    .sort((left, right) => String(right.generatedAt || "").localeCompare(String(left.generatedAt || "")))
-    .slice(0, 240);
+    .sort((left, right) => String(right.generatedAt || "").localeCompare(String(left.generatedAt || "")));
+  const historyByModule = new Map();
+  history.forEach((entry) => {
+    const list = historyByModule.get(entry.module) || [];
+    if (list.length < 120) list.push(entry);
+    historyByModule.set(entry.module, list);
+  });
+  const historyCapped = [...historyByModule.values()].flat().sort((left, right) => String(right.generatedAt || "").localeCompare(String(left.generatedAt || "")));
   const selectedRuleId = rules.some((rule) => rule.id === source.selectedRuleId) ? String(source.selectedRuleId) : (rules.find((rule) => rule.enabled)?.id || rules[0]?.id || "iqc");
-  return { schemaVersion: String(source.schemaVersion || QUALITY_SNAPSHOT_REGISTRY_SCHEMA), updatedAt: String(source.updatedAt || nowIso()), selectedRuleId, rules, history, maintenance: { ...base.maintenance, ...(source.maintenance || {}), retention: Math.max(1, Math.min(20, Number(source.maintenance?.retention || base.maintenance.retention))), taskHistory: Array.isArray(source.maintenance?.taskHistory) ? source.maintenance.taskHistory.slice(0, 50) : [] } };
+  return { schemaVersion: String(source.schemaVersion || QUALITY_SNAPSHOT_REGISTRY_SCHEMA), updatedAt: String(source.updatedAt || nowIso()), selectedRuleId, rules, history: historyCapped, maintenance: { ...base.maintenance, ...(source.maintenance || {}), retention: Math.max(1, Math.min(20, Number(source.maintenance?.retention || base.maintenance.retention))), taskHistory: Array.isArray(source.maintenance?.taskHistory) ? source.maintenance.taskHistory.slice(0, 50) : [] } };
 };
 
 export const getQualitySnapshotRulePreview = (rule = {}) => ({
@@ -226,9 +234,15 @@ export const buildQualitySnapshotHistoryEntry = ({ rule = {}, snapshot = {}, sou
 export const mergeQualitySnapshotHistory = (registry = {}, entry = {}) => {
   const normalizedRegistry = normalizeQualitySnapshotRegistry(registry);
   const normalizedEntry = buildQualitySnapshotHistoryEntry(entry);
-  const history = [normalizedEntry, ...normalizedRegistry.history.filter((item) => item.id !== normalizedEntry.id)]
-    .sort((left, right) => String(right.generatedAt || "").localeCompare(String(left.generatedAt || "")))
-    .slice(0, 240);
+  const mergedHistory = [normalizedEntry, ...normalizedRegistry.history.filter((item) => item.id !== normalizedEntry.id)]
+    .sort((left, right) => String(right.generatedAt || "").localeCompare(String(left.generatedAt || "")));
+  const mergedByModule = new Map();
+  mergedHistory.forEach((item) => {
+    const list = mergedByModule.get(item.module) || [];
+    if (list.length < 120) list.push(item);
+    mergedByModule.set(item.module, list);
+  });
+  const history = [...mergedByModule.values()].flat().sort((left, right) => String(right.generatedAt || "").localeCompare(String(left.generatedAt || "")));
   const maintained = maintainQualitySnapshotHistory({
     ...normalizedRegistry,
     selectedRuleId: normalizedRegistry.rules.some((rule) => rule.id === normalizedRegistry.selectedRuleId)
@@ -299,3 +313,4 @@ export const qualitySnapshotPresentationOptions = REPORT_PRESENTATION_PROFILES.m
   label: profile.label,
   description: profile.description,
 }));
+

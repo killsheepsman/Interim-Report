@@ -7,6 +7,8 @@ import { createHash, randomUUID } from "node:crypto";
 import { pipeline } from "node:stream/promises";
 import { buildDqaAgentRawMetrics, buildDqaEngineerSupplementSource, buildOqcRuleDimensionChartCache, parseFiles } from "../src/dataEngine.js";
 import { buildQualityAgentSnapshot } from "../src/agent/qualitySnapshot.js";
+import { expandDoamDataset } from "../src/doamCompact.js";
+import { mergeDoamDatasets } from "../src/doamEngine.js";
 import { attachDqaAgentRawMetrics, buildRoleSnapshots, mergeRoleSnapshotRegistry, normalizeRoleSnapshotRegistry, roleSnapshotMappingSignature, roleSnapshotRule, roleSnapshotSourceSignature } from "../src/agent/roleSnapshotRegistry.js";
 import { buildSnapshotPeriods, mergeQualitySnapshotHistory, normalizeQualitySnapshotRegistry } from "../src/agent/snapshotRegistry.js";
 import { gzip } from "node:zlib";
@@ -58,6 +60,26 @@ const defaultValueFor = (key) => key === REPORT_QUALITY_RULES_KEY ? { version: 1
 const stateList = (value) => Array.isArray(value)
   ? value
   : (value && typeof value === "object" ? Object.keys(value).sort((left, right) => Number(left) - Number(right)).map((key) => value[key]) : []);
+const isDoamCompactSource = (source) => source?.module === "DOAM" && (source.kind === "DOAM_COMPACT" || String(source.name || "").toLowerCase().endsWith(".doam.json"));
+const loadDoamAgentDataset = async (importedSources) => {
+  const listed = stateList(importedSources).filter(isDoamCompactSource);
+  const names = [...new Set((listed.length
+    ? listed.map((source) => String(source.name || "")).filter(Boolean)
+    : ((await fs.readdir(path.join(uploadDir, "DOAM")).catch(() => [])).filter((name) => name.toLowerCase().endsWith(".doam.json")))))];
+  const items = [];
+  for (const name of names) {
+    const filePath = path.resolve(uploadDir, "DOAM", name);
+    const permittedRoot = path.resolve(uploadDir, "DOAM") + path.sep;
+    if (!filePath.startsWith(permittedRoot)) continue;
+    let compact;
+    try { compact = JSON.parse(await fs.readFile(filePath, "utf8")); } catch { continue; }
+    if (!Number(compact.unitCount || compact.units?.length || 0)) continue;
+    items.push(expandDoamDataset(compact));
+  }
+  if (!items.length) return null;
+  return mergeDoamDatasets({ units: [], categories: [], quality: {}, files: [] }, items);
+};
+
 const rehydrateSnapshotSources = async (sourceIndex, modules = [], onProgress = null) => {
   const wanted = stateList(sourceIndex).filter((source) => source && modules.includes(source.module));
   const hydrated = [];
@@ -1142,8 +1164,10 @@ const handleUploadedFile = async (req, res) => {
   } catch {
     return sendJson(res, 404, { error: "Upload not found" });
   }
+  const ext = path.extname(fileName).toLowerCase();
+  const contentType = ext === ".json" ? "application/json" : ext === ".csv" ? "text/csv" : ext === ".gz" ? "application/gzip" : "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
   res.writeHead(200, {
-    "Content-Type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "Content-Type": contentType,
     "Cache-Control": "no-store",
   });
   createReadStream(filePath).pipe(res);
@@ -1192,10 +1216,22 @@ const loadLegacyStateValue = async (key) => {
 };
 
 const loadStateValue = async (key) => {
+  if (stateMemory.has(key)) return stateMemory.get(key);
   const filePath = safeKeyPath(key);
   if (!filePath) return defaultValueFor(key);
   const database = await readPostgresState(key);
-  if (database.available && database.found) return database.value;
+  let fileValue = null;
+  let fileTime = 0;
+  try {
+    const stat = await fs.stat(filePath);
+    fileTime = Number(stat.mtimeMs || 0);
+    fileValue = await readJsonFile(filePath);
+  } catch {}
+  if (database.available && database.found) {
+    const pgTime = database.updatedAt ? new Date(database.updatedAt).getTime() : 0;
+    if (fileValue && fileTime && fileTime > pgTime + 500) return fileValue;
+    return database.value;
+  }
   try {
     const value = await readJsonFile(filePath);
     if (value !== null) {
@@ -1212,6 +1248,7 @@ const loadStateValue = async (key) => {
 };
 
 const writeQueues = new Map();
+const stateMemory = new Map();
 let oqcRuleCacheTimer = null;
 let oqcRuleCacheBuild = null;
 let oqcRuleCacheRebuildPending = false;
@@ -1278,6 +1315,7 @@ const saveStateValue = async (key, value) => {
   if (!filePath) return value;
   const previous = writeQueues.get(key) || Promise.resolve();
   const next = previous.catch(() => {}).then(async () => {
+    stateMemory.set(key, value);
     const database = await writePostgresState(key, value);
     await fs.mkdir(stateDir, { recursive: true });
     const tempFile = `${filePath}.${process.pid}.${Date.now()}.tmp`;
@@ -1402,10 +1440,11 @@ const compactRoleHistory = (registry) => {
   return { ...current, history: current.history.map((entry) => keep.has(entry.id) ? entry : { ...entry, active: false, status: "archived" }) };
 };
 
-const appendTaskHistory = async (key, task) => {
+const appendTaskHistory = async (key, task, currentRegistry = null) => {
+  const loaded = currentRegistry || await loadStateValue(key);
   const current = key === QUALITY_ROLE_SNAPSHOT_REGISTRY_KEY
-    ? normalizeRoleSnapshotRegistry(await loadStateValue(key))
-    : normalizeQualitySnapshotRegistry(await loadStateValue(key));
+    ? normalizeRoleSnapshotRegistry(loaded)
+    : normalizeQualitySnapshotRegistry(loaded);
   const next = {
     ...current,
     maintenance: {
@@ -1444,6 +1483,8 @@ const processSnapshotJob = async (jobId) => {
           return;
         }
         const moduleFiles = files.filter((source) => (rule.sourceModules || [rule.module]).includes(source.module));
+        const doamDataset = rule.module === "DOAM" ? await loadDoamAgentDataset(importedSources) : null;
+        const doamSignature = rule.module === "DOAM" ? createSourcesSignature(stateList(importedSources).filter(isDoamCompactSource)) : "";
         for (const period of periods) {
           const latestPeriodJob = (await loadSnapshotJobs()).find((item) => item.id === jobId);
           if (latestPeriodJob?.status === "cancelled") {
@@ -1456,8 +1497,16 @@ const processSnapshotJob = async (jobId) => {
             continue;
           }
           try {
-            const snapshot = buildQualityAgentSnapshot({ data, files: moduleFiles, dateRange: period, module: rule.module });
-            next = mergeQualitySnapshotHistory(next, { rule, snapshot, sourceSignature: createSourcesSignature(moduleFiles), dateRange: period, generatedBy: job.creator || "服务器", batchId: job.batchId || `module-batch-${job.id}`, skillName: rule.selectedSkill || rule.defaultSkill, layoutProfileId: rule.layoutProfileId });
+            let snapshot;
+            let sourceSignature = createSourcesSignature(moduleFiles);
+            if (rule.module === "DOAM") {
+              if (!doamDataset?.units?.length) throw new Error("未找到 DOAM 压缩结果，请先在质量数据 / 数据导入中上传告警 CSV");
+              snapshot = buildQualityAgentSnapshot({ data: { doam: doamDataset }, files: [], dateRange: period, module: "DOAM" });
+              sourceSignature = doamSignature;
+            } else {
+              snapshot = buildQualityAgentSnapshot({ data, files: moduleFiles, dateRange: period, module: rule.module });
+            }
+            next = mergeQualitySnapshotHistory(next, { rule, snapshot, sourceSignature, dateRange: period, generatedBy: job.creator || "服务器", batchId: job.batchId || `module-batch-${job.id}`, skillName: rule.selectedSkill || rule.defaultSkill, layoutProfileId: rule.layoutProfileId });
           } catch (error) {
             failedItems.push({ ruleId: rule.id, module: rule.module, periodKey: period.periodKey, error: String(error?.message || error || "快照失败").slice(0, 800) });
           }
@@ -1472,7 +1521,7 @@ const processSnapshotJob = async (jobId) => {
       await saveStateValue(QUALITY_SNAPSHOT_REGISTRY_KEY, next);
       const finishedAt = new Date().toISOString();
       const task = { id: jobId, batchId: job.batchId || `module-batch-${jobId}`, kind: "模块", startedAt: job.startedAt || finishedAt, finishedAt, status: failedItems.length ? "failed" : "completed", total, done, failed: failedItems.length, failedItems, rules: rules.map((rule) => rule.module), period: job.payload?.dateRange || {} };
-      await appendTaskHistory(QUALITY_SNAPSHOT_REGISTRY_KEY, task);
+      await appendTaskHistory(QUALITY_SNAPSHOT_REGISTRY_KEY, task, next);
       await updateSnapshotJob(jobId, { status: failedItems.length ? "failed" : "completed", progress: 100, failed: failedItems.length, failedItems, message: failedItems.length ? "模块快照部分失败" : "模块快照已完成", finishedAt });
       return;
     }

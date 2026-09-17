@@ -116,20 +116,65 @@ const compactSnapshot = (snapshot, retry = false) => {
 const snapshotText = (snapshot, retry = false) => compactSnapshot(snapshot, retry);
 const analysisSeed = (snapshot, retry = false) => {
   const data = snapshot?.data || {};
+  const metrics = data.metrics || {};
+  const evidence = data.evidence || {};
   const seed = {
     module: snapshot?.module,
     period: snapshot?.period,
     target: snapshot?.target,
     moduleRule: snapshot?.definitions?.moduleRule,
-    metrics: data.metrics || {},
+    metrics: snapshot?.module === "DOAM" ? {
+      average2025: metrics.average2025,
+      average2026: metrics.average2026,
+      volumeAverage2025: metrics.volumeAverage2025,
+      volumeAverage2026: metrics.volumeAverage2026,
+      shifts2025: metrics.shifts2025,
+      shifts2026: metrics.shifts2026,
+      alarms2025: metrics.alarms2025,
+      alarms2026: metrics.alarms2026,
+      types2025: metrics.types2025,
+      types2026: metrics.types2026,
+      machineCount: metrics.machineCount,
+      months2025: metrics.months2025,
+      months2026: metrics.months2026,
+      overlapMonths: metrics.overlapMonths,
+      comparableAverage2025: metrics.comparableAverage2025,
+      comparableAverage2026: metrics.comparableAverage2026,
+      comparableVolume2025: metrics.comparableVolume2025,
+      comparableVolume2026: metrics.comparableVolume2026,
+      comparableShifts2025: metrics.comparableShifts2025,
+      comparableShifts2026: metrics.comparableShifts2026,
+      residualVolumeExcludeTopTpm: metrics.residualVolumeExcludeTopTpm,
+      residualShiftsExcludeTopTpm: metrics.residualShiftsExcludeTopTpm,
+      residualVolumeExcludeNewTypes: metrics.residualVolumeExcludeNewTypes,
+      residualVolumeCommonTypes: metrics.residualVolumeCommonTypes,
+      otherShare2026: metrics.otherShare2026,
+      otherAlarms2026: metrics.otherAlarms2026,
+      topTpm2026: metrics.topTpm2026,
+      monthlyTrend: metrics.monthlyTrend,
+      dateMin: metrics.dateMin,
+      dateMax: metrics.dateMax,
+    } : metrics,
     localPareto: compactValue(data.localPareto, 3, retry ? 6 : 12),
     evidenceCatalog: compactValue(compactEvidenceCatalog(data.evidenceCatalog, retry ? 10 : 20), 3, retry ? 10 : 20),
     sourceAudit: compactValue(data.sourceAudit, 2, retry ? 6 : 12),
     organization: compactValue(data.organization, 2, retry ? 4 : 8),
-    evidence: compactValue(data.evidence, 2, retry ? 4 : 8),
+    evidence: snapshot?.module === "DOAM" ? compactValue({
+      risingCategories: evidence.risingCategories,
+      fallingCategories: evidence.fallingCategories,
+      newTypes2026: evidence.newTypes2026,
+      retiredTypes2025: evidence.retiredTypes2025,
+      bothWorsenedDevices: evidence.bothWorsenedDevices,
+      bothImprovedDevices: evidence.bothImprovedDevices,
+      topMachines: evidence.topMachines,
+      deviceCategoryCross: evidence.deviceCategoryCross,
+      productAlarmTotals: evidence.productAlarmTotals,
+      customerAlarmTotals: evidence.customerAlarmTotals,
+      categories: evidence.categories,
+    }, 3, retry ? 6 : 10) : compactValue(evidence, 2, retry ? 4 : 8),
     scope: data.scope || null,
   };
-  return JSON.stringify(seed).slice(0, retry ? 8000 : 16000);
+  return JSON.stringify(seed).slice(0, retry ? 8000 : 18000);
 };
 // Keep the complete deterministic snapshot in the reuse key. A short prefix can
 // remain unchanged after an import and incorrectly reuse an older report.
@@ -142,6 +187,7 @@ const modulePlaybooks = {
   OQC: "必须覆盖产品部、TPM/项目、样本量、平均分、5分率、低分率和发货门禁；样本不足时标记待核实，不以小样本强行排名。重点输出低分客户/现场风险和出货前控制动作。",
   DQA: "必须并列分析研发问题、设计评审、ECN、非BOM及产品部/TPM责任；区分源头设计缺陷、后端暴露和变更执行问题，不能只按问题数量排名。",
   QMS: "必须覆盖客户满意度总体指标、低分率、客户意见主题、严重度、重复性、产品部和TPM归属；客户意见文字是独立证据，必须给出关闭证据和客户反馈回路。",
+  DOAM: "先报有数月份和重叠月份，再解释2026窗口。重叠不足3个月，禁止把总体等权/加权变化写成年度改善或恶化。必须引用：等权、加权、班次、告警次数、机型数、重叠月份加权、剔除TOP TPM后加权、新机型班次分母、otherShare2026。月度趋势必须用 metrics.monthlyTrend 的 YYYY-MM 标签，不得写观测点1..n。Pareto分母是2026告警总次数，覆盖率<95%要写缺口。0-30天只打当前瓶颈（升高且次数前三、高交叉、班次足够的高平均新机型、或其他≥15%）；已下降项放到31-60天。每项行动只能有一个Owner。分类名不是已验证失效。",
 };
 
 const moduleResponsibilityChains = {
@@ -150,6 +196,7 @@ const moduleResponsibilityChains = {
   OQC: "公司→产品部→TPM→项目/客户",
   DQA: "公司→产品部→TPM→PM→研发工程师；无个人字段时不得下钻",
   QMS: "客户声音→公司→产品部→TPM/项目→责任对象（仅在映射存在时）",
+  DOAM: "公司→产品部→客户→TPM→设备类型→机台",
 };
 
 export const loadQualityAgentRuns = () => {
@@ -242,6 +289,7 @@ export const buildAgentAuditResult = (snapshot) => {
     OQC: ["fiveRate2026", "sampleCount2026", "lowRate2026"],
     DQA: ["backendIssues2026", "reviewIssues2026", "totalIssues2026"],
     QMS: ["currentPeriod", "riskCount", "suggestionCount"],
+    DOAM: ["average2026", "volumeAverage2026", "shifts2026", "alarms2026"],
   };
   const missing = (value) => value === undefined || value === null || (typeof value === "object" && !Array.isArray(value) && Object.keys(value).length === 0);
   (requiredByModule[snapshot.module] || []).filter((key) => missing(metrics[key])).forEach((key) => blockers.push(`${snapshot.module}缺少必备指标：${key}`));
@@ -257,6 +305,17 @@ export const buildAgentAuditResult = (snapshot) => {
   else if (!mapping.total) warnings.push(`${mapping.dimension || "组织"}没有可核查的映射对象`);
   const reconciliation = auditReconciliation(snapshot.module, metrics);
   reconciliation.filter((item) => item.status === "不一致").forEach((item) => blockers.push(`${item.name}不一致：快照=${item.actual}，按固定分子分母核对=${item.expected}`));
+  if (snapshot.module === "DOAM") {
+    const months2025 = Array.isArray(metrics.months2025) ? metrics.months2025 : [];
+    const months2026 = Array.isArray(metrics.months2026) ? metrics.months2026 : [];
+    const overlap = months2025.filter((month) => months2026.includes(month));
+    if (months2025.length && months2026.length && !overlap.length) warnings.push("2025与2026实际有数月份没有交集，同比只能作结构对照，不能直接判年度变差");
+    if (months2025.length && months2026.length && overlap.length && overlap.length < 3) materialIssues.push("两年重叠月份仅" + overlap.join("、") + "，不得把总体同比写成年度改善或年度变差");
+    if (numberForAudit(metrics.shifts2026) <= 0) blockers.push("DOAM 2026班次数为0，不能分析平均报警");
+    if (Number.isFinite(auditMetricValue(metrics.average2026)) && Number.isFinite(auditMetricValue(metrics.volumeAverage2026)) && Number.isFinite(auditMetricValue(metrics.average2025)) && Number.isFinite(auditMetricValue(metrics.volumeAverage2025))) {
+      if (auditMetricValue(metrics.average2026) > auditMetricValue(metrics.average2025) && auditMetricValue(metrics.volumeAverage2026) < auditMetricValue(metrics.volumeAverage2025)) warnings.push("等权机型平均升高但班次加权平均下降，优先按新机型或少班次机型结构解释");
+    }
+  }
   if (snapshot.module === "OQC") {
     if (numberForAudit(metrics.sampleCount2026) <= 0) blockers.push("OQC样本量为0，不能分析评分和比例");
     ["fiveRate2026", "lowRate2026"].forEach((key) => {
@@ -267,7 +326,7 @@ export const buildAgentAuditResult = (snapshot) => {
   const localPareto = snapshot?.data?.localPareto || {};
   const expectedProblemCount = snapshot.module === "IQC" || snapshot.module === "IPQC"
     ? numberForAudit(metrics.issueCount2026)
-    : snapshot.module === "DQA" ? numberForAudit(metrics.totalIssues2026) : null;
+    : snapshot.module === "DQA" ? numberForAudit(metrics.totalIssues2026) : snapshot.module === "DOAM" ? numberForAudit(metrics.alarms2026) : null;
   if (expectedProblemCount > 0 && !numberForAudit(localPareto.totalWeight)) materialIssues.push("固定快照存在问题数量，但本地Pareto没有形成事件；二八结论不可用");
   if (localPareto.coverage?.missingDateRows > 0) warnings.push(`本地Pareto有${localPareto.coverage.missingDateRows}条记录缺少日期，未纳入当前周期`);
   const grade = blockers.length ? "D" : materialIssues.length ? "C" : warnings.length ? "B" : "A";
@@ -309,7 +368,7 @@ const systemPrompt = `你是质量分析 Agent，不是聊天助手。你只能�
 const validateEvidenceReferences = (content, snapshot, stage) => {
   if (stage === "audit") return { status: "not-required", references: [], invalid: [], message: "本地审计无需模型引用" };
   const allowed = new Set((snapshot?.data?.evidenceCatalog?.entries || []).map((item) => item.id));
-  const pattern = /(?:S|M|O|C|X)-(?:IQC|IPQC|OQC|DQA|QMS)-\d{3}/g;
+  const pattern = /(?:S|M|O|C|X)-[A-Z0-9]+-\d{3}/g;
   const references = [...new Set(String(content || "").match(pattern) || [])];
   const invalid = references.filter((id) => !allowed.has(id));
   if (!allowed.size) return { status: "warning", references, invalid, message: "当前快照没有本地证据目录" };
@@ -416,7 +475,7 @@ const extractActionLedger = (content, snapshot, previousLedger) => {
       const met = targetReached(currentValue, target, direction);
       const overdue = Boolean(actionDate(raw?.reviewDate || raw?.dueDate) && actionDate(raw?.reviewDate || raw?.dueDate) < new Date());
       const status = reopened ? "reopened" : previousClosed ? "closed" : met ? "verification-ready" : overdue ? "overdue" : "in-progress";
-      const rawReferences = Array.isArray(raw?.evidenceIds) ? raw.evidenceIds : String(raw?.evidenceIds || "").match(/(?:S|M|O|C|X)-(?:IQC|IPQC|OQC|DQA|QMS)-\d{3}/g) || [];
+      const rawReferences = Array.isArray(raw?.evidenceIds) ? raw.evidenceIds : String(raw?.evidenceIds || "").match(/(?:S|M|O|C|X)-[A-Z0-9]+-\d{3}/g) || [];
       return {
         id, conclusionId, identitySignature,
         riskLevel: String(raw?.riskLevel || "待核实").slice(0, 20),
@@ -472,8 +531,8 @@ const stagePrompt = ({ stage, snapshot, outputs, skillName, skillContent, retry 
   const isAnalysis = stage === "analysis";
   const isActions = stage === "actions";
   const dataText = isAnalysis ? analysisSeed(snapshot, retry) : (isActions ? actionSeed(snapshot, retry) : snapshotText(snapshot, retry));
-  const skillText = String(skillContent || "").slice(0, isAnalysis ? (retry ? 2800 : 5500) : isActions ? (retry ? 1800 : 3600) : (retry ? 7000 : 12000));
-  const common = `模块技能：${skillName || "quality-analysis-core"}\n核心与模块规则：\n${skillText}\n模块：${snapshot.module}\n模块专项规则：${snapshot.definitions?.moduleRule || "按固定快照分析"}\n模块分析作业要求：${modulePlaybooks[snapshot.module] || "按固定快照中的组织、指标和证据分析"}\n模块责任链：${moduleResponsibilityChains[snapshot.module] || "按输入中的有效组织映射分层"}\n证据卡规则：事实必须引用 evidenceCatalog 的 S/M/O/C/X 编号；合理推断和待验证假设不得伪装成事实，必须写验证方法、验证角色和期限。\n目标角色：${snapshot.target?.role || "公司级"}\n目标收件人：${snapshot.target?.recipient || "待指定"}\n周期：${JSON.stringify(snapshot.period)}\n${isAnalysis ? "首次分析数据摘要" : "固定数据摘要"}（由本地统计引擎生成，不要重新计算）：\n${dataText}\n已完成Agent阶段摘要（仅引用，不重复计算）：\n${JSON.stringify(completedOutputs)}`;
+  const skillText = String(skillContent || "").slice(0, isAnalysis ? (retry ? 3600 : 8000) : isActions ? (retry ? 2800 : 6000) : (retry ? 7000 : 12000));
+  const common = `模块技能：${skillName || "quality-analysis-core"}\n核心与模块规则：\n${skillText}\n模块：${snapshot.module}\n模块专项规则：${snapshot.definitions?.moduleRule || "按固定快照分析"}\n模块分析作业要求：${modulePlaybooks[snapshot.module] || "按固定快照中的组织、指标和证据分析"}\n模块责任链：${moduleResponsibilityChains[snapshot.module] || "按输入中的有效组织映射分层"}\n证据卡规则：事实必须引用 evidenceCatalog 的 S/M/O/C/X 编号，例如 S-${snapshot.module}-001、M-${snapshot.module}-001；合理推断和待验证假设不得伪装成事实，必须写验证方法、验证角色和期限。可用证据编号：${(snapshot?.data?.evidenceCatalog?.entries || []).map((item) => item.id).filter(Boolean).slice(0, 24).join("、") || "无"}。正文里必须原样写出至少 2 个编号。\n目标角色：${snapshot.target?.role || "公司级"}\n目标收件人：${snapshot.target?.recipient || "待指定"}\n周期：${JSON.stringify(snapshot.period)}\n${isAnalysis ? "首次分析数据摘要" : "固定数据摘要"}（由本地统计引擎生成，不要重新计算）：\n${dataText}\n已完成Agent阶段摘要（仅引用，不重复计算）：\n${JSON.stringify(completedOutputs)}`;
   if (stage === "analysis") return `${common}\n请完成 Agent结果与二八分析：直接引用固定数据摘要中的 localPareto，区分结果指标和问题暴露量，解释TOP组织、TOP机制及其交叉主题。不得根据截断数组重新排序、重算占比或改变名次；localPareto没有事件时明确写“无法形成Pareto”。Pareto表示问题贡献集中度，不等同于绩效排名。形成3—5张证据卡，每张包含：结论ID（K-${snapshot.module}-三位序号）、证据等级、证据编号、事实、合理推断/待验证假设、验证方法、验证角色、验证期限。输出结构化 Markdown。`;
   if (stage === "actions") return `${common}\n请完成 Agent责任与改善行动。这里只做行动设计，不要重述第一阶段的数据和分析。沿用前序 K 结论ID和证据编号，严格按上述模块责任链拆解责任，最多输出6项最关键行动；每项必须有风险等级、根因证据、30/60/90天动作、责任对象、完成期限、验证指标和关闭条件。没有人员字段或映射证据时不得用上级字段替代，必须写待核实。正文保持精炼，随后必须追加一个且仅一个 <ACTION_LEDGER_JSON>{"actions":[...]}</ACTION_LEDGER_JSON> 数据块；每项包含 id（A-${snapshot.module}-三位序号）、conclusionId、riskLevel、phase、action、mechanism、owner、collaborators、dueDate、reviewDate、deliverable、evidenceLocation、evidenceIds、metricKey、target、direction（lte或gte）、reopenThreshold、closeCriteria、fallback。metricKey只能从固定快照 metrics 的真实键中选择，无法对应时留空；不要把培训、会议或提醒单独作为永久措施。`;
   return `${common}\n请完成 Agent正式复盘报告：汇总审计、结果、过程、根因、责任和行动，输出管理层可直接审核的报告。正文保留K结论ID和证据等级，但不要逐条展示 S/M/O/C/X 证据编号，不要出现“证据编号：...”列表，不要写“REPORT_VISUAL_SPEC_JSON”标题；若需要机器图表契约，只能在全文最后直接追加标签数据块供系统读取。把“过程断点与根因证据”写成“数据表现→过程判断→具体动作→验证口径”，少用“推断/假设”字样；无法证实的内容改写为“待现场核验项”，并同时给出验证动作、责任人和期限。所有数字必须来自固定快照或前序Agent结果，禁止添加未经证据支持的数字。`;

@@ -360,9 +360,9 @@ export const initPostgres = async () => ({
 export const readPostgresState = async (key) => {
   if (!(await ensureReady())) return { available: false, found: false, value: null };
   try {
-    const result = await pool.query("SELECT state_value FROM qms_state WHERE state_key = $1", [key]);
+    const result = await pool.query("SELECT state_value, updated_at FROM qms_state WHERE state_key = $1", [key]);
     if (!result.rows.length) return { available: true, found: false, value: null };
-    return { available: true, found: true, value: result.rows[0].state_value };
+    return { available: true, found: true, value: result.rows[0].state_value, updatedAt: result.rows[0].updated_at };
   } catch (error) {
     disabledUntil = Date.now() + retryAfterMs;
     logFailure(error);

@@ -3,6 +3,8 @@ import { ArrowsClockwise, Brain, CaretDown, CaretRight, CheckCircle, DownloadSim
 import { createSourcesSignature, deleteAgentReport, deleteLocalAgentReport, loadAgentReport, loadAgentReports, loadCurrentUser, loadLocalAgentReport, loadLocalAgentReports, loadAgentSkills, loadQualityAgentSnapshotRegistry, requestAiChat, saveAgentReportFile, saveLocalAgentReport } from "../dataStore.js";
 import { loadQualityAgentRunsFromServer, saveQualityAgentRunsToServer, loadReportQualityRules } from "../dataStore.js";
 import { buildQualityAgentSnapshot } from "./qualitySnapshot.js";
+import { loadDoamPack } from "../doamStore.js";
+import { hydrateDoamDefault, mergeDoamDatasets } from "../doamEngine.js";
 import { closeQualityAgentAction, loadQualityAgentRuns, qualityAgentSnapshotHash, QUALITY_AGENT_STAGES, runQualityAgent, saveQualityAgentRuns } from "./qualityAgent.js";
 import { calloutToneClass, headingClass, isLayoutMarker, isMachineMetadataLine, metricLine, sectionClass, tableToneClass } from "./reportLayout.js";
 import { DEFAULT_REPORT_PRESENTATION_PROFILE, getReportPresentationProfile, normalizeReportPresentationProfile, REPORT_PRESENTATION_PROFILES, reportPresentationClass } from "./reportPresentationProfiles.js";
@@ -20,6 +22,7 @@ const MODULE_DEFAULT_SKILLS = {
   OQC: { id: "quality-analysis-oqc", name: "quality-analysis-oqc", description: "OQC出货质量分析", content: "按公司、产品部、TPM和项目分析出货质量。" },
   DQA: { id: "quality-analysis-dqa", name: "quality-analysis-dqa", description: "DQA研发质量分析", content: "综合研发问题、设计评审、ECN和非BOM分析研发质量。" },
   QMS: { id: "quality-analysis-qms", name: "quality-analysis-qms", description: "QMS客户质量分析", content: "综合客户评分、低分率和客户意见分析客户质量。" },
+  DOAM: { id: "quality-analysis-doam", name: "quality-analysis-doam", description: "DOAM机台稳定性分析", content: "先报重叠月份再解释2026窗口；重叠不足3个月不得把总体同比写成年度改善。必须带班次分母、剔除局部后加权和带YYYY-MM标签的月度趋势。0-30天只打当前瓶颈，每项行动只有一个Owner。" },
 };
 const IMPORTED_REPORTS_KEY = "qms-quality-agent-imported-reports-v1";
 const MAX_IMPORTED_REPORTS_PER_MODULE = 12;
@@ -212,7 +215,7 @@ const isMarkdownTableLine = (line) => /^\s*\|.*\|\s*$/.test(line);
 const isMarkdownTableSeparator = (line) => /^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$/.test(line);
 const reportNumber = (value) => {
   const text = String(value || "").replace(/[,*_`，]/g, "").trim();
-  if (!text || /(?:S|M|O|C|X)-(?:IQC|IPQC|OQC|DQA|QMS)-\d{3}/i.test(text)) return null;
+  if (!text || /(?:S|M|O|C|X)-[A-Z0-9]+-\d{3}/i.test(text)) return null;
   const matched = text.match(/[-+]?\d+(?:\.\d+)?/);
   if (!matched) return null;
   const parsed = Number(matched[0]);
@@ -754,6 +757,7 @@ export const renderAgentMarkdown = (content, { chartFirst = false, snapshot = nu
 };
 
 export function QualityAgentPage({ data, files = [], dateRange, module = "DQA", onEnsureAgentSources, canStart = false, canSaveToServer = false, creatorIp = "" }) {
+  const [doamDataset, setDoamDataset] = useState(null);
   const initialSkill = MODULE_DEFAULT_SKILLS[module] || MODULE_DEFAULT_SKILLS.DQA;
   const [skillName, setSkillName] = useState(initialSkill.name);
   const [skillContent, setSkillContent] = useState(initialSkill.content);
@@ -791,7 +795,7 @@ export function QualityAgentPage({ data, files = [], dateRange, module = "DQA", 
   const [sourceState, setSourceState] = useState({ status: "idle", message: "" });
   const abortRef = useRef(null);
   const serverRunSaveTimerRef = useRef(null);
-  const sourceReady = useMemo(() => agentFiles.some((source) => source.module === module && Array.isArray(source.rows) && source.rows.length), [agentFiles, module]);
+  const sourceReady = useMemo(() => module === "DOAM" ? Boolean(doamDataset?.units?.length) : agentFiles.some((source) => source.module === module && Array.isArray(source.rows) && source.rows.length), [agentFiles, module, doamDataset]);
   useEffect(() => () => { abortRef.current?.abort(); }, []);
   useEffect(() => { loadCurrentUser().then((user) => setResolvedCreatorIp(String(user?.ip || ""))).catch(() => {}); }, []);
   useEffect(() => { loadReportQualityRules().then((value) => { if (Array.isArray(value?.rules)) setQualityRules(value.rules); }).catch(() => {}); }, []);
@@ -822,7 +826,38 @@ export function QualityAgentPage({ data, files = [], dateRange, module = "DQA", 
     });
   }, [files, module]);
   useEffect(() => {
+    if (module !== "DOAM") return undefined;
     let active = true;
+    setSourceState({ status: "loading", message: "正在加载 DOAM 告警数据" });
+    const loadDefault = () => fetch((import.meta.env.BASE_URL || "./") + "doam-default.json", { cache: "no-store" }).then((response) => response.json()).then((payload) => hydrateDoamDefault(payload));
+    loadDoamPack().then((pack) => {
+      const items = pack?.items || [];
+      if (items.length) return mergeDoamDatasets({ units: [], categories: [], quality: {}, files: [] }, items);
+      return loadDefault();
+    }).then((dataset) => {
+      if (!active) return;
+      setDoamDataset(dataset || { units: [], categories: [], quality: {}, files: [] });
+      const fileCount = (dataset?.quality?.files || dataset?.files || []).length || (dataset?.units?.length ? 1 : 0);
+      setSourceState({ status: dataset?.units?.length ? "ready" : "error", message: dataset?.units?.length ? `DOAM 数据已就绪 · ${fileCount} 个数据源` : "未找到 DOAM 告警数据，请先到质量数据 / 数据导入中上传 CSV" });
+    }).catch((loadError) => {
+      if (active) {
+        setDoamDataset({ units: [], categories: [], quality: {}, files: [] });
+        setSourceState({ status: "error", message: `DOAM 数据加载失败：${loadError.message || loadError}` });
+      }
+    });
+    const sync = () => {
+      loadDoamPack().then((pack) => {
+        const items = pack?.items || [];
+        if (!items.length) return;
+        if (active) setDoamDataset(mergeDoamDatasets({ units: [], categories: [], quality: {}, files: [] }, items));
+      }).catch(() => {});
+    };
+    window.addEventListener("qms-doam-changed", sync);
+    return () => { active = false; window.removeEventListener("qms-doam-changed", sync); };
+  }, [module]);
+  useEffect(() => {
+    let active = true;
+    if (module === "DOAM") return undefined;
     if (!onEnsureAgentSources || !canStart) {
       setSourceState({ status: "ready", message: canStart ? "Agent 数据已就绪" : "当前账号仅读取已保存报告" });
       return undefined;
@@ -847,8 +882,19 @@ export function QualityAgentPage({ data, files = [], dateRange, module = "DQA", 
     });
     return () => { active = false; };
   }, [module]);
-  const snapshot = useMemo(() => buildQualityAgentSnapshot({ data, files: agentFiles, dateRange: period, module }), [data, agentFiles, period, module]);
-  const sourceSignature = useMemo(() => createSourcesSignature(agentFiles.filter((source) => source.module === module)), [agentFiles, module]);
+  const snapshot = useMemo(() => {
+    try {
+      return buildQualityAgentSnapshot({ data: module === "DOAM" ? { ...data, doam: doamDataset || {} } : data, files: agentFiles, dateRange: period, module });
+    } catch (error) {
+      console.error("DOAM/质量分析快照生成失败", module, error);
+      return { schemaVersion: "quality-agent-snapshot-v3", module, moduleLabel: module, period, data: { metrics: {}, organization: {}, evidence: {}, sourceAudit: { sourceFileCount: 0, totalRows: 0 }, localPareto: { organizationPareto: [], mechanismPareto: [], crossThemes: [] }, evidenceCatalog: { entries: [] } } };
+    }
+  }, [data, agentFiles, period, module, doamDataset]);
+  const sourceSignature = useMemo(() => {
+    if (module !== "DOAM") return createSourcesSignature(agentFiles.filter((source) => source.module === module));
+    const compact = agentFiles.filter((source) => source.module === "DOAM" && (source.kind === "DOAM_COMPACT" || String(source.name || "").toLowerCase().endsWith(".doam.json")));
+    return compact.length ? createSourcesSignature(compact, { includeDoam: true }) : JSON.stringify({ files: doamDataset?.quality?.files || doamDataset?.files || [], rowCount: doamDataset?.quality?.rowCount || 0, units: doamDataset?.units?.length || 0, dateMax: doamDataset?.quality?.dateMax || "" });
+  }, [agentFiles, module, doamDataset]);
   const matchedSnapshotEntry = useMemo(() => snapshotRegistry ? pickLatestQualitySnapshot(snapshotRegistry, { module, dateRange: period, sourceSignature, skillName, layoutProfileId: layoutSkillName }) : null, [snapshotRegistry, module, period, sourceSignature, skillName, layoutSkillName]);
   const combinedSkillContent = useMemo(() => `模块 Skill：${skillName}\n${skillContent}\n\n核心 Skill：${CORE_SKILL_NAME}\n${coreSkillContent}`, [skillName, skillContent, coreSkillContent]);
   const record = runs[module] || {};
@@ -868,12 +914,19 @@ export function QualityAgentPage({ data, files = [], dateRange, module = "DQA", 
     try { return JSON.parse(record.stages?.audit?.content || "{}"); } catch { return {}; }
   }, [record.stages?.audit?.content]);
   const auditDetail = [...(auditSummary.blockers || []), ...(auditSummary.materialIssues || []), ...(auditSummary.warnings || [])].join("；");
-  const snapshotTrace = matchedSnapshotEntry
-    ? { status: "matched", label: "已命中有效快照", detail: `${matchedSnapshotEntry.moduleLabel || module} · ${matchedSnapshotEntry.skillName || skillName} · ${matchedSnapshotEntry.layoutProfileId || layoutSkillName}`, meta: `生成于 ${new Date(matchedSnapshotEntry.generatedAt).toLocaleString("zh-CN")} · 来源版本已匹配` }
-    : snapshotRegistry
-      ? { status: "missing", label: "未命中有效快照", detail: "当前周期、来源版本、Skill 或 Profile 没有完全匹配的有效快照", meta: "本次分析将使用当前确定性统计结果；请管理员检查后台快照" }
-      : { status: "loading", label: "正在读取快照注册表", detail: "尚未完成快照匹配", meta: "" };
-  const snapshotCacheMessage = matchedSnapshotEntry ? "缓存命中：本次分析将复用固定快照，跳过重复统计" : "缓存未命中：本次分析将重新整理当前数据";
+  const doamFileCount = ((doamDataset?.quality?.files || doamDataset?.files || []).length) || (doamDataset?.units?.length ? 1 : 0);
+  const snapshotTrace = module === "DOAM" && !matchedSnapshotEntry
+    ? (sourceState.status === "loading" || doamDataset == null
+      ? { status: "loading", label: "正在准备 DOAM 统计", detail: "正在读取导入的告警明细", meta: "" }
+      : sourceReady
+        ? { status: "missing", label: "未命中 DOAM 后台快照", detail: `${skillName} · ${doamFileCount} 个数据源`, meta: `将使用当前导入明细；可在系统管理 / 后台快照生成 DOAM 快照` }
+        : { status: "missing", label: "DOAM 数据未就绪", detail: sourceState.message || "请先到质量数据 / 数据导入中上传告警明细", meta: "" })
+    : matchedSnapshotEntry
+      ? { status: "matched", label: "已命中有效快照", detail: `${matchedSnapshotEntry.moduleLabel || module} · ${matchedSnapshotEntry.skillName || skillName} · ${matchedSnapshotEntry.layoutProfileId || layoutSkillName}`, meta: `生成于 ${new Date(matchedSnapshotEntry.generatedAt).toLocaleString("zh-CN")} · 来源版本已匹配` }
+      : snapshotRegistry
+        ? { status: "missing", label: "未命中有效快照", detail: "当前周期、来源版本、Skill 或 Profile 没有完全匹配的有效快照", meta: "本次分析将使用当前确定性统计结果；请管理员检查后台快照" }
+        : { status: "loading", label: "正在读取快照注册表", detail: "尚未完成快照匹配", meta: "" };
+  const snapshotCacheMessage = matchedSnapshotEntry ? "缓存命中：本次分析将复用固定快照，跳过重复统计" : (module === "DOAM" && sourceReady ? "未命中后台快照，使用当前导入明细生成固定统计" : "缓存未命中：本次分析将重新整理当前数据");
   const workflowProgress = record.progress || { percent: record.status === "done" ? 100 : 0, phase: record.status === "running" ? "正在准备分析" : "等待启动", detail: record.status === "done" ? "报告已生成，可直接查看或保存" : "点击“启动 Agent 分析”后开始" };
   const update = (next) => setRuns((current) => {
     const value = { ...current, [module]: next };
@@ -1075,7 +1128,7 @@ export function QualityAgentPage({ data, files = [], dateRange, module = "DQA", 
       let snapshotForRun = canUseStoredSnapshot
         ? matchedSnapshotEntry.snapshot
         : (sourceReady ? snapshot : (record.snapshot || snapshot));
-      if ((!sourceReady || auditFailed) && !canUseStoredSnapshot && onEnsureAgentSources) {
+      if (module !== "DOAM" && (!sourceReady || auditFailed) && !canUseStoredSnapshot && onEnsureAgentSources) {
         setSourceState({ status: "loading", message: "正在重新加载当前模块原始数据" });
         const nextSources = await onEnsureAgentSources([module], (progress) => {
           if (progress?.label) setSourceState({ status: "loading", message: progress.label });
@@ -1430,3 +1483,4 @@ export function QualityAgentPage({ data, files = [], dateRange, module = "DQA", 
     {error && <div className="quality-agent-error-banner"><WarningCircle size={18}/>{error}</div>}
   </div>;
 }
+

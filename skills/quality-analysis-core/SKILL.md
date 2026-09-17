@@ -1,6 +1,6 @@
 ---
 name: quality-analysis-core
-description: 为质量分析 Agent 提供统一的数据审计、证据分级、双重 Pareto、风险判断、责任分解、30/60/90 天行动和验证关闭规则。与 IQC、IPQC、OQC、DQA、QMS 或跨模块质量分析 Skill 组合使用。
+description: 为质量分析 Agent 提供统一的数据审计、证据分级、双重 Pareto、风险判断、责任分解、30/60/90 天行动和验证关闭规则。与 IQC、IPQC、OQC、DQA、QMS、DOAM 或跨模块质量分析 Skill 组合使用。
 ---
 
 # 质量分析 Agent 核心规则

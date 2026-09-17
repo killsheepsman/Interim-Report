@@ -1,7 +1,8 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { ScaledChart } from "./charts.jsx";
-import { ArrowsClockwise, FileCsv, Funnel, UploadSimple, X } from "@phosphor-icons/react";
-import { buildDoamDataset, decodeDoamFile, doamCategoryTop, doamCustomerAverages, doamDeviceAverages, doamMonthlyTrend, doamProductAverages, doamTpmAverages, doamKeyWords, hydrateDoamDefault, mergeDoamDatasets } from "./doamEngine.js";
+import { FileCsv, Funnel, X } from "@phosphor-icons/react";
+import { doamCategoryTop, doamCustomerAverages, doamDeviceAverages, doamMonthlyTrend, doamProductAverages, doamTpmAverages, doamKeyWords, doamUnitsByCategory, hydrateDoamDefault } from "./doamEngine.js";
+import { loadDoamDataset } from "./doamStore.js";
 
 const palettes = {
   classic: { blue: "#2f7ee6", orange: "#f5822a", blueSoft: "#8ec5f3", orangeSoft: "#f8b27e", blueDeep: "#245eae", orangeDeep: "#b85d15", axis: "#d8e2ee", split: "#eef3f9", label: "#526174" },
@@ -12,8 +13,8 @@ const axis = axisFrom(palettes.classic);
 const fmt = (value) => Number(value || 0).toLocaleString("zh-CN", { maximumFractionDigits: 2 });
 const yoy = (base, next) => (base && next != null ? `${((next - base) / base * 100).toFixed(1)}%` : "—");
 const months = Array.from({ length: 12 }, (_, index) => `${index + 1}月`);
-const emptyFilter = () => ({ tpm: null, device: null, customer: null, product: null, year: null, month: null });
-const hasFilter = (filter) => Boolean(filter.tpm || filter.device || filter.customer || filter.product || filter.month);
+const emptyFilter = () => ({ tpm: null, device: null, customer: null, product: null, year: null, month: null, category: null });
+const hasFilter = (filter) => Boolean(filter.tpm || filter.device || filter.customer || filter.product || filter.month || filter.category);
 const num = (row, key) => Number(row?.[key]) || 0;
 
 function DoamChart({ option, height = 320, onEvents }) {
@@ -40,6 +41,7 @@ function FilterPills({ filter, onClear, onClearAll }) {
     filter.customer && { key: "customer", label: "客户", value: filter.customer },
     filter.product && { key: "product", label: "产品部", value: filter.product },
     filter.month && { key: "month", label: "月份", value: `${filter.year ? `${filter.year}年` : ""}${filter.month}月` },
+    filter.category && { key: "category", label: "告警分类", value: filter.category },
   ].filter(Boolean);
   if (!items.length) return null;
   return <div className="doam-filter-pills">{items.map((item) => <button key={item.key} className="doam-filter-pill" onClick={() => onClear(item.key)}><Funnel size={13}/>{item.label}：{item.value}<X size={13}/></button>)}<button className="doam-filter-clear" onClick={onClearAll}>清除全部</button></div>;
@@ -112,8 +114,8 @@ function rankOption(rows, valueKey, color, faded, selectedName, c = palettes.cla
 }
 
 function clickName(params) {
-  if (params?.componentType === "yAxis") return params.value || "";
-  if (params?.componentType === "series") return params.name || "";
+  if (params?.componentType === "yAxis" || params?.componentType === "xAxis") return params.value || "";
+  if (params?.componentType === "series") return params.name || params.value || "";
   return "";
 }
 
@@ -142,24 +144,38 @@ export function DoamPage() {
   const [filter, setFilter] = useState(emptyFilter);
   const [sorts, setSorts] = useState({ trend: "month", tpm: "y2026", device2025: "desc", device2026: "desc", customer: "y2026", product: "y2026", category: "y2026" });
   const [loading, setLoading] = useState(true);
-  const [importing, setImporting] = useState(false);
   const [notice, setNotice] = useState("");
-  const inputRef = useRef(null);
   const setSort = (key, value) => setSorts((prev) => ({ ...prev, [key]: value }));
 
   useEffect(() => {
     let alive = true;
-    fetch(`${import.meta.env.BASE_URL || "./"}doam-default.json`, { cache: "no-store" }).then((response) => response.json()).then((payload) => { if (alive) { setDataset(hydrateDoamDefault(payload)); setLoading(false); } }).catch(() => { if (alive) { setDataset({ units: [], categories: [], quality: {}, files: [] }); setLoading(false); setNotice("默认数据加载失败，请导入 CSV 文件"); } });
-    return () => { alive = false; };
+    const loadDefault = () => fetch(`${import.meta.env.BASE_URL || "./"}doam-default.json`, { cache: "no-store" }).then((response) => response.json()).then((payload) => hydrateDoamDefault(payload));
+    const load = async () => {
+      try {
+        const imported = await loadDoamDataset();
+        if (imported?.units?.length) {
+          if (alive) { setDataset(imported); setLoading(false); setNotice("正在使用数据导入中的 DOAM 文件"); }
+          return;
+        }
+        const payload = await loadDefault();
+        if (alive) { setDataset(payload); setLoading(false); setNotice(""); }
+      } catch {
+        if (alive) { setDataset({ units: [], categories: [], quality: {}, files: [] }); setLoading(false); setNotice("DOAM 数据加载失败，请到质量数据 / 数据导入中上传 CSV"); }
+      }
+    };
+    load();
+    window.addEventListener("qms-doam-changed", load);
+    return () => { alive = false; window.removeEventListener("qms-doam-changed", load); };
   }, []);
 
-  const tpmRows = useMemo(() => sortSplitRows(dataset ? doamTpmAverages(dataset.units, filter) : [], sorts.tpm), [dataset, filter, sorts.tpm]);
-  const deviceAll = useMemo(() => dataset ? doamDeviceAverages(dataset.units, filter) : [], [dataset, filter]);
+  const chartUnits = useMemo(() => dataset ? doamUnitsByCategory(dataset.units, dataset.categories, filter.category) : [], [dataset, filter.category]);
+  const tpmRows = useMemo(() => sortSplitRows(dataset ? doamTpmAverages(chartUnits, filter) : [], sorts.tpm), [dataset, chartUnits, filter, sorts.tpm]);
+  const deviceAll = useMemo(() => dataset ? doamDeviceAverages(chartUnits, filter) : [], [dataset, chartUnits, filter]);
   const deviceRows2025 = useMemo(() => sortValueRows(deviceAll.filter((row) => row.y2025 != null), sorts.device2025, "y2025"), [deviceAll, sorts.device2025]);
   const deviceRows2026 = useMemo(() => sortValueRows(deviceAll.filter((row) => row.y2026 != null), sorts.device2026, "y2026"), [deviceAll, sorts.device2026]);
-  const customerRows = useMemo(() => sortSplitRows(dataset ? doamCustomerAverages(dataset.units, filter) : [], sorts.customer), [dataset, filter, sorts.customer]);
-  const productRows = useMemo(() => sortSplitRows(dataset ? doamProductAverages(dataset.units, filter) : [], sorts.product), [dataset, filter, sorts.product]);
-  const trend = useMemo(() => dataset ? doamMonthlyTrend(dataset.units, filter) : [[], []], [dataset, filter]);
+  const customerRows = useMemo(() => sortSplitRows(dataset ? doamCustomerAverages(chartUnits, filter) : [], sorts.customer), [dataset, chartUnits, filter, sorts.customer]);
+  const productRows = useMemo(() => sortSplitRows(dataset ? doamProductAverages(chartUnits, filter) : [], sorts.product), [dataset, chartUnits, filter, sorts.product]);
+  const trend = useMemo(() => dataset ? doamMonthlyTrend(chartUnits, filter) : [[], []], [chartUnits, filter]);
   const categoryRows = useMemo(() => sortSplitRows(dataset ? doamCategoryTop(dataset.categories, filter, dataset.units) : [], sorts.category), [dataset, filter, sorts.category]);
   const tpmNames = useMemo(() => tpmRows.map((row) => row.name).filter(Boolean), [tpmRows]);
   const monthOrder = useMemo(() => {
@@ -183,21 +199,6 @@ export function DoamPage() {
   };
   const clearKey = (key) => setFilter((prev) => key === "month" ? { ...prev, month: null, year: null } : { ...prev, [key]: null });
   const clearAll = () => setFilter(emptyFilter());
-
-  const importFiles = async (files) => {
-    const selected = [...files];
-    if (!selected.length) return;
-    const duplicateNames = selected.map((file) => file.name).filter((name, index, all) => all.indexOf(name) !== index);
-    setImporting(true); setNotice(duplicateNames.length ? `检测到重复文件名：${[...new Set(duplicateNames)].join("、")}，重复项将合并计算。` : "正在解析 CSV 并按日期、班次、机台聚合…");
-    try {
-      const parsed = await Promise.all(selected.map((file) => decodeDoamFile(file).then((result) => ({ ...buildDoamDataset(result.rows, [file.name]), files: [file.name], missingShift: result.missingShift }))));
-      const merged = mergeDoamDatasets({ units: [], categories: [], quality: {}, files: [] }, parsed);
-      setDataset(merged); setFilter(emptyFilter());
-      const missingShift = parsed.some((item) => item.missingShift);
-      setNotice(`已导入 ${selected.length} 个文件，共 ${fmt(merged.quality.rowCount)} 行${missingShift ? "；存在缺失班次字段" : ""}。`);
-    } catch (error) { setNotice(`导入失败：${error?.message || "CSV 格式无法解析"}`); }
-    finally { setImporting(false); }
-  };
 
   const monthStyle = (year, month, fill, active) => ({
     ...(isDoamApple() ? {} : { color: filter.month === month ? active : fill }),
@@ -228,11 +229,11 @@ export function DoamPage() {
     tooltip: { trigger: "axis", axisPointer: { type: "shadow" }, valueFormatter: (value) => value == null ? "—" : `${fmt(value)} 次/机台/班` },
     legend: { bottom: 2, data: ["2025 平均报警", "2026 平均报警"], textStyle: { color: "#526174", fontWeight: 700 } },
     grid: { left: 48, right: 22, top: 22, bottom: 52, containLabel: true },
-    xAxis: { type: "category", data: categoryRows.map((row) => row.name), axisLabel: { ...axis.axisLabel, rotate: 25 }, ...axis },
+    xAxis: { type: "category", data: categoryRows.map((row) => row.name), triggerEvent: true, axisLabel: { ...axis.axisLabel, rotate: 25, color: filter.category ? "#1f3852" : axis.axisLabel.color, formatter: (value) => filter.category && value === filter.category ? "{hl|" + value + "}" : value, rich: { hl: { color: "#b42318", fontWeight: 800 } } }, ...axis },
     yAxis: { type: "value", name: "平均报警次数", ...axis },
     series: [
-      { name: "2025 平均报警", type: "bar", data: categoryRows.map((row) => row.y2025), barMaxWidth: 22, itemStyle: { color: c.blue, borderRadius: [5, 5, 0, 0] }, label: { show: true, position: "top", color: c.blueDeep, fontSize: 9, formatter: ({ value }) => value == null ? "" : fmt(value) } },
-      { name: "2026 平均报警", type: "bar", data: categoryRows.map((row) => row.y2026), barMaxWidth: 22, itemStyle: { color: c.orange, borderRadius: [5, 5, 0, 0] }, label: { show: true, position: "top", color: c.orangeDeep, fontSize: 9, formatter: ({ value }) => value == null ? "" : fmt(value) } },
+      { name: "2025 平均报警", type: "bar", data: categoryRows.map((row) => ({ name: row.name, value: row.y2025, itemStyle: barStyle(c.blue, c.blueSoft, filter.category, row.name, [5, 5, 0, 0]) })), barMaxWidth: 22, label: { show: true, position: "top", color: c.blueDeep, fontSize: 9, formatter: ({ value }) => value == null ? "" : fmt(value) } },
+      { name: "2026 平均报警", type: "bar", data: categoryRows.map((row) => ({ name: row.name, value: row.y2026, itemStyle: barStyle(c.orange, c.orangeSoft, filter.category, row.name, [5, 5, 0, 0]) })), barMaxWidth: 22, label: { show: true, position: "top", color: c.orangeDeep, fontSize: 9, formatter: ({ value }) => value == null ? "" : fmt(value) } },
     ],
   };
 
@@ -243,11 +244,16 @@ export function DoamPage() {
     const year = String(params?.seriesName || "").includes("2026") ? 2026 : String(params?.seriesName || "").includes("2025") ? 2025 : filter.year;
     toggleFilter("month", month, { year });
   };
-  const onCategoryClick = () => setNotice("告警分类不能下钻到其他图。一条机台记录里会混有多种告警，无法按单个分类反查 TPM、设备、客户或产品部。");
+  const onCategoryClick = (params) => {
+    const name = clickName(params);
+    if (!name || months.includes(name) || name === "2025 平均报警" || name === "2026 平均报警") return;
+    toggleFilter("category", name);
+    setNotice("");
+  };
 
   if (loading) return <div className="qmdp-page doam-page"><div className="qmdp-empty">正在加载 DOAM 默认数据…</div></div>;
   return <div className="qmdp-page doam-page">
-    <header className="qmdp-page-header doam-page-header"><div className="qmdp-page-title"><small>质量数据 / DOAM</small><h2>DOAM 告警质量分析</h2><p>按各机台真实班次计算平均告警次数，定位 TPM、设备类型和告警机制的真实瓶颈。</p></div><div className="doam-header-actions"><button className="qmdp-secondary-btn" onClick={() => inputRef.current?.click()} disabled={importing}><UploadSimple size={16}/>{importing ? "正在解析" : "导入 CSV"}</button><button className="qmdp-secondary-btn" onClick={() => { setDataset(null); setFilter(emptyFilter()); setLoading(true); fetch(`${import.meta.env.BASE_URL || "./"}doam-default.json`, { cache: "no-store" }).then((response) => response.json()).then((payload) => { setDataset(hydrateDoamDefault(payload)); setLoading(false); setNotice("已恢复默认数据"); }); }} disabled={loading}><ArrowsClockwise size={16}/>恢复默认</button><input ref={inputRef} type="file" accept=".csv,text/csv" multiple hidden onChange={(event) => { importFiles(event.target.files); event.target.value = ""; }}/></div></header>
+    <header className="qmdp-page-header doam-page-header"><div className="qmdp-page-title"><small>质量数据 / DOAM</small><h2>DOAM 告警质量分析</h2><p>按各机台真实班次计算平均告警次数。数据在「质量数据 / 数据导入」的 DOAM机台稳定性 模块维护。</p></div></header>
     <DataQuality quality={dataset?.quality || {}}/>
     <section className="doam-filter-bar">
       <div><Funnel size={16}/><strong>{hasFilter(filter) ? "当前已下钻筛选" : "当前筛选：全部"}</strong><span>点击图表下钻，再点一次取消该项。本图自己不筛自己，方便换选项。</span></div>
@@ -261,7 +267,7 @@ export function DoamPage() {
       <section className="doam-panel panel"><header><div className="doam-heading"><span className="section-number">3.2</span><div><strong>设备类型问题 · 2026</strong><span>{filter.tpm ? `${filter.tpm} 负责范围` : "全部 TPM"} · 隐藏当年无数据的类型。点名称后两张图同时高亮</span></div></div><div className="doam-panel-tools"><em>点击名称下钻</em><SortBar value={sorts.device2026} onChange={(value) => setSort("device2026", value)} items={valueSortItems}/></div></header>{deviceRows2026.length ? <DoamChart option={deviceOption2026} height={Math.max(320, Math.min(720, deviceRows2026.length * 34))} onEvents={{ click: (params) => toggleFilter("device", clickName(params)) }}/> : <div className="doam-empty">2026 无设备类型数据</div>}</section>
       <section className="doam-panel panel wide"><header><div className="doam-heading"><span className="section-number">4</span><div><strong>客户维度平均报警</strong><span>左 2025、右 2026，同一客户对齐在同一行。该客户下先算各类型平均，再对类型取平均</span></div></div><div className="doam-panel-tools"><em>点击名称下钻</em><SortBar value={sorts.customer} onChange={(value) => setSort("customer", value)} items={splitSortItems}/></div></header>{customerRows.length ? <DoamChart option={customerOption} height={Math.max(320, customerRows.length * 38)} onEvents={{ click: (params) => toggleFilter("customer", clickName(params)) }}/> : <div className="doam-empty">当前筛选无客户数据</div>}</section>
       <section className="doam-panel panel wide"><header><div className="doam-heading"><span className="section-number">5</span><div><strong>产品部维度平均报警</strong><span>左 2025、右 2026，同一产品部对齐在同一行。该产品部下先算各类型平均，再对类型取平均</span></div></div><div className="doam-panel-tools"><em>点击名称下钻</em><SortBar value={sorts.product} onChange={(value) => setSort("product", value)} items={splitSortItems}/></div></header>{productRows.length ? <DoamChart option={productOption} height={Math.max(300, productRows.length * 42)} onEvents={{ click: (params) => toggleFilter("product", clickName(params)) }}/> : <div className="doam-empty">当前筛选无产品部数据</div>}</section>
-      <section className="doam-panel panel wide"><header><div className="doam-heading"><span className="section-number">6</span><div><strong>告警分类 Top</strong><span>先按类型用全部班次做分母，再对出现过该分类的类型取平均。可随 TPM、设备类型筛选；不能随月份、客户、产品部下钻，点击分类也不能反查其他图。</span></div></div><div className="doam-panel-tools"><em>仅被 TPM / 设备类型筛选</em><SortBar value={sorts.category} onChange={(value) => setSort("category", value)} items={splitSortItems}/></div></header>{categoryRows.length ? <DoamChart option={categoryOption} height={360} onEvents={{ click: onCategoryClick }}/> : <div className="doam-empty">当前筛选无告警分类数据</div>}<div className="doam-category-table"><div className="head"><span>分类</span><span>2025 平均报警</span><span>2026 平均报警</span><span>同比</span></div>{categoryRows.map((row) => <div key={row.name}><strong>{row.name}</strong><span>{row.y2025 == null ? "—" : fmt(row.y2025)}</span><span>{row.y2026 == null ? "—" : fmt(row.y2026)}</span><span>{yoy(row.y2025, row.y2026)}</span></div>)}</div></section>
+      <section className="doam-panel panel wide"><header><div className="doam-heading"><span className="section-number">6</span><div><strong>告警分类 Top</strong><span>先按类型用全部班次做分母，再对出现过该分类的类型取平均。点击分类后，其他图只保留出现过该分类的机台，并用该分类的告警次数做分子。本图保持全部分类并高亮选中项。</span></div></div><div className="doam-panel-tools"><em>点击分类下钻</em><SortBar value={sorts.category} onChange={(value) => setSort("category", value)} items={splitSortItems}/></div></header>{categoryRows.length ? <DoamChart option={categoryOption} height={360} onEvents={{ click: onCategoryClick }}/> : <div className="doam-empty">当前筛选无告警分类数据</div>}<div className="doam-category-table"><div className="head"><span>分类</span><span>2025 平均报警</span><span>2026 平均报警</span><span>同比</span></div>{categoryRows.map((row) => <div key={row.name} className={filter.category === row.name ? "active" : ""} onClick={() => toggleFilter("category", row.name)}><strong>{row.name}</strong><span>{row.y2025 == null ? "—" : fmt(row.y2025)}</span><span>{row.y2026 == null ? "—" : fmt(row.y2026)}</span><span>{yoy(row.y2025, row.y2026)}</span></div>)}</div></section>
     </div>
     <section className="doam-rules"><header><div><strong>告警分类关键词规则</strong><span>规则按从上到下匹配，后续可直接调整关键词和优先级</span></div><FileCsv size={22}/></header><div className="doam-rule-grid">{doamKeyWords.map((rule) => <div key={rule.name}><b>{rule.name}</b><span>{rule.words}</span></div>)}<div><b>其他</b><span>未命中以上关键词的告警信息</span></div></div><p>统计原则：告警总次数为「告警次数」列求和，不是一行算一次。同一机台、同一日期、同一班次的多行明细先合并，算 1 个班次。单类型平均报警 = 该类型告警总次数 ÷ 该类型机台班次之和。月度趋势、TPM、客户、产品部、告警分类再把各类型平均相加后，除以实际出现过的设备类型数。设备类型图只展示当年有数据的类型。蝴蝶图同一名称左右对齐并靠拢；某年没有该名称时该侧留空。</p></section>
     {notice && <div className="doam-notice" role="status">{notice}</div>}
