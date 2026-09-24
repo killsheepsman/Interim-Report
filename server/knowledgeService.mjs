@@ -39,6 +39,19 @@ import {
   writePostgresKnowledgeAuditLog,
   writePostgresKnowledgeReviewSession,
 } from "./postgresStore.mjs";
+import {
+  ISSUE_VOCABULARY,
+  enrichKnowledgeFieldLanguage,
+  extractCardTriple,
+  extractIssueTriple,
+  formatIssueTriple,
+  isObjectMismatch,
+  defectsOverlap,
+  processesOverlap,
+  retrievalTerms,
+  GENERIC_DEFECTS,
+  isGenericDefect,
+} from "./issueTriple.mjs";
 
 const emptyStore = () => ({ version: 5, documents: [], clauses: [], jobs: [], knowledge: [], issues: [], matches: [], recurrenceActions: [], reviewSessions: [], feedbackRecords: [], conflicts: [], auditLogs: [] });
 const fallbackMutationLocks = new Map();
@@ -88,7 +101,7 @@ const compactDistillationClause = (clause) => ({
   ocrStatus: clause.metadata?.ocrStatus || clause.ocrStatus || "",
 });
 const distillationOutputContract = `只输出JSON：{"knowledge":[...]}
-每条只生成这些字段：type、title、content、atomicRule、originalFact、correctState、violationBasis、applicableScope、applicableRoles、processes、issueTags、synonyms、riskLevel、mustReview、confidence、sourceCitations。
+每条只生成这些字段：type、title、content、atomicRule、originalFact、correctState、violationBasis、applicableScope、applicableRoles、processes、issueTags、synonyms、riskLevel、mustReview、confidence、sourceCitations。issueTags和synonyms必须写成现场会说的词，例如漏装、穿错、敲过头、不到位、不出针、销子、片针；禁止只写“应按规定锁紧”这类规范套话。原文没有现场词时，根据atomicRule.object和action补现场同义词。
 type只能是mandatory、prohibited、threshold、recommendation、evidence、definition、failure_mode、exam_point。明确区分：REQUIREMENT/PROHIBITION/THRESHOLD用mandatory/prohibited/threshold；RECOMMENDATION用recommendation；DEFINITION用definition；EVIDENCE或资料事实用evidence；失效机理用failure_mode，不能把推荐建议标成mandatory。
 atomicRule必须包含ruleType、topic、subject、action、object、condition、exceptions；ruleType仅用REQUIREMENT、PROHIBITION、RESTRICTION、TIME_LIMIT、PERMISSION、EXCEPTION、RESPONSIBILITY、PENALTY、APPLICABILITY、RECOMMENDATION、DEFINITION、EVIDENCE。topic、subject、action、object缺一不可；原文不支持就不要生成该卡片。
 mandatory、prohibited、threshold、recommendation、failure_mode必须提供至少一条客观violationBasis；definition和纯资料事实可以为空。sourceCitations至少一个，必须引用本批次的clauseId，quote必须是原文连续子串。无法由原文证明的字段用空字符串或空数组。不要生成reviewPoints、correctionActions、verification、method、commonViolations、engineeringExplanation。`;
@@ -251,6 +264,7 @@ const evidenceSentenceParts = (value) => String(value || "")
 // Evidence is a traceable semantic unit, not an arbitrary character slice.
 // Keep headings attached to the first complete statement, merge OCR/line fragments,
 // and only split long prose at real sentence or list boundaries.
+export { extractIssueTriple, extractCardTriple, formatIssueTriple, enrichKnowledgeFieldLanguage } from "./issueTriple.mjs";
 export const splitEvidenceText = (value) => {
   const text = cleanText(value).replace(/[\t ]+/g, " ").replace(/\n{3,}/g, "\n\n");
   if (!text) return [];
@@ -741,7 +755,7 @@ const normalizeKnowledge = (document = {}, skillId, items = []) => items.map((it
     createdAt: nowIso(),
     updatedAt: nowIso(),
   };
-}).filter((item) => {
+}).map((item) => enrichKnowledgeFieldLanguage({ ...item, atomicRule: item.metadata?.atomicRule })).filter((item) => {
   if (!item.content || !item.sourceCitations.length) return false;
   const rule = item.metadata?.atomicRule || {};
   if (["topic", "subject", "action", "object"].some((key) => !cleanText(rule[key]))) return false;
@@ -786,15 +800,12 @@ const buildKnowledgeCoverageAudit = (clauses = [], cards = []) => {
   return { version: "qms-knowledge-coverage-v1", generatedAt: nowIso(), totalTopics: subjects.length, coveredTopics: covered.length, missingTopics: missing.length, coverageRate: subjects.length ? Math.round(covered.length / subjects.length * 100) : 100, covered, missing };
 };
 
-const issueVocabulary = [
-  "错装", "装反", "漏装", "少装", "松动", "划伤", "破损", "脏污", "异物", "压伤", "变形", "翘曲", "开裂", "虚焊", "漏焊", "短路", "断路", "接线", "标签", "螺丝", "扭矩", "首件", "点检", "巡检", "装配", "加工", "调试",
-  "干涉", "碰撞", "空间不足", "尺寸", "公差", "图纸", "BOM", "物料", "选型", "设计", "评审", "验证", "测试", "ECN", "非BOM", "变更", "接口", "软件", "电气", "结构", "工艺", "资料", "缺失", "错误", "不一致", "可靠性", "安全",
-];
-const issueStopTerms = new Set(["问题", "异常", "要求", "进行", "需要", "相关", "情况", "现场", "人员", "产品", "设备", "公司", "一个", "没有", "不能", "以及", "当前", "记录", "处理", "出现", "发生"]);
+const issueVocabulary = ISSUE_VOCABULARY;
+const issueStopTerms = new Set(["问题", "异常", "要求", "进行", "需要", "相关", "情况", "现场", "人员", "产品", "设备", "公司", "一个", "没有", "不能", "以及", "当前", "记录", "处理", "出现", "发生", "确认", "规范", "规定"]);
 const matchingTermGroups = {
-  object: ["接线", "端子", "电控板", "线束", "吸嘴", "气缸", "螺丝", "工装", "BOM", "图纸", "物料", "接口", "标签", "阀", "传感器", "支架", "外壳"],
-  defect: ["错装", "装反", "漏装", "松动", "短路", "断路", "虚焊", "漏焊", "干涉", "碰撞", "划伤", "破损", "变形", "不一致", "缺失", "错误"],
-  action: ["接线", "安装", "装配", "组装", "焊接", "锁紧", "固定", "连接", "验证", "测试", "确认", "点检", "设计", "选型"],
+  object: ["销钉", "片针", "针模", "吸嘴", "接线", "端子", "电控板", "线束", "气缸", "螺丝", "工装", "BOM", "图纸", "物料", "接口", "标签", "调速阀", "传感器", "支架", "外壳"],
+  defect: ["敲过头", "过打", "过定位", "穿错", "错装", "装反", "漏装", "不到位", "不出针", "松动", "短路", "断路", "虚焊", "漏焊", "干涉", "碰撞", "划伤", "破损", "变形", "不一致", "缺失"],
+  action: ["接线", "安装", "装配", "组装", "焊接", "锁紧", "固定", "连接", "验证", "测试", "点检", "设计", "选型"],
 };
 const normalizeSearchText = (value) => cleanText(value).toLowerCase().replace(/[\s\p{P}\p{S}]+/gu, "");
 const searchTerms = (value) => {
@@ -803,14 +814,10 @@ const searchTerms = (value) => {
   const terms = new Set();
   issueVocabulary.forEach((term) => { if (compact.includes(term.toLowerCase())) terms.add(term.toLowerCase()); });
   (raw.match(/[a-z][a-z0-9_.-]{1,20}/gi) || []).forEach((term) => terms.add(term.toLowerCase()));
-  (raw.match(/[\u4e00-\u9fff]{2,}/g) || []).forEach((segment) => {
-    if (segment.length <= 10 && !issueStopTerms.has(segment)) terms.add(segment);
-    for (let index = 0; index < Math.min(segment.length - 1, 30); index += 1) {
-      const term = segment.slice(index, index + 2);
-      if (!issueStopTerms.has(term)) terms.add(term);
-    }
+  (raw.match(/[\u4e00-\u9fff]{3,8}/g) || []).forEach((segment) => {
+    if (!issueStopTerms.has(segment)) terms.add(segment);
   });
-  return [...terms].slice(0, 100);
+  return [...terms].slice(0, 40);
 };
 const normalizedIssue = (payload = {}) => {
   const module = String(payload.module || "").toUpperCase() === "IPQC" ? "IPQC" : "DQA";
@@ -820,7 +827,8 @@ const normalizedIssue = (payload = {}) => {
   const personName = cleanText(payload.personName);
   const sourceFile = cleanText(payload.sourceFile);
   const sourceKey = cleanText(payload.sourceKey || `${module}:${sourceFile}:${personName}:${payload.issueDate || ""}:${issueType}:${issueText}`);
-  const tags = [...new Set([...toArray(payload.tags), ...issueVocabulary.filter((term) => normalizeSearchText(`${issueType}${issueText}`).includes(term.toLowerCase()))])];
+  const triple = extractIssueTriple({ module, issueType, issueText, tags: payload.tags });
+  const tags = [...new Set([...toArray(payload.tags), ...triple.tags])];
   const timestamp = nowIso();
   return {
     id: stableId("issue", sourceKey),
@@ -834,7 +842,10 @@ const normalizedIssue = (payload = {}) => {
     tags,
     sourceFile,
     sourceKey,
-    metadata: payload.metadata && typeof payload.metadata === "object" ? payload.metadata : {},
+    metadata: {
+      ...(payload.metadata && typeof payload.metadata === "object" ? payload.metadata : {}),
+      triple: triple.display,
+    },
     createdAt: timestamp,
     updatedAt: timestamp,
   };
@@ -867,72 +878,100 @@ const candidateEligibility = (issue, candidate) => {
   // concrete object/defect signals below provide the precision gate.
   return { eligible: true, scopeStatus, moduleMatched, sourceLevel: String(candidate.sourceLevel || "C").toUpperCase(), sourceKind: candidate.publicationStatus === "published" ? "已发布知识" : "原始条款候选" };
 };
+const decorateIssueWithTriple = (issue) => {
+  if (!issue) return issue;
+  const triple = extractIssueTriple(issue);
+  return { ...issue, metadata: { ...(issue.metadata || {}), triple: triple.display } };
+};
+const decorateIssuePage = (page = {}) => ({ ...page, issues: (page.issues || []).map(decorateIssueWithTriple) });
+const isVisibleMatchStatus = (status) => ["candidate", "confirmed", "rejected"].includes(String(status || ""));
+const matchFailsObjectGate = (issue, match) => {
+  if (!issue) return false;
+  const issueTriple = extractIssueTriple(issue);
+  const cardTriple = extractCardTriple({
+    title: match.evidence?.candidateTitle || match.title || "",
+    issueTags: match.evidence?.matchedIssueTags || [],
+    synonyms: [],
+    processes: [],
+    atomicRule: match.evidence?.atomicRule,
+  });
+  return isObjectMismatch(issueTriple, cardTriple);
+};
 const candidateScore = (issue, candidate, eligibility = {}) => {
-  const issueText = `${issue.issueType} ${issue.issueText} ${(issue.tags || []).join(" ")}`;
-  const candidateBody = candidateText(candidate);
-  const issueTerms = new Set(searchTerms(issueText));
-  const candidateTerms = new Set(searchTerms(candidateBody));
-  const sharedTerms = [...issueTerms].filter((term) => candidateTerms.has(term) && !issueStopTerms.has(term)).sort((left, right) => right.length - left.length).slice(0, 8);
-  const normalizedCandidate = normalizeSearchText(candidateText(candidate));
-  const matchedIssueTags = (issue.tags || []).filter((tag) => normalizedCandidate.includes(normalizeSearchText(tag))).slice(0, 6);
-  const roleMatch = roleTermsForIssue(issue).some((term) => normalizeSearchText(`${(candidate.applicableRoles || []).join(" ")} ${candidateText(candidate)}`).includes(normalizeSearchText(term)));
-  const processMatch = processTermsForIssue(issue).some((term) => normalizeSearchText(`${(candidate.processes || []).join(" ")} ${candidateText(candidate)}`).includes(normalizeSearchText(term)));
-  const typeMatch = issue.issueType && issue.issueType !== "未分类" && normalizedCandidate.includes(normalizeSearchText(issue.issueType));
-  // Issue type labels such as “接线问题” are broad categories, not proof
-  // that the affected object is a wire. Prefer the concrete issue text when
-  // deciding whether a candidate targets the wrong object.
-  const concreteIssueText = String(issue.issueText || "");
-  const concreteObjectTerms = matchingTermGroups.object.filter((term) => normalizeSearchText(concreteIssueText).includes(normalizeSearchText(term)));
-  const issueObjectTerms = concreteObjectTerms;
-  // Ignore incidental mentions inside long source quotations when detecting
-  // the affected object; use explicit card metadata as the object anchor.
-  const candidateObjectAnchor = normalizeSearchText(`${candidate.title || ""} ${(candidate.issueTags || []).join(" ")} ${(candidate.processes || []).join(" ")} ${(candidate.synonyms || []).join(" ")} ${(candidate.applicableRoles || []).join(" ")}`);
-  const candidateObjectTerms = matchingTermGroups.object.filter((term) => candidateObjectAnchor.includes(normalizeSearchText(term)));
-  const matchedObjects = issueObjectTerms.filter((term) => candidateObjectTerms.includes(term));
-  const objectMismatch = issueObjectTerms.length > 0 && matchedObjects.length === 0;
-  const issueDefectTerms = matchingTermGroups.defect.filter((term) => normalizeSearchText(issueText).includes(normalizeSearchText(term)));
-  const matchedDefects = issueDefectTerms.filter((term) => normalizedCandidate.includes(normalizeSearchText(term)));
-  let score = Math.min(44, matchedIssueTags.length * 22) + Math.min(28, sharedTerms.reduce((sum, term) => sum + (term.length >= 4 ? 7 : 4), 0));
-  if (typeMatch) score += 14;
-  if (roleMatch) score += 7;
-  if (processMatch) score += 7;
-  if (candidate.candidateType === "knowledge") score += Math.round(Number(candidate.confidence || 0.8) * 5);
-  if (eligibility.scopeStatus === "matched") score += 10;
-  if (eligibility.moduleMatched) score += 6;
-  if (eligibility.sourceLevel === "A") score += 3;
-  if (eligibility.sourceLevel === "C") score = Math.min(score, 62);
-  if (objectMismatch) score = Math.min(score, 25);
-  if (issueObjectTerms.length && matchedObjects.length) score += Math.min(24, matchedObjects.length * 12);
-  if (issueDefectTerms.length && matchedDefects.length) score += Math.min(16, matchedDefects.length * 8);
+  const issueTriple = extractIssueTriple(issue);
+  const cardTriple = extractCardTriple({
+    ...candidate,
+    atomicRule: candidate.atomicRule || candidate.metadata?.atomicRule,
+  });
+  const objectMismatch = isObjectMismatch(issueTriple, cardTriple);
+  const matchedObjects = objectMismatch ? [] : issueTriple.objects.filter((item) => cardTriple.objects.some((other) => other.canonical === item.canonical)).flatMap((item) => item.matched);
+  const matchedDefects = defectsOverlap(issueTriple, cardTriple) ? issueTriple.defects.filter((item) => cardTriple.defects.some((other) => other.canonical === item.canonical)).map((item) => item.canonical) : [];
+  const matchedProcesses = processesOverlap(issueTriple, cardTriple) ? issueTriple.processes.filter((item) => item.explicit && cardTriple.processes.some((other) => other.canonical === item.canonical)).map((item) => item.canonical) : [];
+  const normalizedCandidate = normalizeSearchText(`${candidate.title || ""} ${(candidate.issueTags || []).join(" ")} ${(candidate.synonyms || []).join(" ")} ${(candidate.processes || []).join(" ")}`);
+  const matchedIssueTags = [...new Set([...(issue.tags || []), ...issueTriple.tags])].filter((tag) => tag && normalizedCandidate.includes(normalizeSearchText(tag))).slice(0, 6);
+  const roleMatch = roleTermsForIssue(issue).some((term) => normalizeSearchText(`${(candidate.applicableRoles || []).join(" ")} ${candidate.title || ""}`).includes(normalizeSearchText(term)));
+  const processMatch = matchedProcesses.length > 0;
+  const typeMatch = issue.issueType && issue.issueType !== "未分类" && issueVocabulary.some((term) => normalizeSearchText(issue.issueType).includes(normalizeSearchText(term))) && normalizedCandidate.includes(normalizeSearchText(issue.issueType));
+  let score = 0;
+  if (matchedObjects.length) score += 40;
+  if (matchedDefects.length) score += 20;
+  if (matchedProcesses.length) score += 8;
+  const scorableTags = matchedObjects.length ? matchedIssueTags : matchedIssueTags.filter((item) => !isGenericDefect(item));
+  if (scorableTags.length) score += Math.min(18, scorableTags.length * 9);
+  if (typeMatch) score += 8;
+  if (roleMatch) score += 4;
+  if (candidate.candidateType === "knowledge") score += Math.round(Number(candidate.confidence || 0.8) * 4);
+  if (eligibility.scopeStatus === "matched") score += 6;
+  if (eligibility.moduleMatched) score += 4;
+  if (eligibility.sourceLevel === "A") score += 2;
+  if (objectMismatch) score = 0;
+  if (eligibility.sourceLevel === "C" && score) score = Math.min(score, 72);
   score = Math.min(100, score);
   return {
     score,
     evidence: {
+      triple: issueTriple.display,
+      cardTriple: cardTriple.display,
       matchedIssueTags,
-      sharedTerms,
-      issueObjectTerms,
+      sharedTerms: [...matchedObjects, ...matchedDefects, ...matchedProcesses].slice(0, 8),
+      issueObjectTerms: issueTriple.objects.flatMap((item) => item.matched),
       matchedObjects,
       objectMismatch,
-      issueDefectTerms,
+      issueDefectTerms: issueTriple.defects.map((item) => item.canonical),
       matchedDefects,
+      matchedProcesses,
       roleMatch,
       processMatch,
       typeMatch,
-      reason: [matchedIssueTags.length ? `问题标签：${matchedIssueTags.join("、")}` : "", sharedTerms.length ? `共同术语：${sharedTerms.join("、")}` : "", roleMatch ? "适用角色相符" : "", processMatch ? "过程阶段相符" : "", eligibility.moduleMatched ? `${issue.module}模块相符` : "", eligibility.scopeStatus === "matched" ? "适用范围相符" : "", eligibility.sourceLevel ? `来源${eligibility.sourceLevel}级` : "", eligibility.sourceKind || ""].filter(Boolean).join("；") || "仅有弱文本关联",
+      reason: [
+        issueTriple.display.object || issueTriple.display.defect || issueTriple.display.process ? `三要素 ${formatIssueTriple(issueTriple)}` : "",
+        matchedObjects.length ? `对象：${matchedObjects.join("、")}` : "",
+        matchedDefects.length ? `缺陷：${matchedDefects.join("、")}` : "",
+        matchedProcesses.length ? `过程：${matchedProcesses.join("、")}` : "",
+        matchedIssueTags.length ? `现场词：${matchedIssueTags.join("、")}` : "",
+        objectMismatch ? "对象不符，已排除" : "",
+        roleMatch ? "适用角色相符" : "",
+        eligibility.moduleMatched ? `${issue.module}模块相符` : "",
+        eligibility.scopeStatus === "matched" ? "适用范围相符" : "",
+        eligibility.sourceLevel ? `来源${eligibility.sourceLevel}级` : "",
+        eligibility.sourceKind || "",
+      ].filter(Boolean).join("；") || "无三要素重合，保持无匹配",
       scopeStatus: eligibility.scopeStatus || "unknown",
       sourceLevel: eligibility.sourceLevel || String(candidate.sourceLevel || "C").toUpperCase(),
       sourceKind: eligibility.sourceKind || "候选",
     },
   };
 };
+
 const hasSpecificMatchSignal = (issue, result) => {
-  const generic = new Set([...matchingTermGroups.object, ...matchingTermGroups.action, "问题", "异常", "设计", "装配", "组装", "过程", "研发", "评审"]);
-  const issueTerms = searchTerms(`${issue.issueType || ""} ${issue.issueText || ""}`).filter((term) => !generic.has(term));
-  const sharedSpecific = (result.evidence?.sharedTerms || []).some((term) => !generic.has(term) && term.length >= 2);
-  const matchedTag = (result.evidence?.matchedIssueTags || []).some((term) => !generic.has(term));
-  const matchedDefect = (result.evidence?.matchedDefects || []).length > 0;
-  return Boolean(sharedSpecific || matchedTag || matchedDefect || result.evidence?.typeMatch || issueTerms.length === 0);
+  if (result.evidence?.objectMismatch) return false;
+  if ((result.evidence?.matchedObjects || []).length) return true;
+  if ((result.evidence?.matchedDefects || []).some((item) => !isGenericDefect(item))) return true;
+  if ((result.evidence?.matchedIssueTags || []).some((item) => !isGenericDefect(item) && !GENERIC_DEFECTS.has(item))) return true;
+  if ((result.evidence?.matchedProcesses || []).some((item) => item && item !== "装配")) return true;
+  return false;
 };
+
 const dateTimestamp = (value) => {
   const text = cleanText(value);
   if (!text) return 0;
@@ -2864,7 +2903,7 @@ export const createKnowledgeService = ({ filePath, originalDir = path.join(path.
         const fallbackIssues = (await readFallback()).issues || [];
         if (fallbackIssues.length) {
           await upsertPostgresQualityIssues(fallbackIssues);
-          return await listPostgresQualityIssues(options);
+          return decorateIssuePage(await listPostgresQualityIssues(options));
         }
       }
       return postgres;
@@ -2921,7 +2960,7 @@ export const createKnowledgeService = ({ filePath, originalDir = path.join(path.
     const facetSource = (store.issues || []).filter((item) => (!module || item.module === module) && (!personName || item.personName === personName));
     const unique = (rows, key) => [...new Set(rows.map((item) => cleanText(item[key])).filter(Boolean))].sort((a, b) => a.localeCompare(b, "zh-CN")).slice(0, 200);
     const facetTypeSource = issueType ? facetSource.filter((item) => String(item.issueType || "").toLowerCase().includes(issueType)) : facetSource;
-    return { total: all.length, facets: { personNames: unique(facetSource, "personName"), issueTypes: unique(facetSource, "issueType"), sourceFiles: unique(facetTypeSource, "sourceFile") }, issues: all.slice(offset, offset + limit).map((item) => ({ ...item, ...(matchesByIssue.get(item.id) || { matchCount: 0, confirmedCount: 0 }), storage: "json" })), storage: "json" };
+    return { total: all.length, facets: { personNames: unique(facetSource, "personName"), issueTypes: unique(facetSource, "issueType"), sourceFiles: unique(facetTypeSource, "sourceFile") }, issues: all.slice(offset, offset + limit).map((item) => decorateIssueWithTriple({ ...item, ...(matchesByIssue.get(item.id) || { matchCount: 0, confirmedCount: 0 }), storage: "json" })), storage: "json" };
   };
   const loadCorpus = async () => {
     if (corpusCache.revision === corpusRevision && corpusCache.expiresAt > Date.now()) return corpusCache.rows;
@@ -3035,10 +3074,13 @@ export const createKnowledgeService = ({ filePath, originalDir = path.join(path.
         offset += page.knowledge?.length || 0;
       } while (offset < total && offset < 5000);
     }
-    const isValidMatch = (item) => item.candidateType === "knowledge" && activeDocumentIds.has(item.documentId) && publishedKnowledgeIds.has(item.knowledgeId);
+    const isValidMatch = (item) => item.candidateType === "knowledge" && activeDocumentIds.has(item.documentId) && publishedKnowledgeIds.has(item.knowledgeId) && isVisibleMatchStatus(item.status);
+    const postgresIssue = await readPostgresQualityIssue(issueId);
+    const issue = postgresIssue.available ? postgresIssue.issue : ((await readFallback()).issues || []).find((item) => item.id === issueId);
+    const visible = (matches) => matches.filter(isValidMatch).filter((item) => !matchFailsObjectGate(issue, item));
     const postgres = await listPostgresKnowledgeMatches(issueId);
-    if (postgres.available) return { ...postgres, matches: postgres.matches.filter(isValidMatch) };
-    return { matches: (await readFallback()).matches.filter((item) => item.issueId === issueId && isValidMatch(item)).sort((left, right) => (left.status === "confirmed" ? -1 : 0) - (right.status === "confirmed" ? -1 : 0) || right.score - left.score), storage: "json" };
+    if (postgres.available) return { ...postgres, matches: visible(postgres.matches) };
+    return { matches: visible((await readFallback()).matches.filter((item) => item.issueId === issueId)).sort((left, right) => (left.status === "confirmed" ? -1 : 0) - (right.status === "confirmed" ? -1 : 0) || right.score - left.score), storage: "json" };
   };
   const runReadBenchmark = async (options = {}) => {
     const concurrency = Math.min(20, Math.max(1, Number(options.concurrency || 5)));
@@ -3068,7 +3110,7 @@ export const createKnowledgeService = ({ filePath, originalDir = path.join(path.
     return { ...lastReadBenchmark, metrics: getPerformanceMetrics() };
   };
   const retrieveCandidates = async (issue) => {
-    const terms = [...new Set([...(issue.tags || []), issue.issueType, ...searchTerms(`${issue.issueType || ""} ${issue.issueText || ""}`)].map((item) => cleanText(item).toLowerCase()).filter((item) => item.length >= 2))].slice(0, 32);
+    const terms = retrievalTerms(issue).map((item) => cleanText(item).toLowerCase()).filter((item) => item.length >= 2).slice(0, 24);
     const requestedVersion = cleanText(issue.metadata?.version || issue.metadata?.sourceVersion || issue.metadata?.documentVersion);
     const cacheKey = `${corpusRevision}:${issue.module}:${requestedVersion}:${normalizeSearchText(`${issue.issueType || ""}${issue.issueText || ""}${terms.join("|")}`)}`;
     const activeDocumentIds = new Set((await listDocuments()).map((document) => document.id));
@@ -3172,7 +3214,7 @@ export const createKnowledgeService = ({ filePath, originalDir = path.join(path.
         createdAt: generatedAt,
         updatedAt: generatedAt,
       };
-    }).filter(Boolean).filter((item) => item.score >= 32)
+    }).filter(Boolean).filter((item) => item.score >= 20)
       .sort((left, right) => right.score - left.score || (left.candidateType === "knowledge" ? -1 : 1))
       // Some imported workbooks contain duplicate cards. Keep one candidate
       // for the same knowledge id, or for identical title/content when ids
@@ -3539,7 +3581,7 @@ export const createKnowledgeService = ({ filePath, originalDir = path.join(path.
     if (postgres.available) {
       if (!postgres.records.length) {
         const fallback = (await readFallback()).feedbackRecords || [];
-        const matching = fallback.filter((item) => (!options.targetType || item.targetType === options.targetType) && (!options.status || item.status === options.status));
+        const matching = fallback.filter((item) => (!options.targetType || item.targetType === options.targetType) && (!options.status || item.status === options.status) && (!options.sourceId || item.sourceId === options.sourceId));
         for (const record of matching) await writePostgresKnowledgeFeedbackRecord(record);
         if (matching.length) return await listPostgresKnowledgeFeedbackRecords(options);
       }
@@ -3547,22 +3589,26 @@ export const createKnowledgeService = ({ filePath, originalDir = path.join(path.
     }
     const limit = Math.min(500, Math.max(1, Number(options.limit || 200)));
     const records = ((await readFallback()).feedbackRecords || [])
-      .filter((item) => (!options.targetType || item.targetType === options.targetType) && (!options.status || item.status === options.status))
+      .filter((item) => (!options.targetType || item.targetType === options.targetType) && (!options.status || item.status === options.status) && (!options.sourceId || item.sourceId === options.sourceId))
       .sort((left, right) => String(right.updatedAt || "").localeCompare(String(left.updatedAt || "")))
       .slice(0, limit);
     return { records, storage: "json" };
   };
   const saveFeedbackRecord = async (payload = {}) => {
-    const sourceType = new Set(["recurrence", "review"]).has(payload.sourceType) ? payload.sourceType : "";
+    const sourceType = new Set(["recurrence", "review", "issue"]).has(payload.sourceType) ? payload.sourceType : "";
     const sourceId = cleanText(payload.sourceId);
-    const targetType = new Set(["checklist", "dfmea", "question_bank", "design_rule"]).has(payload.targetType) ? payload.targetType : "";
+    const targetType = new Set(["checklist", "dfmea", "question_bank", "design_rule", "ai_supplement"]).has(payload.targetType) ? payload.targetType : "";
     const status = new Set(["candidate", "approved", "rejected", "applied"]).has(payload.status) ? payload.status : "candidate";
     if (!sourceType || !sourceId || !targetType) throw new Error("反哺记录必须指定来源和目标类型");
     const store = await readFallback();
     let source = null;
     let sourceKnowledgeIds = [];
     let evidence = [];
-    if (sourceType === "recurrence") {
+    if (sourceType === "issue") {
+      source = { module: payload.module || "" };
+      sourceKnowledgeIds = [];
+      evidence = Array.isArray(payload.evidence) ? payload.evidence : [];
+    } else if (sourceType === "recurrence") {
       source = (store.recurrenceActions || []).find((item) => item.recurrenceKey === sourceId);
       if (!source || source.status !== "closed" || source.effectiveness !== "effective") throw new Error("只有已关闭且验证有效的纠偏闭环才能形成正式反哺候选");
       sourceKnowledgeIds = cleanText(source.candidateKey).startsWith("knowledge:") ? [source.candidateKey.slice("knowledge:".length)] : [];

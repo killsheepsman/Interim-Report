@@ -9,12 +9,14 @@ import { buildDqaAgentRawMetrics, buildDqaEngineerSupplementSource, buildOqcRule
 import { buildQualityAgentSnapshot } from "../src/agent/qualitySnapshot.js";
 import { expandDoamDataset } from "../src/doamCompact.js";
 import { mergeDoamDatasets } from "../src/doamEngine.js";
-import { attachDqaAgentRawMetrics, buildRoleSnapshots, mergeRoleSnapshotRegistry, normalizeRoleSnapshotRegistry, roleSnapshotMappingSignature, roleSnapshotRule, roleSnapshotSourceSignature } from "../src/agent/roleSnapshotRegistry.js";
-import { buildSnapshotPeriods, mergeQualitySnapshotHistory, normalizeQualitySnapshotRegistry } from "../src/agent/snapshotRegistry.js";
+import { attachDqaAgentRawMetrics, buildRoleSnapshots, mergeRoleSnapshotRegistry, normalizeRoleSnapshotRegistry, pickRoleSnapshotEntry, rolePeriodHistoryWithWeeks, roleSnapshotMappingSignature, roleSnapshotRule, roleSnapshotSourceSignature } from "../src/agent/roleSnapshotRegistry.js";
+import { buildSnapshotPeriods, mergeQualitySnapshotHistory, normalizeQualitySnapshotRegistry, snapshotBatchOutcome } from "../src/agent/snapshotRegistry.js";
+import { describeAiError } from "../src/agent/aiErrorMessage.js";
 import { gzip } from "node:zlib";
 import { promisify } from "node:util";
 import { deletePostgresAgentReport, initPostgres, listPostgresAgentReports, readPostgresAgentReport, readPostgresState, writePostgresAgentReport, writePostgresState } from "./postgresStore.mjs";
 import { createKnowledgeService } from "./knowledgeService.mjs";
+import { exportOnePdf, loadWecomConfig, matchEmployee, publicWecomConfig, saveWecomConfig, sendOneReport, sendWecomText } from "./wecomSend.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const gzipAsync = promisify(gzip);
@@ -32,6 +34,9 @@ const agentSkillDir = path.join(rootDir, "skills");
 let agentSkillsCache = null;
 let agentSkillsCacheAt = 0;
 const aiConfigFile = path.join(dataDir, "ai-config.json");
+const wecomConfigFile = path.join(dataDir, "wecom-config.json");
+const wecomPdfDir = path.join(dataDir, "wecom-pdf");
+const roleReportPdfDir = path.resolve(rootDir, "..", "outputs", "role_report_pdfs");
 const adminIpsFile = path.join(dataDir, "admin-ips.json");
 const permissionFile = path.join(dataDir, "permission-config.json");
 const examSessionsFile = path.join(dataDir, "exam-sessions.json");
@@ -366,13 +371,11 @@ const requestAi = async (config, pathname, options = {}) => {
     let body;
     try { body = text ? JSON.parse(text) : {}; } catch { body = { error: { message: text.slice(0, 500) || "Invalid AI response" } }; }
     if (!response.ok) {
-      if (response.status === 504) throw new Error("AI上游网关超时（504）：请使用更快的模型或缩短当前阶段请求；已完成阶段不会丢失");
-      if (response.status === 524) throw new Error("AI上游网关超时（524）：模型在网关等待时间内未返回。系统将使用精简上下文重试；已完成报告不会丢失。");
-      const upstreamMessage = body?.error?.message || body?.message || text.slice(0, 500) || "No error detail returned";
-      if (response.status === 404 && /model.+not supported|no available channel/i.test(upstreamMessage)) {
-        throw new Error(`当前 API 密钥/分组不支持模型 ${config.model}，请在“AI接口”重新读取模型并选择可用模型；当前请求通道：${pathname}`);
+      const rawUpstream = body?.error?.message || body?.message || text.slice(0, 200) || "";
+      if (response.status === 404 && /model.+not supported|no available channel/i.test(rawUpstream)) {
+        throw new Error(`问题：当前 API 密钥不支持模型 ${config.model}，请到“AI接口”改选可用模型`);
       }
-      throw new Error(`AI上游返回 ${response.status}：${upstreamMessage}`);
+      throw new Error(describeAiError({ status: response.status, message: rawUpstream }));
     }
     return requestOptions.stream ? (parseAiStream(text) || body) : body;
   } catch (error) {
@@ -757,7 +760,7 @@ const handleKnowledge = async (req, res) => {
       return sendJson(res, 200, { session });
     }
     if (pathname === "/api/knowledge/feedback" && req.method === "GET") {
-      const result = await knowledgeService.listFeedbackRecords({ targetType: requestUrl.searchParams.get("targetType") || "", status: requestUrl.searchParams.get("status") || "", limit: requestUrl.searchParams.get("limit") });
+      const result = await knowledgeService.listFeedbackRecords({ targetType: requestUrl.searchParams.get("targetType") || "", status: requestUrl.searchParams.get("status") || "", sourceId: requestUrl.searchParams.get("sourceId") || "", limit: requestUrl.searchParams.get("limit") });
       return sendJson(res, 200, result);
     }
     if (pathname === "/api/knowledge/feedback" && req.method === "POST") {
@@ -1065,6 +1068,54 @@ const sanitizeSegment = (value) => String(value || "UNKNOWN")
   .replace(/\s+/g, " ")
   .trim()
   .slice(0, 180) || "UNKNOWN";
+
+const agentReportPeriodKey = (row = {}) => {
+  const period = row.period || {};
+  return [row.role || "", row.recipient || "", period._periodStart || period.start || "", period._periodEnd || period.end || ""].join("|");
+};
+const listDiskAgentReports = async () => {
+  await fs.mkdir(aiReportDir, { recursive: true });
+  const names = await fs.readdir(aiReportDir);
+  const reports = [];
+  for (const name of names.filter((item) => /^QMS-Agent报告-.+\.md$/i.test(item))) {
+    const filePath = path.join(aiReportDir, name);
+    const stat = await fs.stat(filePath);
+    let metadata = {};
+    try { metadata = JSON.parse(await fs.readFile(`${filePath}.json`, "utf8")); } catch {}
+    reports.push({
+      ...metadata,
+      fileName: name,
+      relativePath: `outputs/ai_saved_reports/${name}`,
+      size: stat.size,
+      updatedAt: metadata.updatedAt || metadata.savedAt || stat.mtime.toISOString(),
+      savedAt: metadata.savedAt || stat.mtime.toISOString(),
+      storage: "file",
+    });
+  }
+  return reports;
+};
+const mergeAgentReportLists = (...lists) => {
+  const map = new Map();
+  lists.flat().forEach((row) => {
+    if (row?.fileName) map.set(row.fileName, row);
+  });
+  return [...map.values()].sort((left, right) => String(right.updatedAt || right.savedAt || "").localeCompare(String(left.updatedAt || left.savedAt || "")));
+};
+const latestAgentReports = (reports = []) => {
+  const map = new Map();
+  reports.forEach((row) => {
+    const key = agentReportPeriodKey(row);
+    const current = map.get(key);
+    if (!current || String(row.updatedAt || row.savedAt || "") > String(current.updatedAt || current.savedAt || "")) map.set(key, { ...row, latest: true });
+  });
+  return [...map.values()].sort((left, right) => String(right.updatedAt || "").localeCompare(String(left.updatedAt || "")));
+};
+const resolveLatestAgentReportName = (fileName, reports = []) => {
+  const current = reports.find((row) => row.fileName === fileName);
+  if (!current) return fileName;
+  const latest = reports.find((row) => row.latest && agentReportPeriodKey(row) === agentReportPeriodKey(current));
+  return latest?.fileName || fileName;
+};
 
 const sanitizeHumanReportContent = (content = "") => String(content || "")
   .replace(/质量总监(?:综合)?判断/g, "质量复盘摘要")
@@ -1417,7 +1468,7 @@ const compactQualityHistory = (registry) => {
   const keep = new Set();
   const grouped = new Map();
   [...current.history].sort((left, right) => String(right.generatedAt || "").localeCompare(String(left.generatedAt || ""))).forEach((entry) => {
-    const key = `${entry.ruleId}::${entry.dateRange?.granularity || "range"}::${entry.dateRange?.periodKey || ""}`;
+    const key = `${entry.ruleId}::${entry.dateRange?.granularity || "range"}::${entry.dateRange?.periodKey || ""}::${entry.dateRange?.start2026 || entry.dateRange?.start2025 || ""}::${entry.dateRange?.end2026 || entry.dateRange?.end2025 || ""}`;
     const list = grouped.get(key) || [];
     list.push(entry);
     grouped.set(key, list);
@@ -1431,13 +1482,14 @@ const compactRoleHistory = (registry) => {
   const keep = new Set();
   const grouped = new Map();
   [...current.history].sort((left, right) => String(right.generatedAt || "").localeCompare(String(left.generatedAt || ""))).forEach((entry) => {
-    const key = `${entry.role}::${entry.granularity || entry.period?.granularity || "range"}::${entry.period?.periodKey || `${entry.period?.start || ""}_${entry.period?.end || ""}`}`;
+    const key = `${entry.role}::${entry.granularity || entry.period?.granularity || "range"}::${entry.period?.periodKey || ""}::${entry.period?.start || ""}::${entry.period?.end || ""}`;
     const list = grouped.get(key) || [];
     list.push(entry);
     grouped.set(key, list);
   });
-  grouped.forEach((list) => list.slice(0, Math.max(1, Number(current.maintenance?.retention || 3))).forEach((entry) => keep.add(entry.id)));
-  return { ...current, history: current.history.map((entry) => keep.has(entry.id) ? entry : { ...entry, active: false, status: "archived" }) };
+  const keepId = (entry) => entry.id || entry.key || "";
+  grouped.forEach((list) => list.slice(0, Math.max(1, Number(current.maintenance?.retention || 3))).forEach((entry) => keep.add(keepId(entry))));
+  return { ...current, history: current.history.map((entry) => keep.has(keepId(entry)) ? entry : { ...entry, active: false, status: "archived" }) };
 };
 
 const appendTaskHistory = async (key, task, currentRegistry = null) => {
@@ -1520,9 +1572,10 @@ const processSnapshotJob = async (jobId) => {
       next = compactQualityHistory(next);
       await saveStateValue(QUALITY_SNAPSHOT_REGISTRY_KEY, next);
       const finishedAt = new Date().toISOString();
-      const task = { id: jobId, batchId: job.batchId || `module-batch-${jobId}`, kind: "模块", startedAt: job.startedAt || finishedAt, finishedAt, status: failedItems.length ? "failed" : "completed", total, done, failed: failedItems.length, failedItems, rules: rules.map((rule) => rule.module), period: job.payload?.dateRange || {} };
+      const outcome = snapshotBatchOutcome({ failedItems, skippedItems, kind: "模块快照" });
+      const task = { id: jobId, batchId: job.batchId || `module-batch-${jobId}`, kind: "模块", startedAt: job.startedAt || finishedAt, finishedAt, status: outcome.status, total, done, failed: failedItems.length, failedItems, rules: rules.map((rule) => rule.module), period: job.payload?.dateRange || {} };
       await appendTaskHistory(QUALITY_SNAPSHOT_REGISTRY_KEY, task, next);
-      await updateSnapshotJob(jobId, { status: failedItems.length ? "failed" : "completed", progress: 100, failed: failedItems.length, failedItems, message: failedItems.length ? "模块快照部分失败" : "模块快照已完成", finishedAt });
+      await updateSnapshotJob(jobId, { status: outcome.status, progress: 100, failed: failedItems.length, failedItems, message: outcome.message, finishedAt });
       return;
     }
     if (job.kind === "role") {
@@ -1607,9 +1660,10 @@ const processSnapshotJob = async (jobId) => {
       next = compactRoleHistory(next);
       await saveStateValue(QUALITY_ROLE_SNAPSHOT_REGISTRY_KEY, next);
       const finishedAt = new Date().toISOString();
-      const task = { id: jobId, batchId: job.batchId || `role-batch-${jobId}`, kind: "角色", startedAt: job.startedAt || finishedAt, finishedAt, status: failedItems.length ? "failed" : "completed", total, done, failed: failedItems.length, failedItems, skipped: skippedItems.length, skippedItems, rules: rules.map((rule) => rule.role), period: { start: rolePeriod.start, end: rolePeriod.end } };
-      await appendTaskHistory(QUALITY_ROLE_SNAPSHOT_REGISTRY_KEY, task);
-      await updateSnapshotJob(jobId, { status: failedItems.length ? "failed" : "completed", progress: 100, failed: failedItems.length, failedItems, skipped: skippedItems.length, skippedItems, message: failedItems.length ? "角色快照部分失败" : skippedItems.length ? `角色快照已完成，跳过 ${skippedItems.length} 个无活动周期` : "角色快照已完成", finishedAt });
+      const outcome = snapshotBatchOutcome({ failedItems, skippedItems, kind: "角色快照" });
+      const task = { id: jobId, batchId: job.batchId || `role-batch-${jobId}`, kind: "角色", startedAt: job.startedAt || finishedAt, finishedAt, status: outcome.status, total, done, failed: failedItems.length, failedItems, skipped: skippedItems.length, skippedItems, rules: rules.map((rule) => rule.role), period: { start: rolePeriod.start, end: rolePeriod.end } };
+      await appendTaskHistory(QUALITY_ROLE_SNAPSHOT_REGISTRY_KEY, task, next);
+      await updateSnapshotJob(jobId, { status: outcome.status, progress: 100, failed: failedItems.length, failedItems, skipped: skippedItems.length, skippedItems, message: outcome.message, finishedAt });
       return;
     }
     throw new Error("未知快照任务类型");
@@ -1825,12 +1879,8 @@ const handleApi = async (req, res) => {
       const end = requestUrl.searchParams.get("end") || "";
       const skillName = requestUrl.searchParams.get("skillName") || "";
       const layoutProfileId = requestUrl.searchParams.get("layoutProfileId") || "";
-      const entry = (Array.isArray(value.history) ? value.history : [])
-        .filter((item) => item?.active !== false && item?.role === role && item?.period?.start === start && item?.period?.end === end)
-        .filter((item) => !skillName || item?.skillName === skillName)
-        .filter((item) => !layoutProfileId || item?.layoutProfileId === layoutProfileId)
-        .sort((left, right) => String(right?.generatedAt || "").localeCompare(String(left?.generatedAt || "")))[0];
-      return sendJson(res, 200, { key, value: entry ? { ...value, history: [entry] } : { ...value, history: [] } });
+      const history = rolePeriodHistoryWithWeeks(value, { role, period: { start, end }, skillName, layoutProfileId });
+      return sendJson(res, 200, { key, value: { ...value, history } });
     }
     if (view === "index" && value && typeof value === "object") {
       const index = { ...value, history: Array.isArray(value.history) ? value.history.map((entry) => {
@@ -1940,7 +1990,7 @@ const handleAi = async (req, res) => {
     if (requestPayload === null) requestPayload = JSON.parse(await readBody(req) || "{}");
     return requestPayload;
   };
-  const preliminaryPayload = ["/api/ai/chat", "/api/ai/reports", "/api/ai/agent-dispatch", "/api/ai/agent-reports", "/api/ai/models", "/api/ai/test", "/api/ai/config"].includes(pathname)
+  const preliminaryPayload = ["/api/ai/chat", "/api/ai/reports", "/api/ai/agent-dispatch", "/api/ai/agent-reports", "/api/ai/models", "/api/ai/test", "/api/ai/config", "/api/ai/wecom-config", "/api/ai/wecom-test", "/api/ai/wecom-preview", "/api/ai/wecom-send", "/api/ai/wecom-export-pdf", "/api/ai/wecom-open-folder"].includes(pathname)
     ? (req.method === "POST" ? await getPayload() : {}) : {};
   const isQualityAgentRequest = preliminaryPayload?.feature === "qualityAgent" || preliminaryPayload?.agentTitle === "质量分析 Agent" || preliminaryPayload?.agent === true;
   const operationFeatureKey = preliminaryPayload?.operation === "quality-agent-start"
@@ -1948,7 +1998,7 @@ const handleAi = async (req, res) => {
     : preliminaryPayload?.operation === "agent-role-report-generate"
       ? "agentRoleReportGenerate"
       : "";
-  const featureKey = operationFeatureKey || (legacyChatAlias ? "aiInterface" : (isQualityAgentRequest || pathname === "/api/ai/skills" || pathname === "/api/ai/agent-dispatch" || pathname.startsWith("/api/ai/agent-reports") ? "qualityAgent" : (["/api/ai/config", "/api/ai/models", "/api/ai/test"].includes(pathname) ? "aiInterface" : "aiAnalysis")));
+  const featureKey = operationFeatureKey || (legacyChatAlias ? "aiInterface" : (isQualityAgentRequest || pathname === "/api/ai/skills" || pathname === "/api/ai/agent-dispatch" || pathname.startsWith("/api/ai/agent-reports") || pathname.startsWith("/api/ai/wecom") ? "qualityAgent" : (["/api/ai/config", "/api/ai/models", "/api/ai/test"].includes(pathname) ? "aiInterface" : "aiAnalysis")));
   const featureRule = user.permissions?.features?.[featureKey] || {};
   const featureAllowed = user.isAdmin || (user.isDeputy ? featureRule.deputy !== false : featureRule.public === true);
   if (!featureAllowed) {
@@ -2007,6 +2057,95 @@ const handleAi = async (req, res) => {
     }
     tasks.sort((left, right) => String(right.createdAt || "").localeCompare(String(left.createdAt || "")));
     return sendJson(res, 200, { tasks: tasks.slice(0, 200) });
+  }
+  if (pathname === "/api/ai/wecom-config" && req.method === "GET") {
+    const config = await loadWecomConfig(wecomConfigFile);
+    return sendJson(res, 200, publicWecomConfig(config));
+  }
+  if (pathname === "/api/ai/wecom-config" && req.method === "PUT") {
+    if (!user.isAdmin) return sendJson(res, 403, { error: "只有主管理员可以保存企业微信配置" });
+    const payload = await getPayload();
+    const current = await loadWecomConfig(wecomConfigFile);
+    const saved = await saveWecomConfig(wecomConfigFile, payload, current);
+    return sendJson(res, 200, publicWecomConfig(saved));
+  }
+  if (pathname === "/api/ai/wecom-test" && req.method === "POST") {
+    if (!user.isAdmin) return sendJson(res, 403, { error: "只有主管理员可以测试企业微信发送" });
+    const payload = await getPayload();
+    const config = await loadWecomConfig(wecomConfigFile);
+    const userid = String(payload.userid || "").trim();
+    if (!userid) return sendJson(res, 400, { error: "请填写要测试的企业微信 userid" });
+    try {
+      await sendWecomText(config, { userid, text: "这是QMS质量报告发送测试。如果您收到这条消息，说明企业微信应用已经连通。" });
+    } catch (error) {
+      return sendJson(res, 400, { error: error.message || "测试发送失败" });
+    }
+    return sendJson(res, 200, { ok: true, message: "测试消息已发送，请在企业微信中查看" });
+  }
+  if (pathname === "/api/ai/wecom-preview" && req.method === "POST") {
+    if (!user.isAdmin) return sendJson(res, 403, { error: "只有主管理员可以预览发送名单" });
+    const payload = await getPayload();
+    const config = await loadWecomConfig(wecomConfigFile);
+    const items = Array.isArray(payload.items) ? payload.items : [];
+    const rows = items.map((item) => {
+      const match = matchEmployee(config.employees, item.recipient || item.name);
+      return { fileName: item.fileName || "", recipient: item.recipient || item.name || "", role: item.role || "", ...match };
+    });
+    return sendJson(res, 200, { configured: Boolean(config.corpId && config.secret && config.agentId), rows });
+  }
+  if (pathname === "/api/ai/wecom-send" && req.method === "POST") {
+    if (!user.isAdmin) return sendJson(res, 403, { error: "只有主管理员可以从服务器发送企业微信" });
+    const payload = await getPayload();
+    const config = await loadWecomConfig(wecomConfigFile);
+    if (!config.corpId || !config.secret || !config.agentId) return sendJson(res, 400, { error: "请先在系统管理-企业微信中保存 CorpId、AgentId 和 Secret" });
+    const fileNames = [...new Set((Array.isArray(payload.fileNames) ? payload.fileNames : []).map((item) => String(item || "")).filter((name) => /^QMS-Agent报告-.+\.md$/i.test(name) && !name.includes("..")))];
+    if (!fileNames.length) return sendJson(res, 400, { error: "请先勾选要发送的报告" });
+    const results = [];
+    for (const fileName of fileNames) {
+      try {
+        const filePath = path.join(aiReportDir, fileName);
+        const content = await fs.readFile(filePath, "utf8");
+        let metadata = { fileName };
+        try { metadata = { ...JSON.parse(await fs.readFile(filePath + ".json", "utf8")), fileName }; } catch {}
+        const result = await sendOneReport({ config, report: metadata, content, pdfDir: wecomPdfDir });
+        results.push(result);
+      } catch (error) {
+        results.push({ ok: false, fileName, status: "error", reason: error.message || String(error) });
+      }
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+    return sendJson(res, 200, { ok: results.every((item) => item.ok), sent: results.filter((item) => item.ok).length, failed: results.filter((item) => !item.ok).length, results });
+  }
+  if (pathname === "/api/ai/wecom-export-pdf" && req.method === "POST") {
+    if (!user.isAdmin && !user.isDeputy) return sendJson(res, 403, { error: "只有管理员可以批量导出报告 PDF" });
+    const payload = await getPayload();
+    const fileNames = [...new Set((Array.isArray(payload.fileNames) ? payload.fileNames : []).map((item) => String(item || "")).filter((name) => /^QMS-Agent报告-.+\.md$/i.test(name) && !name.includes("..")))];
+    if (!fileNames.length) return sendJson(res, 400, { error: "请先勾选要导出的报告" });
+    const stamp = new Date().toISOString().replace(/[-:]/g, "").replace("T", "-").slice(0, 15);
+    const batchDir = path.join(roleReportPdfDir, stamp);
+    await fs.mkdir(batchDir, { recursive: true });
+    const results = [];
+    for (const fileName of fileNames) {
+      try {
+        const filePath = path.join(aiReportDir, fileName);
+        const content = await fs.readFile(filePath, "utf8");
+        let metadata = { fileName };
+        try { metadata = { ...JSON.parse(await fs.readFile(filePath + ".json", "utf8")), fileName }; } catch {}
+        results.push(await exportOnePdf({ report: metadata, content, batchDir }));
+      } catch (error) {
+        results.push({ ok: false, fileName, reason: error.message || String(error) });
+      }
+    }
+    return sendJson(res, 200, { ok: results.every((item) => item.ok), exported: results.filter((item) => item.ok).length, failed: results.filter((item) => !item.ok).length, folder: batchDir, results });
+  }
+  if (pathname === "/api/ai/wecom-open-folder" && req.method === "POST") {
+    const payload = await getPayload();
+    const folder = path.resolve(String(payload.folder || ""));
+    const root = path.resolve(roleReportPdfDir) + path.sep;
+    if (folder !== path.resolve(roleReportPdfDir) && !folder.startsWith(root)) return sendJson(res, 400, { error: "只能打开报告 PDF 导出目录" });
+    try { await fs.access(folder); } catch { return sendJson(res, 404, { error: "文件夹还不存在" }); }
+    spawn("explorer.exe", [folder], { windowsHide: false, detached: true, stdio: "ignore" }).unref();
+    return sendJson(res, 200, { ok: true, folder });
   }
   if (pathname === "/api/ai/skills" && req.method === "GET") {
     const requestedSkillIds = new Set(String(new URL(req.url, `http://${req.headers.host || "localhost"}`).searchParams.get("ids") || "").split(",").map((item) => item.trim()).filter(Boolean));
@@ -2075,38 +2214,30 @@ const handleAi = async (req, res) => {
     const requestedModule = String(query.get("module") || "").trim();
     const requestedRole = String(query.get("role") || "").trim();
     const requestedRecipient = String(query.get("recipient") || "").trim();
-    const limit = Math.min(200, Math.max(1, Number(query.get("limit") || 200)));
+    const latestOnly = query.get("latest") === "1";
+    const limit = Math.min(500, Math.max(1, Number(query.get("limit") || 200)));
     const offset = Math.max(0, Number(query.get("offset") || 0));
-    const database = await listPostgresAgentReports({ module: requestedModule, role: requestedRole, recipient: requestedRecipient, limit, offset });
-    if (database.available) {
-      return sendJson(res, 200, {
-        reports: database.reports.map((item) => ({ ...item, relativePath: `outputs/ai_saved_reports/${item.fileName}` })),
-        total: database.total,
-        limit,
-        offset,
-        storage: "postgres",
-      });
-    }
-    const names = await fs.readdir(aiReportDir);
-    const reports = [];
-    for (const name of names.filter((item) => /^QMS-Agent报告-.+\.md$/i.test(item))) {
-      const filePath = path.join(aiReportDir, name);
-      const stat = await fs.stat(filePath);
-      let metadata = {};
-      try { metadata = JSON.parse(await fs.readFile(`${filePath}.json`, "utf8")); } catch {}
-      const layoutProfileId = metadata.layoutProfileId || metadata.layoutSkillName || (name.match(/-(research-briefing-v1)-/)?.[1] || "research-briefing-v1");
-      const fallbackModuleMatch = !requestedModule || name.startsWith(`QMS-Agent报告-${sanitizeSegment(requestedModule)}-`);
-      const fallbackRoleMatch = !requestedRole || name.includes(`-${sanitizeSegment(requestedRole)}-`);
-      const fallbackRecipientMatch = !requestedRecipient || name.includes(`-${sanitizeSegment(requestedRecipient)}-`);
-      if (requestedModule && (metadata.module ? metadata.module !== requestedModule : !fallbackModuleMatch)) continue;
-      if (requestedRole && (metadata.role ? metadata.role !== requestedRole : !fallbackRoleMatch)) continue;
-      if (requestedRecipient && (metadata.recipient ? metadata.recipient !== requestedRecipient : !fallbackRecipientMatch)) continue;
-      reports.push({ ...metadata, fileName: name, layoutProfileId, layoutSkillName: layoutProfileId, relativePath: `outputs/ai_saved_reports/${name}`, size: stat.size, updatedAt: metadata.updatedAt || stat.mtime.toISOString() });
-    }
-    reports.sort((left, right) => String(right.updatedAt).localeCompare(String(left.updatedAt)));
-    return sendJson(res, 200, { reports: reports.slice(offset, offset + limit), total: reports.length, limit, offset, storage: "file" });
+    const disk = await listDiskAgentReports();
+    const database = await listPostgresAgentReports({ module: requestedModule, role: requestedRole, recipient: requestedRecipient, limit: 500, offset: 0 });
+    let reports = mergeAgentReportLists(disk, database.available ? database.reports : []);
+    reports = reports.filter((row) => {
+      if (requestedModule && row.module && row.module !== requestedModule) return false;
+      if (requestedRole && row.role && row.role !== requestedRole) return false;
+      if (requestedRecipient && row.recipient && row.recipient !== requestedRecipient) return false;
+      return true;
+    });
+    if (latestOnly) reports = latestAgentReports(reports);
+    else reports = reports.map((row) => ({ ...row, latest: latestAgentReports(reports).some((item) => item.fileName === row.fileName) }));
+    return sendJson(res, 200, {
+      reports: reports.slice(offset, offset + limit),
+      total: reports.length,
+      limit,
+      offset,
+      latestOnly,
+      storage: database.available ? "postgres+file" : "file",
+    });
   }
-  const agentReportMatch = pathname.match(/^\/api\/ai\/agent-reports\/([^/]+)$/);
+    const agentReportMatch = pathname.match(/^\/api\/ai\/agent-reports\/([^/]+)$/);
   if (agentReportMatch) {
     const fileName = decodeURIComponent(agentReportMatch[1]);
     if (!/^QMS-Agent报告-.+\.md$/i.test(fileName) || fileName.includes("..")) return sendJson(res, 400, { error: "无效的 Agent 报告文件" });

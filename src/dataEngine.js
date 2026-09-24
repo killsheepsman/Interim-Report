@@ -754,6 +754,79 @@ export async function parseDqaAgentRawFiles(files = []) {
   return result;
 }
 
+
+export const classifyDqaRdImportKind = ({ fileName = "", headers = [], reviewHint = false } = {}) => {
+  const lower = supplementText(fileName).toLowerCase();
+  const headerSet = new Set((headers || []).map((item) => supplementText(item)));
+  const has = (...names) => names.some((name) => headerSet.has(name));
+  if ((/评审|启动会|会议纪要/.test(lower) || reviewHint) && !/ecn|非bom|nonbom/.test(lower) && !has("ECN编号")) return "review";
+  if (/映射/.test(lower) || (has("成本对象") && (has("PM") || has("TPM")) && !has("ECN编号") && !has("物料代码"))) return "mapping";
+  if (/ecn/.test(lower) || has("ECN编号") || has("创建人")) return "ecn";
+  if (/非bom|nonbom/.test(lower) || (has("申请人") && has("物料代码"))) return "nonbom";
+  if (reviewHint) return "review";
+  if (has("成本对象") && (has("PM") || has("项目名称"))) return "mapping";
+  return "";
+};
+
+const workbookReviewHint = (workbook) => (workbook?.SheetNames || []).some((sheetName) => {
+  const matrix = sheetMatrix(workbook.Sheets[sheetName]);
+  return matrix.slice(0, 16).some((row) => row.some((cell) => /评审成员|评审人员|与会人员|更新日期/.test(supplementText(cell))));
+});
+
+export const pruneEngineerSupplementToReviews = (supplement) => {
+  if (!supplement) return null;
+  const files = (supplement.files || []).filter((file) => file.kind === "研发评审");
+  const reviewRecords = supplement.reviewRecords || [];
+  if (!files.length && !reviewRecords.length) return null;
+  return { ...supplement, updatedAt: new Date().toISOString(), files, ecnRecords: [], nonBomRecords: [], reviewRecords };
+};
+
+export async function parseDqaRdImportFiles(files = []) {
+  const agentRaw = { version: 1, kind: DQA_AGENT_RAW_KIND, updatedAt: new Date().toISOString(), files: [], ecnRecords: [], nonBomRecords: [], projectMappings: [] };
+  const reviews = { files: [], reviewRecords: [] };
+  const unknown = [];
+  for (const file of files) {
+    const buffer = await file.arrayBuffer();
+    const bytes = new Uint8Array(buffer);
+    const workbook = XLSX.read(buffer, xlsxReadOptions);
+    const records = supplementRowsFromWorkbook(workbook);
+    const headers = records[0] ? Object.keys(records[0]) : [];
+    const kind = classifyDqaRdImportKind({ fileName: file.name, headers, reviewHint: workbookReviewHint(workbook) });
+    if (kind === "review") {
+      const sourceId = `supplement:${supplementText(file.name)}:${supplementContentFingerprint(bytes)}`;
+      const sourceMeta = { sourceId, sourceName: supplementText(file.name) };
+      reviews.reviewRecords.push(...supplementReviewRecord(workbook, file.name).map((record) => ({ ...sourceMeta, ...record })));
+      reviews.files.push({ ...sourceMeta, name: file.name, kind: "研发评审", rowCount: records.length, sheets: workbook.SheetNames, importedAt: agentRaw.updatedAt });
+      continue;
+    }
+    if (!kind) {
+      unknown.push(file.name);
+      continue;
+    }
+    const sourceId = `agent-raw:${supplementText(file.name)}:${supplementContentFingerprint(bytes)}`;
+    const sourceMeta = { sourceId, sourceName: supplementText(file.name) };
+    if (kind === "ecn") {
+      records.forEach((row, index) => {
+        const materialCode = agentMaterialCode(row["物料代码"]);
+        agentRaw.ecnRecords.push({ ...sourceMeta, recordId: agentRecordId(sourceId, index), engineer: agentPerson(row["创建人"]), pm: agentPerson(row["PM审核人"]), date: supplementDate(row["申请日期"]), ecnNo: supplementText(row["ECN编号"]), projectName: supplementText(row["项目名称"]), reason: supplementText(row["变更原因"]), materialCode, bomTotal: number(row["BOM物料总款数"]), bomMachinedTotal: number(row["BOM(加工件)"]), isMachined: materialCode.startsWith("35") });
+      });
+      agentRaw.files.push({ ...sourceMeta, name: file.name, kind: "ECN_AGENT_RAW", rowCount: records.length, sheets: workbook.SheetNames, importedAt: agentRaw.updatedAt });
+    } else if (kind === "nonbom") {
+      records.forEach((row, index) => {
+        const materialCode = agentMaterialCode(row["物料代码"]);
+        agentRaw.nonBomRecords.push({ ...sourceMeta, recordId: agentRecordId(sourceId, index), engineer: agentPerson(row["申请人"]), date: supplementDate(row["创建时间"] || row["需求日期"]), costObject: supplementText(row["成本对象"]), materialCode, quantity: number(row["申请数量"]), reason: supplementText(row["申请原因"]), productDept: supplementText(row["产品部"]), isMachined: materialCode.startsWith("35") });
+      });
+      agentRaw.files.push({ ...sourceMeta, name: file.name, kind: "NON_BOM_AGENT_RAW", rowCount: records.length, sheets: workbook.SheetNames, importedAt: agentRaw.updatedAt });
+    } else {
+      records.forEach((row, index) => agentRaw.projectMappings.push({ ...sourceMeta, recordId: agentRecordId(sourceId, index), costObject: supplementText(row["成本对象"]), projectName: supplementText(row["项目名称"]), applicant: agentPerson(row["申请人"]), productDept: supplementText(row["产品部"]), pm: agentPerson(row["PM"]), tpm: agentPerson(row["TPM"]) }));
+      agentRaw.files.push({ ...sourceMeta, name: file.name, kind: "PROJECT_MAPPING", rowCount: records.length, sheets: workbook.SheetNames, importedAt: agentRaw.updatedAt });
+    }
+  }
+  if (unknown.length) throw new Error(`未识别文件：${unknown.join("、")}。请导入 ECN、非BOM、项目映射或评审表。`);
+  if (!agentRaw.files.length && !reviews.files.length) throw new Error("未识别到 ECN、非BOM、项目映射或研发评审数据");
+  return { agentRaw, reviews };
+};
+
 const agentRawInRange = (value, range = {}) => {
   const date = supplementDate(value);
   const start = range.start || range.start2026 || "0000-01-01";
@@ -810,8 +883,6 @@ const dateInRange = (date, range = {}) => {
 export const buildDqaEngineerSupplementSource = (supplement, dateRange = {}) => {
   if (!supplement?.kind) return null;
   const rows = [];
-  (supplement.ecnRecords || []).filter((record) => dateInRange(record.date, dateRange)).forEach((record) => rows.push({ __roleActivity: true, __engineer: record.engineer, "\u7814\u53d1\u5de5\u7a0b\u5e08": record.engineer, "\u65e5\u671f": record.date, "\u95ee\u9898\u7c7b\u578b": record.reason || record.changeType || "ECN", "\u95ee\u9898\u6765\u6e90": "ECN", "\u7269\u6599\u4ee3\u7801": record.materialCode, "\u52a0\u5de5\u4ef6": record.isMachined ? 1 : 0 }));
-  (supplement.nonBomRecords || []).filter((record) => dateInRange(record.date, dateRange)).forEach((record) => rows.push({ __roleActivity: true, __engineer: record.engineer, "\u7814\u53d1\u5de5\u7a0b\u5e08": record.engineer, "\u65e5\u671f": record.date, "\u95ee\u9898\u7c7b\u578b": record.reason || "\u975eBOM", "\u95ee\u9898\u6765\u6e90": "\u975eBOM", "\u7269\u6599\u4ee3\u7801": record.materialCode, "\u52a0\u5de5\u4ef6": record.isMachined ? 1 : 0 }));
   (supplement.reviewRecords || []).filter((record) => record.updateDate && dateInRange(record.updateDate, dateRange)).forEach((record) => {
     [...new Set(record.members || [])].forEach((engineer) => rows.push({ __roleActivity: true, __engineer: engineer, "\u7814\u53d1\u5de5\u7a0b\u5e08": engineer, "\u65e5\u671f": record.updateDate, "\u95ee\u9898\u7c7b\u578b": "\u8bc4\u5ba1\u53c2\u4e0e", "\u95ee\u9898\u6765\u6e90": "\u8bc4\u5ba1" }));
     (record.proposers || []).forEach((engineer) => rows.push({ __roleActivity: true, __engineer: engineer, "\u7814\u53d1\u5de5\u7a0b\u5e08": engineer, "\u65e5\u671f": record.updateDate, "\u95ee\u9898\u7c7b\u578b": "\u8bc4\u5ba1\u610f\u89c1", "\u95ee\u9898\u6765\u6e90": "\u8bc4\u5ba1" }));

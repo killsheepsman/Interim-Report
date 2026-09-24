@@ -11,6 +11,8 @@ import { DEFAULT_REPORT_PRESENTATION_PROFILE, getReportPresentationProfile, norm
 import { normalizeQualitySnapshotRegistry, pickLatestQualitySnapshot } from "./snapshotRegistry.js";
 import { extractReportVisualSpec, sanitizeHumanReportContent } from "../reportSanitizer.js";
 import { DEFAULT_REPORT_QUALITY_RULES, reportQualityAdvice, validateReportQuality } from "./reportQualityRules.js";
+import { keepActiveWeekChartRows, trendBucketSelected } from "./roleSnapshotRegistry.js";
+import { periodChartTitle, renderLieflatHairline, renderLieflatPairedTrend, renderLieflatRungBars } from "./lieflatRoleCharts.js";
 
 const AGENT_TITLE = "质量分析 Agent";
 const CORE_SKILL_NAME = "quality-analysis-core";
@@ -225,6 +227,8 @@ const chartText = (value, limit = 12) => {
   const text = String(value || "未命名").trim();
   return text.length > limit ? `${text.slice(0, limit - 1)}…` : text;
 };
+const isWeekChartContext = (...values) => /周|week/i.test(values.map((item) => String(item || "")).join(" "));
+const lieflatClass = (theme) => theme === "lieflat" ? " lieflat-mono" : "";
 const niceChartMax = (value) => {
   const source = Math.max(1, Number(value) || 1);
   const magnitude = 10 ** Math.floor(Math.log10(source));
@@ -232,7 +236,7 @@ const niceChartMax = (value) => {
   const step = normalized <= 1 ? 1 : normalized <= 2 ? 2 : normalized <= 5 ? 5 : 10;
   return step * magnitude;
 };
-const renderComboChart = ({ title, subtitle, rows, barLabel, lineLabel, lineMin = 0, lineMax = 100, lineClass = "rate" }) => {
+const renderComboChart = ({ title, subtitle, rows, barLabel, lineLabel, lineMin = 0, lineMax = 100, lineClass = "rate", theme = "default" }) => {
   const sourceRows = (rows || []).filter((row) => Number.isFinite(row.bar) && Number.isFinite(row.line)).slice(0, 12);
   if (sourceRows.length < 2) return "";
   const width = 920;
@@ -262,17 +266,17 @@ const renderComboChart = ({ title, subtitle, rows, barLabel, lineLabel, lineMin 
     const center = margin.left + step * (index + .5);
     const y = barY(row.bar);
     const label = escapeHtml(chartText(row.label));
-    return `<g><title>${escapeHtml(row.label)}：${barLabel} ${row.bar.toLocaleString("zh-CN")}；${lineLabel} ${row.line}%</title><rect x="${(center - barWidth / 2).toFixed(1)}" y="${y.toFixed(1)}" width="${barWidth.toFixed(1)}" height="${Math.max(1, margin.top + plotHeight - y).toFixed(1)}" rx="5" class="combo-bar"/><text x="${center.toFixed(1)}" y="${Math.max(margin.top + 11, y - 7).toFixed(1)}" text-anchor="middle" class="combo-value">${escapeHtml(row.bar.toLocaleString("zh-CN"))}</text><text x="${center.toFixed(1)}" y="${margin.top + plotHeight + 20}" text-anchor="end" transform="rotate(-32 ${center.toFixed(1)} ${margin.top + plotHeight + 20})" class="combo-x-label">${label}</text></g>`;
+    return `<g><title>${escapeHtml(row.label)}：${barLabel} ${row.bar.toLocaleString("zh-CN")}；${lineLabel} ${row.line}%</title><rect x="${(center - barWidth / 2).toFixed(1)}" y="${y.toFixed(1)}" width="${barWidth.toFixed(1)}" height="${Math.max(1, margin.top + plotHeight - y).toFixed(1)}" rx="${theme === "lieflat" ? 0 : 5}" class="combo-bar"/><text x="${center.toFixed(1)}" y="${Math.max(margin.top + 11, y - 7).toFixed(1)}" text-anchor="middle" class="combo-value">${escapeHtml(row.bar.toLocaleString("zh-CN"))}</text><text x="${center.toFixed(1)}" y="${margin.top + plotHeight + 20}" text-anchor="end" transform="rotate(-32 ${center.toFixed(1)} ${margin.top + plotHeight + 20})" class="combo-x-label">${label}</text></g>`;
   }).join("");
   const pointsMarkup = sourceRows.map((row, index) => {
     const x = margin.left + step * (index + .5);
     const y = lineY(row.line);
-    return `<g><circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="5" class="combo-line-point"/><text x="${x.toFixed(1)}" y="${Math.max(margin.top + 10, y - 10).toFixed(1)}" text-anchor="middle" class="combo-rate-value">${Number(row.line.toFixed(1))}%</text></g>`;
+    return `<g><circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="${theme === "lieflat" ? 2.4 : 5}" class="combo-line-point"/><text x="${x.toFixed(1)}" y="${Math.max(margin.top + 10, y - 10).toFixed(1)}" text-anchor="middle" class="combo-rate-value">${Number(row.line.toFixed(1))}%</text></g>`;
   }).join("");
   const eightyLine = rateMin < 80 && rateMax >= 80
     ? `<line x1="${margin.left}" y1="${lineY(80)}" x2="${width - margin.right}" y2="${lineY(80)}" class="combo-threshold"/><text x="${width - margin.right - 4}" y="${lineY(80) - 5}" text-anchor="end" class="combo-threshold-label">80%</text>`
     : "";
-  return `<figure class="agent-report-auto-chart agent-report-combo-chart combo-${lineClass}" role="img" aria-label="${escapeHtml(title)}，柱形为${escapeHtml(barLabel)}，折线为${escapeHtml(lineLabel)}"><figcaption><strong>${escapeHtml(title)}</strong><span>${escapeHtml(subtitle)}</span></figcaption><div class="agent-report-combo-legend"><span><i class="bar"></i>${escapeHtml(barLabel)}</span><span><i class="line"></i>${escapeHtml(lineLabel)}</span></div><svg viewBox="0 0 ${width} ${height}" preserveAspectRatio="xMidYMid meet" aria-hidden="true">${leftTicks}${rightTicks}${eightyLine}<line x1="${margin.left}" y1="${margin.top + plotHeight}" x2="${width - margin.right}" y2="${margin.top + plotHeight}" class="combo-axis"/>${bars}<polyline points="${points}" class="combo-line"/>${pointsMarkup}</svg></figure>`;
+  return `<figure class="agent-report-auto-chart agent-report-combo-chart combo-${lineClass}${lieflatClass(theme)}" role="img" aria-label="${escapeHtml(title)}，柱形为${escapeHtml(barLabel)}，折线为${escapeHtml(lineLabel)}"><figcaption><strong>${escapeHtml(title)}</strong><span>${escapeHtml(subtitle)}</span></figcaption><div class="agent-report-combo-legend"><span><i class="bar"></i>${escapeHtml(barLabel)}</span><span><i class="line"></i>${escapeHtml(lineLabel)}</span></div><svg viewBox="0 0 ${width} ${height}" preserveAspectRatio="xMidYMid meet" aria-hidden="true">${leftTicks}${rightTicks}${eightyLine}<line x1="${margin.left}" y1="${margin.top + plotHeight}" x2="${width - margin.right}" y2="${margin.top + plotHeight}" class="combo-axis"/>${bars}<polyline points="${points}" class="combo-line"/>${pointsMarkup}</svg></figure>`;
 };
 const renderYearComparisonComboChart = ({ title, subtitle, rows }) => {
   const sourceRows = (rows || []).filter((row) => row.label
@@ -528,8 +532,9 @@ const renderReportChart = (header, body, sectionTitle, chart) => {
   }).join("");
   return `<figure class="agent-report-auto-chart series-count-${chart.series.length}" role="img" aria-label="${title}，共${displayedBody.length}个项目、${chart.series.length}组数值"><figcaption><strong>${displayTitle}</strong><span>图表优先展示 · 数值来自当前报告</span></figcaption>${legend}<div class="agent-report-chart-body">${rows}</div></figure>`;
 };
-const renderDualColumnLineChart = ({ title, subtitle, rows, barLabels = ["不良数量", "总数量"], lineLabel = "不良率" }) => {
-  const sourceRows = (rows || []).filter((row) => Number.isFinite(row.bad) && Number.isFinite(row.total) && Number.isFinite(row.rate)).slice(0, 24);
+const renderDualColumnLineChart = ({ title, subtitle, rows, barLabels = ["不良数量", "总数量"], lineLabel = "不良率", theme = "default" }) => {
+  const finiteRows = (rows || []).filter((row) => Number.isFinite(row.bad) && Number.isFinite(row.total) && Number.isFinite(row.rate));
+  const sourceRows = (isWeekChartContext(title, subtitle) ? keepActiveWeekChartRows(finiteRows) : finiteRows).slice(0, 24);
   if (sourceRows.length < 2) return "";
   const width = 980;
   const height = 420;
@@ -555,14 +560,15 @@ const renderDualColumnLineChart = ({ title, subtitle, rows, barLabels = ["不良
     const xBad = center - barWidth - 2;
     const xTotal = center + 2;
     const label = escapeHtml(chartText(row.label, 18));
-    return `<g><title>${escapeHtml(row.label)}：${barLabels[0]} ${row.bad.toLocaleString("zh-CN")}；${barLabels[1]} ${row.total.toLocaleString("zh-CN")}；${lineLabel} ${row.rate}%</title><rect x="${xBad.toFixed(1)}" y="${badY.toFixed(1)}" width="${barWidth.toFixed(1)}" height="${Math.max(1, margin.top + plotHeight - badY).toFixed(1)}" rx="4" class="combo-bar combo-bar-bad"/><rect x="${xTotal.toFixed(1)}" y="${totalY.toFixed(1)}" width="${barWidth.toFixed(1)}" height="${Math.max(1, margin.top + plotHeight - totalY).toFixed(1)}" rx="4" class="combo-bar combo-bar-total"/><text x="${center.toFixed(1)}" y="${margin.top + plotHeight + 21}" text-anchor="end" transform="rotate(-32 ${center.toFixed(1)} ${margin.top + plotHeight + 21})" class="combo-x-label">${label}</text></g>`;
+    return `<g><title>${escapeHtml(row.label)}：${barLabels[0]} ${row.bad.toLocaleString("zh-CN")}；${barLabels[1]} ${row.total.toLocaleString("zh-CN")}；${lineLabel} ${row.rate}%</title><rect x="${xBad.toFixed(1)}" y="${badY.toFixed(1)}" width="${barWidth.toFixed(1)}" height="${Math.max(1, margin.top + plotHeight - badY).toFixed(1)}" rx="${theme === "lieflat" ? 0 : 4}" class="combo-bar combo-bar-bad"/><rect x="${xTotal.toFixed(1)}" y="${totalY.toFixed(1)}" width="${barWidth.toFixed(1)}" height="${Math.max(1, margin.top + plotHeight - totalY).toFixed(1)}" rx="${theme === "lieflat" ? 0 : 4}" class="combo-bar combo-bar-total"/><text x="${center.toFixed(1)}" y="${margin.top + plotHeight + 21}" text-anchor="end" transform="rotate(-32 ${center.toFixed(1)} ${margin.top + plotHeight + 21})" class="combo-x-label">${label}</text></g>`;
   }).join("");
-  const pointsMarkup = sourceRows.map((row, index) => { const x = margin.left + step * (index + .5); const y = lineY(row.rate); return `<g><circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="5" class="combo-line-point"/><text x="${x.toFixed(1)}" y="${Math.max(margin.top + 10, y - 10).toFixed(1)}" text-anchor="middle" class="combo-rate-value">${row.rate}%</text></g>`; }).join("");
-  return `<figure class="agent-report-auto-chart agent-report-combo-chart combo-period-trend" role="img" aria-label="${escapeHtml(title)}，两组柱形为${escapeHtml(barLabels.join("和"))}，折线为${escapeHtml(lineLabel)}"><figcaption><strong>${escapeHtml(title)}</strong><span>${escapeHtml(subtitle)}</span></figcaption><div class="agent-report-combo-legend"><span><i class="bar bar-bad"></i>${escapeHtml(barLabels[0])}</span><span><i class="bar bar-total"></i>${escapeHtml(barLabels[1])}</span><span><i class="line"></i>${escapeHtml(lineLabel)}</span></div><svg viewBox="0 0 ${width} ${height}" preserveAspectRatio="xMidYMid meet" aria-hidden="true">${grid}${rightTicks}<line x1="${margin.left}" y1="${margin.top + plotHeight}" x2="${width - margin.right}" y2="${margin.top + plotHeight}" class="combo-axis"/>${bars}<polyline points="${points}" class="combo-line"/>${pointsMarkup}</svg></figure>`;
+  const pointsMarkup = sourceRows.map((row, index) => { const x = margin.left + step * (index + .5); const y = lineY(row.rate); return `<g><circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="${theme === "lieflat" ? 2.4 : 5}" class="combo-line-point"/><text x="${x.toFixed(1)}" y="${Math.max(margin.top + 10, y - 10).toFixed(1)}" text-anchor="middle" class="combo-rate-value">${row.rate}%</text></g>`; }).join("");
+  return `<figure class="agent-report-auto-chart agent-report-combo-chart combo-period-trend${lieflatClass(theme)}" role="img" aria-label="${escapeHtml(title)}，两组柱形为${escapeHtml(barLabels.join("和"))}，折线为${escapeHtml(lineLabel)}"><figcaption><strong>${escapeHtml(title)}</strong><span>${escapeHtml(subtitle)}</span></figcaption><div class="agent-report-combo-legend"><span><i class="bar bar-bad"></i>${escapeHtml(barLabels[0])}</span><span><i class="bar bar-total"></i>${escapeHtml(barLabels[1])}</span><span><i class="line"></i>${escapeHtml(lineLabel)}</span></div><svg viewBox="0 0 ${width} ${height}" preserveAspectRatio="xMidYMid meet" aria-hidden="true">${grid}${rightTicks}<line x1="${margin.left}" y1="${margin.top + plotHeight}" x2="${width - margin.right}" y2="${margin.top + plotHeight}" class="combo-axis"/>${bars}<polyline points="${points}" class="combo-line"/>${pointsMarkup}</svg></figure>`;
 };
 
-const renderSingleSeriesLineChart = ({ title, subtitle, rows, seriesLabel = "数量" }) => {
-  const sourceRows = (rows || []).filter((row) => row.label && Number.isFinite(row.value));
+const renderSingleSeriesLineChart = ({ title, subtitle, rows, seriesLabel = "数量", theme = "default" }) => {
+  const finiteRows = (rows || []).filter((row) => row.label && Number.isFinite(row.value));
+  const sourceRows = isWeekChartContext(title, subtitle) ? keepActiveWeekChartRows(finiteRows.map((row) => ({ ...row, count: row.value }))) : finiteRows;
   if (sourceRows.length < 2) return "";
   const width = Math.max(920, sourceRows.length * 48);
   const height = 350;
@@ -579,9 +585,9 @@ const renderSingleSeriesLineChart = ({ title, subtitle, rows, seriesLabel = "数
   const points = sourceRows.map((row, index) => { const item = point(row, index); return `${item.x.toFixed(1)},${item.y.toFixed(1)}`; }).join(" ");
   const marks = sourceRows.map((row, index) => {
     const item = point(row, index);
-    return `<g><title>${escapeHtml(row.label)}：${escapeHtml(seriesLabel)} ${row.value}</title><circle cx="${item.x.toFixed(1)}" cy="${item.y.toFixed(1)}" r="5" class="combo-line-point"/><text x="${item.x.toFixed(1)}" y="${Math.max(margin.top + 10, item.y - 10).toFixed(1)}" text-anchor="middle" class="combo-value">${row.value}</text><text x="${item.x.toFixed(1)}" y="${margin.top + plotHeight + 22}" text-anchor="end" transform="rotate(-32 ${item.x.toFixed(1)} ${margin.top + plotHeight + 22})" class="combo-x-label">${escapeHtml(chartText(row.label, 12))}</text></g>`;
+    return `<g><title>${escapeHtml(row.label)}：${escapeHtml(seriesLabel)} ${row.value}</title><circle cx="${item.x.toFixed(1)}" cy="${item.y.toFixed(1)}" r="${theme === "lieflat" ? 2.4 : 5}" class="combo-line-point"/><text x="${item.x.toFixed(1)}" y="${Math.max(margin.top + 10, item.y - 10).toFixed(1)}" text-anchor="middle" class="combo-value">${row.value}</text><text x="${item.x.toFixed(1)}" y="${margin.top + plotHeight + 22}" text-anchor="end" transform="rotate(-32 ${item.x.toFixed(1)} ${margin.top + plotHeight + 22})" class="combo-x-label">${escapeHtml(chartText(row.label, 12))}</text></g>`;
   }).join("");
-  return `<figure class="agent-report-auto-chart agent-report-combo-chart combo-single-line" role="img" aria-label="${escapeHtml(title)}，折线表示${escapeHtml(seriesLabel)}"><figcaption><strong>${escapeHtml(title)}</strong><span>${escapeHtml(subtitle)}</span></figcaption><div class="agent-report-combo-legend"><span><i class="line"></i>${escapeHtml(seriesLabel)}</span></div><div style="overflow-x:auto"><svg viewBox="0 0 ${width} ${height}" style="min-width:${width}px" preserveAspectRatio="xMidYMid meet" aria-hidden="true">${grid}<line x1="${margin.left}" y1="${margin.top + plotHeight}" x2="${width - margin.right}" y2="${margin.top + plotHeight}" class="combo-axis"/><polyline points="${points}" class="combo-line"/>${marks}</svg></div></figure>`;
+  return `<figure class="agent-report-auto-chart agent-report-combo-chart combo-single-line${lieflatClass(theme)}" role="img" aria-label="${escapeHtml(title)}，折线表示${escapeHtml(seriesLabel)}"><figcaption><strong>${escapeHtml(title)}</strong><span>${escapeHtml(subtitle)}</span></figcaption><div class="agent-report-combo-legend"><span><i class="line"></i>${escapeHtml(seriesLabel)}</span></div><div style="overflow-x:auto"><svg viewBox="0 0 ${width} ${height}" style="min-width:${width}px" preserveAspectRatio="xMidYMid meet" aria-hidden="true">${grid}<line x1="${margin.left}" y1="${margin.top + plotHeight}" x2="${width - margin.right}" y2="${margin.top + plotHeight}" class="combo-axis"/><polyline points="${points}" class="combo-line"/>${marks}</svg></div></figure>`;
 };
 
 // Render the machine-readable visual contract emitted by every Agent.  Older
@@ -605,7 +611,7 @@ const figureMatchesSection = (figure, sectionTitle = "") => {
   const fTitle = String(figure.title || "").toLowerCase();
   const intent = `${figure.intent || ""} ${figure.preferredChart || ""} ${figure.type || ""}`.toLowerCase();
   const sectionId = String(figure.sectionId || "").replace(/[.)、]/g, "").toLowerCase();
-  if (sectionId && title.replace(/[.)、]/g, "").includes(sectionId)) return true;
+  if (sectionId) return title.replace(/[.)、]/g, "") === sectionId;
   const aliases = [
     ["trend", "趋势"], ["rate-trend", "趋势"], ["pareto", "pareto"],
     ["period-trend", "趋势"], ["dual-column-line", "趋势"], ["period-trend", "过程"], ["dual-column-line", "过程"],
@@ -617,20 +623,52 @@ const figureMatchesSection = (figure, sectionTitle = "") => {
   const words = fTitle.split(/[ ·×与和/—()（）]+/).filter((word) => word.length >= 2);
   return words.some((word) => title.includes(word));
 };
-const renderVisualSpecFigure = (figure) => {
+const renderVisualSpecFigure = (figure, theme = "default") => {
   const categories = Array.isArray(figure.categories) ? figure.categories : [];
   const series = Array.isArray(figure.series) ? figure.series : [];
+  if (theme === "lieflat") {
+    const title = figure.title || figure.sectionId || "图表";
+    const intent = String(figure.intent || figure.preferredChart || "").toLowerCase();
+    const week = isWeekChartContext(figure.id, figure.sectionId, title);
+    const grainKey = `${figure.id || ""} ${figure.sectionId || ""} ${title}`; const grain = isWeekChartContext(grainKey) ? "week" : /month|月/i.test(grainKey) ? "month" : "week";
+    const isRdCountTrend = /rd-quality-(week|month)-trend|周度问题趋势|月度问题趋势|研发质量问题(?:周度|月度)趋势/.test(grainKey);
+    if (isRdCountTrend) {
+      let rdRows = categories.map((label, index) => { const name = String(typeof label === "object" ? (label.name || label.label) : label); return { label: name, value: Number(series[0]?.values?.[index]) || 0, count: Number(series[0]?.values?.[index]) || 0, selected: Boolean(typeof label === "object" && label.selected) || Boolean(figure.selectedWindow && trendBucketSelected(name, grain, figure.selectedWindow)) }; });
+      if (week) rdRows = keepActiveWeekChartRows(rdRows);
+      return renderLieflatRungBars({ title, rows: rdRows, valueLabel: series[0]?.name || "问题数量" });
+    }
+    if (intent.includes("period-trend") || intent.includes("dual-column") || String(figure.preferredChart).toLowerCase() === "line") {
+      let rows = categories.map((label, index) => {
+        const bad = Number(series[0]?.values?.[index]);
+        const total = Number(series[1]?.values?.[index]);
+        const rate = Number(series[2]?.values?.[index]);
+        const name = String(typeof label === "object" ? (label.name || label.label) : label);
+        return { label: name, value: bad, bad, total: Number.isFinite(total) ? total : null, rate: Number.isFinite(rate) ? rate : null, hollow: Number.isFinite(total) && total > 0 && bad === 0, count: bad, selected: Boolean(typeof label === "object" && label.selected) || Boolean(figure.selectedWindow && trendBucketSelected(name, grain, figure.selectedWindow)) };
+      }).filter((row) => Number.isFinite(row.value));
+      if (week) rows = keepActiveWeekChartRows(rows);
+      if (rows.some((row) => row.total != null)) {
+        return renderLieflatPairedTrend({ title, rows, barLabels: [series[0]?.name || "不良数量", series[1]?.name || "总数量"], lineLabel: series[2]?.name || "不良率", grain });
+      }
+      return renderLieflatHairline({ title, rows, valueLabel: series[0]?.name || "不良数量", grain });
+    }
+    const values = categories.map((label, index) => {
+      const item = typeof label === "object" && label ? label : { name: label };
+      return { label: item.name || item.label || "未命名", name: item.name || item.label, value: Number(series[0]?.values?.[index]) || 0, focus: Boolean(item.focus), rank: item.rank, rankTotal: item.rankTotal || item.total };
+    });
+    return renderLieflatRungBars({ title, rows: values, valueLabel: series[0]?.name || figure.unit || "数量" });
+  }
   const intent = String(figure.intent || figure.preferredChart || "comparison").toLowerCase();
   const title = String(figure.title || "数据图表");
   if (!categories.length && !Array.isArray(figure.data)) return `<figure class="agent-report-auto-chart agent-report-visual-empty"><figcaption><strong>${escapeHtml(title)}</strong><span>数据覆盖：${escapeHtml(figure.coverage || figure.status || "partial")}</span></figcaption><p>${escapeHtml(figure.data?.note || figure.accessibilitySummary || "当前缺少完整可视化分母，保留为待补数据，不生成误导性图表。")}</p></figure>`;
-  if (String(figure.preferredChart).toLowerCase() === "line" && series.length === 1) return renderSingleSeriesLineChart({ title, subtitle: figure.accessibilitySummary || "按连续周期展示固定快照数量", rows: categories.map((label, index) => ({ label: String(label), value: Number(series[0]?.values?.[index]) })), seriesLabel: series[0]?.name || figure.unit || "数量" });
+  if (String(figure.preferredChart).toLowerCase() === "line" && series.length === 1) return renderSingleSeriesLineChart({ title, subtitle: figure.accessibilitySummary || "按连续周期展示固定快照数量", rows: categories.map((label, index) => ({ label: String(label), value: Number(series[0]?.values?.[index]) })), seriesLabel: series[0]?.name || figure.unit || "数量", theme });
   const makeRows = (barIndex = 0, lineIndex = 1) => categories.map((label, index) => ({ label: String(label), bar: Number(series[barIndex]?.values?.[index]), line: Number(series[lineIndex]?.values?.[index]) })).filter((row) => Number.isFinite(row.bar) && Number.isFinite(row.line));
-  if (intent.includes("pareto") || String(figure.preferredChart).includes("pareto")) return renderComboChart({ title, subtitle: `${figure.unit || "数量"}柱形 + 累计占比折线`, rows: makeRows(0, 1), barLabel: series[0]?.name || "数量", lineLabel: series[1]?.name || "累计占比", lineMin: 0, lineMax: 100, lineClass: "pareto" });
+  if (intent.includes("pareto") || String(figure.preferredChart).includes("pareto")) return renderComboChart({ title, subtitle: `${figure.unit || "数量"}柱形 + 累计占比折线`, rows: makeRows(0, 1), barLabel: series[0]?.name || "数量", lineLabel: series[1]?.name || "累计占比", lineMin: 0, lineMax: 100, lineClass: "pareto", theme });
   if (intent.includes("period-trend") || intent.includes("dual-column-line") || String(figure.preferredChart).includes("dual-column-line")) {
     const rows = categories.map((label, index) => ({ label: String(label), bad: Number(series[0]?.values?.[index]), total: Number(series[1]?.values?.[index]), rate: Number(series[2]?.values?.[index]) })).filter((row) => [row.bad, row.total, row.rate].every(Number.isFinite));
-    return renderDualColumnLineChart({ title, subtitle: "柱形表示不良数量与总数量，折线表示不良率", rows, barLabels: [series[0]?.name || "不良数量", series[1]?.name || "总数量"], lineLabel: series[2]?.name || "不良率" });
+    const chartRows = isWeekChartContext(figure.id, figure.sectionId, title) ? keepActiveWeekChartRows(rows) : rows;
+    return renderDualColumnLineChart({ title, subtitle: "柱形表示不良数量与总数量，折线表示不良率", rows: chartRows, barLabels: [series[0]?.name || "不良数量", series[1]?.name || "总数量"], lineLabel: series[2]?.name || "不良率", theme });
   }
-  if (intent.includes("trend") || String(figure.preferredChart).includes("column-line")) return renderComboChart({ title, subtitle: `${series[0]?.name || "数量"}柱形 + ${series[1]?.name || "比率"}折线`, rows: makeRows(0, 1), barLabel: series[0]?.name || "数量", lineLabel: series[1]?.name || "比率", lineMin: 0, lineMax: 100, lineClass: "yield" });
+  if (intent.includes("trend") || String(figure.preferredChart).includes("column-line")) return renderComboChart({ title, subtitle: `${series[0]?.name || "数量"}柱形 + ${series[1]?.name || "比率"}折线`, rows: makeRows(0, 1), barLabel: series[0]?.name || "数量", lineLabel: series[1]?.name || "比率", lineMin: 0, lineMax: 100, lineClass: "yield", theme });
   if (intent.includes("relationship") || intent.includes("heatmap") || String(figure.preferredChart).includes("heatmap")) {
     const rows = Array.isArray(figure.data) ? figure.data : categories.map((label, index) => ({ name: label, value: Number(series[0]?.values?.[index]) || 0 }));
     const max = Math.max(1, ...rows.map((row) => Number(row.value) || 0));
@@ -642,16 +680,17 @@ const renderVisualSpecFigure = (figure) => {
   });
   const max = Math.max(1, ...rows.flatMap((row) => row.values));
   const ranking = intent.includes("ranking") || String(figure.preferredChart).includes("horizontal");
-  return `<figure class="agent-report-auto-chart agent-report-visual-bars ${ranking ? "agent-report-visual-ranking" : ""}"><figcaption><strong>${escapeHtml(title)}</strong><span>图表优先展示 · ${escapeHtml(figure.unit || "")}</span></figcaption><div class="agent-report-visual-legend">${series.map((item, index) => `<span><i class="series-${index + 1}"></i>${escapeHtml(item.name || `指标${index + 1}`)}</span>`).join("")}</div><div class="agent-report-visual-bars-body">${rows.map((row) => `<div class="agent-report-visual-bar-row ${row.focus ? "is-focus" : ""}"><b>${row.focus ? "★ " : ""}${escapeHtml(chartText(row.label, 22))}</b><div>${row.values.map((value, index) => `<i class="series-${index + 1}" style="width:${Math.max(2, value / max * 100).toFixed(2)}%"><span>${value.toLocaleString("zh-CN")}</span></i>`).join("")}</div></div>`).join("")}</div></figure>`;
+  return `<figure class="agent-report-auto-chart agent-report-visual-bars ${ranking ? "agent-report-visual-ranking" : ""}${lieflatClass(theme)}"><figcaption><strong>${escapeHtml(title)}</strong><span>图表优先展示 · ${escapeHtml(figure.unit || "")}</span></figcaption><div class="agent-report-visual-legend">${series.map((item, index) => `<span><i class="series-${index + 1}"></i>${escapeHtml(item.name || `指标${index + 1}`)}</span>`).join("")}</div><div class="agent-report-visual-bars-body">${rows.map((row) => `<div class="agent-report-visual-bar-row ${row.focus ? "is-focus" : ""}"><b>${row.focus ? "★ " : ""}${escapeHtml(chartText(row.label, 22))}</b><div>${row.values.map((value, index) => `<i class="series-${index + 1}" style="width:${Math.max(2, value / max * 100).toFixed(2)}%"><span>${value.toLocaleString("zh-CN")}</span></i>`).join("")}</div></div>`).join("")}</div></figure>`;
 };
-const renderMarkdownTable = (lines, { chartFirst = false, sectionTitle = "", suppressIqcYieldTable = false } = {}) => {
+const renderMarkdownTable = (lines, { chartFirst = false, sectionTitle = "", suppressIqcYieldTable = false, visualFigures = [] } = {}) => {
   const rows = lines.map((line) => line.trim().replace(/^\||\|$/g, "").split("|").map((cell) => cell.trim()));
   if (!rows.length) return "";
   const hasSeparator = rows.length > 1 && isMarkdownTableSeparator(lines[1]);
   const header = rows[0];
   const body = hasSeparator ? rows.slice(2) : rows.slice(1);
   if (suppressIqcYieldTable && /(?:物料类别.*良率|月度趋势)/i.test(`${sectionTitle} ${header.join(" ")}`)) return "";
-  const chart = chartFirst ? chartableReportTable(header, body, sectionTitle) : null;
+  const visualCovered = (Array.isArray(visualFigures) ? visualFigures : []).some((figure) => figureMatchesSection(figure, sectionTitle));
+  const chart = chartFirst && !visualCovered ? chartableReportTable(header, body, sectionTitle) : null;
   if (chart) return renderReportChart(header, body, sectionTitle, chart);
   return `<div class="${tableToneClass(sectionTitle)}"><table class="agent-report-table"><thead><tr>${header.map((cell) => `<th scope="col">${escapeHtml(cell)}</th>`).join("")}</tr></thead><tbody>${body.map((row) => `<tr>${header.map((_, index) => `<td>${escapeHtml(row[index] || "")}</td>`).join("")}</tr>`).join("")}</tbody></table></div>`;
 };
@@ -669,9 +708,10 @@ const reportPublisherChrome = (content, fragment, profileId, module = "质量分
   });
   return `<div class="report-publisher report-publisher-${escapeHtml(profileId || "research-briefing-v1")}"><div class="report-publisher-masthead"></div><header class="report-publisher-header"><strong>QUALITY <span>INTELLIGENCE</span></strong><small>${escapeHtml(reportLayoutLabel(profileId))}</small></header><section class="report-publisher-hero"><div><span class="report-publisher-eyebrow">QUALITY ANALYSIS AGENT / ${escapeHtml(module)}</span><h1>${inlineReportMarkdown(escapeHtml(title))}</h1><p>固定统计结果、证据卡和改善行动的管理复盘。</p></div></section>${quick}<div class="report-publisher-layout">${toc}<article class="report-publisher-article">${sectionedFragment}</article></div><footer class="report-publisher-footer">${escapeHtml(module)} · Agent 正式报告</footer></div>`;
 };
-export const renderAgentMarkdown = (content, { chartFirst = false, snapshot = null, includeSnapshotCharts = false, publisher = false, profileId = DEFAULT_REPORT_PRESENTATION_PROFILE, module = "质量分析", visualSpec = null } = {}) => {
+export const renderAgentMarkdown = (content, { chartFirst = false, snapshot = null, includeSnapshotCharts = false, publisher = false, profileId = DEFAULT_REPORT_PRESENTATION_PROFILE, module = "质量分析", visualSpec = null, chartTheme = "" } = {}) => {
   // The visual contract is machine-readable metadata, never report prose.
   const visualFigures = visualFigureList(visualSpec || extractReportVisualSpec(content || ""));
+  const resolvedChartTheme = chartTheme || (visualSpec?.reportKind === "role" || String(module || "").startsWith("角色报告") ? "lieflat" : "default");
   const reportText = sanitizeHumanReportContent(content || "暂无报告");
   const lines = reportText.split(/\r?\n/);
   const output = [];
@@ -693,7 +733,10 @@ export const renderAgentMarkdown = (content, { chartFirst = false, snapshot = nu
   const openSection = (title, tag) => {
     closeSection();
     sectionTitle = title;
-    output.push(`<section class="${sectionClass(title)}"><${tag} class="${headingClass(title)}">${inlineReportMarkdown(title)}</${tag}>`);
+    const figure = visualFigures.find((item) => figureMatchesSection(item, title));
+    const labels = (figure?.categories || []).map((item) => String(typeof item === "object" ? (item.name || item.label || "") : item));
+    const heading = /趋势/.test(title) ? periodChartTitle(title, labels) : title;
+    output.push(`<section class="${sectionClass(title)}"><${tag} class="${headingClass(title)}">${inlineReportMarkdown(heading)}</${tag}>`);
     sectionOpen = true;
   };
   const insertSnapshotChartForSection = (title) => {
@@ -706,7 +749,7 @@ export const renderAgentMarkdown = (content, { chartFirst = false, snapshot = nu
   const insertVisualFiguresForSection = (title) => {
     if (!chartFirst) return;
     visualFigures.filter((figure) => !insertedVisualFigures.has(figure.__key) && figureMatchesSection(figure, title)).forEach((figure) => {
-      const markup = renderVisualSpecFigure(figure);
+      const markup = renderVisualSpecFigure(figure, resolvedChartTheme);
       if (markup) {
         output.push(`<div class="agent-report-inline-chart" data-figure-id="${escapeHtml(figure.__key)}">${markup}</div>`);
         insertedVisualFigures.add(figure.__key);
@@ -726,7 +769,7 @@ export const renderAgentMarkdown = (content, { chartFirst = false, snapshot = nu
       const suppressSnapshotTable = (/月度趋势/i.test(sectionTitle) && insertedSnapshotCharts.has("monthly"))
         || (/物料类别.*良率/i.test(sectionTitle) && insertedSnapshotCharts.has("material"));
       const replacingFigure = visualFigures.some((figure) => figure.tablePolicy === "replace" && figureMatchesSection(figure, sectionTitle));
-      if (!replacingFigure) output.push(renderMarkdownTable(tableLines, { chartFirst, sectionTitle, suppressIqcYieldTable: suppressSnapshotTable }));
+      if (!replacingFigure) output.push(renderMarkdownTable(tableLines, { chartFirst, sectionTitle, suppressIqcYieldTable: suppressSnapshotTable, visualFigures }));
       index -= 1;
       continue;
     }
@@ -750,7 +793,7 @@ export const renderAgentMarkdown = (content, { chartFirst = false, snapshot = nu
   closeSection();
   const remainingFigures = visualFigures.filter((figure) => !insertedVisualFigures.has(figure.__key));
   if (chartFirst && remainingFigures.length) {
-    output.push(`<section class="agent-report-section agent-report-visual-appendix"><h4 class="agent-report-section-heading">图表附录</h4>${remainingFigures.map((figure) => { insertedVisualFigures.add(figure.__key); return `<div class="agent-report-inline-chart" data-figure-id="${escapeHtml(figure.__key)}">${renderVisualSpecFigure(figure)}</div>`; }).join("")}</section>`);
+    output.push(`<section class="agent-report-section agent-report-visual-appendix"><h4 class="agent-report-section-heading">图表附录</h4>${remainingFigures.map((figure) => { insertedVisualFigures.add(figure.__key); return `<div class="agent-report-inline-chart" data-figure-id="${escapeHtml(figure.__key)}">${renderVisualSpecFigure(figure, resolvedChartTheme)}</div>`; }).join("")}</section>`);
   }
   const fragment = output.join("");
   return publisher ? reportPublisherChrome(reportText, fragment, profileId, module) : fragment;

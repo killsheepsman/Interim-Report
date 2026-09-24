@@ -31,8 +31,8 @@ For each knowledge point, populate:
 - `content`: one testable rule or knowledge statement. Preserve numeric values, units, conditions, exceptions, and responsibility boundaries.
 - `applicableRoles`: only roles explicitly named or unambiguously implied by the clause.
 - `processes`: controlled process stages such as incoming inspection, assembly, debugging, design review, ECN, release, or customer feedback.
-- `issueTags`: normalized defect or risk terms useful for assembly and R&D issue matching.
-- `synonyms`: equivalent terms found in the local source text; do not invent a broad external taxonomy.
+- `issueTags`: 现场会说的缺陷词，必须能配上组装/研发问题，例如漏装、穿错、敲过头、不到位、不出针。不要只写“锁紧”“确认”这类规范套话。
+- `synonyms`: 对象和缺陷的现场别名，例如销子、片针、针模、螺丝没打紧。原文没有现场词时，根据 `atomicRule.object` / `action` 补同一对象的现场说法，不编造其他对象。
 - `confidence`: `1.0` for explicit rules, `0.8` for direct operational implications, and at most `0.6` for context-dependent interpretations.
 - `sourceCitations`: one or more objects containing `clauseId`, `clauseNumber`, `sectionPath`, and an exact `quote`.
 - `originalFact`: 原文明确事实；没有则留空。
@@ -59,8 +59,8 @@ Return pure JSON without Markdown fences or surrounding commentary:
       "content": "首件检验确认合格后，方可进入批量生产。",
       "applicableRoles": ["组装人员", "机长", "IPQC"],
       "processes": ["首件检验", "批量生产"],
-      "issueTags": ["未做首件", "首件不合格"],
-      "synonyms": ["首件确认"],
+      "issueTags": ["未做首件", "首件不合格", "不到位"],
+      "synonyms": ["首件确认", "没做首件"],
       "originalFact": "首件检验确认合格后方可批量生产",
       "engineeringExplanation": "",
       "correctState": "首件检验确认合格后进入批量生产",

@@ -12,6 +12,10 @@ node tests/knowledge-match-acceptance.mjs
 
 输出中的 `expectedKnowledgeIds`、`allowNoMatch` 和 `reviewStatus` 是人工确认字段。确认前 `reviewStatus` 为 `pending`，Top1/Top3 命中率保持为空，避免误报准确率。
 
+## 匹配规则（已升级）
+
+现场问题先翻成对象、缺陷、过程，再用三要素配卡。对象对不上（例如销钉 vs 调速阀）直接排除；“装”“气”等单字不加分；配不上允许无匹配。知识卡需要带漏装、穿错、敲过头等现场词。
+
 ## 页面确认位置
 
 1. 进入“知识管理 → 知识库”。

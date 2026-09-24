@@ -56,6 +56,25 @@ export const buildSnapshotPeriods = (dateRange = {}) => {
   });
   return periods;
 };
+
+export const snapshotBatchOutcome = ({ failedItems = [], skippedItems = [], cancelled = false, kind = "快照" } = {}) => {
+  const failed = Array.isArray(failedItems) ? failedItems.length : 0;
+  const skipped = Array.isArray(skippedItems) ? skippedItems.length : 0;
+  const status = cancelled ? "cancelled" : failed ? "failed" : "completed";
+  const failedLabel = (Array.isArray(failedItems) ? failedItems : []).slice(0, 8).map((item) => {
+    const owner = item.role || item.module || "";
+    const period = item.periodKey === "all" ? "全部周期" : (item.periodKey || "");
+    return [owner, period].filter(Boolean).join(" · ");
+  }).filter(Boolean).join("；");
+  const message = cancelled
+    ? `${kind}任务已取消，已完成内容会保留`
+    : failed
+      ? `${kind}部分失败 ${failed} 个周期${failedLabel ? `：${failedLabel}` : ""}，其余周期已保存`
+      : skipped
+        ? `${kind}已完成，跳过 ${skipped} 个无活动周期`
+        : `${kind}已完成`;
+  return { status, failed, skipped, message, failedItems: Array.isArray(failedItems) ? failedItems : [], skippedItems: Array.isArray(skippedItems) ? skippedItems : [] };
+};
 const normalizeLayoutProfileId = (value) => normalizeReportPresentationProfile(String(value || DEFAULT_REPORT_PRESENTATION_PROFILE));
 const normalizeSkillName = (value, module) => String(value || "").trim() || DEFAULT_SKILL_BY_MODULE[module] || `quality-analysis-${String(module || "dqa").toLowerCase()}`;
 const normalizeJson = (value) => value && typeof value === "object" && !Array.isArray(value) ? value : {};
@@ -260,7 +279,7 @@ export const maintainQualitySnapshotHistory = (registry = {}) => {
   const retention = Math.max(1, Number(current.maintenance?.retention || 3));
   const groups = new Map();
   [...current.history].sort((a, b) => String(b.generatedAt).localeCompare(String(a.generatedAt))).forEach((entry) => {
-    const key = `${entry.module}|${entry.skillName}|${entry.layoutProfileId}|${entry.dateRange?.granularity}|${entry.dateRange?.periodKey}`;
+    const key = `${entry.module}|${entry.skillName}|${entry.layoutProfileId}|${entry.dateRange?.granularity}|${entry.dateRange?.periodKey}|${entry.dateRange?.start2026 || entry.dateRange?.start2025 || ""}|${entry.dateRange?.end2026 || entry.dateRange?.end2025 || ""}`;
     const list = groups.get(key) || []; list.push(entry); groups.set(key, list);
   });
   const keep = new Set(); groups.forEach((list) => list.slice(0, retention).forEach((entry) => keep.add(entry.id)));

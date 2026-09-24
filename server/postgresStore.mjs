@@ -1127,13 +1127,14 @@ export const writePostgresKnowledgeReviewSession = async (session = {}) => {
 };
 
 const feedbackRecordRow = (row = {}) => ({ id: row.id, sourceType: row.source_type, sourceId: row.source_id, module: row.module, targetType: row.target_type, title: row.title, content: row.content, owner: row.owner, reviewer: row.reviewer, status: row.status, sourceKnowledgeIds: jsonValue(row.source_knowledge_ids, []), evidence: jsonValue(row.evidence, []), metadata: jsonValue(row.metadata, {}), appliedAt: isoValue(row.applied_at), createdAt: isoValue(row.created_at), updatedAt: isoValue(row.updated_at), storage: "postgres" });
-export const listPostgresKnowledgeFeedbackRecords = async ({ targetType = "", status = "", limit = 200 } = {}) => {
+export const listPostgresKnowledgeFeedbackRecords = async ({ targetType = "", status = "", sourceId = "", limit = 200 } = {}) => {
   if (!(await ensureReady())) return { available: false, records: [] };
   try {
     const values = [];
     const where = [];
     if (targetType) { values.push(String(targetType)); where.push(`target_type=$${values.length}`); }
-    if (status) { values.push(String(status)); where.push(`status=$${values.length}`); }
+    if (status) { values.push(String(status)); where.push(`status=${values.length}`); }
+    if (sourceId) { values.push(String(sourceId)); where.push(`source_id=${values.length}`); }
     values.push(Math.min(500, Math.max(1, Number(limit || 200))));
     const result = await pool.query(`SELECT * FROM qms_knowledge_feedback_records ${where.length ? `WHERE ${where.join(" AND ")}` : ""} ORDER BY updated_at DESC LIMIT $${values.length}`, values);
     return { available: true, records: result.rows.map(feedbackRecordRow) };

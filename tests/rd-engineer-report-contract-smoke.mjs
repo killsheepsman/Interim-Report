@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { addIsoDays, enforceRdEngineerReportFacts } from "../src/agent/rdEngineerReportContract.js";
+import { addIsoDays, enforceRdEngineerReportFacts, normalizeMonthlyActionHeadings } from "../src/agent/rdEngineerReportContract.js";
 
 const content = `# 个人报告
 
@@ -68,6 +68,7 @@ const result = enforceRdEngineerReportFacts(content, evidence, ranking, { ecnCou
 assert.match(result, /\| 2026-01 \| 7 \|/);
 assert.doesNotMatch(result, /\| 研发质量问题 \| 23 \| 0 \|/);
 assert.equal((result.match(/周度问题趋势/g) || []).length, 1);
+assert.ok(result.indexOf("周度问题趋势") < result.indexOf("月度问题趋势"));
 assert.match(result, /3D模型问题 \| 1 \| 4\.3%/);
 assert.match(result, /DFX \| 1 \| 4\.3%/);
 assert.match(result, /问题分类数量已覆盖全部 23 项/);
@@ -84,8 +85,10 @@ assert.match(result, /## 2\. 质量结果概览/);
 assert.match(result, /发布前检出率=发布前发现问题数÷（发布前发现问题数\+后端再暴露问题数）/);
 assert.match(result, /单项验证周期=提交验证至形成放行结论的工作日，试行目标≤5个工作日/);
 assert.doesNotMatch(result, /验证周期：2026-09-26至2026-11-25/);
+assert.match(result, /## 本月措施/);
+assert.doesNotMatch(result, /30\/60\/90/);
+assert.match(normalizeMonthlyActionHeadings("## 九、改善措施与30/60/90天待办\n\n空"), /## 本月措施/);
+assert.doesNotMatch(normalizeMonthlyActionHeadings("## 九、改善措施与30/60/90天待办"), /30\/60\/90/);
 assert.equal(addIsoDays("2026-08-27", 30), "2026-09-26");
-assert.equal(addIsoDays("2026-08-27", 60), "2026-10-26");
-assert.equal(addIsoDays("2026-08-27", 90), "2026-11-25");
 
 console.log("R&D engineer report contract smoke test passed");

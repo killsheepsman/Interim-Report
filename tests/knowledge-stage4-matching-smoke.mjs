@@ -28,7 +28,7 @@ try {
   assert.ok(result.matches.every((item) => item.evidence.sourceLevel === "B"), "应过滤研发和失效来源");
   assert.equal(result.audit.filteredCount, 1, "失效来源应在语料构建前排除，并记录模块过滤数量");
   assert.match(result.matches[0].evidence.reason, /IPQC模块相符/);
-  assert.match(result.matches[0].evidence.reason, /问题标签：首件/);
+  assert.match(result.matches[0].evidence.reason, /现场词：首件/);
   assert.equal(result.matches[0].candidateType, "knowledge");
   assert.equal(result.matches[0].evidence.scopeStatus, "unknown");
   console.log("knowledge stage4 matching smoke passed");

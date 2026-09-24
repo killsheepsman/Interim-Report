@@ -1,4 +1,5 @@
 import { extractReportVisualSpec, sanitizeHumanReportContent } from "./reportSanitizer.js";
+import { describeAiError } from "./agent/aiErrorMessage.js";
 
 const DB_NAME = "qms-quality-analytics";
 const DB_VERSION = 1;
@@ -611,7 +612,7 @@ const aiApiJson = async (path, options = {}) => {
   }
   const payload = await response.json().catch(() => ({}));
   if (response.status === 404) throw new Error("当前QMS后端版本过旧，请重启项目服务后再试");
-  if (!response.ok) throw new Error(payload?.error || `AI接口请求失败（${response.status}）`);
+  if (!response.ok) throw new Error(describeAiError({ status: response.status, message: payload?.error || payload?.message || "" }));
   return payload;
 };
 
@@ -648,6 +649,13 @@ export const requestAiChat = async (messages, options = {}) => {
 };
 export const saveAiReport = async (report) => await aiApiJson("/ai/reports", { method: "POST", body: JSON.stringify(report) });
 export const saveAgentDispatch = async (dispatch) => await aiApiJson("/ai/agent-dispatch", { method: "POST", body: JSON.stringify(dispatch) });
+export const loadWecomConfig = async () => await aiApiJson("/ai/wecom-config", { method: "GET", cache: "no-store" });
+export const saveWecomConfig = async (config) => await aiApiJson("/ai/wecom-config", { method: "PUT", body: JSON.stringify(config) });
+export const testWecomSend = async (userid) => await aiApiJson("/ai/wecom-test", { method: "POST", body: JSON.stringify({ userid, feature: "qualityAgent" }) });
+export const previewWecomSend = async (items) => await aiApiJson("/ai/wecom-preview", { method: "POST", body: JSON.stringify({ items, feature: "qualityAgent" }) });
+export const sendWecomReports = async (fileNames) => await aiApiJson("/ai/wecom-send", { method: "POST", body: JSON.stringify({ fileNames, feature: "qualityAgent" }) });
+export const exportWecomPdfs = async (fileNames) => await aiApiJson("/ai/wecom-export-pdf", { method: "POST", body: JSON.stringify({ fileNames, feature: "qualityAgent" }) });
+export const openWecomPdfFolder = async (folder) => await aiApiJson("/ai/wecom-open-folder", { method: "POST", body: JSON.stringify({ folder, feature: "qualityAgent" }) });
 export const loadAgentDispatches = async () => await aiApiJson("/ai/agent-dispatch", { method: "GET", cache: "no-store" });
 export const loadAgentSkills = async (skillIds = null) => {
   const ids = Array.isArray(skillIds) ? skillIds.map((item) => String(item || "").trim()).filter(Boolean) : [];
@@ -869,8 +877,8 @@ export const loadKnowledgeReviewSessions = async ({ module = "", status = "", li
   return knowledgeApiJson(`/knowledge/review-sessions?${params.toString()}`, { method: "GET", cache: "no-store" });
 };
 export const saveKnowledgeReviewSession = async (session) => knowledgeApiJson(session.id ? `/knowledge/review-sessions/${encodeURIComponent(session.id)}` : "/knowledge/review-sessions", { method: session.id ? "PUT" : "POST", body: JSON.stringify(session) });
-export const loadKnowledgeFeedbackRecords = async ({ targetType = "", status = "", limit = 200 } = {}) => {
-  const params = new URLSearchParams({ targetType, status, limit: String(limit) });
+export const loadKnowledgeFeedbackRecords = async ({ targetType = "", status = "", sourceId = "", limit = 200 } = {}) => {
+  const params = new URLSearchParams({ targetType, status, sourceId, limit: String(limit) });
   return knowledgeApiJson(`/knowledge/feedback?${params.toString()}`, { method: "GET", cache: "no-store" });
 };
 export const saveKnowledgeFeedbackRecord = async (record) => knowledgeApiJson(record.id ? `/knowledge/feedback/${encodeURIComponent(record.id)}` : "/knowledge/feedback", { method: record.id ? "PUT" : "POST", body: JSON.stringify(record) });

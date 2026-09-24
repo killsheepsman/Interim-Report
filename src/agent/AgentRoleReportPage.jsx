@@ -1,7 +1,7 @@
 import { memo, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import { ArrowsClockwise, Brain, DownloadSimple, FloppyDisk, PaperPlaneTilt, WarningCircle } from "@phosphor-icons/react";
 import { createExamSession, loadAgentReport, loadAgentReports, loadAgentSkills, loadConfirmedKnowledgeMatches, loadCurrentUser, loadDqaAgentRaw, loadExamResults, loadKnowledgeRecurrences, loadLocalAgentReport, loadLocalAgentReports, loadReportQualityRules, requestAiChat, saveAgentDispatch, saveAgentReportFile, saveLocalAgentReport } from "../dataStore.js";
-import { buildDqaAgentRawMetrics } from "../dataEngine.js";
+import { buildDqaAgentRawMetrics, isIpqcExcludedBadType } from "../dataEngine.js";
 import { loadQualityAgentRuns } from "./qualityAgent.js";
 import { renderAgentMarkdown, reportFileName } from "./QualityAgentPage.jsx";
 import { loadImportedAgentReports } from "./agentReportStorage.js";
@@ -9,12 +9,19 @@ import { calloutToneClass, headingClass, isLayoutMarker, isMachineMetadataLine, 
 import { DEFAULT_REPORT_PRESENTATION_PROFILE, getReportPresentationProfile, normalizeReportPresentationProfile, REPORT_PRESENTATION_PROFILES, reportPresentationClass } from "./reportPresentationProfiles.js";
 import { extractReportVisualSpec, sanitizeHumanReportContent } from "../reportSanitizer.js";
 import { loadQualityAgentRoleSnapshotRegistry } from "../dataStore.js";
-import { normalizeRoleSnapshotRegistry, pickRoleSnapshot } from "./roleSnapshotRegistry.js";
+import { issueCategoriesFromRoleSnapshot, keepActiveWeekChartRows, normalizeRoleSnapshotRegistry, periodTrendFromRoleSnapshot, pickRoleSnapshot, pickRoleSnapshotEntry, roleSkillMatchesRole, isRoleChartSkill, chartThemeFromSkill, DEFAULT_ROLE_CHART_SKILL_ID, teamMemberSpecForRole, teamMemberStats, filterTeamMembersByMapping, pickNonEmptyTrend, resolveSupplyMappings, applyMappedTeamMembersToVisualSpec, filterTeamTableInMarkdown, applySelectedWindowToTrend, overlaySelectedWindowOnSnapshot, fillSnapshotWindowDetails, overlayWindowDetailsOntoEvidence, periodTrendFromRows, snapshotMatchesPeriod, yearToEndPeriodOf, rankPeopleInSelectedWindow } from "./roleSnapshotRegistry.js";
 import { DEFAULT_REPORT_QUALITY_RULES, reportQualityAdvice, validateReportQuality } from "./reportQualityRules.js";
-import { addIsoDays, enforceRdEngineerReportFacts } from "./rdEngineerReportContract.js";
+import { addIsoDays, enforceRdEngineerReportFacts, normalizeMonthlyActionHeadings } from "./rdEngineerReportContract.js";
+import { groupConfirmedKnowledgeByRecipient, knowledgePersonKey } from "./roleKnowledgeEvidence.js";
+import { TIMEOUT_FALLBACK_NOTE, actionTableRowCount, buildDeterministicAnalysisMarkdown, buildFixedDataRoleReport, buildRoleAnalysisBrief, defaultAnalysisMarkdown, extractAnalysisMarkdown, hasTimeoutFallbackMarker, needsRoleModelAnalysis, repairRoleAnalysis, stitchRoleReportParts } from "./roleFixedEvidenceReport.js";
+import { describeAiError } from "./aiErrorMessage.js";
 
 const ROLE_CACHE_KEY = "qms-agent-role-report-cache-v2";
 const ROLE_LAYOUT_STORAGE_KEY = "qms-agent-role-report-layout-v1";
+const ROLE_SKILL_STORAGE_KEY = "qms-agent-role-skill-v1";
+const ROLE_CHART_SKILL_STORAGE_KEY = "qms-agent-role-chart-skill-v1";
+const ROLE_CHART_FONT_KEY = "qms-role-chart-font-size-v1";
+const ROLE_CHART_FONT_STEPS = [["small","小"],["standard","标准"],["large","大"],["xlarge","特大"]];
 const MAX_ROLE_CACHE_REPORTS = 240;
 const ROLE_RECIPIENT_CACHE = new Map();
 const ROLE_HISTORY_DETAIL_CACHE = new Map();
@@ -83,8 +90,44 @@ const roleSkillIds = {
   TPM: "quality-role-tpm",
   产总: "quality-role-product-director",
 };
-const fallbackRoleSkill = (role) => `角色：${role}\n严格区分本人问题与管理范围汇总。所有数字必须来自固定统计或明细证据；证据不足写“待核实”。输出结果、过程、根因、责任、行动、验证和关闭条件。`;
-const retryableRoleAgentError = (error) => /\b(?:429|502|503|504|524)\b|too many requests|rate limit|网关超时|gateway timeout|timed? ?out|service unavailable|bad gateway/i.test(String(error?.message || error || ""));
+
+const roleAnalysisExtra = (role = "") => {
+  const shared = "分析结论必须3段空行；对「你」说话；禁止「姓名+本期」；用「我们的目的」，禁止「质量部的目的」。措施按问题分类 Top3 各一条，不要只抽3条明细。";
+  return ({
+    组装人员: `${shared}第1段写固定摘要 trend.phrase，接着写 purpose。我们的目的是送检前把装配缺陷拦住。第2段 Top3 类+代表事实。第3段下一批送检前当场核对。3D/研发/设计/资料/来料/仓库发料不算组装异常。`,
+    机长: `${shared}第1段班组趋势+purpose。我们的目的是班组送检前把重复问题拦住。第2段管辖 Top3 和下属事实。第3段带着班组核对，权限外升级交付经理。不要写成机长个人做错。`,
+    交付经理: `${shared}分析结论必须3段空行，禁止合成一段。第1段用 trend.phrase 和 ranking 写各月项数、不良率、名次。第8/9名是不良少，写「不良数量靠后」，禁止「排名低」「这把火在你身上」。第2段必须有 categories Top3 类名+项数、teamTop 机长、weekHot 周尖峰；两个以上机长才写跨班组。有分类时禁止只写「仍有问题流出」，禁止措施写成关闭周次。分类空也要写周尖峰，并写明固定摘要还没分类。第3段点名的类必须和措施表逐行对应。禁止「本期无待办」，禁止措施类别写成「本期不良」，禁止「按本期不良逐条关闭」。`,
+    PM: `${shared}第1段项目趋势+purpose。我们的目的是项目发布前把设计问题拦住。第2段所辖工程师 Top3。第3段要求工程师发布前核对。不要把工程师缺陷写成你个人做错。`,
+    TPM: `${shared}第1段跨项目趋势+purpose。我们的目的是把共性问题拦在设计阶段。第2段共性 Top3。第3段做成所辖项目发布前核对项。不要把 PM/工程师问题写成你个人做错。禁止空写公司级门禁。`,
+    研发工程师: `${shared}第1段先写 trend.phrase，接着写 review.praise；表扬和空档都用「我们的目的」。第2段按分类 Top3 点名集中在哪几类。第3段写发布前核对，并写 ecn.note：分批下单不作为异常。措施表质量问题 Top3，可避免ECN和非BOM加工件有则各加一条。`,
+  }[role] || shared);
+};
+const readRoleSkillPreference = () => {
+  try {
+    const value = JSON.parse(localStorage.getItem(ROLE_SKILL_STORAGE_KEY) || "{}");
+    return value && typeof value === "object" ? value : {};
+  } catch {
+    return {};
+  }
+};
+const writeRoleSkillPreference = (roleName, skillName) => {
+  if (!roleName || !skillName) return;
+  localStorage.setItem(ROLE_SKILL_STORAGE_KEY, JSON.stringify({ ...readRoleSkillPreference(), [roleName]: skillName }));
+};
+const readRoleChartSkillPreference = () => {
+  try {
+    const value = JSON.parse(localStorage.getItem(ROLE_CHART_SKILL_STORAGE_KEY) || "{}");
+    return value && typeof value === "object" ? value : {};
+  } catch {
+    return {};
+  }
+};
+const writeRoleChartSkillPreference = (roleName, skillName) => {
+  if (!roleName || !skillName) return;
+  localStorage.setItem(ROLE_CHART_SKILL_STORAGE_KEY, JSON.stringify({ ...readRoleChartSkillPreference(), [roleName]: skillName }));
+};
+const fallbackRoleSkill = (role) => `角色：${role}\n本报告由质量部出具。严格区分本人问题与管理范围汇总。所有数字必须来自固定统计或明细证据；证据不足写“待核实”。用认定和要求的口吻写结果、过程、根因、责任、行动、验证和关闭条件。`;
+const retryableRoleAgentError = (error) => /(?:429|502|503|504|520|521|522|523|524)|too many requests|rate limit|网关超时|gateway timeout|web server is returning an unknown error|timed? ?out|service unavailable|bad gateway|network|failed to fetch/i.test(`${error?.message || ""} ${error || ""}`);
 const waitForRoleAgentRetry = (delay, signal) => new Promise((resolve, reject) => {
   const timer = window.setTimeout(resolve, delay);
   if (!signal) return;
@@ -279,7 +322,7 @@ const sourceRows = (files = [], modules = []) => files.filter((file) => modules.
 const configFromBrowser = () => {
   try { return JSON.parse(localStorage.getItem("qms-qmdp-system-config-v1") || "{}"); } catch { return {}; }
 };
-const roleDateValue = (row = {}) => row["日期"] || row["检验日期"] || row["发生日期"] || row["问题日期"] || row["创建时间"] || row["需求日期"] || row["申请日期"] || row["更新日期"] || row["更新时间"] || "";
+const roleDateValue = (row = {}) => row["日期"] || row["检验日期"] || row["送检日期"] || row["发生日期"] || row["问题日期"] || row["创建时间"] || row["需求日期"] || row["申请日期"] || row["更新日期"] || row["更新时间"] || row["时间"] || "";
 const roleDateKey = (value) => {
   if (value instanceof Date && !Number.isNaN(value.getTime())) {
     const normalized = [15, 16].includes(value.getUTCHours())
@@ -301,6 +344,12 @@ const roleValueInPeriod = (value, period = {}) => {
   return key.startsWith(`${year}-`) && (!period._periodStart || key >= period._periodStart) && (!period._periodEnd || key <= period._periodEnd);
 };
 const roleRowInPeriod = (row, period) => roleValueInPeriod(roleDateValue(row), period);
+const roleRowInYearToEnd = (row, period = {}) => {
+  const key = roleDateKey(roleDateValue(row));
+  if (!key) return true;
+  const year = String(period._periodYear || yearToEndPeriodOf(period).start.slice(0, 4) || "2026");
+  return key.startsWith(`${year}-`) && (!period._periodEnd || key <= period._periodEnd);
+};
 const periodSpanMonths = (start, end) => {
   const left = new Date(`${start}T00:00:00`); const right = new Date(`${end}T00:00:00`);
   if (Number.isNaN(left.getTime()) || Number.isNaN(right.getTime())) return 0;
@@ -313,10 +362,12 @@ const isoWeekKey = (dateKey) => {
   const week = Math.ceil((((date - yearStart) / 86400000) + 1) / 7);
   return `${date.getUTCFullYear()}-W${String(week).padStart(2, "0")}`;
 };
+const roleIpqcIssue = (row = {}) => isIpqcExcludedBadType(row) ? 0 : (String(row["不良内容"] || "").trim() || String(row["不良类型"] || "").trim() ? 1 : 0);
 const buildRolePeriodTrend = (rows = [], period = {}) => {
   const year = String(period._periodYear || period.year || "2026");
   const start = year + "-01-01";
   const end = period._periodEnd || period.end || period.end2026 || period.end2025 || (year + "-12-31");
+  const startBound = period._periodStart || period.start || period.start2026 || start;
   const makeTrend = (granularity) => {
     const groups = new Map();
     const from = new Date(start + "T00:00:00Z"); const to = new Date(end + "T00:00:00Z");
@@ -333,13 +384,14 @@ const buildRolePeriodTrend = (rows = [], period = {}) => {
     rows.forEach((row) => {
       const dateKey = roleDateKey(roleDateValue(row)); if (!dateKey || dateKey < start || dateKey > end) return;
       const label = granularity === "month" ? dateKey.slice(0, 7) : isoWeekKey(dateKey); if (!label) return;
-      const item = groups.get(label) || { label, bad: 0, total: 0 };
+      const item = groups.get(label) || { label, bad: 0, total: 0, selected: false };
       item.total += 1;
-      if (String(row["不良内容"] || "").trim() || String(row["不良类型"] || "").trim()) item.bad += 1;
+      item.bad += roleIpqcIssue(row);
       groups.set(label, item);
     });
+    const selectedPeriod = { start: startBound, end };
     const ordered = [...groups.values()].sort((a, b) => a.label.localeCompare(b.label));
-    return ordered.length >= 2 ? { granularity, rows: ordered.map((item) => ({ ...item, rate: item.total ? Number((item.bad / item.total * 100).toFixed(2)) : 0 })) } : null;
+    return ordered.length >= 2 ? applySelectedWindowToTrend({ granularity, rows: ordered.map((item) => ({ ...item, rate: item.total ? Number((item.bad / item.total * 100).toFixed(2)) : 0 })) }, selectedPeriod) : null;
   };
   return { month: makeTrend("month"), week: makeTrend("week") };
 };
@@ -382,10 +434,11 @@ const rdIssueOwnerNames = (row = {}) => ["责任人", "工程师", "研发工程
   .map(normalizeRdPersonName)
   .filter(Boolean);
 const rdIssueEvidenceForRecipient = (recipient, files = [], dateRange = {}) => {
-  const rows = sourceRows(files, ["DQA"])
+  const allRows = sourceRows(files, ["DQA"])
     .filter((row) => String(row["问题描述"] || "").trim())
-    .filter((row) => rdIssueOwnerNames(row).includes(recipient))
-    .filter((row) => roleRowInPeriod(row, dateRange));
+    .filter((row) => rdIssueOwnerNames(row).includes(recipient));
+  const rows = allRows.filter((row) => roleRowInPeriod(row, dateRange));
+  const yearRows = allRows.filter((row) => roleRowInYearToEnd(row, dateRange));
   const categories = new Map();
   rows.forEach((row) => {
     const name = String(row["问题分类"] || row["类别"] || row["问题类型"] || "未分类").trim() || "未分类";
@@ -396,7 +449,11 @@ const rdIssueEvidenceForRecipient = (recipient, files = [], dateRange = {}) => {
     categories: [...categories.entries()].map(([name, count]) => ({ name, count })).sort((a, b) => b.count - a.count).slice(0, 10),
     productDepts: unique(rows.map((row) => row["产品部"])),
     stages: unique(rows.map((row) => row["阶段"])),
-    examples: rows.slice(0, 8).map((row) => ({ date: roleDateKey(roleDateValue(row)), category: String(row["问题分类"] || row["类别"] || "未分类").trim(), description: String(row["问题描述"] || "").trim() })),
+    examples: [...rows].sort((left, right) => String(roleDateKey(roleDateValue(right)) || "").localeCompare(String(roleDateKey(roleDateValue(left)) || ""))).slice(0, 8).map((row) => ({ date: roleDateKey(roleDateValue(row)), category: String(row["问题分类"] || row["类别"] || "未分类").trim(), description: String(row["问题描述"] || "").trim() })),
+    periodTrend: {
+      month: periodTrendFromRows(yearRows, dateRange, "month"),
+      week: periodTrendFromRows(yearRows, dateRange, "week"),
+    },
   };
 };
 
@@ -405,9 +462,11 @@ const recipientEvidence = (role, recipient, data, files, dateRange = {}, roleRow
   const config = configFromBrowser();
   const rows = sourceRows(files, spec.modules);
   const indexed = roleRowIndex?.get(recipient);
-  const matched = (indexed?.rows || rows.filter((row) => rowValues(row, spec.fields).includes(recipient))).filter((row) => roleRowInPeriod(row, dateRange));
+  const recipientRows = indexed?.rows?.length ? indexed.rows : rows.filter((row) => rowValues(row, spec.fields).includes(recipient));
+  const matched = recipientRows.filter((row) => roleRowInPeriod(row, dateRange));
+  const yearRows = recipientRows.filter((row) => roleRowInYearToEnd(row, dateRange));
   const ipqcBadRows = spec.modules.includes("IPQC")
-    ? matched.filter((row) => String(row["不良内容"] || "").trim() || String(row["不良类型"] || "").trim())
+    ? matched.filter((row) => roleIpqcIssue(row))
     : [];
   const ipqcMetrics = spec.modules.includes("IPQC") ? {
     inspectedRecords: matched.length,
@@ -417,10 +476,7 @@ const recipientEvidence = (role, recipient, data, files, dateRange = {}, roleRow
     issueRecordDefinition: "IPQC中不良内容或不良类型任一非空的送检记录，每条只计1条问题记录",
     badRate: matched.length ? Number((ipqcBadRows.length / matched.length * 100).toFixed(2)) : 0,
   } : null;
-  const yearTrendRows = spec.modules.includes("IPQC")
-    ? rows.filter((row) => roleValueInPeriod(roleDateValue(row), { start: String(dateRange._periodYear || "2026") + "-01-01", end: String(dateRange._periodEnd || dateRange.end || dateRange.end2026 || dateRange.end2025 || (String(dateRange._periodYear || "2026") + "-12-31")) }))
-    : matched;
-  const periodTrend = spec.modules.includes("IPQC") ? buildRolePeriodTrend(yearTrendRows, dateRange) : null;
+  const periodTrend = spec.modules.includes("IPQC") ? buildRolePeriodTrend(yearRows, dateRange) : null;
   const related = role === "机长" ? (data.ipqc?.leaderAnalysis?.bySite?.["全公司"]?.leaders || []).filter((row) => row.name === recipient)
     : role === "交付经理" || role === "供应链经理" ? (data.ipqc?.leaderAnalysis?.bySite?.["全公司"]?.managers || []).filter((row) => row.name === recipient)
       : role === "TPM" ? (data.dqa?.tpmStages || []).filter((row) => row.name === recipient)
@@ -444,22 +500,10 @@ const recipientEvidence = (role, recipient, data, files, dateRange = {}, roleRow
   const rdQualityIssues = role === "研发工程师" ? rdIssueEvidenceForRecipient(recipient, files, dateRange) : null;
   if (role === "研发工程师" && supplement) {
     const inRange = (value) => roleValueInPeriod(value, dateRange);
-    const ecn = (supplement.ecnRecords || []).filter((row) => row.engineer === recipient && inRange(row.date));
-    const nonBom = (supplement.nonBomRecords || []).filter((row) => row.engineer === recipient && inRange(row.date));
     const reviews = (supplement.reviewRecords || []).filter((row) => inRange(row.updateDate));
     engineerMetrics = {
-      ecn: ecn.length,
-      ecnMachined: ecn.filter((row) => row.isMachined).length,
-      ecnByReason: Object.entries(ecn.reduce((map, row) => { const key = row.reason || row.changeType || "未填写"; map[key] = (map[key] || 0) + 1; return map; }, {})).sort((a, b) => b[1] - a[1]).slice(0, 8),
-      nonBom: nonBom.length,
-      nonBomMachined: nonBom.filter((row) => row.isMachined).length,
-      nonBomStandard: nonBom.filter((row) => !row.isMachined).length,
       reviewParticipation: reviews.filter((row) => (row.members || []).includes(recipient)).length,
       reviewSuggestions: reviews.reduce((sum, row) => sum + (row.proposers || []).filter((name) => name === recipient).length, 0),
-      machinedDenominator: {
-        ecn: data.dqa?.machinedParts?.ecn?.totals?.[2026]?.denominator ?? null,
-        nonBom: data.dqa?.machinedParts?.nonBom?.totals?.[2026]?.denominator ?? null,
-      },
     };
   }
   // The new ECN/nonBOM import is an Agent-only source. Prefer it for the
@@ -486,8 +530,11 @@ const recipientEvidence = (role, recipient, data, files, dateRange = {}, roleRow
       machinedDenominator: { ecn: metrics.machinedBomDenominator ?? null, nonBom: null },
     };
   }
+  const examples = spec.modules.includes("IPQC")
+    ? [...ipqcBadRows].sort((left, right) => String(roleDateKey(roleDateValue(right)) || "").localeCompare(String(roleDateKey(roleDateValue(left)) || ""))).slice(0, 8).map((row) => ({ date: roleDateKey(roleDateValue(row)), category: String(row["不良类型"] || row["问题类型"] || row["问题分类"] || "未分类").trim(), description: String(row["不良内容"] || row["问题描述"] || "").trim() }))
+    : (rdQualityIssues?.examples || []);
   const topCategoryStats = Object.entries(categories).sort((a, b) => b[1] - a[1]).slice(0, 8).map(([name, count]) => ({ name, count, share: ipqcBadRows.length ? Number((count / ipqcBadRows.length * 100).toFixed(1)) : null }));
-  return { role, recipient, modules: spec.modules, matchedRows: role === "研发工程师" ? rdQualityIssues.count : matched.length, ipqcMetrics, periodTrend, topCategories: topCategoryStats.map((item) => item.name), topCategoryStats, related: related.slice(0, 20), directResponsibility, mapping, rdQualityIssues, engineerMetrics };
+  return { role, recipient, modules: spec.modules, matchedRows: role === "研发工程师" ? rdQualityIssues.count : matched.length, ipqcMetrics, periodTrend, topCategories: topCategoryStats.map((item) => item.name), topCategoryStats, related: related.slice(0, 20), directResponsibility, mapping, rdQualityIssues, engineerMetrics, examples, teamMembers: teamMemberSpecForRole(role) ? filterTeamMembersByMapping(role, recipient, teamMemberStats(matched, teamMemberSpecForRole(role).fields), resolveSupplyMappings(config.supplyMappings, files)) : [] };
 };
 
 const recurrenceEvidenceForRecipient = (role, recipient, recurrences = [], files = [], dateRange = {}) => {
@@ -546,7 +593,7 @@ const recurrenceEvidenceForRecipient = (role, recipient, recurrences = [], files
 
 const individualRoles = new Set(["组装人员", "研发工程师"]);
 const nonRankingRoles = new Set(["供应链经理", "产总"]);
-const REPORT_PROMPT_VERSION = "role-report-v8-rd-quality-contract";
+const REPORT_PROMPT_VERSION = "role-report-v11-evidence-actions";
 const REPORT_VERSION_MARKER = `<!-- qms-agent-role-version:${REPORT_PROMPT_VERSION} -->`;
 const reportNumber = (value) => Number.isFinite(Number(value)) ? Number(value) : 0;
 const siteFromValue = (value) => {
@@ -563,7 +610,6 @@ const inferRankingSite = (rows = [], files = [], modules = [], fields = [], reci
   const sites = [...new Set([...rowSites, ...fileSites])];
   return sites.length === 1 ? sites[0] : sites.length > 1 ? "多基地" : "";
 };
-const roleIpqcIssue = (row = {}) => String(row["不良内容"] || "").trim() || String(row["不良类型"] || "").trim() ? 1 : 0;
 const roleIpqcQuantity = (row = {}) => Number(row["送检数"] ?? row["治具数量"] ?? 0) || 0;
 const roleIpqcManager = (row = {}) => String(row["交付经理"] || row["供应商经理"] || row["经理"] || "").trim();
 const aggregateByName = (rows, valueOf) => {
@@ -583,7 +629,7 @@ const aggregateByName = (rows, valueOf) => {
 const buildRoleRanking = (role, recipientNames, selectedRecipient, data, files, dateRange = {}, roleRowIndex = null, preparedRows = null) => {
   const spec = roleSpecs[role] || roleSpecs.组装人员;
   const ipqc = data.ipqc?.leaderAnalysis?.bySite?.["全公司"] || {};
-  const periodIpqcRows = (preparedRows || sourceRows(files, ["IPQC"])).filter((row) => roleRowInPeriod(row, dateRange));
+  const periodIpqcRows = (Array.isArray(preparedRows) && preparedRows.length ? preparedRows : sourceRows(files, ["IPQC"])).filter((row) => roleRowInPeriod(row, dateRange));
   let rows = [];
   if (role === "机长") {
     const grouped = new Map();
@@ -618,14 +664,15 @@ const buildRoleRanking = (role, recipientNames, selectedRecipient, data, files, 
       }
       if (role === "组装人员") {
         const issues = matched.reduce((sum, row) => sum + roleIpqcIssue(row), 0);
-        return { name, site: inferRankingSite(matched, files, spec.modules, spec.fields, name), value: issues, detail: `送检记录 ${matched.length} 条 / 不良 ${issues} 条 / 合格 ${matched.length - issues} 条${categories.size ? ` · ${[...categories].slice(0, 2).join("、")}` : ""}` };
+        const assemblyCategories = new Set(matched.filter((row) => roleIpqcIssue(row)).map((row) => String(row["不良类型"] || row["问题类型"] || row["问题分类"] || "").trim()).filter(Boolean));
+        return { name, site: inferRankingSite(matched, files, spec.modules, spec.fields, name), value: issues, detail: `送检记录 ${matched.length} 条 / 组装不良 ${issues} 条 / 合格 ${matched.length - issues} 条${assemblyCategories.size ? ` · ${[...assemblyCategories].slice(0, 2).join("、")}` : ""}` };
       }
       return { name, site: inferRankingSite(matched, files, spec.modules, spec.fields, name), value: matched.length, detail: `研发质量记录 ${matched.length} 项${categories.size ? ` · ${[...categories].slice(0, 2).join("、")}` : ""}` };
     });
   }
-  recipientNames.forEach((name) => {
-    if (name && !rows.some((row) => row.name === name)) rows.push({ name, site: inferRankingSite([], files, spec.modules, spec.fields, name), value: 0, detail: "当前周期暂无直接记录" });
-  });
+  if (selectedRecipient && !rows.some((row) => row.name === selectedRecipient)) {
+    rows.push({ name: selectedRecipient, site: inferRankingSite([], files, spec.modules, spec.fields, selectedRecipient), value: 0, detail: "当前周期暂无直接记录" });
+  }
   const sorted = rows.filter((row) => row.name).sort((a, b) => b.value - a.value || a.name.localeCompare(b.name, "zh-CN"));
   const selected = sorted.find((row) => row.name === selectedRecipient);
   const limited = sorted.slice(0, 12);
@@ -654,7 +701,8 @@ const buildSnapshotRankingRows = (ranking = [], selectedRecipient, role) => {
 // The model writes the management narrative.  The deterministic statistics and
 // visual contract are created here so a skipped JSON block can never remove a
 // chart or turn a known count into “待核实”.
-const buildRoleVisualSpec = (role, recipient, evidence = {}, rankingRows = []) => {
+const buildRoleVisualSpec = (role, recipient, evidence = {}, rankingRows = [], period = {}) => {
+  const selectedWindow = { start: period._periodStart || evidence.roleSnapshot?.selectedWindow?.start || "", end: period._periodEnd || evidence.roleSnapshot?.selectedWindow?.end || "" };
   const stats = Array.isArray(evidence.topCategoryStats) ? evidence.topCategoryStats : [];
   const total = Number(evidence.ipqcMetrics?.badRecords || 0);
   let cumulative = 0;
@@ -676,9 +724,11 @@ const buildRoleVisualSpec = (role, recipient, evidence = {}, rankingRows = []) =
       let accumulated = 0; const total = Number(evidence.rdQualityIssues.count || 0);
       figures.push({ id: "rd-quality-issue-pareto", sectionId: "问题类型分布", intent: "pareto", preferredChart: "pareto-column-line", title: "研发质量问题分类 Pareto", unit: "问题", categories: issues.map((item) => item.name), series: [{ name: "问题数量", values: issues.map((item) => item.count), axis: "left" }, { name: "累计占比", values: issues.map((item) => { accumulated += Number(item.count || 0); return total ? Number((accumulated / total * 100).toFixed(1)) : 0; }), axis: "right", unit: "%" }], coverage: "complete", tablePolicy: "replace", accessibilitySummary: `当前工程师研发质量问题 ${total} 项，按问题分类进行 Pareto 展示；问题分类不等同于已证实根因。` });
     }
-    [evidence.rdQualityIssues.periodTrend?.month, evidence.rdQualityIssues.periodTrend?.week].filter(Boolean).forEach((item) => {
+    [evidence.rdQualityIssues.periodTrend?.week, evidence.rdQualityIssues.periodTrend?.month].filter(Boolean).forEach((item) => {
       const isMonth = item.granularity === "month";
-      figures.push({ id: `rd-quality-${item.granularity}-trend`, sectionId: isMonth ? "月度问题趋势" : "周度问题趋势", intent: "single-series-trend", preferredChart: "line", title: `研发质量问题${isMonth ? "月度" : "周度"}趋势`, unit: "问题", categories: item.rows.map((row) => row.label), series: [{ name: "问题数量", values: item.rows.map((row) => Number(row.count || 0)), axis: "left" }], coverage: "complete", tablePolicy: "replace", accessibilitySummary: `从当年首个${isMonth ? "月" : "周"}到报告截止日，连续展示本人研发质量问题数量；无有效设计输出总量分母，不生成不良率。` });
+      const rows = isMonth ? item.rows || [] : keepActiveWeekChartRows(item.rows);
+      if (rows.length < 2) return;
+      figures.push({ id: `rd-quality-${item.granularity}-trend`, sectionId: isMonth ? "月度问题趋势" : "周度问题趋势", intent: "comparison", preferredChart: "clustered-bar", title: `研发质量问题${isMonth ? "月度" : "周度"}趋势`, unit: "问题", selectedWindow, categories: rows.map((row) => ({ name: row.label, selected: Boolean(row.selected) })), series: [{ name: "问题数量", values: rows.map((row) => Number(row.count ?? row.bad ?? 0)), axis: "left" }], coverage: "complete", tablePolicy: "replace", accessibilitySummary: `从当年首个有记录的${isMonth ? "月" : "周"}到报告截止日，展示本人研发质量问题数量；周图不展示分子分母都为0的空周；无有效设计输出总量分母，不生成不良率。` });
     });
   }
   if (role === "研发工程师" && rdMetrics && (rdMetrics.reviewParticipation || rdMetrics.reviewSuggestions)) {
@@ -686,17 +736,29 @@ const buildRoleVisualSpec = (role, recipient, evidence = {}, rankingRows = []) =
   }
   if (stats.length && role !== "研发工程师") {
     const values = stats.map((item) => Number(item.count) || 0);
-    const accumulated = values.map((value) => { cumulative += value; return total ? Number((cumulative / total * 100).toFixed(1)) : 0; });
-    figures.push({ id: "direct-category-pareto", sectionId: "三", intent: "pareto", preferredChart: "pareto-column-line", title: "问题类型 Pareto", unit: "不良记录", categories: stats.map((item) => item.name), series: [{ name: "不良记录", values, axis: "left" }, { name: "累计占比", values: accumulated, axis: "right", unit: "%" }], coverage: "complete", tablePolicy: "replace", accessibilitySummary: `TOP问题类型覆盖 ${total} 条本人不良记录。` });
+    const seriesTotal = values.reduce((sum, item) => sum + item, 0) || total;
+    const accumulated = values.map((value) => { cumulative += value; return seriesTotal ? Number((cumulative / seriesTotal * 100).toFixed(1)) : 0; });
+    figures.push({ id: "direct-category-pareto", sectionId: "问题分类", intent: "pareto", preferredChart: "pareto-column-line", title: "问题类型 Pareto", unit: "不良记录", categories: stats.map((item) => item.name), series: [{ name: "不良记录", values, axis: "left" }, { name: "累计占比", values: accumulated, axis: "right", unit: "%" }], coverage: "complete", tablePolicy: "replace", accessibilitySummary: `TOP问题类型覆盖 ${total} 条本人不良记录。` });
   }
-  [evidence.periodTrend?.month, evidence.periodTrend?.week].filter(Boolean).forEach((trend) => {
+  [evidence.periodTrend?.month, evidence.periodTrend?.week].forEach((trend) => {
+    if (!trend) return;
     const isMonth = trend.granularity === "month";
-    figures.push({ id: `direct-${trend.granularity}-trend`, sectionId: "二", intent: "period-trend", preferredChart: "dual-column-line", title: isMonth ? "月度趋势" : "周度趋势", unit: "记录", categories: trend.rows.map((item) => item.label), series: [{ name: "不良数量", values: trend.rows.map((item) => item.bad), axis: "left" }, { name: "总数量", values: trend.rows.map((item) => item.total), axis: "left" }, { name: "不良率", values: trend.rows.map((item) => item.rate), axis: "right", unit: "%" }], coverage: "complete", tablePolicy: "replace", accessibilitySummary: `${isMonth ? "月度" : "周度"}不良数量、总数量与不良率趋势。` });
+    const rows = isMonth ? trend.rows || [] : keepActiveWeekChartRows(trend.rows);
+    if (rows.length < 2) return;
+    figures.push({ id: `direct-${trend.granularity}-trend`, sectionId: isMonth ? "月度趋势" : "周度趋势", intent: "period-trend", preferredChart: "dual-column-line", title: isMonth ? "月度趋势" : "周度趋势", unit: "记录", selectedWindow, categories: rows.map((item) => ({ name: item.label, selected: Boolean(item.selected) })), series: [{ name: "不良数量", values: rows.map((item) => Number(item.bad ?? item.count ?? 0) || 0), axis: "left" }, { name: "总数量", values: rows.map((item) => Number(item.total ?? 0) || 0), axis: "left" }, { name: "不良率", values: rows.map((item) => Number(item.rate ?? 0) || 0), axis: "right", unit: "%" }], coverage: "complete", tablePolicy: "replace", accessibilitySummary: `${isMonth ? "月度" : "周度"}不良数量、总数量与不良率趋势${isMonth ? "" : "；分子和分母都为0的空周不展示"}。` });
   });
-  if (rankingRows.length) {
+  if (teamMemberSpecForRole(role) && Array.isArray(evidence.teamMembers) && evidence.teamMembers.length) {
+    const spec = teamMemberSpecForRole(role);
+    const members = evidence.teamMembers.slice(0, 12);
+    figures.push({ id: "leader-team-members", sectionId: spec.sectionId, intent: "ranking", preferredChart: "clustered-horizontal-bar", title: spec.chartTitle, unit: "不良记录", categories: members.map((item) => item.name), series: [{ name: "不良记录", values: members.map((item) => Number(item.bad || 0)), axis: "left" }], coverage: "complete", tablePolicy: "keep", accessibilitySummary: `${spec.label} ${evidence.teamMembers.length} 人按不良记录排序，展示前 ${members.length} 人。` });
+  }
+  if (rankingRows.some((row) => Number(row.value) > 0)) {
     const metric = role === "研发工程师" ? "研发质量问题" : "不良记录";
     const focus = rankingRows.find((row) => row.selected);
-    figures.push({ id: "direct-ranking", sectionId: "排名", intent: "ranking", preferredChart: "clustered-horizontal-bar", title: "个人风险排名", unit: metric, categories: rankingRows.map((row) => ({ name: row.selected && row.rank ? `${row.name} · 第${row.rank}/${row.total}` : row.name, focus: row.selected, site: row.site || "", rank: row.rank, rankTotal: row.total })), series: [{ name: metric, values: rankingRows.map((row) => Number(row.value) || 0), axis: "left" }], coverage: "complete", tablePolicy: "replace", accessibilitySummary: focus ? `${recipient}按${metric}降序排列为第${focus.rank}/${focus.total}名。` : `${recipient}在当前统计周期内按${metric}进行同口径比较。` });
+    const visible = rankingRows.length <= 12 || (focus && rankingRows.slice(0, 12).some((row) => row.selected))
+      ? rankingRows.slice(0, 12)
+      : [...rankingRows.slice(0, 11), focus].filter(Boolean);
+    figures.push({ id: "direct-ranking", sectionId: "排名", intent: "ranking", preferredChart: "clustered-horizontal-bar", title: "个人风险排名", unit: metric, categories: visible.map((row) => ({ name: row.selected && row.rank ? `${row.name} · 第${row.rank}/${row.total}名` : row.name, focus: row.selected, site: row.site || "", rank: row.rank, rankTotal: row.total })), series: [{ name: metric, values: visible.map((row) => Number(row.value) || 0), axis: "left" }], coverage: "complete", tablePolicy: "replace", accessibilitySummary: focus ? `${recipient}按${metric}降序排列为第${focus.rank}/${focus.total}名。` : `${recipient}在当前统计周期内按${metric}进行同口径比较。` });
   }
   return { version: "1.0", layoutProfile: "research-briefing-v1", reportKind: "role", subject: { role, name: recipient, scopeType: "direct" }, figures, sourceLimitations: [] };
 };
@@ -712,7 +774,7 @@ const assertRoleVisualConsistency = (role, evidence = {}, visualSpec = {}) => {
 };
 const escapeRegExp = (value) => String(value || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 const enforceRoleReportFacts = (content = "", evidence = {}, role = "", rankingRows = []) => {
-  let next = String(content || "")
+  let next = normalizeMonthlyActionHeadings(String(content || ""))
     .replace(/^\s*#{1,6}\s*章节标题\s*$/gmi, "")
     .replace(/^\s*-\s*当前排名图表数据：\s*(?:空|暂无排名数据\/待补充)\s*$/gmi, "");
   if (role === "研发工程师") {
@@ -785,7 +847,7 @@ const latestCompletedExamResults = (records = []) => {
   return byRecipient;
 };
 const previousExamResultMarkdown = (result) => {
-  if (!result) return "\n\n## 上次知识考试结果\n- 暂无已回传考试结果。";
+  if (!result) return "";
   const total = Number(result.total ?? result.totalQuestions ?? 0);
   const correct = Number(result.correct ?? result.correctAnswers ?? 0);
   const score = Number(result.score ?? 0);
@@ -793,20 +855,9 @@ const previousExamResultMarkdown = (result) => {
   const categories = Array.isArray(result.issueCategories) ? result.issueCategories.filter(Boolean).join("、") : "";
   return `\n\n## 上次知识考试结果\n- 上次得分：${score} 分\n- 状态：${passed ? "已通过" : "未通过"}\n- 正确题数：${correct}/${total}\n- 提交时间：${examDateText(result.submittedAt) || "待核实"}${categories ? `\n- 对应问题分类：${categories}` : ""}`;
 };
-const confirmedKnowledgeMarkdown = (matches = []) => {
-  if (!matches.length) return "\n\n## 已确认规范依据\n- 当前问题尚未完成人工规范匹配，暂不推送考试题目。";
-  const rows = matches.slice(0, 5).map((match) => {
-    const evidence = match.evidence || {};
-    const violation = Array.isArray(evidence.violationBasis) && evidence.violationBasis.length ? `；违反依据：${evidence.violationBasis.join("；")}` : "";
-    const correct = evidence.correctState ? `；正确做法：${evidence.correctState}` : "";
-    return `- **${evidence.documentName || "规范"}${evidence.clauseNumber ? ` · ${evidence.clauseNumber}` : ""}**：${evidence.candidateTitle || evidence.quote || "已确认条款"}${violation}${correct}`;
-  });
-  return `\n\n## 已确认规范依据\n${rows.join("\n")}`;
-};
 const createAgentExamLink = async (role, recipient, evidence, confirmedMatches = null) => {
-  const knowledgeMarkdown = Array.isArray(confirmedMatches) ? confirmedKnowledgeMarkdown(confirmedMatches) : "";
   const questions = questionSetForAgent(role, evidence, confirmedMatches);
-  if (!questions.length) return { markdown: `${knowledgeMarkdown}\n\n> 知识考试：${Array.isArray(confirmedMatches) && !confirmedMatches.length ? "请先在知识库完成人工规范匹配。" : "已确认规范对应的题库中暂无可用题目。"}`, questionCount: 0 };
+  if (!questions.length) return { markdown: "", questionCount: 0 };
   const roleName = examRoleForAgent(role);
   let token = "";
   let expiresAt = new Date(Date.now() + 14 * 86400000).toISOString();
@@ -918,6 +969,8 @@ export function AgentRoleReportPage({ initialRole = "组装人员", data = {}, f
   const [historyState, setHistoryState] = useState({ status: "idle", message: "" });
   const [roleSkill, setRoleSkill] = useState(() => ({ name: roleSkillId, content: fallbackRoleSkill(role) }));
   const [roleSkills, setRoleSkills] = useState([]);
+  const [chartSkills, setChartSkills] = useState([]);
+  const [chartSkill, setChartSkill] = useState(() => ({ id: DEFAULT_ROLE_CHART_SKILL_ID, name: DEFAULT_ROLE_CHART_SKILL_ID }));
   const [layoutSkills] = useState(REPORT_PRESENTATION_PROFILES);
   const [layoutSkillName, setLayoutSkillName] = useState(initialRoleLayout);
   const [recipient, setRecipient] = useState("");
@@ -935,6 +988,7 @@ export function AgentRoleReportPage({ initialRole = "组装人员", data = {}, f
   const [dqaAgentRaw, setDqaAgentRaw] = useState(null);
   const [qualityRules, setQualityRules] = useState(DEFAULT_REPORT_QUALITY_RULES);
   const [showQualityDetails, setShowQualityDetails] = useState(false);
+  const [chartFontSize, setChartFontSize] = useState(() => (typeof localStorage === "undefined" ? "large" : (localStorage.getItem(ROLE_CHART_FONT_KEY) || "large")));
   const [generationProgress, setGenerationProgress] = useState({ visible: false, recipientNames: [], completedNames: [], currentName: "", total: 0, phase: "", detail: "" });
   const abortRef = useRef(null);
   const historyRequestIdRef = useRef(0);
@@ -1047,14 +1101,21 @@ export function AgentRoleReportPage({ initialRole = "组装人员", data = {}, f
   // The first-page registry is intentionally index-only and has no snapshot
   // bodies. Validity therefore comes from its role/period/person index; the
   // single full snapshot is fetched only when generation starts.
-  const selectedRoleSnapshotIndex = useMemo(() => (roleSnapshotRegistry?.history || [])
-    .filter((entry) => entry.active !== false && entry.role === role && entry.period?.start === period.start && entry.period?.end === period.end)
-    .filter((entry) => !recipient || (entry.recipients || []).includes(recipient))
-    .sort((left, right) => String(right.generatedAt || "").localeCompare(String(left.generatedAt || "")))[0] || null, [roleSnapshotRegistry, role, recipient, period.start, period.end]);
+  const generationScopeLabel = generationRecipients.length === recipients.length && recipients.length
+    ? "全部人员"
+    : `已选 ${generationRecipients.length}/${recipients.length || 0} 人`;
+  const snapshotPerson = (generationProgress.visible && generationProgress.currentName) || recipient;
+  const selectedRoleSnapshotIndex = useMemo(() => pickRoleSnapshotEntry(roleSnapshotRegistry, {
+    role,
+    recipient: snapshotPerson,
+    period: { start: period.start, end: period.end },
+  }), [roleSnapshotRegistry, role, snapshotPerson, period.start, period.end]);
   const selectedRoleSnapshot = selectedRoleSnapshotIndex;
   const roleSnapshotTrace = roleSnapshotRegistry
     ? (selectedRoleSnapshot
-      ? { status: "matched", label: "已命中有效角色快照", detail: `${role} · ${selectedRoleSnapshotIndex?.period?.granularity === "range" ? "总周期" : selectedRoleSnapshotIndex?.period?.periodKey || "当前周期"}`, meta: `当前人员：${recipient} · 固定数据已就绪` }
+      ? { status: "matched", label: "已命中有效角色快照", detail: `${role} · ${selectedRoleSnapshotIndex?.period?.granularity === "range" ? "总周期" : selectedRoleSnapshotIndex?.period?.periodKey || "当前周期"}`, meta: generationProgress.visible && (generationProgress.currentName || state.status === "running")
+        ? `正在生成：${generationProgress.currentName || "准备中"} · ${generationScopeLabel}${recipient ? ` · 查看中：${recipient}` : ""}`
+        : `当前人员：${recipient} · 固定数据已就绪` }
       : { status: "missing", label: recipient ? "未命中有效角色快照" : "等待选择人员", detail: recipient ? "当前人员或统计周期没有有效快照" : "选择人员后显示快照匹配状态", meta: recipient ? "本次生成将回退到确定性人员证据" : "" })
     : { status: "loading", label: "正在读取角色快照注册表", detail: "尚未完成角色快照匹配", meta: "" };
   const sourceRevision = useMemo(() => {
@@ -1065,14 +1126,12 @@ export function AgentRoleReportPage({ initialRole = "组装人员", data = {}, f
   }, [roleFiles, dqaAgentRaw]);
   const sourceSignature = useMemo(() => roleSourceSignature(role, spec, baseline.files, recipients, roleDateRange, sourceRevision, roleSkill.name, roleSkill.content), [role, spec, baseline.files, recipients, roleDateRange, sourceRevision, roleSkill]);
   const selectedHistoryReport = savedRoleReports.find((item) => item.historyKey === selectedHistoryKey) || null;
+  const displayedReportFileName = String((selectedHistoryKey !== "current" && selectedHistoryReport?.fileName) || savedRoleReports.find((item) => item.recipient === recipient)?.fileName || "").replace(/\.md$/i, "");
   const selectedContent = selectedHistoryKey === "current" ? currentCacheContent : savedRoleContent;
   const reportLayoutChanged = false;
   const cachedComplete = !reportLayoutChanged && cacheEntry?.sourceSignature === sourceSignature && recipients.length > 0 && recipients.every((name) => cacheEntry.reports?.[name]);
   const selectedCachedComplete = !reportLayoutChanged && cacheEntry?.sourceSignature === sourceSignature && generationRecipients.length > 0 && generationRecipients.every((name) => cacheEntry.reports?.[name]);
   const activeReportLayoutClass = reportLayoutClass(layoutSkillName);
-  const generationScopeLabel = generationRecipients.length === recipients.length && recipients.length
-    ? "全部人员"
-    : `已选 ${generationRecipients.length}/${recipients.length || 0} 人`;
 
   // Saving a report succeeds before the next report-library poll. Merge that
   // authoritative response immediately so the current page, selector and
@@ -1090,6 +1149,7 @@ export function AgentRoleReportPage({ initialRole = "组装人员", data = {}, f
       localOnly: saved.localOnly === true || !canSaveToServer,
     };
     if (!entry.fileName) return;
+    try { window.dispatchEvent(new Event("qms-agent-reports-changed")); } catch {}
     if (entry.localOnly) {
       const metadata = { ...entry };
       delete metadata.content;
@@ -1162,16 +1222,32 @@ export function AgentRoleReportPage({ initialRole = "组装人员", data = {}, f
     loadAgentSkills().then((value) => {
       const skills = Array.isArray(value?.skills) ? value.skills : [];
       if (!active) return;
-      const roleOnly = skills.filter((item) => String(item.name || item.id || "").startsWith("quality-role-"));
+      const roleOnly = skills.filter((item) => roleSkillMatchesRole(item, roleSkillId));
       setRoleSkills(roleOnly);
-      const selected = roleOnly.find((item) => item.id === roleSkillId || item.name === roleSkillId);
+      const preferred = readRoleSkillPreference()[role];
+      const selected = roleOnly.find((item) => (item.id || item.name) === preferred || (item.name || item.id) === preferred)
+        || roleOnly.find((item) => /musk/i.test(`${item.id || ""} ${item.name || ""}`))
+        || roleOnly.find((item) => item.id === roleSkillId || item.name === roleSkillId)
+        || roleOnly[0];
       if (selected) setRoleSkill({ name: selected.name || selected.id || roleSkillId, content: selected.content || fallbackRoleSkill(role) });
+      const charts = skills.filter((item) => isRoleChartSkill(item));
+      const chartList = charts.length ? charts : [{ id: DEFAULT_ROLE_CHART_SKILL_ID, name: DEFAULT_ROLE_CHART_SKILL_ID }, { id: "quality-role-charts-default", name: "quality-role-charts-default" }];
+      setChartSkills(chartList);
+      const preferredChart = readRoleChartSkillPreference()[role];
+      const selectedChart = chartList.find((item) => (item.id || item.name) === preferredChart || (item.name || item.id) === preferredChart)
+        || chartList.find((item) => item.id === DEFAULT_ROLE_CHART_SKILL_ID || item.name === DEFAULT_ROLE_CHART_SKILL_ID)
+        || chartList[0];
+      if (selectedChart) setChartSkill({ id: selectedChart.id || selectedChart.name, name: selectedChart.name || selectedChart.id, content: selectedChart.content || "" });
     }).catch(() => {});
     return () => { active = false; };
   }, [role, roleSkillId]);
   useEffect(() => {
     localStorage.setItem(ROLE_LAYOUT_STORAGE_KEY, layoutSkillName);
   }, [layoutSkillName]);
+  useEffect(() => {
+    if (typeof localStorage === "undefined") return;
+    localStorage.setItem(ROLE_CHART_FONT_KEY, chartFontSize);
+  }, [chartFontSize]);
   useEffect(() => {
     setSavedRoleReports([]);
     setSavedRoleContent("");
@@ -1348,10 +1424,9 @@ export function AgentRoleReportPage({ initialRole = "组装人员", data = {}, f
     // First paint only loads metadata. Fetch the few Markdown baselines and,
     // for R&D roles, detailed ECN/non-BOM evidence only after an explicit
     // generation command. This keeps role navigation independent of data size.
-    setState({ status: "running", message: "正在按需读取本次生成所需的报告基线…" });
-    const generationBaseline = await refresh({ loadContents: true, silent: true });
-    if (!generationBaseline) { setState({ status: "error", message: "读取报告基线失败，请检查项目服务后重试" }); return; }
-    if (!hasCompleteBaseline(generationBaseline.files, spec.modules)) { setState({ status: "error", message: `请先在对应模块 Agent 中生成、保存或导入报告：${spec.modules.filter((module) => !generationBaseline.files.some((item) => baselineMatchesModule(item, module))).join("、")}` }); return; }
+    setState({ status: "running", message: "正在读取角色快照和固定证据…" });
+    const generationBaseline = await refresh({ loadContents: false, silent: true });
+    if (!generationBaseline) { setState({ status: "error", message: "读取角色报告索引失败，请检查项目服务后重试" }); return; }
     // Ask the server for one role/period snapshot, not the entire snapshot
     // registry. The server can read PostgreSQL/JSON state; the browser only
     // receives the fixed evidence needed for this one generation request.
@@ -1368,9 +1443,15 @@ export function AgentRoleReportPage({ initialRole = "组装人员", data = {}, f
       // a zero count. Treat them as stale so the generation path loads source
       // rows or waits for a newly generated role snapshot.
       if (role === "研发工程师" && snapshot && (!snapshot.rdQualityIssues || snapshot.metricContract !== "rd-quality-only-v1")) return null;
+      if (["组装人员", "机长", "交付经理", "供应链经理"].includes(role) && snapshot && snapshot.metricContract !== "ipqc-exclude-upstream-v1") return null;
+      if (teamMemberSpecForRole(role) && snapshot && !Array.isArray(snapshot.teamMembers)) return null;
       return snapshot;
     };
-    const snapshotReady = targetRecipients.length > 0 && targetRecipients.every((name) => snapshotFor(name));
+    const snapshotEntryFor = (name) => pickRoleSnapshotEntry(generationRoleSnapshotRegistry, { role, recipient: name, period: { start: period.start, end: period.end } });
+    const snapshotReady = targetRecipients.length > 0 && targetRecipients.every((name) => {
+      const entry = snapshotEntryFor(name);
+      return Boolean(snapshotFor(name) && snapshotMatchesPeriod(entry || {}, period));
+    });
     let generationDqaAgentMetrics = dqaAgentMetrics;
     let generationRaw = dqaAgentRaw;
     if (!snapshotReady && ["研发工程师", "PM", "TPM", "产总"].includes(role) && !dqaAgentRaw) {
@@ -1386,10 +1467,11 @@ export function AgentRoleReportPage({ initialRole = "组装人员", data = {}, f
     }
     const generationSourceRevision = `${roleFiles.find((file) => file.subKind === "DQA_ENGINEER_SUPPLEMENT")?.importedAt || ""}|${(generationRaw?.files || []).map((file) => `${file.sourceId || file.name}:${file.importedAt || ""}:${file.rowCount || 0}`).sort().join("|")}`;
     const generationSourceSignature = roleSourceSignature(role, spec, generationBaseline.files, recipients, roleDateRange, generationSourceRevision, roleSkill.name, roleSkill.content);
-    if (!snapshotReady && !sourceReady && onEnsureAgentSources) {
+    let workingFiles = roleFiles;
+    if (onEnsureAgentSources) {
       setGenerationProgress({ visible: true, recipientNames: [...targetRecipients], completedNames: Object.keys(cacheEntry?.reports || {}).filter((name) => targetRecipients.includes(name)), currentName: "", total: targetRecipients.length, phase: "数据准备", detail: "正在加载本次生成所需的原始数据" });
       setSourceState({ status: "loading", message: "正在加载本次生成所需的原始数据" });
-      setState({ status: "running", message: "首次生成需要解析角色数据，当前页面不会自动加载" });
+      setState({ status: "running", message: "正在加载角色原始数据" });
       try {
         const next = await onEnsureAgentSources(spec.modules, (progress) => {
           if (progress?.label) {
@@ -1399,39 +1481,39 @@ export function AgentRoleReportPage({ initialRole = "组装人员", data = {}, f
         });
         const keep = (source) => spec.modules.includes(source.module) || (role === "研发工程师" && source.subKind === "DQA_ENGINEER_SUPPLEMENT");
         const byKey = new Map();
-        [...files.filter(keep), ...(next || []).filter(keep)].forEach((source) => {
+        [...files.filter(keep), ...workingFiles.filter(keep), ...(next || []).filter(keep)].forEach((source) => {
           const key = `${source.module}::${source.name}`;
           const previous = byKey.get(key);
           const previousRows = Array.isArray(previous?.rows) ? previous.rows.length : 0;
           const nextRows = Array.isArray(source.rows) ? source.rows.length : 0;
           if (!previous || nextRows >= previousRows) byKey.set(key, source);
         });
+        workingFiles = role === "研发工程师" ? [...byKey.values()] : [...byKey.values()].filter((file) => file.subKind !== "DQA_ENGINEER_SUPPLEMENT");
         setAgentFiles([...byKey.values()]);
-        setGenerationProgress((current) => ({ ...current, visible: true, recipientNames: [...targetRecipients], currentName: "", total: targetRecipients.length, phase: "数据准备", detail: "原始数据已加载，请再次点击生成报告" }));
-        setSourceState({ status: "ready", message: "角色数据已加载，请再次点击生成" });
-        setState({ status: "done", message: "角色原始数据已加载，确认后再次点击生成报告" });
+        setSourceState({ status: "ready", message: "角色数据已加载" });
       } catch (loadError) {
         setGenerationProgress((current) => ({ ...current, visible: true, phase: "数据准备失败", detail: loadError.message || String(loadError) }));
         setSourceState({ status: "error", message: `角色数据加载失败：${loadError.message || loadError}` });
         setState({ status: "error", message: `角色数据加载失败：${loadError.message || loadError}` });
+        return;
       }
-      return;
     }
     if (!targetRecipients.length) { setState({ status: "error", message: "请先勾选需要生成报告的人员" }); return; }
     if (!recipients.length) { setState({ status: "error", message: "没有找到可用的人员名单，请先检查原始数据或映射表" }); return; }
-    if (!reportLayoutChanged && selectedCachedComplete && !window.confirm(`当前勾选的 ${targetRecipients.length} 人报告已经生成并缓存，是否继续重新生成？`)) return;
+    const selectedAlreadyCached = targetRecipients.some((name) => cacheEntry?.reports?.[name]);
+    if (selectedAlreadyCached && !window.confirm(`当前勾选的 ${targetRecipients.length} 人已有缓存报告。确定按新规则重新生成吗？`)) return;
     const controller = new AbortController();
     abortRef.current = controller;
     const reports = cacheEntry?.sourceSignature === generationSourceSignature ? { ...(cacheEntry.reports || {}) } : {};
-    if (selectedCachedComplete) targetRecipients.forEach((name) => { delete reports[name]; });
-    const completedTargetNames = Object.keys(reports).filter((name) => targetRecipients.includes(name));
+    targetRecipients.forEach((name) => { delete reports[name]; });
+    const completedTargetNames = [];
     setGenerationProgress({ visible: true, recipientNames: [...targetRecipients], completedNames: completedTargetNames, currentName: "", total: targetRecipients.length, phase: "准备生成", detail: `正在检查 ${role} 报告基线` });
     setState({ status: "running", message: `正在批量生成 ${role} 报告（${completedTargetNames.length}/${targetRecipients.length}）…` });
     try {
       // Build the per-person row index only after the user starts generation;
       // this keeps initial navigation and name selection responsive while
       // retaining O(1) evidence lookup during a batch.
-      const generationRoleRows = roleRows.length ? roleRows : sourceRows(roleFiles, spec.modules);
+      const generationRoleRows = sourceRows(workingFiles, spec.modules);
       const generationRoleRowIndex = roleRowIndex || (individualRoles.has(role) ? buildRoleRowIndex(generationRoleRows, spec.fields) : null);
       let autoSaved = 0;
       let autoSaveError = "";
@@ -1457,19 +1539,15 @@ export function AgentRoleReportPage({ initialRole = "组装人员", data = {}, f
         }
         try {
           const response = await loadConfirmedKnowledgeMatches({ module: role === "组装人员" ? "IPQC" : "DQA", limit: 10000 });
-          confirmedKnowledgeByRecipient = new Map();
-          (response.matches || []).forEach((match) => {
-            const personName = String(match.issue?.personName || "").trim();
-            if (!personName) return;
-            confirmedKnowledgeByRecipient.set(personName, [...(confirmedKnowledgeByRecipient.get(personName) || []), match]);
-          });
+          // IPQC personName comes from 送检人; DQA personName comes from 工程师/责任人.
+          confirmedKnowledgeByRecipient = groupConfirmedKnowledgeByRecipient(response.matches || [], { start: period.start, end: period.end });
+          
         } catch {
           // Older/offline servers keep the previous deterministic text matching as a compatibility fallback.
           confirmedKnowledgeByRecipient = null;
         }
       }
-      const baselineText = roleBaselineBrief(generationBaseline, spec.modules);
-      setGenerationProgress((current) => ({ ...current, phase: "准备生成", detail: `已整理 ${spec.modules.join("、")} Agent 基线，准备逐人生成` }));
+      setGenerationProgress((current) => ({ ...current, phase: "准备生成", detail: "固定数据由快照组装，模型只生成分析" }));
       for (let index = 0; index < targetRecipients.length; index += 1) {
         if (controller.signal.aborted) throw new DOMException("aborted", "AbortError");
         const name = targetRecipients[index];
@@ -1478,9 +1556,9 @@ export function AgentRoleReportPage({ initialRole = "组装人员", data = {}, f
           setState({ status: "running", message: `正在使用缓存 ${role} 报告（${index + 1}/${targetRecipients.length}）…` });
           continue;
         }
-        setGenerationProgress((current) => ({ ...current, visible: true, currentName: name, phase: "生成报告", detail: `正在调用大模型生成 ${name} 的报告（${index + 1}/${targetRecipients.length}）` }));
-        const deterministicRoleSnapshot = snapshotFor(name);
-        const liveEvidence = recipientEvidence(role, name, data, roleFiles, roleDateRange, generationRoleRowIndex, generationDqaAgentMetrics);
+        setGenerationProgress((current) => ({ ...current, visible: true, currentName: name, phase: "组装报告", detail: `正在组装 ${name} 的固定数据（${index + 1}/${targetRecipients.length}）` }));
+        const deterministicRoleSnapshot = fillSnapshotWindowDetails(overlaySelectedWindowOnSnapshot(snapshotFor(name), roleDateRange), generationRoleSnapshotRegistry, { role, recipient: name, period: roleDateRange });
+        const liveEvidence = recipientEvidence(role, name, data, workingFiles, roleDateRange, generationRoleRowIndex, generationDqaAgentMetrics);
         const evidence = {
           ...liveEvidence,
           ...(deterministicRoleSnapshot ? {
@@ -1488,66 +1566,140 @@ export function AgentRoleReportPage({ initialRole = "组装人员", data = {}, f
             // Snapshot generation owns deterministic R&D issue counting. When
             // the browser intentionally keeps source rows unloaded for speed,
             // never replace that fixed evidence with an empty live recount.
-            rdQualityIssues: deterministicRoleSnapshot.rdQualityIssues || liveEvidence.rdQualityIssues,
-            ...(role === "研发工程师" ? {
+            rdQualityIssues: (!deterministicRoleSnapshot.coveringWindow ? deterministicRoleSnapshot.rdQualityIssues : null) || liveEvidence.rdQualityIssues,
+            ...(role === "研发工程师" && !deterministicRoleSnapshot.coveringWindow ? {
               matchedRows: deterministicRoleSnapshot.rdQualityIssues?.count ?? deterministicRoleSnapshot.metrics?.total ?? 0,
               engineerMetrics: deterministicRoleSnapshot.dqaAgentMetrics || liveEvidence.engineerMetrics,
               periodTrend: null,
               topCategories: (deterministicRoleSnapshot.rdQualityIssues?.categories || []).map((item) => item.name),
               topCategoryStats: (deterministicRoleSnapshot.rdQualityIssues?.categories || []).map((item) => ({ name: item.name, count: item.count, share: deterministicRoleSnapshot.rdQualityIssues?.count ? Number((item.count / deterministicRoleSnapshot.rdQualityIssues.count * 100).toFixed(1)) : null })),
-            } : {}),
+            } : (!liveEvidence.matchedRows && !liveEvidence.ipqcMetrics?.inspectedRecords ? {
+              matchedRows: Number(deterministicRoleSnapshot.metrics?.total || 0),
+              ipqcMetrics: liveEvidence.ipqcMetrics ? {
+                ...liveEvidence.ipqcMetrics,
+                inspectedRecords: Number(deterministicRoleSnapshot.metrics?.total || 0),
+                badRecords: Number(deterministicRoleSnapshot.metrics?.bad || 0),
+                goodRecords: Number(deterministicRoleSnapshot.metrics?.good ?? Math.max(0, Number(deterministicRoleSnapshot.metrics?.total || 0) - Number(deterministicRoleSnapshot.metrics?.bad || 0))),
+                issueRecords: Number(deterministicRoleSnapshot.metrics?.bad || 0),
+                badRate: Number(deterministicRoleSnapshot.metrics?.badRate || 0),
+              } : liveEvidence.ipqcMetrics,
+              periodTrend: periodTrendFromRoleSnapshot(deterministicRoleSnapshot) || liveEvidence.periodTrend,
+              topCategories: issueCategoriesFromRoleSnapshot(deterministicRoleSnapshot).map((item) => item.name),
+              topCategoryStats: issueCategoriesFromRoleSnapshot(deterministicRoleSnapshot),
+              teamMembers: Array.isArray(deterministicRoleSnapshot.teamMembers) ? deterministicRoleSnapshot.teamMembers : liveEvidence.teamMembers,
+            } : {})),
           } : {}),
-          recurrence: recurrenceEvidenceForRecipient(role, name, recurrenceRows, roleFiles, roleDateRange),
+          recurrence: recurrenceEvidenceForRecipient(role, name, recurrenceRows, workingFiles, roleDateRange),
+          examples: liveEvidence.examples?.length ? liveEvidence.examples : (deterministicRoleSnapshot?.examples || deterministicRoleSnapshot?.rdQualityIssues?.examples || []),
         };
+        if (role !== "研发工程师") {
+          const snapshotTrend = periodTrendFromRoleSnapshot(deterministicRoleSnapshot);
+          evidence.periodTrend = {
+            month: applySelectedWindowToTrend(pickNonEmptyTrend(liveEvidence.periodTrend?.month, snapshotTrend?.month), roleDateRange),
+            week: applySelectedWindowToTrend(pickNonEmptyTrend(liveEvidence.periodTrend?.week, snapshotTrend?.week), roleDateRange),
+          };
+          if (deterministicRoleSnapshot) {
+            const merged = overlayWindowDetailsOntoEvidence(evidence, deterministicRoleSnapshot);
+            evidence.roleSnapshot = merged.roleSnapshot;
+            evidence.topCategoryStats = merged.topCategoryStats;
+            evidence.topCategories = merged.topCategories;
+            evidence.teamMembers = merged.teamMembers;
+            evidence.examples = merged.examples;
+          }
+        }
+        if (individualRoles.has(role) && confirmedKnowledgeByRecipient) {
+          const confirmedMatches = confirmedKnowledgeByRecipient.get(knowledgePersonKey(name)) || [];
+          evidence.confirmedKnowledge = confirmedMatches.slice(0, 8).map((match) => ({
+            issueType: match.issue?.issueType || "",
+            issueText: match.issue?.issueText || "",
+            issueDate: match.issue?.issueDate || "",
+            personName: match.issue?.personName || name,
+            documentName: match.evidence?.documentName || "",
+            clauseNumber: match.evidence?.clauseNumber || "",
+            title: match.evidence?.candidateTitle || "",
+            violationBasis: match.evidence?.violationBasis || [],
+            correctState: match.evidence?.correctState || "",
+          }));
+        }
         if (role === "研发工程师") {
           const fixedMetrics = withDerivedEcnMetrics(evidence.roleSnapshot?.dqaAgentMetrics || evidence.engineerMetrics || {});
           evidence.engineerMetrics = fixedMetrics;
           if (evidence.roleSnapshot) evidence.roleSnapshot = { ...evidence.roleSnapshot, dqaAgentMetrics: fixedMetrics };
         }
-        const snapshotRanking = generationRoleSnapshotRegistry?.history?.find((entry) => entry.active !== false
-          && entry.role === role
-          && entry.period?.start === period.start
-          && entry.period?.end === period.end)?.snapshot?.ranking || [];
-        const personRankingRows = nonRankingRoles.has(role)
-          ? []
-          : snapshotReady && snapshotRanking.length
-            ? buildSnapshotRankingRows(snapshotRanking, name, role)
-            : buildRoleRanking(role, recipients, name, data, roleFiles, roleDateRange, generationRoleRowIndex, generationRoleRows);
-        const deterministicVisualSpec = buildRoleVisualSpec(role, name, evidence, personRankingRows);
+        const rankingEntry = pickRoleSnapshotEntry(generationRoleSnapshotRegistry, { role, period: { start: period.start, end: period.end } });
+        const slicedRanking = nonRankingRoles.has(role) ? [] : rankPeopleInSelectedWindow(rankingEntry?.snapshot?.people || [], roleDateRange, name);
+        const liveRanking = nonRankingRoles.has(role) ? [] : buildRoleRanking(role, recipients, name, data, workingFiles, roleDateRange, generationRoleRowIndex, generationRoleRows);
+        const personRankingRows = liveRanking.filter((row) => Number(row.value) > 0).length >= 2
+          ? liveRanking
+          : (slicedRanking.some((row) => Number(row.value) > 0) ? slicedRanking : liveRanking);
+        const deterministicVisualSpec = buildRoleVisualSpec(role, name, evidence, personRankingRows, roleDateRange);
         assertRoleVisualConsistency(role, evidence, deterministicVisualSpec);
         const previousExamResult = previousExamByRecipient.get(name) || null;
-        const ipqcCountingInstruction = role === "组装人员"
-          ? "IPQC口径必须严格执行：matchedRows和ipqcMetrics.inspectedRecords均为送检记录数；不良内容或不良类型至少一项非空才计1条不良；两项同时为空计为合格，不得写成数据缺失、未分类或异常。报告必须分别写明送检记录、不良记录、合格记录和不良率。"
-          : "";
-        const managerInstruction = individualRoles.has(role)
-          ? "这是当事人报告，必须具体列出本人问题、问题类型、数量、证据和改善动作。"
-          : "这是管理者报告，不要写管理者本人犯了什么问题，也不要虚构个人问题；只展示其管理范围、下属质量汇总、TOP责任单元、管理风险、需要向上级汇报的事项和管理动作。";
-        const rdHardContract = role === "研发工程师"
-          ? "研发工程师硬口径：研发质量问题是唯一质量结果数量；ECN、非BOM和设计评审分别属于工程活动与正向贡献，禁止进入质量问题总数、分母、趋势或排名。没有设计输出总量分母时，禁止计算或展示不良率。正文和图表必须只使用人员证据中的engineerMetrics权威对象。阶段数组只表示出现过的阶段，禁止写成全部问题都在这些阶段暴露。问题分类Pareto不是根因Pareto。排名结论只在独立的研发质量问题排名章节出现一次。工程行动只保留一张表：每项只有一个Owner，协同人另列，截止日期必须是YYYY-MM-DD；不得再重复30/60/90天待办列表。样本覆盖率目标100%；发布前检出率=发布前发现问题数÷（发布前发现问题数+后端再暴露问题数），分母为0时标记不适用，目标100%；单项验证周期=提交验证至放行结论，试行目标≤5个工作日；后端再暴露数目标0项。"
-          : "";
-        const fixedRdTrend = role === "研发工程师" ? `\n确定性研发问题趋势（必须分析）：${JSON.stringify(evidence.rdQualityIssues?.periodTrend || null)}` : "";
         const reportDate = new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Shanghai" });
-        const rdMilestones = role === "研发工程师" ? `30天=${addIsoDays(reportDate, 30)}，60天=${addIsoDays(reportDate, 60)}，90天=${addIsoDays(reportDate, 90)}` : "";
-        const requestRoleReport = async (retry = false) => requestAiChat([
-          { role: "system", content: `你是质量分析 Agent 的角色闭环报告生成器。只能使用输入的固定 Agent报告和人员证据，不得新增数字，不得用上级数据冒充本人。${managerInstruction}${ipqcCountingInstruction}${rdHardContract}报告必须包含：结果指标、过程暴露、根因证据/待核实、责任链汇报、改善措施、30/60/90天待办、验证指标和关闭条件。输出结构化 Markdown，使用一级/二级标题、表格和清晰列表；排名章节只输出章节标题，系统会在该标题下插入统一排名图表。禁止输出“章节标题”、模板占位词或空白排名结论。已提供的确定性统计必须原样引用；仅缺失的字段才写“待核实”。研发工程师报告必须严格分组：研发质量问题是问题指标；ECN与非BOM是变更/申请活动，不能自动写成质量问题；非BOM必须分别说明加工件与标准件；设计评审参与和有效改善项是正向贡献，单独成节，不能与问题、ECN或非BOM相加或混排。趋势不得截断：跨月半年周期必须完整列出每个自然月，跨周周期必须列出统计起止日期之间的全部连续周。责任链姓名只能取人员证据中的 directResponsibility 或 mapping，不得把当前人员姓名推断为其交付经理。必须严格执行角色 Skill，不得违反其中的角色边界、数据口径和禁止事项。复发判断只能引用人员证据摘要中 recurrence 的系统确定性结果；考试通过不能单独证明问题关闭。组装人员和研发工程师的考试结果由系统确定性追加，不要自行输出考试章节。不要输出 REPORT_VISUAL_SPEC_JSON，系统会使用固定统计生成视觉契约。${retry ? "本次为网关超时后的精简重试：只输出最关键结论、行动和验证项，最多6个二级章节。" : ""}\n\n角色 Skill：\n${String(roleSkill.content || "").slice(0, retry ? 2000 : 3600)}\n\n当前网页呈现风格 Profile：${layoutSkillName}` },
-          { role: "user", content: `角色：${role}\n角色 Skill 名称：${roleSkill.name}\n网页呈现风格 Profile：${layoutSkillName}\n报告生成日期：${reportDate}\n${rdMilestones ? `研发行动里程碑日期（必须逐项原样写入）：${rdMilestones}\n最小验证必须明确采用“3个新项目或5个高风险设计输出”，并给出发布前检出、验证周期、后端再暴露的数值阈值。\n` : ""}责任链：${spec.chain}\n统计年份：${roleDateRange._periodYear}\n统计周期：${roleDateRange._periodStart}—${roleDateRange._periodEnd}\n当前人员：${name}\n本人员工证据摘要（固定统计，不得重算）：${JSON.stringify(compactRolePromptValue(evidence, retry ? 2 : 3, retry ? 5 : 10))}${fixedRdTrend}\n上次知识考试结果（只可引用，不得重算）：${JSON.stringify(compactRolePromptValue(previousExamResult, 2, 4))}\n排名图表数据（只可引用，不得重算）：${JSON.stringify(personRankingRows.slice(0, retry ? 12 : 24))}\n基线 Agent 报告摘要：${retry ? roleBaselineBrief(generationBaseline, spec.modules, true) : baselineText}\n${managerInstruction}\n${ipqcCountingInstruction}\n请只输出该人员的 Markdown 报告；没有证据的部分写“待核实”，不得把下属问题写成管理者个人问题。` },
-        ], { max_tokens: retry ? 1800 : 2400, agent: true, operation: "agent-role-report-generate", signal: controller.signal });
-        let result;
-        try {
-          result = await requestRoleReport(false);
-        } catch (firstError) {
-          if (!retryableRoleAgentError(firstError) || controller.signal.aborted) throw firstError;
-          setGenerationProgress((current) => ({ ...current, visible: true, currentName: name, phase: "精简重试", detail: `${name} 的上游请求超时，正在使用固定摘要重新生成` }));
-          setState({ status: "running", message: `${name} 请求超时，正在精简上下文重试…` });
-          await waitForRoleAgentRetry(1200, controller.signal);
-          result = await requestRoleReport(true);
+        const nextReviewDate = addIsoDays(reportDate, 30);
+        const analysisBrief = buildRoleAnalysisBrief(role, evidence, personRankingRows, roleDateRange);
+        const requestAnalysis = () => requestAiChat([
+          { role: "system", content: `你代表质量部出具本期角色质量报告，发给当事人或管理者本人，不是第三方旁观者，也不是咨询顾问。固定数字已经在报告里，禁止重复输出固定结果、趋势表、排名表、ECN表、非BOM表、评审表和知识条款原文，也不得改写输入数字。正文用质量部对当事人的口吻：本期认定、要求于下次报告前完成。禁止“建议关注”“可以看出”“值得重视”“该人员存在”“反映出”“赋能”“抓手”“颗粒度”“痛点”“深度洞察”“闭环机制”“第一性原理”这类旁观或空话。措施用核对、补全、验证、当场确认，不用希望、建议考虑。
+必须输出且仅输出两个二级标题：
+## 分析结论
+写质量部对本期问题的认定，发给本人看。必须分成2到3个短段，段与段空行，不要写成一长句，不要审讯口吻。对「你」说话，禁止「姓名+本期」「该人员」。禁止解释质量部分类，禁止写「根因不是XX这个分类名」「不是用四个字可以代替」；「装配问题」「设计问题」等分类名只留在问题分类图，结论里写对象和现象。第1段写本期结果。第2段有日期+对象+现象才写「代表：」；没有明细就不要写代表句，禁止写「待核实」「不得编造」「明细不足」「不许编」这类系统话。第3段写下次必须核对什么。个人角色只写本人，管理角色只写管辖范围和下属。
+## 本月措施
+必须是完整 Markdown 表格，包含表头、对齐分隔行和数据行，禁止空表、禁止只写表头。研发工程师按分类 Top3 各一行，可避免ECN和非BOM加工件有则各加一行，最多5行；其他角色 1 到 3 行。列：措施 | 针对的本人/下属问题（必须来自本期固定证据） | Owner | 完成日(YYYY-MM-DD) | 下次报告如何验收。Owner只有一个，完成日不晚于${nextReviewDate}。措施必须是当事人下次能执行的检查/补全/验证，禁止开会、培训、提醒作为关闭证据，禁止把公司级门禁写成个人待办。不要输出“下次报告复核点”章节。
+禁止30/60/90天分期待办。没有日期+对象+现象的明细时，不要写代表句，不要写待核实、不得编造、明细不足。措施表没有数据行视为失败。${roleAnalysisExtra(role)}
+角色Skill要点：${String(roleSkill.content || "").slice(0, 1400)}` },
+          { role: "user", content: `角色：${role}\n人员：${name}\n周期：${roleDateRange._periodStart}—${roleDateRange._periodEnd}\n下次报告复核日：${nextReviewDate}\n固定摘要：${JSON.stringify(analysisBrief)}\n请按分析结论、本月措施两个标题出具，不要输出下次报告复核点，不要重复固定数据，不要旁观点评。` },
+        ], { max_tokens: 2000, agent: true, operation: "agent-role-report-generate", signal: controller.signal });
+        const fixed = buildFixedDataRoleReport({ role, recipient: name, period: roleDateRange, evidence, rankingRows: personRankingRows });
+        let analysis = "";
+        let usedTimeoutFallback = false;
+        let result = { content: "", model: "" };
+        if (!needsRoleModelAnalysis(role, evidence)) {
+          analysis = defaultAnalysisMarkdown({ skipped: true });
+          result = { content: analysis, model: "fixed-data-only" };
+        } else {
+          setGenerationProgress((current) => ({ ...current, visible: true, currentName: name, phase: "模型分析", detail: `正在生成 ${name} 的分析（${index + 1}/${targetRecipients.length}）` }));
+          try {
+            result = await requestAnalysis();
+            analysis = extractAnalysisMarkdown(normalizeMonthlyActionHeadings(sanitizeHumanReportContent(result.content || "")));
+            if (!analysis) analysis = defaultAnalysisMarkdown({ timeout: true });
+          } catch (firstError) {
+            const userStopped = controller.signal.aborted && (firstError?.name === "AbortError" || /已停止/.test(String(firstError?.message || "")));
+            if (userStopped) throw firstError;
+            if (!retryableRoleAgentError(firstError)) throw firstError;
+            setGenerationProgress((current) => ({ ...current, visible: true, currentName: name, phase: "精简重试", detail: `${name} 分析超时，固定数据已就绪，正在重试分析` }));
+            setState({ status: "running", message: `${name} 分析超时，固定数据已保留，正在重试分析…` });
+            try {
+              await waitForRoleAgentRetry(800, controller.signal);
+              result = await requestAnalysis();
+              analysis = extractAnalysisMarkdown(normalizeMonthlyActionHeadings(sanitizeHumanReportContent(result.content || "")));
+              if (!analysis) throw firstError;
+            } catch (retryError) {
+              const retryStopped = controller.signal.aborted && (retryError?.name === "AbortError" || /已停止/.test(String(retryError?.message || "")));
+              if (retryStopped) throw retryError;
+              usedTimeoutFallback = true;
+              result = { content: "", model: "fixed-evidence-fallback" };
+              analysis = buildDeterministicAnalysisMarkdown({ role, recipient: name, evidence, nextReviewDate, period: roleDateRange, rankingRows: personRankingRows }) || defaultAnalysisMarkdown({ timeout: true });
+            }
+          }
+        }
+        if (needsRoleModelAnalysis(role, evidence)) {
+          const fallbackAnalysis = buildDeterministicAnalysisMarkdown({ role, recipient: name, evidence, nextReviewDate, period: roleDateRange, rankingRows: personRankingRows });
+          analysis = repairRoleAnalysis(analysis, fallbackAnalysis, role, evidence, name);
+          if (usedTimeoutFallback && actionTableRowCount(analysis) >= 1 && !/待核实：模型超时/.test(analysis)) {
+            usedTimeoutFallback = false;
+            result = { ...result, model: result.model || "fixed-evidence-actions" };
+          }
         }
         const reportModel = String(result.model || "");
         if (reportModel) setLastGeneratedModel(reportModel);
-        let reportContent = enforceRoleReportFacts(sanitizeHumanReportContent(result.content || "暂无报告"), evidence, role, personRankingRows);
-        if (role === "研发工程师") reportContent += reviewContributionMarkdown(evidence, reportContent);
+        let reportContent = stitchRoleReportParts({
+          fixed,
+          analysis,
+          confirmedKnowledge: individualRoles.has(role) ? evidence.confirmedKnowledge : undefined,
+          timeout: usedTimeoutFallback,
+        });
         if (individualRoles.has(role)) {
-          const confirmedMatches = confirmedKnowledgeByRecipient == null ? null : (confirmedKnowledgeByRecipient.get(name) || []);
+          const confirmedMatches = confirmedKnowledgeByRecipient == null ? null : (confirmedKnowledgeByRecipient.get(knowledgePersonKey(name)) || []);
           const exam = await createAgentExamLink(role, name, evidence, confirmedMatches);
           reportContent += previousExamResultMarkdown(previousExamResult);
           reportContent += exam.markdown;
@@ -1590,8 +1742,8 @@ export function AgentRoleReportPage({ initialRole = "组装人员", data = {}, f
       refresh().catch(() => {});
       setState({ status: "done", message: autoSaved === targetRecipients.length ? `已生成、自动保存并缓存 ${targetRecipients.length} 份 ${role} 报告 · ${autoSaveError}` : `已生成并缓存 ${targetRecipients.length} 份 ${role} 报告；项目自动保存 ${autoSaved}/${targetRecipients.length}，${autoSaveError || "其余报告保留在本地缓存"}` });
     } catch (error) {
-      setGenerationProgress((current) => ({ ...current, visible: true, phase: error?.name === "AbortError" || controller.signal.aborted ? "已停止" : "生成失败", detail: error?.name === "AbortError" || controller.signal.aborted ? "已保留已完成报告，可继续生成" : (error.message || String(error)) }));
-      setState({ status: "error", message: error?.name === "AbortError" || controller.signal.aborted ? "已停止批量生成，已完成报告已缓存，可继续生成" : `批量生成失败：${error.message}` });
+      setGenerationProgress((current) => ({ ...current, visible: true, phase: error?.name === "AbortError" || controller.signal.aborted ? "已停止" : "生成失败", detail: error?.name === "AbortError" || controller.signal.aborted ? "已保留已完成报告，可继续生成" : describeAiError(error) }));
+      setState({ status: "error", message: error?.name === "AbortError" || controller.signal.aborted ? "已停止批量生成，已完成报告已缓存，可继续生成" : `批量生成失败，${describeAiError(error)}` });
     } finally { if (abortRef.current === controller) abortRef.current = null; }
   };
 
@@ -1637,7 +1789,13 @@ export function AgentRoleReportPage({ initialRole = "组装人员", data = {}, f
   const renderedReportContent = isBulkGenerating ? "" : selectedContent;
   const rankingTitle = individualRoles.has(role) ? "个人问题排名" : "管理范围排名";
   const rankingMetric = individualRoles.has(role) ? "本人质量记录" : "管理范围异常";
-  const selectedVisualSpec = useMemo(() => selectedHistoryReport?.visualSpec || extractReportVisualSpec(renderedReportContent || ""), [selectedHistoryReport?.visualSpec, renderedReportContent]);
+  const supplyMappingsForRole = useMemo(() => resolveSupplyMappings(configFromBrowser().supplyMappings, files), [files]);
+  const selectedVisualSpec = useMemo(() => {
+    const spec = applyMappedTeamMembersToVisualSpec(selectedHistoryReport?.visualSpec || cacheEntry?.visualSpecs?.[recipient] || extractReportVisualSpec(renderedReportContent || ""), role, recipient, supplyMappingsForRole);
+    const selectedWindow = { start: displayedPeriod._periodStart || "", end: displayedPeriod._periodEnd || "" };
+    if (!spec?.figures || !selectedWindow.start) return spec;
+    return { ...spec, figures: spec.figures.map((figure) => /trend|趋势/i.test(`${figure.id || ""} ${figure.sectionId || ""} ${figure.title || ""}`) ? { ...figure, selectedWindow: figure.selectedWindow || selectedWindow } : figure) };
+  }, [selectedHistoryReport?.visualSpec, cacheEntry?.visualSpecs, recipient, renderedReportContent, role, supplyMappingsForRole, displayedPeriod]);
   const roleQuality = useMemo(() => {
     if (!renderedReportContent) return { status: "pending", label: "待校验", failed: [] };
     const result = validateReportQuality(renderedReportContent, { rules: qualityRules, hasSnapshot: Boolean(selectedRoleSnapshot), hasVisuals: Boolean(selectedVisualSpec?.figures?.length) });
@@ -1663,17 +1821,40 @@ export function AgentRoleReportPage({ initialRole = "组装人员", data = {}, f
   // report tables and chart placeholders. Selection checkboxes must not rerun
   // it: their state is unrelated to the report currently being viewed.
   const reportContentParts = useMemo(() => renderedReportContent
-    ? { before: renderAgentMarkdown(renderedReportContent, { chartFirst: true, publisher: true, profileId: layoutSkillName, module: "角色报告-" + role, visualSpec: selectedVisualSpec }), after: "", hasRanking: false }
-    : { before: "", after: "", hasRanking: false }, [renderedReportContent, layoutSkillName, role, selectedVisualSpec]);
-  const rankedReportHtml = useMemo(() => renderedReportContent
-    && selectedHistoryKey === "current"
-    && !hasContractRanking
-    && rankingRows.length
-    ? injectRoleRankingChart(reportContentParts.before, renderRoleRankingChartMarkup({ rows: rankingRows, title: rankingTitle, metric: rankingMetric, role, recipient, period: displayedPeriod }))
-    : reportContentParts.before, [renderedReportContent, selectedHistoryKey, hasContractRanking, reportContentParts.before, rankingRows, rankingTitle, rankingMetric, role, recipient, displayedPeriod]);
+    ? { before: renderAgentMarkdown(filterTeamTableInMarkdown(renderedReportContent, role, recipient, supplyMappingsForRole), { chartFirst: true, publisher: true, profileId: layoutSkillName, module: "角色报告-" + role, visualSpec: selectedVisualSpec, chartTheme: chartThemeFromSkill(chartSkill) }), after: "", hasRanking: false }
+    : { before: "", after: "", hasRanking: false }, [renderedReportContent, layoutSkillName, role, selectedVisualSpec, chartSkill]);
+  const rankedReportHtml = useMemo(() => {
+    const html = renderedReportContent
+      && selectedHistoryKey === "current"
+      && !hasContractRanking
+      && rankingRows.length
+      ? injectRoleRankingChart(reportContentParts.before, renderRoleRankingChartMarkup({ rows: rankingRows, title: rankingTitle, metric: rankingMetric, role, recipient, period: displayedPeriod }))
+      : reportContentParts.before;
+    return hasTimeoutFallbackMarker(renderedReportContent) ? `<p class="role-report-timeout-note">${TIMEOUT_FALLBACK_NOTE}</p>${html}` : html;
+  }, [renderedReportContent, selectedHistoryKey, hasContractRanking, reportContentParts.before, rankingRows, rankingTitle, rankingMetric, role, recipient, displayedPeriod]);
+  useEffect(() => {
+    const wraps = document.querySelectorAll(".quality-agent-role-report .lieflat-scroll .lieflat-svg-wrap");
+    wraps.forEach((wrap) => {
+      const target = wrap.querySelector("#lieflat-selected-start") || wrap.querySelector(".lieflat-selected-group");
+      if (!target) return;
+      const wrapRect = wrap.getBoundingClientRect();
+      const targetRect = target.getBoundingClientRect();
+      wrap.scrollLeft += targetRect.left - wrapRect.left - 48;
+    });
+  }, [rankedReportHtml, chartFontSize]);
+
   const selectRoleSkill = (name) => {
     const selected = roleSkills.find((item) => (item.name || item.id) === name);
-    if (selected) setRoleSkill({ name: selected.name || selected.id, content: selected.content || fallbackRoleSkill(role) });
+    if (!selected) return;
+    const skillName = selected.name || selected.id;
+    setRoleSkill({ name: skillName, content: selected.content || fallbackRoleSkill(role) });
+    writeRoleSkillPreference(role, skillName);
+  };
+  const selectChartSkill = (name) => {
+    const selected = chartSkills.find((item) => (item.name || item.id) === name);
+    if (!selected) return;
+    setChartSkill({ id: selected.id || selected.name, name: selected.name || selected.id, content: selected.content || "" });
+    writeRoleChartSkillPreference(role, selected.name || selected.id);
   };
   const selectLayoutSkill = (name) => {
     setLayoutSkillName(normalizeReportPresentationProfile(name));
@@ -1688,9 +1869,9 @@ export function AgentRoleReportPage({ initialRole = "组装人员", data = {}, f
   return <div className="qmdp-page quality-agent-page">
     <div className="quality-agent-hero"><div><span className="qmdp-eyebrow">QUALITY ANALYSIS AGENT / ROLE REPORT</span><h2>Agent角色报告 · {role}</h2><p>按责任链批量生成并缓存人员报告，选择人员查看本人问题、上级汇报、改善行动和闭环待办。</p></div><Brain size={42} weight="duotone" /></div>
     <section className="qmdp-card quality-agent-controls">
-      <label>角色链路<span className="quality-agent-inline-value">{spec.chain}</span></label><label>角色 Skill<select value={roleSkill.name} onChange={(event) => selectRoleSkill(event.target.value)} disabled={!roleSkills.length}><option value={roleSkill.name}>{roleSkill.name}</option>{roleSkills.filter((item) => (item.name || item.id) !== roleSkill.name).map((item) => <option key={item.id || item.name} value={item.name || item.id}>{item.name || item.id}</option>)}</select></label><label>网页呈现风格<select value={layoutSkillName} onChange={(event) => selectLayoutSkill(event.target.value)}>{layoutSkills.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}</select><small>{reportLayoutLabel(layoutSkillName)} · 切换后立即重绘当前、历史报告，不重新调用大模型</small></label>
+      <label>角色链路<span className="quality-agent-inline-value">{spec.chain}</span></label><label>角色 Skill<select value={roleSkill.name} onChange={(event) => selectRoleSkill(event.target.value)} disabled={!roleSkills.length}>{roleSkills.map((item) => <option key={item.id || item.name} value={item.name || item.id}>{item.name || item.id}</option>)}</select></label><label>图表 Skill<select value={chartSkill.name} onChange={(event) => selectChartSkill(event.target.value)} disabled={!chartSkills.length}>{chartSkills.map((item) => <option key={item.id || item.name} value={item.name || item.id}>{item.name || item.id}</option>)}</select><small>切换后立即重绘当前、历史报告里的图表，不重新调用大模型</small></label><label>网页呈现风格<select value={layoutSkillName} onChange={(event) => selectLayoutSkill(event.target.value)}>{layoutSkills.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}</select><small>{reportLayoutLabel(layoutSkillName)} · 切换后立即重绘当前、历史报告，不重新调用大模型</small></label>
       <label className="quality-agent-period-year">统计年份<select value={period.year} onChange={(event) => setPeriod(rolePeriodDefaults(dateRange, event.target.value))}><option value="2026">2026</option><option value="2025">2025</option></select></label><label>开始日期<input type="date" value={period.start} onChange={(event) => setPeriod((current) => ({ ...current, start: event.target.value }))}/></label><label>结束日期<input type="date" value={period.end} onChange={(event) => setPeriod((current) => ({ ...current, end: event.target.value }))}/></label>
-      <label>人员{individualRoles.has(role) ? <><div className="quality-agent-recipient-combobox"><input className="quality-agent-recipient-input" value={recipientPickerQuery} onFocus={() => setRecipientPickerOpen(true)} onChange={(event) => { setRecipientPickerQuery(event.target.value); setRecipientPickerOpen(true); }} onKeyDown={(event) => { if (event.key === "Enter" && recipientPickerOptions[0]) { event.preventDefault(); recipientManualClearRef.current = false; selectRecipient(recipientPickerOptions[0]); setRecipientPickerQuery(recipientPickerOptions[0]); setRecipientPickerOpen(false); } if (event.key === "Escape") setRecipientPickerOpen(false); }} placeholder="输入姓名或关键字" autoComplete="off"/><button type="button" className="quality-agent-recipient-clear" aria-label="清除人员" onMouseDown={(event) => event.preventDefault()} onClick={() => { recipientManualClearRef.current = true; selectRecipient(""); setRecipientPickerQuery(""); setRecipientPickerOpen(true); }}>×</button>{recipientPickerOpen && <div className="quality-agent-recipient-options" role="listbox">{recipientPickerOptions.map((name) => <button type="button" role="option" aria-selected={name === recipient} key={name} onMouseDown={(event) => event.preventDefault()} onClick={() => { recipientManualClearRef.current = false; selectRecipient(name); setRecipientPickerQuery(name); setRecipientPickerOpen(false); }}>{name}</button>)}{!recipientPickerOptions.length && <span>没有匹配的人员</span>}{recipientSelectNames.length > recipientPickerOptions.length && <small>已显示 {recipientPickerOptions.length} 人，请继续输入姓名缩小范围</small>}</div>}</div><small>共 {recipientSelectNames.length} 人，可输入姓名筛选</small></> : <select value={recipient} onChange={(event) => selectRecipient(event.target.value)}><option value="">请选择人员</option>{recipientSelectNames.map((name) => <option key={name}>{name}</option>)}</select>}</label><label>历史报告<select value={selectedHistoryKey} onChange={(event) => openHistoryReport(event.target.value)} disabled={!recipient}><option value="current" disabled={!currentCacheContent}>当前缓存{currentCacheContent ? ` · ${roleReportTimeLabel(cacheEntry?.generatedAt)}` : "（暂无）"}</option>{savedRoleReports.map((item) => <option key={item.historyKey} value={item.historyKey}>{roleHistoryLabel(item)}</option>)}</select><small>{historyState.message || "选择人员后读取历史版本"}</small></label>
+      <label>人员{individualRoles.has(role) ? <><div className="quality-agent-recipient-combobox" onBlur={(event) => { if (event.currentTarget.contains(event.relatedTarget)) return; setRecipientPickerOpen(false); setRecipientPickerQuery(recipient || ""); }}><input className="quality-agent-recipient-input" value={recipientPickerQuery} onFocus={() => setRecipientPickerOpen(true)} onChange={(event) => { setRecipientPickerQuery(event.target.value); setRecipientPickerOpen(true); }} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); if (!String(recipientPickerQuery || "").trim()) { recipientManualClearRef.current = true; selectRecipient(""); setRecipientPickerQuery(""); setRecipientPickerOpen(false); return; } if (recipientPickerOptions[0]) { recipientManualClearRef.current = false; selectRecipient(recipientPickerOptions[0]); setRecipientPickerQuery(recipientPickerOptions[0]); setRecipientPickerOpen(false); } } if (event.key === "Escape") { setRecipientPickerOpen(false); setRecipientPickerQuery(recipient || ""); } }} placeholder="输入姓名或关键字" autoComplete="off"/><button type="button" className="quality-agent-recipient-clear" aria-label="清除人员" onMouseDown={(event) => event.preventDefault()} onClick={() => { recipientManualClearRef.current = true; selectRecipient(""); setRecipientPickerQuery(""); setRecipientPickerOpen(false); }}>×</button>{recipientPickerOpen && <div className="quality-agent-recipient-options" role="listbox"><button type="button" role="option" aria-selected={!recipient} className={!recipient ? "is-empty" : ""} onMouseDown={(event) => event.preventDefault()} onClick={() => { recipientManualClearRef.current = true; selectRecipient(""); setRecipientPickerQuery(""); setRecipientPickerOpen(false); }}>不选择</button>{recipientPickerOptions.map((name) => <button type="button" role="option" aria-selected={name === recipient} key={name} onMouseDown={(event) => event.preventDefault()} onClick={() => { recipientManualClearRef.current = false; selectRecipient(name); setRecipientPickerQuery(name); setRecipientPickerOpen(false); }}>{name}</button>)}{!recipientPickerOptions.length && <span>没有匹配的人员</span>}{recipientSelectNames.length > recipientPickerOptions.length && <small>已显示 {recipientPickerOptions.length} 人，请继续输入姓名缩小范围</small>}</div>}</div><small>共 {recipientSelectNames.length} 人，可输入姓名筛选</small></> : <select value={recipient} onChange={(event) => selectRecipient(event.target.value)}><option value="">请选择人员</option>{recipientSelectNames.map((name) => <option key={name}>{name}</option>)}</select>}</label><label>历史报告<select value={selectedHistoryKey} onChange={(event) => openHistoryReport(event.target.value)} disabled={!recipient}><option value="current" disabled={!currentCacheContent}>当前缓存{currentCacheContent ? ` · ${roleReportTimeLabel(cacheEntry?.generatedAt)}` : "（暂无）"}</option>{savedRoleReports.map((item) => <option key={item.historyKey} value={item.historyKey}>{roleHistoryLabel(item)}</option>)}</select><small>{historyState.message || "选择人员后读取历史版本"}</small></label>
       {period.start > period.end && <span className="quality-agent-period-invalid">日期范围无效</span>}
       <div className="quality-agent-recipient-picker">
         <div className="quality-agent-recipient-picker-head">
@@ -1725,7 +1906,7 @@ export function AgentRoleReportPage({ initialRole = "组装人员", data = {}, f
     {generationProgress.visible && <div className={`agent-generation-progress agent-generation-grid-progress ${state.status === "error" ? "error" : progressTotal > 0 && progressDone >= progressTotal ? "done" : ""}`} role="status" aria-live="polite"><div className="agent-generation-progress-head"><strong>{generationProgress.phase || "正在生成"}</strong><b>{progressDone}/{progressTotal}</b></div><div className="agent-generation-progress-cells" role="img" aria-label={`已完成 ${progressDone} 份，共 ${progressTotal} 份`}>{progressRecipientNames.map((name) => <i key={name} className={`${completedNameSet.has(name) ? "is-complete" : ""} ${generationProgress.currentName === name ? "is-current" : ""}`} title={`${name} · ${completedNameSet.has(name) ? "已完成" : generationProgress.currentName === name ? "正在生成" : "待生成"}`} />)}</div><small className="agent-generation-progress-detail">{generationProgress.detail}</small></div>}
     <section className="qmdp-card quality-agent-base-preview"><header><strong>角色报告基线</strong><span>{baseline.files.map((item) => `${item.module || spec.modules.find((module) => baselineMatchesModule(item, module))} · ${item.imported ? "外部导入" : item.fileName.startsWith("本地缓存-") ? "本地缓存" : "项目报告库"}`).join("、") || "尚未找到对应 Agent 报告"}</span></header><p>供应链角色只使用 IPQC Agent；研发角色同时使用 OQC、DQA、QMS Agent。个人证据不足时报告必须标记“待核实”。外部导入报告仅作为角色报告基线使用，不会覆盖项目报告库。</p></section>
     {isBulkGenerating && <section className="qmdp-card quality-agent-report"><header><strong>正在批量生成报告</strong><span>报告内容和全员排名将在全部任务完成后按需加载，避免研发大数据量导致页面卡顿。</span></header></section>}
-    {renderedReportContent && <section className={`qmdp-card quality-agent-report quality-agent-role-report ${activeReportLayoutClass}`}><header><strong>{role} · {recipient}</strong><span>{selectedHistoryKey === "current" ? `当前缓存 · ${reportLayoutLabel(layoutSkillName)}` : `${roleHistoryLabel(selectedHistoryReport || {})} · ${reportLayoutLabel(layoutSkillName)}`} <em className={`quality-agent-report-check ${roleQuality.status}`} title={roleQuality.failed.map((item) => item.label).join("；")}>报告质量：{roleQuality.label}</em> <button className="qmdp-text-btn" onClick={() => setShowQualityDetails((value) => !value)}>{showQualityDetails ? "收起校验" : "查看校验详情"}</button></span><div><button className="qmdp-secondary-btn" onClick={download}><DownloadSimple size={15}/>导出报告</button><button className="qmdp-primary-btn" onClick={save}><FloppyDisk size={15}/>保存报告</button>{canSaveToServer && <button className="qmdp-primary-btn" onClick={dispatch}><PaperPlaneTilt size={15}/>创建发送任务</button>}</div></header>{showQualityDetails && <div className="quality-agent-quality-details"><div><b>通过 {roleQuality.checks?.filter((item) => item.passed).length || 0}</b><b className="warn">警告 {roleQuality.failed.filter((item) => item.severity !== "block").length}</b><b className="error">阻断 {roleQuality.failed.filter((item) => item.severity === "block").length}</b></div>{roleQuality.failed.map((item, index) => <p key={`${item.id || item.label}-${index}`}><strong>{item.label}</strong><span>{reportQualityAdvice(item)}</span></p>)}</div>}<div className={`quality-agent-report-content ${activeReportLayoutClass}`}><div dangerouslySetInnerHTML={{ __html: rankedReportHtml }}/></div></section>}
+    {renderedReportContent && <section className={`qmdp-card quality-agent-report quality-agent-role-report ${activeReportLayoutClass}`} data-chart-font={chartFontSize}><header><strong>{role} · {recipient}</strong><span>{displayedReportFileName ? `报告名称：${displayedReportFileName}` : selectedHistoryKey === "current" ? "当前缓存尚未保存到报告库" : "报告名称未记录"} · {selectedHistoryKey === "current" ? `当前缓存 · ${reportLayoutLabel(layoutSkillName)}` : `${roleHistoryLabel(selectedHistoryReport || {})} · ${reportLayoutLabel(layoutSkillName)}`} <em className={`quality-agent-report-check ${roleQuality.status}`} title={roleQuality.failed.map((item) => item.label).join("；")}>报告质量：{roleQuality.label}</em> <button className="qmdp-text-btn" onClick={() => setShowQualityDetails((value) => !value)}>{showQualityDetails ? "收起校验" : "查看校验详情"}</button></span><div className="quality-agent-report-actions"><div className="font-size-control" title="只放大报告里的图表文字"><span>图表字号</span>{ROLE_CHART_FONT_STEPS.map(([key, label]) => <button type="button" key={key} className={chartFontSize === key ? "active" : ""} onClick={() => setChartFontSize(key)}>{label}</button>)}</div><button className="qmdp-secondary-btn" onClick={download}><DownloadSimple size={15}/>导出报告</button><button className="qmdp-primary-btn" onClick={save}><FloppyDisk size={15}/>保存报告</button>{canSaveToServer && <button className="qmdp-primary-btn" onClick={dispatch}><PaperPlaneTilt size={15}/>创建发送任务</button>}</div></header>{showQualityDetails && <div className="quality-agent-quality-details"><div><b>通过 {roleQuality.checks?.filter((item) => item.passed).length || 0}</b><b className="warn">警告 {roleQuality.failed.filter((item) => item.severity !== "block").length}</b><b className="error">阻断 {roleQuality.failed.filter((item) => item.severity === "block").length}</b></div>{roleQuality.failed.map((item, index) => <p key={`${item.id || item.label}-${index}`}><strong>{item.label}</strong><span>{reportQualityAdvice(item)}</span></p>)}</div>}<div className={`quality-agent-report-content ${activeReportLayoutClass}`}><div dangerouslySetInnerHTML={{ __html: rankedReportHtml }}/></div></section>}
     {!renderedReportContent && !isBulkGenerating && <section className="qmdp-card quality-agent-report"><header><strong>请选择人员查看报告</strong><span>{cachedComplete ? "缓存已完成" : "请先生成全部角色报告"}</span></header></section>}
     {state.message && <div className={`quality-agent-save-state ${state.status}`}><WarningCircle size={16}/>{state.message}</div>}
   </div>;

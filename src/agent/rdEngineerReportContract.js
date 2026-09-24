@@ -20,6 +20,11 @@ const issueSectionBody = (categories, total) => {
 
 const ACTION_METRIC_CONTRACT = "样本覆盖率=完成门禁验证样本数÷计划样本数，目标100%；发布前检出率=发布前发现问题数÷（发布前发现问题数+后端再暴露问题数），分母为0时标记不适用，目标100%；单项验证周期=提交验证至形成放行结论的工作日，试行目标≤5个工作日；后端再暴露数目标为0项。";
 
+export const normalizeMonthlyActionHeadings = (content = "") => String(content || "")
+  .replace(/^(#{1,6})\s+[^\n]*30\s*[\/／]\s*60\s*[\/／]\s*90[^\n]*$/gmi, "$1 本月措施")
+  .replace(/^#{3,6}\s+(?:0?\s*[—\-～~]?\s*30|31\s*[—\-～~]\s*60|61\s*[—\-～~]\s*90|30|60|90)\s*天[^\n]*\r?\n[\s\S]*?(?=^#{2,6}\s+|(?![\s\S]))/gmi, "")
+  .replace(/^[-*]\s+\*{0,2}\s*(?:0?\s*[—\-～~]?\s*30|31\s*[—\-～~]\s*60|61\s*[—\-～~]\s*90)\s*天[^\n]*$/gmi, "");
+
 export const addIsoDays = (isoDate, days) => {
   const date = new Date(`${isoDate}T00:00:00Z`);
   if (Number.isNaN(date.getTime())) return "";
@@ -32,7 +37,7 @@ export const enforceRdEngineerReportFacts = (content = "", evidence = {}, rankin
   const categories = evidence.rdQualityIssues?.categories || [];
   const monthly = evidence.rdQualityIssues?.periodTrend?.month?.rows || [];
   const weekly = evidence.rdQualityIssues?.periodTrend?.week?.rows || [];
-  let next = String(content || "")
+  let next = normalizeMonthlyActionHeadings(String(content || ""))
     .replace(/^\s*\|\s*综合问题口径\s*\|.*$/gmi, "")
     .replace(/全部暴露于\*{0,2}生产、售后\*{0,2}阶段/g, "问题记录涵盖**生产、售后**阶段")
     .replace(/人员证据中的`directResponsibility`[^。\n]*`mapping`[^。\n]*。?/g, "当前固定组织映射未提供PM、TPM或产总姓名，因此不推断具体管理者。")
@@ -73,8 +78,8 @@ export const enforceRdEngineerReportFacts = (content = "", evidence = {}, rankin
   next = removeSections(next, "(?:月度|周度)问题趋势");
   const trendBody = [
     `**研发质量问题：${rdIssues} 项。** 问题趋势只展示数量，不展示不良率。`,
-    monthly.length ? `### 月度问题趋势\n\n${trendTable(monthly, "自然月")}` : "",
     weekly.length ? `### 周度问题趋势\n\n${trendTable(weekly, "自然周")}` : "",
+    monthly.length ? `### 月度问题趋势\n\n${trendTable(monthly, "自然月")}` : "",
   ].filter(Boolean).join("\n\n");
   if (trendBody) {
     const replaced = replaceSectionBody(next, "质量结果与完整趋势", trendBody);
@@ -92,6 +97,6 @@ export const enforceRdEngineerReportFacts = (content = "", evidence = {}, rankin
     const replaced = replaceSectionBody(next, "(?:研发质量问题|个人问题|个人风险|质量风险)排名", body);
     next = replaced === next ? `${next.trim()}\n\n## 研发质量问题排名\n\n${body}\n` : replaced;
   }
-  if (!/发布前检出率\s*=.*单项验证周期\s*=.*后端再暴露/s.test(next)) next = rewriteSectionBody(next, "工程门禁[^\n]*(?:30|60|90)", (body) => `**验证指标统一口径：**${ACTION_METRIC_CONTRACT}\n\n${body}`);
+  if (!/发布前检出率\s*=.*单项验证周期\s*=.*后端再暴露/s.test(next)) next = rewriteSectionBody(next, "(?:本月措施|工程门禁)[^\n]*", (body) => `**验证指标统一口径：**${ACTION_METRIC_CONTRACT}\n\n${body}`);
   return next.replace(/\n{3,}/g, "\n\n").trim();
 };
