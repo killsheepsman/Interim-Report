@@ -1305,7 +1305,7 @@
 .lieflat-card.lieflat-wide svg{min-width:920px;max-height:none}
 .lieflat-card.lieflat-scroll .lieflat-svg-wrap{padding-bottom:6px}
 .lieflat-card.lieflat-scroll svg{width:auto!important;max-width:none!important;min-width:0!important;max-height:none!important;height:auto!important}
-.lieflat-card.lieflat-scroll svg text{font-size:11px!important}
+.lieflat-card.lieflat-scroll svg text:not(.lieflat-axis){font-size:11px!important}
 .lieflat-week-bands{display:flex;flex-direction:column;gap:10px;width:100%}
 .lieflat-week-bands svg{width:100%!important;max-width:100%!important;min-width:0!important;height:auto!important;max-height:none!important}
 @media print{
@@ -1327,7 +1327,8 @@
 .lieflat-sub{font-size:calc(13px * var(--lieflat-font-scale,1.55))!important}
 .lieflat-src{font-size:calc(11px * var(--lieflat-font-scale,1.55))!important}
 .lieflat-card svg{overflow:visible}
-.lieflat-card svg text{font-size:calc(13px * var(--lieflat-font-scale,1.55))!important}
+.lieflat-card svg text:not(.lieflat-axis){font-size:calc(13px * var(--lieflat-font-scale,1.55))!important}
+.lieflat-card svg text.lieflat-axis{font-size:calc(var(--lieflat-axis-px, 8) * 1px) !important}
 
 .wecom-send-panel header{display:flex;justify-content:space-between;gap:12px;align-items:flex-start;flex-wrap:wrap}
 .wecom-send-panel header span{display:block;color:#7a6a58;font-size:12px;margin-top:4px}

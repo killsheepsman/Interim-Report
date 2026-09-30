@@ -1,5 +1,6 @@
 export const QUALITY_ROLE_SNAPSHOT_REGISTRY_KEY = "quality-agent-role-snapshot-registry";
 import { isIpqcExcludedBadType, normalizeIpqcLeaderMapRows } from "../dataEngine.js";
+import { canonicalProductDept } from "../orgMappingParse.js";
 export const QUALITY_ROLE_SNAPSHOT_SCHEMA = "quality-agent-role-snapshot-v1";
 // 8 roles x range/month/week periods exceed the old 240-entry global limit.
 // Keep one complete annual set plus revisions; maintenance still archives
@@ -9,6 +10,7 @@ const ROLE_SNAPSHOT_HISTORY_LIMIT = 480;
 const nowIso = () => new Date().toISOString();
 const text = (value) => String(value ?? "").trim();
 const unique = (values) => [...new Set(values.map(text).filter(Boolean))];
+const isPlaceholderPerson = (value) => /^(其他|其它|待配置|待定|未配置|未填写|无|\/|-|—)$/.test(text(value));
 const RD_ENGINEER_FIELDS = ["研发工程师", "工程师", "RD工程师", "工程师姓名", "责任人/处理人", "责任人\\处理人", "责任人", "申请人", "创建人", "__engineer"];
 const rdPerson = (value) => {
   const candidate = text(value).normalize("NFKC").replace(/[（(][^)）]*[）)]/g, "").replace(/[\s\u00a0]/g, "").replace(/(?:等人|等)$/u, "");
@@ -167,7 +169,8 @@ export const overlaySelectedWindowOnSnapshot = (snapshot, period = {}) => {
   const sliced = selectedWindowTotalsFromTrend(month, period);
   const windowExamples = exact ? snapshot.examples : examplesInSelectedWindow(snapshot.examples, period);
   const windowCategories = exact ? snapshot.categories : categoriesFromExamples(windowExamples);
-  const windowTeam = exact ? snapshot.teamMembers : teamMembersFromExamples(windowExamples, snapshot.role);
+  const exampleTeam = exact ? [] : teamMembersFromExamples(windowExamples, snapshot.role);
+  const windowTeam = exact ? snapshot.teamMembers : (exampleTeam.some((item) => Number(item.bad || 0) > 0) ? exampleTeam : snapshot.teamMembers);
   const rdIssues = snapshot.rdQualityIssues ? {
     ...snapshot.rdQualityIssues,
     periodTrend: {
@@ -185,17 +188,85 @@ export const overlaySelectedWindowOnSnapshot = (snapshot, period = {}) => {
     categories: windowCategories,
     examples: windowExamples,
     teamMembers: windowTeam,
+    siteStats: exact ? snapshot.siteStats : [],
+    captainTop: exact ? snapshot.captainTop : [],
     rdQualityIssues: rdIssues,
   };
 };
 
 const issue = (row) => row?.__roleActivity === true || isIpqcExcludedBadType(row) ? 0 : (text(row?.不良内容) || text(row?.不良类型) || text(row?.问题类型) || text(row?.问题描述) ? 1 : 0);
 const rowNames = (row, fields) => fields.flatMap((field) => text(row?.[field]).split(/[、,，;；/\\|]/).map(text)).filter(Boolean);
-const sourceRows = (files, modules) => files.filter((file) => modules.includes(file.module) && file.kind !== "IPQC_LEADER_MAP" && file.subKind !== "IPQC_LEADER_MAP").flatMap((file) => file.rows || []);
+const ipqcSiteFromFileName = (name = "") => (/杭州/.test(String(name || "")) ? "杭州" : /深圳/.test(String(name || "")) ? "深圳" : "");
+const sourceRows = (files, modules) => files.filter((file) => modules.includes(file.module) && file.kind !== "IPQC_LEADER_MAP" && file.subKind !== "IPQC_LEADER_MAP").flatMap((file) => {
+  const site = file.module === "IPQC" ? (ipqcSiteFromFileName(`${file.name || ""} ${file.fileName || ""}`) || "深圳") : "";
+  return (file.rows || []).map((row) => (row.__ipqcSite || !site ? row : { ...row, __ipqcSite: site, __sourceFile: file.name || file.fileName || "" }));
+});
 export const TEAM_MEMBER_SPEC = {
   机长: { fields: ["送检人"], label: "组装人员", sectionId: "组内成员", chartTitle: "组内成员不良记录" },
   交付经理: { fields: ["机长", "组长", "班组长"], label: "机长", sectionId: "下属机长", chartTitle: "下属机长不良记录" },
-  供应链经理: { fields: ["交付经理", "供应商经理", "经理"], label: "交付经理", sectionId: "下属交付经理", chartTitle: "下属交付经理不良记录" },
+  供应链经理: { fields: ["交付经理", "供应商经理"], label: "交付经理", sectionId: "下属交付经理", chartTitle: "下属交付经理不良记录" },
+};
+export const siteFromValue = (value = "") => {
+  const raw = text(value);
+  if (/深圳/.test(raw)) return "深圳";
+  if (/杭州/.test(raw)) return "杭州";
+  return "";
+};
+export const siteFromRow = (row = {}) => siteFromValue(row.__ipqcSite || row.__reportSite || row.site || row["厂区"] || row["基地"] || row["区域"] || row["地点"] || row["车间"]);
+export const siteStatsFromRows = (rows = []) => {
+  const map = new Map();
+  (Array.isArray(rows) ? rows : []).forEach((row) => {
+    const site = siteFromRow(row);
+    if (!site) return;
+    const current = map.get(site) || { name: site, total: 0, bad: 0 };
+    current.total += 1;
+    current.bad += issue(row);
+    map.set(site, current);
+  });
+  const ordered = ["深圳", "杭州"].map((name) => map.get(name)).filter(Boolean);
+  const extra = [...map.values()].filter((item) => item.name !== "深圳" && item.name !== "杭州");
+  return [...ordered, ...extra]
+    .map((item) => ({ ...item, good: Math.max(0, item.total - item.bad), badRate: item.total ? Number((item.bad / item.total * 100).toFixed(2)) : 0 }))
+    .filter((item) => Number(item.total || 0) > 0 || Number(item.bad || 0) > 0);
+};
+export const supplyChainTeamFromRows = (rows = [], mappings = []) => {
+  const leaderToManager = new Map();
+  (Array.isArray(mappings) ? mappings : []).forEach((row) => {
+    const leader = text(row.leader || row.机长);
+    const manager = text(row.manager || row.交付经理);
+    if (leader && manager) leaderToManager.set(leader, manager);
+  });
+  const stats = new Map();
+  (Array.isArray(rows) ? rows : []).forEach((row) => {
+    const mapped = rowNames(row, ["机长", "组长", "班组长"]).map((leader) => leaderToManager.get(leader)).filter(Boolean);
+    const names = [...new Set(mapped.length ? mapped : [text(row["交付经理"] || row["供应商经理"])].filter(Boolean))];
+    if (!names.length) return;
+    const bad = issue(row);
+    names.forEach((name) => {
+      const current = stats.get(name) || { name, total: 0, bad: 0 };
+      current.total += 1;
+      current.bad += bad;
+      stats.set(name, current);
+    });
+  });
+  return [...stats.values()]
+    .map((item) => ({ ...item, good: Math.max(0, item.total - item.bad), badRate: item.total ? Number((item.bad / item.total * 100).toFixed(2)) : 0 }))
+    .sort((a, b) => b.bad - a.bad || a.name.localeCompare(b.name, "zh-CN"));
+};
+export const captainTopFromRows = (rows = [], mappings = [], limit = 8) => {
+  const mapRows = Array.isArray(mappings) ? mappings : [];
+  return teamMemberStats(rows, ["机长", "组长", "班组长"])
+    .filter((item) => Number(item.bad || 0) > 0)
+    .slice(0, limit)
+    .map((item) => {
+      const mapped = mapRows.find((row) => text(row.leader || row.机长) === item.name) || {};
+      const sample = (Array.isArray(rows) ? rows : []).find((row) => rowNames(row, ["机长", "组长", "班组长"]).includes(item.name));
+      return {
+        ...item,
+        site: siteFromValue(mapped.site) || siteFromRow(sample) || "",
+        manager: text(mapped.manager || mapped.交付经理 || sample?.["交付经理"] || ""),
+      };
+    });
 };
 export const teamMemberSpecForRole = (role) => TEAM_MEMBER_SPEC[role] || null;
 export const resolveSupplyMappings = (configMappings = [], files = []) => {
@@ -236,16 +307,40 @@ export const applyMappedTeamMembersToVisualSpec = (visualSpec, role, recipient, 
     figures: visualSpec.figures.map((figure) => {
       if (figure.id !== "leader-team-members" && figure.sectionId !== spec.sectionId) return figure;
       const categories = Array.isArray(figure.categories) ? figure.categories : [];
-      const currentValues = Array.isArray(figure.series?.[0]?.values) ? figure.series[0].values : [];
-      const byName = new Map(categories.map((item, index) => [text(typeof item === "string" ? item : item?.name), Number(currentValues[index] || 0)]));
-      (Array.isArray(members) ? members : []).forEach((item) => byName.set(text(item.name), Number(item.bad || 0)));
+      const rateLike = (item) => item?.unit === "%" || /率|占比/.test(String(item?.name || ""));
+      const oldBad = Array.isArray(figure.series?.[0]?.values) ? figure.series[0].values : [];
+      const totalSeries = figure.series?.find((item, index) => index > 0 && !rateLike(item));
+      const rateSeries = figure.series?.find((item) => rateLike(item));
+      const oldTotal = Array.isArray(totalSeries?.values) ? totalSeries.values : [];
+      const oldRate = Array.isArray(rateSeries?.values) ? rateSeries.values : [];
+      const byMember = new Map(categories.map((item, index) => {
+        const name = text(typeof item === "string" ? item : item?.name);
+        const total = Number(oldTotal[index] || 0);
+        const bad = Number(oldBad[index] || 0);
+        return [name, { name, total, bad, badRate: Number(oldRate[index] || (total ? Number((bad / total * 100).toFixed(2)) : 0)) }];
+      }));
+      (Array.isArray(members) ? members : []).forEach((item) => byMember.set(text(item.name), item));
       const names = [...allowed];
-      const values = names.map((name) => Number(byName.get(name) || 0));
-      if (values.every((value) => value === 0) && !(Array.isArray(members) && members.some((item) => Number(item.bad || item.total || 0) > 0))) {
+      const resolved = names.map((name) => {
+        const item = byMember.get(name) || { name, total: 0, bad: 0, badRate: 0 };
+        const total = Number(item.total || 0);
+        const bad = Number(item.bad || 0);
+        return { name, total, bad, badRate: Number(item.badRate || (total ? Number((bad / total * 100).toFixed(2)) : 0)) };
+      });
+      if (resolved.every((item) => item.bad === 0 && item.total === 0) && !(Array.isArray(members) && members.some((item) => Number(item.bad || item.total || 0) > 0))) {
         return null;
       }
-      const series = Array.isArray(figure.series) && figure.series[0] ? [{ ...figure.series[0], values }] : [{ name: "不良记录", values, axis: "left" }];
-      return { ...figure, categories: names, series };
+      return {
+        ...figure,
+        intent: "comparison",
+        preferredChart: "combo-bar-line",
+        categories: names,
+        series: [
+          { name: "不良数量", values: resolved.map((item) => item.bad), axis: "left" },
+          { name: "送检数量", values: resolved.map((item) => item.total), axis: "left" },
+          { name: "不良率", values: resolved.map((item) => item.badRate), axis: "right", unit: "%" },
+        ],
+      };
     }).filter(Boolean),
   };
 };
@@ -358,7 +453,7 @@ const rdIssueEvidence = (files, recipient, period, selectedRows = null, yearRows
   return {
     count: rows.length,
     categories: categoryStats(rows).slice(0, 10),
-    productDepts: unique(rows.map((row) => row?.产品部)),
+    productDepts: unique(rows.map((row) => canonicalProductDept(row?.产品部))),
     stages: unique(rows.map((row) => row?.阶段)),
     periodTrend: {
       month: rdIssuePeriodTrend(trendRows, period, "month"),
@@ -446,6 +541,8 @@ export const roleSnapshotRule = (roleOrId) => ROLE_SNAPSHOT_TYPES.find((item) =>
 
 const roleDefaultSkill = (role) => `quality-role-${roleSnapshotRule(role).id}`;
 export const DEFAULT_ROLE_CHART_SKILL_ID = "quality-role-charts-lieflat";
+export const DEFAULT_ACCEPTANCE_SKILL_ID = "elon-musk-perspective";
+export const isAcceptanceSkill = (item) => /^(elon-musk-perspective|quality-consultant|zeng-shiqiang-perspective|acceptance-)/i.test(String(item?.id || item?.name || "").trim());
 export const isRoleChartSkill = (item) => /quality-role-charts|图表生成|lieflat-charts|role-charts/i.test(`${item?.id || ""} ${item?.name || ""} ${item?.description || ""}`);
 export const chartThemeFromSkill = (item) => {
   const key = `${item?.id || ""} ${item?.name || ""}`;
@@ -506,9 +603,9 @@ export const buildRoleSnapshots = ({ role, files = [], dateRange = {}, mappings 
     ? ["供应链经理"]
     : rule.role === "机长" ? unique(rows.flatMap((row) => rowNames(row, rule.fields)))
       : rule.role === "交付经理" ? unique(rows.flatMap((row) => rowNames(row, rule.fields)).concat(mappingRows.flatMap((row) => rowNames(row, ["manager", "交付经理"]))))
-        : rule.role === "PM" ? unique([...orgRows.flatMap((row) => rowNames(row, ["pm", "PM"])), ...agentNames])
-          : rule.role === "TPM" ? unique([...orgRows.flatMap((row) => rowNames(row, ["tpm", "TPM"])), ...agentNames])
-            : rule.role === "产总" ? unique(orgRows.flatMap((row) => rowNames(row, ["productionDirector", "产总"])))
+        : rule.role === "PM" ? unique(orgRows.flatMap((row) => rowNames(row, ["pm", "PM"]))).filter((name) => !isPlaceholderPerson(name))
+          : rule.role === "TPM" ? unique(orgRows.flatMap((row) => rowNames(row, ["tpm", "TPM"]))).filter((name) => !isPlaceholderPerson(name))
+            : rule.role === "产总" ? unique(orgRows.flatMap((row) => rowNames(row, ["productionDirector", "产总"]))).filter((name) => !isPlaceholderPerson(name))
               : rule.role === "研发工程师" ? unique([...rows.flatMap(rdRowNames), ...agentNames])
                 : unique([...rows.flatMap((row) => rowNames(row, rule.fields)), ...agentNames]));
   const managerRowsFor = (recipient, pool = rows) => {
@@ -553,7 +650,7 @@ export const buildRoleSnapshots = ({ role, files = [], dateRange = {}, mappings 
       return { recipient, snapshot };
     }
     const base = metric(matched);
-    const snapshot = { role, recipient, chain: rule.chain, modules: rule.modules, period: { start: selectedRange.start, end: selectedRange.end }, metricContract: rule.modules.includes("IPQC") ? "ipqc-exclude-upstream-v1" : "", metrics: { ...base, badRate: base.total ? Number((base.bad / base.total * 100).toFixed(2)) : 0 }, categories: categoryStats(matched, true).slice(0, 12), examples: issueExamples(matched), trend: trend(yearMatched, { start: selectedRange.start, end: selectedRange.end, _periodStart: selectedRange.start, _periodEnd: selectedRange.end }), teamMembers: teamMemberSpecForRole(rule.role) ? filterTeamMembersByMapping(rule.role, recipient, teamMemberStats(matched, teamMemberSpecForRole(rule.role).fields), mappingRows) : [], mapping: mappings[recipient] || {}, sourceRows: matched.length, generatedAt: nowIso() };
+    const snapshot = { role, recipient, chain: rule.chain, modules: rule.modules, period: { start: selectedRange.start, end: selectedRange.end }, metricContract: rule.modules.includes("IPQC") ? "ipqc-exclude-upstream-v1" : "", metrics: { ...base, badRate: base.total ? Number((base.bad / base.total * 100).toFixed(2)) : 0 }, categories: categoryStats(matched, true).slice(0, 12), examples: issueExamples(matched), trend: trend(yearMatched, { start: selectedRange.start, end: selectedRange.end, _periodStart: selectedRange.start, _periodEnd: selectedRange.end }), teamMembers: rule.role === "供应链经理" ? filterTeamMembersByMapping(rule.role, recipient, supplyChainTeamFromRows(matched, mappingRows), mappingRows) : (teamMemberSpecForRole(rule.role) ? filterTeamMembersByMapping(rule.role, recipient, teamMemberStats(matched, teamMemberSpecForRole(rule.role).fields), mappingRows) : []), siteStats: rule.role === "供应链经理" ? siteStatsFromRows(matched) : [], captainTop: rule.role === "供应链经理" ? captainTopFromRows(matched, mappingRows) : [], mapping: mappings[recipient] || {}, sourceRows: matched.length, generatedAt: nowIso() };
     return { recipient, snapshot };
   });
   const ranking = all.map(({ recipient, snapshot }) => ({ recipient, bad: snapshot.metrics.bad, total: snapshot.metrics.total, badRate: snapshot.metrics.badRate, metricLabel: snapshot.metrics.metricLabel || "不良记录" })).sort((a, b) => b.bad - a.bad || Number(b.badRate || 0) - Number(a.badRate || 0));
@@ -566,9 +663,17 @@ export const attachDqaAgentRawMetrics = (payload, rawMetrics, mappings = {}, rev
   const scopeFor = (role, recipient) => {
     if (role === "研发工程师") return (raw.records || []).filter((row) => row.engineer === recipient);
     if (role === "PM") return (raw.records || []).filter((row) => row.pm === recipient);
-    const org = role === "TPM" ? orgRows.filter((row) => rowNames(row, ["tpm", "TPM"]).includes(recipient)) : orgRows.filter((row) => rowNames(row, ["productionDirector", "产总"]).includes(recipient));
-    const tpms = new Set(org.flatMap((row) => rowNames(row, ["tpm", "TPM"]))); const pms = new Set(org.flatMap((row) => rowNames(row, ["pm", "PM"])));
-    return (raw.records || []).filter((row) => role === "TPM" ? row.tpm === recipient || pms.has(row.pm) : tpms.has(row.tpm) || pms.has(row.pm));
+    if (role === "TPM") {
+      const org = orgRows.filter((row) => rowNames(row, ["tpm", "TPM"]).includes(recipient));
+      const pms = new Set(org.flatMap((row) => rowNames(row, ["pm", "PM"])));
+      return (raw.records || []).filter((row) => row.tpm === recipient || pms.has(row.pm));
+    }
+    if (role === "产总") {
+      const org = orgRows.filter((row) => rowNames(row, ["productionDirector", "产总"]).includes(recipient));
+      const pms = new Set(org.flatMap((row) => rowNames(row, ["pm", "PM"])));
+      return (raw.records || []).filter((row) => pms.has(row.pm));
+    }
+    return [];
   };
   const summarize = (records) => {
     const ecn = records.filter((row) => row.source === "ECN"); const nonBom = records.filter((row) => row.source === "非BOM"); const projects = [...new Set(ecn.map((row) => row.project).filter(Boolean))];
@@ -597,7 +702,29 @@ export const attachDqaAgentRawMetrics = (payload, rawMetrics, mappings = {}, rev
     const fixedMetrics = payload.role === "研发工程师"
       ? (raw.byEngineer?.[item.recipient] || summarize([]))
       : summarize(scopeFor(payload.role, item.recipient));
-    return { ...item, snapshot: { ...item.snapshot, dqaAgentMetrics: { ...fixedMetrics, ...reviewContribution(item.recipient) } } };
+    const countOnly = (records) => {
+      const metrics = summarize(records);
+      return { ecnCount: metrics.ecnCount, ecnMachinedCount: metrics.ecnMachinedCount, nonBomCount: metrics.nonBomCount, nonBomMachinedCount: metrics.nonBomMachinedCount, projectCount: metrics.projectCount };
+    };
+    const childLines = (() => {
+      if (payload.role === "产总") {
+        const org = orgRows.filter((row) => rowNames(row, ["productionDirector", "产总"]).includes(item.recipient));
+        return unique(org.flatMap((row) => rowNames(row, ["tpm", "TPM"]))).map((tpm) => {
+          const pms = new Set(org.filter((row) => rowNames(row, ["tpm", "TPM"]).includes(tpm)).flatMap((row) => rowNames(row, ["pm", "PM"])));
+          return { name: tpm, ...countOnly((raw.records || []).filter((row) => pms.has(row.pm))) };
+        });
+      }
+      if (payload.role === "TPM") {
+        const org = orgRows.filter((row) => rowNames(row, ["tpm", "TPM"]).includes(item.recipient));
+        return unique(org.flatMap((row) => rowNames(row, ["pm", "PM"]))).map((pm) => ({ name: pm, ...countOnly((raw.records || []).filter((row) => row.pm === pm)) }));
+      }
+      if (payload.role === "PM") {
+        const records = scopeFor(payload.role, item.recipient);
+        return unique(records.map((row) => row.engineer)).map((engineer) => ({ name: engineer, ...countOnly(records.filter((row) => row.engineer === engineer)) }));
+      }
+      return [];
+    })();
+    return { ...item, snapshot: { ...item.snapshot, dqaAgentMetrics: { ...fixedMetrics, agentEcnLineCount: fixedMetrics.ecnCount, agentNonBomLineCount: fixedMetrics.nonBomCount, childLines, ...reviewContribution(item.recipient) } } };
   }) };
 };
 export const mergeRoleSnapshotRegistry = (registry, payload) => {
@@ -693,6 +820,8 @@ export const fillSnapshotWindowDetails = (snapshot, registry, { role = "", recip
   if (!start || !end) return snapshot;
   const cats = new Map();
   const team = new Map();
+  const sites = new Map();
+  const captains = new Map();
   const examples = [];
   normalizeRoleSnapshotRegistry(registry).history.forEach((entry) => {
     if (entry.active === false || entry.role !== role) return;
@@ -708,6 +837,20 @@ export const fillSnapshotWindowDetails = (snapshot, registry, { role = "", recip
       current.total += Number(item.total || 0);
       current.bad += Number(item.bad || 0);
       team.set(item.name, current);
+    });
+    (person.siteStats || []).forEach((item) => {
+      const current = sites.get(item.name) || { name: item.name, total: 0, bad: 0 };
+      current.total += Number(item.total || 0);
+      current.bad += Number(item.bad || 0);
+      sites.set(item.name, current);
+    });
+    (person.captainTop || []).forEach((item) => {
+      const current = captains.get(item.name) || { name: item.name, total: 0, bad: 0, site: item.site || "", manager: item.manager || "" };
+      current.total += Number(item.total || 0);
+      current.bad += Number(item.bad || 0);
+      current.site = current.site || item.site || "";
+      current.manager = current.manager || item.manager || "";
+      captains.set(item.name, current);
     });
     examples.push(...(person.examples || []));
   });
@@ -729,6 +872,12 @@ export const fillSnapshotWindowDetails = (snapshot, registry, { role = "", recip
     categories: categories.length ? categories : snapshot.categories,
     examples: mergedExamples.length ? mergedExamples.slice(0, 200) : snapshot.examples,
     teamMembers: teamMembers.some((item) => item.bad > 0) ? teamMembers : snapshot.teamMembers,
+    siteStats: [...sites.values()].some((item) => item.bad > 0 || item.total > 0)
+      ? [...sites.values()].map((item) => ({ ...item, good: Math.max(0, item.total - item.bad), badRate: item.total ? Number((item.bad / item.total * 100).toFixed(2)) : 0 }))
+      : snapshot.siteStats,
+    captainTop: [...captains.values()].some((item) => item.bad > 0)
+      ? [...captains.values()].map((item) => ({ ...item, good: Math.max(0, item.total - item.bad), badRate: item.total ? Number((item.bad / item.total * 100).toFixed(2)) : 0 })).sort((a, b) => b.bad - a.bad).slice(0, 8)
+      : snapshot.captainTop,
   };
 };
 export const overlayWindowDetailsOntoEvidence = (evidence = {}, snapshot = null) => {
@@ -763,6 +912,14 @@ export const overlayWindowDetailsOntoEvidence = (evidence = {}, snapshot = null)
   const liveExamplesWeak = !Array.isArray(next.examples) || !next.examples.length || (covering && examplesOutside(next.examples));
   if (Array.isArray(snapshot.examples) && snapshot.examples.length && liveExamplesWeak) {
     next.examples = snapshot.examples;
+  }
+  const liveSitesWeak = !Array.isArray(next.siteStats) || !next.siteStats.some((item) => Number(item.bad || 0) > 0 || Number(item.total || 0) > 0);
+  if (Array.isArray(snapshot.siteStats) && snapshot.siteStats.some((item) => Number(item.bad || 0) > 0) && (covering || liveSitesWeak)) {
+    next.siteStats = snapshot.siteStats;
+  }
+  const liveCaptainsWeak = !Array.isArray(next.captainTop) || !next.captainTop.some((item) => Number(item.bad || 0) > 0);
+  if (Array.isArray(snapshot.captainTop) && snapshot.captainTop.some((item) => Number(item.bad || 0) > 0) && (covering || liveCaptainsWeak)) {
+    next.captainTop = snapshot.captainTop;
   }
   return next;
 };

@@ -97,7 +97,7 @@ const stitched = stitchRoleReportParts({
   confirmedKnowledge: [{ documentName: "组装作业指导书", clauseNumber: "5.1" }],
 });
 assert.equal(hasTimeoutFallbackMarker(stitched), false);
-assert.ok(stitched.includes("本期无质量问题，质量部不提出额外要求"));
+assert.ok(stitched.includes("本期无质量问题。请继续保持。"));
 assert.ok(stitched.includes("组装作业指导书"));
 
 const fromSnapshot = buildFixedEvidenceRoleReport({
@@ -151,6 +151,7 @@ assert.equal(roleQualityStatus({ role: "组装人员", evidence: { ipqcMetrics: 
 const goodHi = buildReportSalutation({ role: "组装人员", recipient: "测试员", period: { start: "2026-08-01", end: "2026-08-31" }, evidence: { ipqcMetrics: { inspectedRecords: 10, badRecords: 0 } } });
 assert.match(goodHi, /继续|再接再厉|不错|可控/);
 const chanHi = buildReportSalutation({ role: "产总", recipient: "张总", period: { start: "2026-08-01", end: "2026-08-31" }, evidence: { matchedRows: 4 } });
-assert.match(chanHi, /请先查阅|抓重点、给资源/);
-assert.equal(chanHi.includes("给产品线质量撑了腰"), false);
+assert.match(chanHi, /汇报|供审阅|供查阅/);
+assert.doesNotMatch(chanHi, /请先查阅|抓重点|我们一起|请继续|给产品线质量撑了腰/);
+assert.equal(chanHi.includes("张总总"), false);
 console.log("role timeout fallback smoke test passed");

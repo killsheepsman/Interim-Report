@@ -1,5 +1,6 @@
 import * as XLSX from "xlsx";
 import { sampleData } from "./sampleData.js";
+import { canonicalProductDept, canonicalProjectGroup } from "./orgMappingParse.js";
 
 const text = (v) => (v == null ? "" : String(v).trim());
 const number = (v) => {
@@ -641,7 +642,7 @@ const supplementRowsFromWorkbook = (workbook) => workbook.SheetNames.flatMap((sh
   const matrix = sheetMatrix(workbook.Sheets[sheetName]);
   const headerIndex = matrix.findIndex((row) => row.some((cell) => ["ECN\u7f16\u53f7", "\u7533\u8bf7\u4eba", "\u8bc4\u5ba1\u6210\u5458", "\u63d0\u51fa\u4eba"].includes(supplementText(cell))));
   if (headerIndex < 0) return [];
-  const headers = matrix[headerIndex].map(supplementText);
+  const headers = keepFirstSheetHeaders(matrix[headerIndex].map(supplementText));
   return matrix.slice(headerIndex + 1).filter((row) => row.some((cell) => supplementText(cell))).map((values) => Object.fromEntries(headers.map((header, index) => [header, values[index]]).filter(([header]) => header)));
 });
 const supplementReviewDate = (matrix) => {
@@ -716,12 +717,22 @@ export async function parseDqaEngineerSupplementFiles(files = []) {
 
 // 独立的研发 Agent 原始明细：不参与质量数据-DQA 的既有导入与统计。
 const DQA_AGENT_RAW_KIND = "DQA_AGENT_RAW";
-const agentPerson = (value) => {
-  const source = supplementPerson(value).normalize("NFKC").trim()
-    .replace(/[（(][^)）]*[）)]/g, "")
-    .replace(/[\s\u00a0]/g, "")
-    .replace(/(?:等人|等)$/u, "");
-  return /^[\u4e00-\u9fff·]{2,6}$/u.test(source) ? source : "";
+export const extractAgentPerson = (value) => {
+  const source = String(value ?? "").normalize("NFKC").replace(/\u00a0/g, " ").trim();
+  if (!source) return "";
+  const tail = source.match(/^[0-9]+(?:\([^)]*\))?[\\(（]([^()（）]+)[\\)）]$/);
+  const names = (tail ? tail[1] : source).match(/[\u4e00-\u9fff·]{2,8}/g) || [];
+  return names.find((item) => !/^(?:禁用|离职|停用)$/.test(item)) || "";
+};
+const agentPerson = (value) => extractAgentPerson(value);
+export const keepFirstSheetHeaders = (headers = []) => {
+  const seen = new Set();
+  return headers.map((header) => {
+    const name = String(header || "");
+    if (!name || seen.has(name)) return "";
+    seen.add(name);
+    return name;
+  });
 };
 const agentMaterialCode = (value) => supplementText(value).trim();
 const agentRecordId = (sourceId, index) => `${sourceId}:${index}`;
@@ -840,8 +851,34 @@ const agentRawGroup = (records, getter) => {
   return map;
 };
 // 每条 ECN 明细均为分子；项目 BOM 分母按项目去重，以同项目首次非零值为准。
+const cleanAgentEngineer = (value) => {
+  const text = String(value || "");
+  if (!text || text.includes("\uFFFD")) return "";
+  return extractAgentPerson(text);
+};
+export const repairCorruptedEngineers = (records = []) => {
+  const groups = new Map();
+  for (const row of records) {
+    const key = String(row?.ecnNo || "").trim();
+    if (!key) continue;
+    const list = groups.get(key) || [];
+    list.push(row);
+    groups.set(key, list);
+  }
+  const canonical = new Map();
+  for (const [key, list] of groups) {
+    const names = [...new Set(list.map((row) => cleanAgentEngineer(row.engineer)).filter(Boolean))];
+    if (names.length === 1) canonical.set(key, names[0]);
+  }
+  return records.map((row) => {
+    const fixed = canonical.get(String(row?.ecnNo || "").trim());
+    if (!fixed || cleanAgentEngineer(row.engineer)) return row;
+    return { ...row, engineer: fixed };
+  });
+};
+
 export const buildDqaAgentRawMetrics = (raw = {}, range = {}) => {
-  const ecnRecords = (raw.ecnRecords || []).filter((row) => agentRawInRange(row.date, range));
+  const ecnRecords = repairCorruptedEngineers(raw.ecnRecords || []).filter((row) => agentRawInRange(row.date, range));
   const nonBomRecords = (raw.nonBomRecords || []).filter((row) => agentRawInRange(row.date, range));
   const mappings = raw.projectMappings || [];
   const mappingByCostObject = new Map(mappings.filter((row) => row.costObject).map((row) => [row.costObject, row]));
@@ -1761,13 +1798,7 @@ const buildOqcMonthlySummary = (rows, dateRange) => {
   };
 };
 
-const oqcDisplayDivision = (value) => {
-  const source = text(value);
-  if (/产品一部|半导体|北美|IC载[板版]/i.test(source)) return "半导体&北美";
-  if (/产品五部/.test(source)) return "产品五部";
-  if (/FPC/i.test(source)) return "FPC事业部";
-  return "";
-};
+const oqcDisplayDivision = (value) => allowedProductDept(value);
 
 const buildOqcShipmentDetail = (rows, dateRange) => {
   const divisions = ["半导体&北美", "产品五部", "FPC事业部"];
@@ -1987,13 +2018,11 @@ const buildOqcShipmentDetail = (rows, dateRange) => {
   };
 };
 
-const displayDivision = (value, fileName = "") => {
-  const source = `${text(value)} ${fileName}`;
-  if (/产品一部|北美|传感器|半导体|IC载板/i.test(source)) return "半导体&北美";
-  if (/产品五部/i.test(source)) return "产品五部";
-  if (/FPC/i.test(source)) return "FPC事业部";
-  return text(value) || "未分类";
+const allowedProductDept = (value) => {
+  const dept = canonicalProductDept(value);
+  return ["半导体&北美", "产品五部", "FPC事业部"].includes(dept) ? dept : "";
 };
+const displayDivision = (value, fileName = "") => allowedProductDept(value) || allowedProductDept(fileName) || text(value) || "未分类";
 
 const buildDqaDetails = (dqaFiles) => {
   const divisionNames = ["半导体&北美", "产品五部", "FPC事业部"];
@@ -2009,8 +2038,7 @@ const buildDqaDetails = (dqaFiles) => {
       if (!divisionNames.includes(division)) return;
       const rawTpm = text(row["TPM"]);
       let tpm = rawTpm && rawTpm !== "/" ? rawTpm : (division === "半导体&北美" ? text(row["产品部"]) || "未分类" : "未分类");
-      if (division === "半导体&北美" && /传感器/.test(tpm)) tpm = "传感器产品部";
-      if (division === "半导体&北美" && /北美/.test(tpm)) tpm = "北美项目部";
+      if (division === "半导体&北美" && canonicalProjectGroup(tpm)) tpm = canonicalProjectGroup(tpm);
       const stageText = text(row["阶段"] || row["问题发生地"] || row["问题反馈部门"]);
       // 2025 review totals come exclusively from the dedicated review-summary
       // workbooks. Some 2025 detail rows also carry 阶段=评审 and would otherwise
@@ -2070,21 +2098,21 @@ const buildDqaDetails = (dqaFiles) => {
 
 const ECN_DIVISIONS = ["半导体&北美", "产品五部", "FPC事业部"];
 const ECN_TPMS = ["赵佳池", "田乐清", "谢作林", "郑昊翔", "周超", "李亚龙", "王辉", "罗超", "林秋秋", "朱慧慧"];
-const ECN_RAW_DIVISIONS = ["IC载板产品部", "北美项目部", "传感器产品部", "产品五部", "FPC事业部"];
+const ECN_RAW_DIVISIONS = ["IC载版", "北美项目部", "传感器产品部", "半导体&北美", "产品五部", "FPC事业部"];
 
 const ecnRawDivision = (value) => {
   const source = text(value);
-  if (/IC载板/i.test(source)) return "IC载板产品部";
-  if (/北美/i.test(source)) return "北美项目部";
-  if (/传感器/i.test(source)) return "传感器产品部";
-  if (/产品五部/i.test(source)) return "产品五部";
-  if (/FPC/i.test(source)) return "FPC事业部";
+  const group = canonicalProjectGroup(source);
+  if (group) return group;
+  const dept = canonicalProductDept(source);
+  if (ECN_DIVISIONS.includes(dept)) return dept;
   return source || "未分类";
 };
 
-const ecnMergedDivision = (rawDivision) => ["IC载板产品部", "北美项目部", "传感器产品部"].includes(rawDivision)
-  ? "半导体&北美"
-  : rawDivision;
+const ecnMergedDivision = (rawDivision) => {
+  const dept = canonicalProductDept(rawDivision);
+  return ECN_DIVISIONS.includes(dept) ? dept : rawDivision;
+};
 
 const ecnDateRange = (dateRange) => {
   return {
@@ -2128,6 +2156,7 @@ const buildEcnDimensionRows = (entities, years, numeratorRows, denominatorRows, 
   return {
     name,
     division: entity.division,
+    projectGroup: entity.projectGroup || "",
     tpm: entity.tpm,
     years: years.map((year) => {
       const numerator = numeratorRows.filter((row) => row.year === year && entityGetter(row) === name).length;
@@ -2142,6 +2171,7 @@ const buildEcnReasonRows = (entities, values, years, numeratorRows, entityGetter
   return {
     name,
     division: entity.division,
+    projectGroup: entity.projectGroup || "",
     tpm: entity.tpm,
     years: years.map((year) => {
       const source = numeratorRows.filter((row) => row.year === year && entityGetter(row) === name);
@@ -2220,7 +2250,7 @@ const buildDqaEcn = (dqaFiles, dateRange) => {
   const divisionRows = buildEcnDimensionRows(ECN_DIVISIONS, years, numeratorRows, denominatorByDivision, (row) => row.division);
   const tpmEntities = ECN_RAW_DIVISIONS.flatMap((division) => ECN_TPMS
     .filter((tpm) => numeratorRows.some((row) => row.rawDivision === division && row.tpm === tpm) || denominatorRows.some((row) => row.rawDivision === division && row.tpm === tpm))
-    .map((tpm) => ({ name: `${division}\n${tpm}`, division, tpm })));
+    .map((tpm) => ({ name: `${division}\n${tpm}`, division: ecnMergedDivision(division), projectGroup: canonicalProjectGroup(division), tpm })));
   const tpmRows = buildEcnDimensionRows(tpmEntities, years, numeratorByTpm, denominatorByTpm, (row) => row.tpmKey);
   const topReasons = (rows, limit = 10) => {
     const map = new Map();
@@ -2259,10 +2289,7 @@ const MACHINED_KIND_KEYS = [
 const machinedDivision = (rawDivision, tpm) => {
   const source = `${text(rawDivision)} ${text(tpm)}`;
   if (!source.trim() || /海外亚太|技术中心|总计|加工件总数/.test(source)) return "";
-  if (/产品一部|IC载板|北美|半导体|传感器/.test(source)) return "半导体&北美";
-  if (/产品五部/.test(source)) return "产品五部";
-  if (/FPC|FCP/.test(source)) return "FPC事业部";
-  return "";
+  return allowedProductDept(source);
 };
 
 const machinedTpmName = (row) => {
@@ -2391,10 +2418,8 @@ const machinedDivisionStable = (rawDivision, tpm) => {
   const source = `${text(rawDivision)} ${text(tpm)}`;
   if (!source.trim()) return "";
   if ([cn.overseasAsia, cn.techCenter, cn.productTotal, cn.totalParts].some((name) => source.includes(name))) return "";
-  if ([cn.productOne, cn.northAmerica, cn.semiconductorDept, cn.icCarrier, cn.sensor].some((name) => source.includes(name))) return cn.semiconductor;
-  if (source.includes(cn.productFive)) return cn.productFive;
-  if (source.includes(cn.fpc) || source.includes(cn.fcp)) return cn.fpc;
-  return "";
+  const dept = canonicalProductDept(source);
+  return [cn.semiconductor, cn.productFive, cn.fpc].includes(dept) ? dept : "";
 };
 
 const machinedTpmNameStable = (row) => text(row.__tpm || row.TPM || row.__division) || cn.unfilled;
@@ -2527,11 +2552,10 @@ const buildDqaMachinedPartsStable = (dqaFiles) => {
   };
 };
 
-const qmsNormalizeDivision = (value, year) => {
+const qmsNormalizeDivision = (value) => {
   const division = text(value) || "未填写";
-  if (year === 2025 && division === "产品一部") return "半导体&北美";
-  if (year === 2026 && ["北美项目部", "传感器产品部", "IC载板产品部", "IC载版产品部"].includes(division)) return "半导体&北美";
-  return division;
+  if (division === "未填写") return division;
+  return canonicalProductDept(division);
 };
 
 export const resolveOqcProjectName = (sourceName, mappings = []) => {
@@ -3051,8 +3075,9 @@ export function analyzeImported(files, dateRange) {
     const stageMap = { "评审": "review", "公司内部": "production", "生产": "production", "售后": "onsite" };
     const tpm = new Map();
     issueRows.forEach((r) => {
-      const name = text(r["TPM"]) || text(r["产品部"]) || "未分类";
-      const division = text(r["产品部"]) || "未分类";
+      const rawDept = text(r["产品部"]);
+      const name = text(r["TPM"]) || canonicalProjectGroup(rawDept) || "未分类";
+      const division = allowedProductDept(rawDept) || canonicalProductDept(rawDept) || "未分类";
       const item = tpm.get(`${division}-${name}`) || { name, division, review: 0, production: 0, onsite: 0 };
       const stage = stageMap[stageName(r)] || "production";
       item[stage] += 1;

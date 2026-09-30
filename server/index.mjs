@@ -10,6 +10,7 @@ import { buildQualityAgentSnapshot } from "../src/agent/qualitySnapshot.js";
 import { expandDoamDataset } from "../src/doamCompact.js";
 import { mergeDoamDatasets } from "../src/doamEngine.js";
 import { attachDqaAgentRawMetrics, buildRoleSnapshots, mergeRoleSnapshotRegistry, normalizeRoleSnapshotRegistry, pickRoleSnapshotEntry, rolePeriodHistoryWithWeeks, roleSnapshotMappingSignature, roleSnapshotRule, roleSnapshotSourceSignature } from "../src/agent/roleSnapshotRegistry.js";
+import { buildStoredRoleEvidence } from "../src/agent/pmRoleEvidence.js";
 import { buildSnapshotPeriods, mergeQualitySnapshotHistory, normalizeQualitySnapshotRegistry, snapshotBatchOutcome } from "../src/agent/snapshotRegistry.js";
 import { describeAiError } from "../src/agent/aiErrorMessage.js";
 import { gzip } from "node:zlib";
@@ -17,6 +18,7 @@ import { promisify } from "node:util";
 import { deletePostgresAgentReport, initPostgres, listPostgresAgentReports, readPostgresAgentReport, readPostgresState, writePostgresAgentReport, writePostgresState } from "./postgresStore.mjs";
 import { createKnowledgeService } from "./knowledgeService.mjs";
 import { exportOnePdf, loadWecomConfig, matchEmployee, publicWecomConfig, saveWecomConfig, sendOneReport, sendWecomText } from "./wecomSend.mjs";
+import { orgMappingFilePath, readLinkedOrgMapping } from "./orgMappingSource.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const gzipAsync = promisify(gzip);
@@ -195,6 +197,7 @@ defaultPermissionConfig.apis["PUT /api/state/dqa-agent-raw"] = { public: false, 
 defaultPermissionConfig.apis["GET /api/state/dqa-agent-raw"] = { public: true, deputy: true, label: "研发·ECN/非BOM Agent原始明细" };
 defaultPermissionConfig.apis["PUT /api/state/project-name-mapping"] = { public: false, deputy: true, label: "项目名称映射" };
 defaultPermissionConfig.apis["GET /api/state/project-name-mapping"] = { public: true, deputy: true, label: "项目名称映射" };
+defaultPermissionConfig.apis["GET /api/org-mapping"] = { public: true, deputy: true, label: "读取研发组织映射表" };
 
 defaultPermissionConfig.apis["GET /api/state/oqc-equipment-rule-cache"] = { public: true, deputy: true, label: "OQC equipment rule cache" };
 defaultPermissionConfig.apis["GET /api/state/quality-agent-runs"] = { public: true, deputy: true, label: "Quality Agent run history" };
@@ -242,7 +245,15 @@ const sendJson = async (res, status, body) => {
   res.end(payload);
 };
 
-const defaultAiConfig = { baseUrl: "https://new.ahei.asia/v1", model: "", apiKey: "" };
+const defaultAiConfig = { baseUrl: "https://new.ahei.asia/v1", model: "", apiKey: "", wireApi: "responses", reasoningEffort: "high", stream: true };
+const AI_WIRE_APIS = new Set(["responses", "chat"]);
+const AI_REASONING_EFFORTS = new Set(["", "high", "xhigh"]);
+const normalizeAiCallOptions = (config = {}, current = {}) => {
+  const wireApi = AI_WIRE_APIS.has(config.wireApi) ? config.wireApi : (AI_WIRE_APIS.has(current.wireApi) ? current.wireApi : "responses");
+  const reasoningEffort = AI_REASONING_EFFORTS.has(config.reasoningEffort) ? config.reasoningEffort : (AI_REASONING_EFFORTS.has(current.reasoningEffort) ? current.reasoningEffort : "high");
+  const stream = config.stream === false ? false : config.stream === true ? true : current.stream === false ? false : wireApi === "responses";
+  return { wireApi, reasoningEffort, stream };
+};
 const aiModelCatalog = new Map();
 const normalizeAiBaseUrl = (value = defaultAiConfig.baseUrl) => {
   const url = new URL(String(value || defaultAiConfig.baseUrl).trim());
@@ -256,7 +267,7 @@ const normalizeAiBaseUrl = (value = defaultAiConfig.baseUrl) => {
 const loadAiConfig = async () => {
   try {
     const saved = JSON.parse(await fs.readFile(aiConfigFile, "utf8"));
-    return { baseUrl: normalizeAiBaseUrl(saved.baseUrl), model: String(saved.model || "").trim(), apiKey: String(saved.apiKey || "").trim() };
+    return { baseUrl: normalizeAiBaseUrl(saved.baseUrl), model: String(saved.model || "").trim(), apiKey: String(saved.apiKey || "").trim(), ...normalizeAiCallOptions(saved) };
   } catch (error) {
     if (error.code !== "ENOENT") console.error("Failed to load shared AI config", error);
     return { ...defaultAiConfig };
@@ -268,6 +279,7 @@ const saveAiConfig = async (config) => {
     baseUrl: normalizeAiBaseUrl(config.baseUrl || current.baseUrl || defaultAiConfig.baseUrl),
     model: String(config.model || current.model || "").trim(),
     apiKey: String(config.apiKey || "").trim() || current.apiKey,
+    ...normalizeAiCallOptions(config, current),
   };
   await fs.mkdir(dataDir, { recursive: true });
   const temporary = `${aiConfigFile}.${process.pid}.${Date.now()}.tmp`;
@@ -275,7 +287,7 @@ const saveAiConfig = async (config) => {
   await fs.rename(temporary, aiConfigFile);
   return next;
 };
-const publicAiConfig = (config) => ({ baseUrl: config.baseUrl, model: config.model, hasApiKey: !!config.apiKey, apiKeyHint: config.apiKey ? `••••${config.apiKey.slice(-4)}` : "" });
+const publicAiConfig = (config) => ({ baseUrl: config.baseUrl, model: config.model, hasApiKey: !!config.apiKey, apiKeyHint: config.apiKey ? `••••${config.apiKey.slice(-4)}` : "", ...normalizeAiCallOptions(config) });
 const configFromPayload = async (payload = {}) => {
   const supplied = payload && payload.config && typeof payload.config === "object" ? payload.config : null;
   // No local override means use the administrator's shared default config.
@@ -284,6 +296,7 @@ const configFromPayload = async (payload = {}) => {
     baseUrl: normalizeAiBaseUrl(supplied.baseUrl || defaultAiConfig.baseUrl),
     model: String(supplied.model || "").trim(),
     apiKey: String(supplied.apiKey || "").trim(),
+    ...normalizeAiCallOptions(supplied),
   };
 };
 const usesArkPlanResponses = (config) => /\/api\/plan\/v3\/?$/i.test(config.baseUrl || "");
@@ -348,9 +361,9 @@ const parseAiStream = (text) => {
 };
 const requestAi = async (config, pathname, options = {}) => {
   if (!config.apiKey) throw new Error("Please configure the API key first");
-  const { signal: callerSignal, ...requestOptions } = options;
+  const { signal: callerSignal, timeoutMs: requestedTimeout, ...requestOptions } = options;
   const controller = new AbortController();
-  const timeoutMs = Number(process.env.AI_TIMEOUT_MS || 300000);
+  const timeoutMs = Number(requestedTimeout || process.env.AI_TIMEOUT_MS || 300000);
   let timedOut = false;
   const abortFromCaller = () => controller.abort(callerSignal?.reason);
   if (callerSignal?.aborted) abortFromCaller();
@@ -1599,6 +1612,10 @@ const processSnapshotJob = async (jobId) => {
       const snapshotSourceIndex = sourceIndex.filter((source) => !(source.module === "DQA" && ["DQA_ECN", "DQA_MACHINED_PARTS"].includes(source.subKind || source.kind)));
       const files = await rehydrateSnapshotSources(snapshotSourceIndex, neededModules, async ({ index, total: fileTotal, source }) => {
         await updateSnapshotJob(jobId, { progress: 3, done: 0, total, message: `正在解析原始数据 ${index + 1}/${fileTotal} · ${source.name || source.module}` });
+      const needsReportEvidence = rules.some((rule) => ["PM", "TPM", "产总"].includes(rule.role));
+      const summaryFiles = needsReportEvidence ? await rehydrateSnapshotSources(sourceIndex.filter((source) => source.module === "DQA" && ["DQA_ECN", "DQA_MACHINED_PARTS"].includes(source.subKind || source.kind)), ["DQA"], async ({ index, total: fileTotal, source }) => {
+        await updateSnapshotJob(jobId, { progress: 4, done: 0, total, message: "正在解析报告汇总表 " + (index + 1) + "/" + fileTotal + " · " + (source.name || source.module) });
+      }) : [];
       });
       const supplementSource = buildDqaEngineerSupplementSource(engineerSupplement, { start2026: rolePeriod.start, end2026: rolePeriod.end });
       if (supplementSource) files.push(supplementSource);
@@ -1638,7 +1655,11 @@ const processSnapshotJob = async (jobId) => {
           try {
             let payload = buildRoleSnapshots({ role: rule.role, files: sourceFiles, dateRange: period, mappings, agentRaw: dqaAgentRaw });
             if (["研发工程师", "PM", "TPM", "产总"].includes(rule.role)) {
-              payload = attachDqaAgentRawMetrics(payload, dqaAgentRaw ? buildDqaAgentRawMetrics(dqaAgentRaw, period) : {}, mappings, engineerSupplement?.reviewRecords || []);
+              const rawMetrics = dqaAgentRaw ? buildDqaAgentRawMetrics(dqaAgentRaw, period) : {};
+              payload = attachDqaAgentRawMetrics(payload, rawMetrics, mappings, engineerSupplement?.reviewRecords || []);
+              if (period.granularity !== "week") {
+                payload = { ...payload, people: payload.people.map((item) => ({ ...item, snapshot: { ...item.snapshot, reportEvidence: buildStoredRoleEvidence({ role: rule.role, recipient: item.recipient, mappings: mappings.orgMappings || [], files: sourceFiles.concat(summaryFiles), records: rawMetrics.records || [], projectBom: rawMetrics.projectBom || {}, reviewRecords: engineerSupplement?.reviewRecords || [], range: period }) } })) };
+              }
             }
             if (!payload.people.length) {
               skippedItems.push({ ruleId: rule.id, role: rule.role, periodKey: period.periodKey, message: "当前周期无角色活动，已跳过空快照" });
@@ -2147,7 +2168,28 @@ const handleAi = async (req, res) => {
     spawn("explorer.exe", [folder], { windowsHide: false, detached: true, stdio: "ignore" }).unref();
     return sendJson(res, 200, { ok: true, folder });
   }
-  if (pathname === "/api/ai/skills" && req.method === "GET") {
+  const skillLessonMatch = pathname.match(/^\/api\/ai\/skills\/([a-z0-9-]+)\/lessons$/);
+  if (skillLessonMatch && req.method === "POST") {
+    const skillId = skillLessonMatch[1];
+    if (!/^quality-role-[a-z0-9-]+$/.test(skillId)) return sendJson(res, 400, { error: "只能把验收打回写进角色技能" });
+    const payload = await getPayload();
+    const lessons = [...new Set((Array.isArray(payload.lessons) ? payload.lessons : []).map((item) => String(item || "").replace(/\s+/g, " ").trim()).filter((item) => item && item.length <= 80))].slice(0, 8);
+    if (!lessons.length) return sendJson(res, 400, { error: "没有可回写的验收规则" });
+    const filePath = path.join(agentSkillDir, skillId, "SKILL.md");
+    let text = "";
+    try { text = await fs.readFile(filePath, "utf8"); } catch { return sendJson(res, 404, { error: "角色技能不存在" }); }
+    const heading = "## 验收打回";
+    const existing = text.includes(heading) ? text.split(heading)[1].split(/\n## /)[0] : "";
+    const fresh = lessons.filter((line) => !existing.includes(line));
+    if (fresh.length) {
+      const block = fresh.map((line) => `- ${line}`).join("\n");
+      text = text.includes(heading) ? text.replace(heading, `${heading}\n${block}`) : `${text.trim()}\n\n${heading}\n${block}\n`;
+      await fs.writeFile(filePath, text, "utf8");
+      agentSkillsCache = null;
+    }
+    return sendJson(res, 200, { ok: true, id: skillId, added: fresh.length, content: text.slice(0, 20000) });
+  }
+    if (pathname === "/api/ai/skills" && req.method === "GET") {
     const requestedSkillIds = new Set(String(new URL(req.url, `http://${req.headers.host || "localhost"}`).searchParams.get("ids") || "").split(",").map((item) => item.trim()).filter(Boolean));
     const cacheTtlMs = 5 * 60 * 1000;
     if (!requestedSkillIds.size && agentSkillsCache && Date.now() - agentSkillsCacheAt < cacheTtlMs) {
@@ -2304,8 +2346,8 @@ const handleAi = async (req, res) => {
     const requestedMaxTokens = Number(payload.max_tokens);
     const maxTokens = Number.isFinite(requestedMaxTokens) ? Math.min(12000, Math.max(256, Math.round(requestedMaxTokens))) : null;
     const arkPlan = usesArkPlanResponses(config);
-    const stream = payload.stream === true;
-    const responsesApi = arkPlan || payload.responses === true;
+    const responsesApi = arkPlan || config.wireApi === "responses" || payload.responses === true;
+    const stream = payload.stream === true || (payload.stream !== false && config.stream !== false && responsesApi);
     const requestBody = responsesApi ? { model: config.model, input: messages } : { model: config.model, messages, response_format: payload.response_format };
     if (stream) requestBody.stream = true;
     if (maxTokens) {
@@ -2315,6 +2357,12 @@ const handleAi = async (req, res) => {
       else requestBody.max_tokens = maxTokens;
     }
     if (!responsesApi && Number.isFinite(Number(payload.temperature))) requestBody.temperature = Number(payload.temperature);
+    if (responsesApi && ["high", "xhigh"].includes(config.reasoningEffort)) requestBody.reasoning = { effort: config.reasoningEffort };
+    if (!responsesApi && /deepseek/i.test(config.model) && payload.operation === "agent-role-report-generate" && (Number(payload.max_tokens) || 0) > 500) {
+      requestBody.thinking = { type: "enabled" };
+      requestBody.reasoning_effort = "high";
+      requestBody.max_tokens = Math.max(Number(requestBody.max_tokens) || 0, 8000);
+    }
     const clientController = new AbortController();
     const abortForDisconnect = () => {
       if (!res.writableEnded && !clientController.signal.aborted) clientController.abort();
@@ -2323,7 +2371,9 @@ const handleAi = async (req, res) => {
     res.once("close", abortForDisconnect);
     let result;
     try {
-      result = await requestAi(config, responsesApi ? "/responses" : "/chat/completions", { method: "POST", body: JSON.stringify(requestBody), stream, signal: clientController.signal });
+      const requestedTimeout = Number(payload.timeoutMs);
+      const chatTimeoutMs = Number.isFinite(requestedTimeout) ? Math.min(Number(process.env.AI_TIMEOUT_MS || 300000), Math.max(20000, Math.round(requestedTimeout))) : undefined;
+      result = await requestAi(config, responsesApi ? "/responses" : "/chat/completions", { method: "POST", body: JSON.stringify(requestBody), stream, signal: clientController.signal, ...(chatTimeoutMs ? { timeoutMs: chatTimeoutMs } : {}) });
     } finally {
       req.removeListener("aborted", abortForDisconnect);
       res.removeListener("close", abortForDisconnect);
@@ -2371,6 +2421,15 @@ const serveStatic = async (req, res) => {
 
 const server = createServer(async (req, res) => {
   try {
+    if (new URL(req.url, "http://local").pathname === "/api/org-mapping" && req.method === "GET") {
+      const user = await ensureApiAllowed(req, res);
+      if (!user) return;
+      try {
+        return sendJson(res, 200, await readLinkedOrgMapping(orgMappingFilePath(rootDir)));
+      } catch (error) {
+        return sendJson(res, 404, { error: String(error?.message || "研发组织映射表读取失败") });
+      }
+    }
     if (req.url === "/api/me") return await handleMe(req, res);
     if (req.url === "/api/permissions") return await handlePermissions(req, res);
     if (req.url.startsWith("/api/knowledge")) return await handleKnowledge(req, res);

@@ -12,7 +12,7 @@ import { normalizeQualitySnapshotRegistry, pickLatestQualitySnapshot } from "./s
 import { extractReportVisualSpec, sanitizeHumanReportContent } from "../reportSanitizer.js";
 import { DEFAULT_REPORT_QUALITY_RULES, reportQualityAdvice, validateReportQuality } from "./reportQualityRules.js";
 import { keepActiveWeekChartRows, trendBucketSelected } from "./roleSnapshotRegistry.js";
-import { periodChartTitle, renderLieflatHairline, renderLieflatPairedTrend, renderLieflatRungBars } from "./lieflatRoleCharts.js";
+import { periodChartTitle, renderLieflatFigure } from "./lieflatRoleCharts.js";
 
 const AGENT_TITLE = "质量分析 Agent";
 const CORE_SKILL_NAME = "quality-analysis-core";
@@ -626,37 +626,7 @@ const figureMatchesSection = (figure, sectionTitle = "") => {
 const renderVisualSpecFigure = (figure, theme = "default") => {
   const categories = Array.isArray(figure.categories) ? figure.categories : [];
   const series = Array.isArray(figure.series) ? figure.series : [];
-  if (theme === "lieflat") {
-    const title = figure.title || figure.sectionId || "图表";
-    const intent = String(figure.intent || figure.preferredChart || "").toLowerCase();
-    const week = isWeekChartContext(figure.id, figure.sectionId, title);
-    const grainKey = `${figure.id || ""} ${figure.sectionId || ""} ${title}`; const grain = isWeekChartContext(grainKey) ? "week" : /month|月/i.test(grainKey) ? "month" : "week";
-    const isRdCountTrend = /rd-quality-(week|month)-trend|周度问题趋势|月度问题趋势|研发质量问题(?:周度|月度)趋势/.test(grainKey);
-    if (isRdCountTrend) {
-      let rdRows = categories.map((label, index) => { const name = String(typeof label === "object" ? (label.name || label.label) : label); return { label: name, value: Number(series[0]?.values?.[index]) || 0, count: Number(series[0]?.values?.[index]) || 0, selected: Boolean(typeof label === "object" && label.selected) || Boolean(figure.selectedWindow && trendBucketSelected(name, grain, figure.selectedWindow)) }; });
-      if (week) rdRows = keepActiveWeekChartRows(rdRows);
-      return renderLieflatRungBars({ title, rows: rdRows, valueLabel: series[0]?.name || "问题数量" });
-    }
-    if (intent.includes("period-trend") || intent.includes("dual-column") || String(figure.preferredChart).toLowerCase() === "line") {
-      let rows = categories.map((label, index) => {
-        const bad = Number(series[0]?.values?.[index]);
-        const total = Number(series[1]?.values?.[index]);
-        const rate = Number(series[2]?.values?.[index]);
-        const name = String(typeof label === "object" ? (label.name || label.label) : label);
-        return { label: name, value: bad, bad, total: Number.isFinite(total) ? total : null, rate: Number.isFinite(rate) ? rate : null, hollow: Number.isFinite(total) && total > 0 && bad === 0, count: bad, selected: Boolean(typeof label === "object" && label.selected) || Boolean(figure.selectedWindow && trendBucketSelected(name, grain, figure.selectedWindow)) };
-      }).filter((row) => Number.isFinite(row.value));
-      if (week) rows = keepActiveWeekChartRows(rows);
-      if (rows.some((row) => row.total != null)) {
-        return renderLieflatPairedTrend({ title, rows, barLabels: [series[0]?.name || "不良数量", series[1]?.name || "总数量"], lineLabel: series[2]?.name || "不良率", grain });
-      }
-      return renderLieflatHairline({ title, rows, valueLabel: series[0]?.name || "不良数量", grain });
-    }
-    const values = categories.map((label, index) => {
-      const item = typeof label === "object" && label ? label : { name: label };
-      return { label: item.name || item.label || "未命名", name: item.name || item.label, value: Number(series[0]?.values?.[index]) || 0, focus: Boolean(item.focus), rank: item.rank, rankTotal: item.rankTotal || item.total };
-    });
-    return renderLieflatRungBars({ title, rows: values, valueLabel: series[0]?.name || figure.unit || "数量" });
-  }
+  if (theme === "lieflat") return renderLieflatFigure(figure);
   const intent = String(figure.intent || figure.preferredChart || "comparison").toLowerCase();
   const title = String(figure.title || "数据图表");
   if (!categories.length && !Array.isArray(figure.data)) return `<figure class="agent-report-auto-chart agent-report-visual-empty"><figcaption><strong>${escapeHtml(title)}</strong><span>数据覆盖：${escapeHtml(figure.coverage || figure.status || "partial")}</span></figcaption><p>${escapeHtml(figure.data?.note || figure.accessibilitySummary || "当前缺少完整可视化分母，保留为待补数据，不生成误导性图表。")}</p></figure>`;

@@ -51,7 +51,10 @@ export const confirmedKnowledgeForRecipient = (matches = [], recipient, period =
 };
 
 
-export const confirmedKnowledgeReportMarkdown = (items = []) => {
+export const KNOWLEDGE_REVIEW_ROLES = new Set(["组装人员", "研发工程师"]);
+export const CONFIRMED_KNOWLEDGE_REVIEW_LINE = "以上条款已对应您本期问题。下一批同类作业前，请按规范当场核对后再送检。";
+
+export const confirmedKnowledgeReportMarkdown = (items = [], { role = "" } = {}) => {
   const rows = (Array.isArray(items) ? items : []).filter((item) => item && (item.documentName || item.title || item.clauseNumber || item.correctState || item.issueText));
   if (!rows.length) return "";
   const lines = rows.slice(0, 8).map((item) => {
@@ -62,13 +65,14 @@ export const confirmedKnowledgeReportMarkdown = (items = []) => {
     const issue = item.issueText ? `；对应问题：${item.issueText}` : "";
     return `- **${name}${clause}**${title}${correct}${issue}`;
   });
-  return `\n\n## 已确认规范依据\n${lines.join("\n")}`;
+  const followUp = KNOWLEDGE_REVIEW_ROLES.has(role) ? `\n\n${CONFIRMED_KNOWLEDGE_REVIEW_LINE}` : "";
+  return `\n\n## 已确认规范依据\n${lines.join("\n")}${followUp}`;
 };
 
-export const appendConfirmedKnowledgeToReport = (content = "", confirmedKnowledge) => {
+export const appendConfirmedKnowledgeToReport = (content = "", confirmedKnowledge, { role = "" } = {}) => {
   if (!Array.isArray(confirmedKnowledge)) return String(content || "");
   const stripped = String(content || "").replace(/\n*##\s*已确认规范依据[\s\S]*?(?=\n##\s|$)/g, "").trim();
-  const appendix = confirmedKnowledgeReportMarkdown(confirmedKnowledge);
+  const appendix = confirmedKnowledgeReportMarkdown(confirmedKnowledge, { role });
   return appendix ? `${stripped}${appendix}` : stripped;
 };
 

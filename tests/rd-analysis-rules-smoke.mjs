@@ -54,7 +54,8 @@ const md = buildDeterministicAnalysisMarkdown({
     engineerMetrics: { reviewParticipation: 4, reviewSuggestions: 14 },
   },
 });
-assert.match(md, /继续保持/);
+assert.match(md, /数量下降/);
+assert.doesNotMatch(md, /请继续保持|还没到零|不良率/);
 assert.match(md, /有效改善 14 条/);
 assert.match(md, /拦在图纸上/);
 assert.match(md, /盘定位模块/);

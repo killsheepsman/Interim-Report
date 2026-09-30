@@ -1,4 +1,5 @@
 import { Component, Fragment, Suspense, createContext, lazy, startTransition, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
+import { canonicalProductDept, canonicalProjectGroup, normalizeOrgRecord, parseOrgMappingMatrix } from "./orgMappingParse.js";
 import { createPortal } from "react-dom";
 import {
   ArrowRight, ArrowsClockwise, Bell, CaretDown, ChartBar, ChartPieSlice, CheckCircle,
@@ -8,7 +9,7 @@ import {
   UploadSimple, User, Warning, WarningCircle, X,
 } from "@phosphor-icons/react";
 import { analyzeImported, buildDqaEngineerSupplementSource, buildOqcRuleDimensionDispersions, downloadJson, isIpqcExcludedBadType, normalizeIpqcLeaderMapRows, normalizeIpqcWorkshop, parseDqaAgentRawFiles, parseDqaEngineerSupplementFiles, parseDqaRdImportFiles, parseFiles, parseOqcProjectNameByRules, pruneEngineerSupplementToReviews } from "./dataEngine.js";
-import { clearDqaAgentRaw as clearDqaAgentRawState, clearDqaEngineerSupplement as clearDqaEngineerSupplementState, controlKnowledgeDistillationJob, createExamSession, createKnowledgeDocument, createSourcesSignature, createSnapshotJob, deleteKnowledgeDocument, downloadSourceFiles, generateKnowledgeMatches, governKnowledgeDocument, importKnowledgeDistillation, listSnapshotJobs, loadAgentSkills, loadAiConfig, loadAiModels, loadAppliedDateRange, loadCachedAnalysis, loadCurrentUser, loadDqaAgentRaw, loadDefaultAnalysis, loadDefaultAnnotations, loadDefaultQmsSources, loadDefaultSources, loadDistilledKnowledge, loadDqaEngineerSupplement, loadExamResults, loadExamSession, loadImportedSources, loadKnowledgeAuditLogs, loadKnowledgeClauses, loadKnowledgeConflicts, loadKnowledgeConsistency, loadKnowledgeDocuments, loadKnowledgeFeedbackRecords, loadKnowledgeIssues, loadKnowledgeJob, loadKnowledgeJobs, loadKnowledgeMatches, loadKnowledgePerformanceMetrics, loadKnowledgeRecurrences, loadKnowledgeReviewPoints, loadKnowledgeReviewSessions, loadPermissionConfig, loadProjectNameMapping, loadQualityAgentRoleSnapshotRegistry, loadQualityAgentSnapshotRegistry, loadReportQualityRules, loadSnapshotJob, mergeImportedSources, openSnapshotStorage, patchCachedAnalysis, reparseKnowledgeDocument, requestAiChat, reviewDistilledKnowledge, reviewKnowledgeDocument, reviewKnowledgeMatch, runKnowledgePerformanceBenchmark, saveAiConfig, saveAiReport, saveDqaAgentRaw, saveKnowledgeConflict, saveKnowledgeFeedbackRecord, saveKnowledgeRecurrenceAction, saveKnowledgeReviewSession, saveLocalAiReport, saveAppliedDateRange, saveCachedAnalysis, saveDqaEngineerSupplement, saveImportedSources, savePermissionConfig, saveProjectNameMapping, saveQualityAgentRoleSnapshotRegistry, saveQualityAgentSnapshotRegistry, saveReportQualityRules, sourceRowCount, startKnowledgeDistillation, submitExamSession, summarizeSources, syncKnowledgeIssues, testAiConfig, updateKnowledgeDocumentMetadata, updateSnapshotJob, uploadKnowledgeSource, uploadSourceFiles } from "./dataStore.js";
+import { clearDqaAgentRaw as clearDqaAgentRawState, clearDqaEngineerSupplement as clearDqaEngineerSupplementState, controlKnowledgeDistillationJob, createExamSession, createKnowledgeDocument, createSourcesSignature, createSnapshotJob, deleteKnowledgeDocument, downloadSourceFiles, generateKnowledgeMatches, governKnowledgeDocument, importKnowledgeDistillation, listSnapshotJobs, loadAgentSkills, loadAiConfig, loadAiModels, loadAppliedDateRange, loadCachedAnalysis, loadCurrentUser, loadDqaAgentRaw, loadDefaultAnalysis, loadDefaultAnnotations, loadDefaultQmsSources, loadDefaultSources, loadDistilledKnowledge, loadDqaEngineerSupplement, loadExamResults, loadExamSession, loadImportedSources, loadKnowledgeAuditLogs, loadKnowledgeClauses, loadKnowledgeConflicts, loadKnowledgeConsistency, loadKnowledgeDocuments, loadKnowledgeFeedbackRecords, loadKnowledgeIssues, loadKnowledgeJob, loadKnowledgeJobs, loadKnowledgeMatches, loadKnowledgePerformanceMetrics, loadKnowledgeRecurrences, loadKnowledgeReviewPoints, loadKnowledgeReviewSessions, loadPermissionConfig, loadProjectNameMapping, loadQualityAgentRoleSnapshotRegistry, loadQualityAgentSnapshotRegistry, loadReportQualityRules, loadSnapshotJob, mergeImportedSources, openSnapshotStorage, patchCachedAnalysis, reparseKnowledgeDocument, requestAiChat, reviewDistilledKnowledge, reviewKnowledgeDocument, reviewKnowledgeMatch, runKnowledgePerformanceBenchmark, saveAiConfig, saveAiReport, saveDqaAgentRaw, saveKnowledgeConflict, saveKnowledgeFeedbackRecord, saveKnowledgeRecurrenceAction, saveKnowledgeReviewSession, saveLocalAiReport, saveAppliedDateRange, saveCachedAnalysis, saveDqaEngineerSupplement, saveImportedSources, savePermissionConfig, saveProjectNameMapping, saveQualityAgentRoleSnapshotRegistry, saveQualityAgentSnapshotRegistry, saveReportQualityRules, sourceRowCount, startKnowledgeDistillation, submitExamSession, summarizeSources, syncKnowledgeIssues, testAiConfig, updateKnowledgeDocumentMetadata, updateSnapshotJob, uploadKnowledgeSource, uploadSourceFiles, syncLinkedOrgMapping, withMappingFile, withoutMappingFile, mappingRowKey } from "./dataStore.js";
 import { bulkReviewKnowledgeCards, bulkUpdateKnowledgeCards, deleteKnowledgeCard, deleteKnowledgeClause, exportKnowledgeData, loadKnowledgeBackups, loadKnowledgeImpact, restoreKnowledgeBackup, updateKnowledgeCard, updateKnowledgeClause } from "./dataStore.js";
 import { loadOqcEquipmentRuleCache } from "./dataStore.js";
 import { DoamPage } from "./DoamPage.jsx";
@@ -27,6 +28,7 @@ import { buildQualityAgentSnapshot } from "./agent/qualitySnapshot.js";
 import { buildSnapshotPeriods, createDefaultQualitySnapshotRegistry, getQualitySnapshotRulePreview, mergeQualitySnapshotHistory, moduleAnalysisSkillOptions, normalizeQualitySnapshotRegistry, qualitySnapshotPresentationOptions, snapshotBatchOutcome, updateQualitySnapshotRule } from "./agent/snapshotRegistry.js";
 import { buildRoleSnapshots, createDefaultRoleSnapshotRegistry, isSupersededSnapshot, mergeRoleSnapshotRegistry, normalizeRoleSnapshotRegistry, roleSnapshotMappingSignature, roleSnapshotRule, roleSnapshotSourceSignature, updateRoleSnapshotRule } from "./agent/roleSnapshotRegistry.js";
 import { DEFAULT_REPORT_QUALITY_RULES, reportQualityAdvice, validateReportQuality } from "./agent/reportQualityRules.js";
+import { hasRunningRoleReportJobs } from "./agent/roleReportJobRuntime.js";
 import * as XLSX from "xlsx";
 import "./qmdp.css";
 
@@ -1731,7 +1733,7 @@ function AiAnalysisPage({ data, dateRange, analysisKey, canSaveToServer = false 
 }
 
 function AiInterfacePage({ canSaveToServer = false }) {
-  const [config, setConfig] = useState({ baseUrl: "https://new.ahei.asia/v1", model: "", apiKey: "" });
+  const [config, setConfig] = useState({ baseUrl: "https://new.ahei.asia/v1", model: "", apiKey: "", wireApi: "responses", reasoningEffort: "high", stream: true });
   const [addressHistory, setAddressHistory] = useState(() => normalizeAiEndpointHistory(safeParse(localStorage.getItem(aiEndpointHistoryKey), [])));
   const [models, setModels] = useState([]);
   const [status, setStatus] = useState({ type: "idle", text: "" });
@@ -1815,9 +1817,21 @@ function AiInterfacePage({ canSaveToServer = false }) {
     <section className="ai-interface-hero"><div><span>LOCAL AI GATEWAY</span><h2>AI接口配置</h2><p>主管理员可设置服务器默认接口；其他用户可直接使用，也可在本机覆盖配置。</p></div><aside><ShieldCheck size={22} weight="fill"/><strong>默认共享，本机可覆盖</strong><p>管理员配置供授权用户使用；普通用户的 API 配置只保存在当前浏览器，不会写入服务器。</p></aside></section>
     <div className="ai-interface-grid">
       <section className="ai-config-card"><header><div><GearSix size={21}/><h3>接口参数</h3></div><em>{config.hasApiKey ? `已配置 ${config.apiKeyHint || "API密钥"}` : "尚未配置密钥"}</em></header>
-        <label><span>API请求地址</span><div className="ai-endpoint-input"><input list="qms-ai-endpoint-history" value={config.baseUrl} onChange={(event) => update("baseUrl", event.target.value)} onBlur={() => rememberAddress(config.baseUrl)} disabled={loading}/><select aria-label="选择已保存的API地址" value="" onChange={(event) => event.target.value && update("baseUrl", event.target.value)} disabled={loading || !addressHistory.length}><option value="">历史地址</option>{addressHistory.map((address) => <option key={address} value={address}>{address}</option>)}</select><datalist id="qms-ai-endpoint-history">{addressHistory.map((address) => <option key={address} value={address}/>)}</datalist></div><small>支持任意 HTTPS OpenAI兼容接口；本机 Ollama/LM Studio 可使用 http://127.0.0.1 或 http://localhost。当前通道：{/\/api\/plan\/v3\/?$/i.test(config.baseUrl || "") ? "Responses（方舟 Agent/Coding Plan）" : "Chat Completions（通用兼容接口）"}</small>{addressHistory.length > 0 && <div className="ai-endpoint-history">{addressHistory.map((address) => <div key={address}><code>{address}</code><button type="button" aria-label={`删除地址${address}`} onClick={() => removeAddress(address)}><Trash size={13}/></button></div>)}</div>}</label>
+        <label><span>API请求地址</span><div className="ai-endpoint-input"><input list="qms-ai-endpoint-history" value={config.baseUrl} onChange={(event) => update("baseUrl", event.target.value)} onBlur={() => rememberAddress(config.baseUrl)} disabled={loading}/><select aria-label="选择已保存的API地址" value="" onChange={(event) => event.target.value && update("baseUrl", event.target.value)} disabled={loading || !addressHistory.length}><option value="">历史地址</option>{addressHistory.map((address) => <option key={address} value={address}>{address}</option>)}</select><datalist id="qms-ai-endpoint-history">{addressHistory.map((address) => <option key={address} value={address}/>)}</datalist></div><small>支持任意 HTTPS OpenAI兼容接口；本机 Ollama/LM Studio 可使用 http://127.0.0.1 或 http://localhost。当前通道：{config.wireApi === "chat" ? "Chat Completions" : "Responses（与 Codex / CC Switch 的 wire_api 相同）"}</small>{addressHistory.length > 0 && <div className="ai-endpoint-history">{addressHistory.map((address) => <div key={address}><code>{address}</code><button type="button" aria-label={`删除地址${address}`} onClick={() => removeAddress(address)}><Trash size={13}/></button></div>)}</div>}</label>
         <label><span>API密钥</span><input type="password" value={config.apiKey} onChange={(event) => update("apiKey", event.target.value)} placeholder={config.hasApiKey ? "留空表示继续使用已保存密钥" : "输入第三方API密钥"} autoComplete="new-password"/><small>页面不会读取已保存密钥，只显示末四位提示。</small></label>
         <label><span>模型</span><div className="ai-model-input"><select value={config.model} onChange={(event) => update("model", event.target.value)} disabled={!models.length && !config.model}><option value="">请选择模型</option>{[...new Set([...(models || []), ...(config.model ? [config.model] : [])])].map((model) => <option key={model} value={model}>{model}</option>)}</select><button onClick={fetchModels} disabled={status.type === "loading"}>读取模型</button></div><small>{models.length ? `已加载 ${models.length} 个模型，可直接选择。` : "请先读取模型列表。"}</small></label>
+        <label><span>调用协议</span><select value={config.wireApi === "chat" ? "chat" : "responses"} onChange={(event) => update("wireApi", event.target.value)} disabled={loading}><option value="responses">Responses（Codex / CC Switch）</option><option value="chat">Chat Completions</option></select><small>grok-4.7 用 Responses。Chat Completions 容易在网关等待中被断开。</small></label>
+        <label><span>思考强度</span><select value={config.reasoningEffort || ""} onChange={(event) => update("reasoningEffort", event.target.value)} disabled={loading || config.wireApi === "chat"}><option value="high">high</option><option value="xhigh">xhigh</option><option value="">关闭</option></select><small>对应 Codex 的 model_reasoning_effort。只在 Responses 接口生效。</small></label>
+        <label className="ai-stream-toggle"><span>流式返回</span><input type="checkbox" checked={config.stream !== false} onChange={(event) => update("stream", event.target.checked)} disabled={loading}/><small>开启后网关能持续收到内容，避免思考阶段被 100 秒掐断。</small></label>
+        <div className="ai-config-preview"><span>当前生效配置</span><pre>{[
+          'model_provider = "custom"',
+          `model = "${config.model || ""}"`,
+          `model_reasoning_effort = "${config.reasoningEffort || "off"}"`,
+          `wire_api = "${config.wireApi === "chat" ? "chat" : "responses"}"`,
+          `stream = ${config.stream === false ? "false" : "true"}`,
+          `base_url = "${config.baseUrl || ""}"`,
+          `api_key = "${config.hasApiKey || config.apiKey ? (config.apiKeyHint || "已填写，保存后显示末四位") : "未配置"}"`,
+        ].join("\n")}</pre><small>与 CC Switch / Codex 同一套字段。密钥不显示全文。</small></div>
         <div className="ai-config-actions"><button className="secondary" onClick={save}>保存配置</button><button className="primary" onClick={test}>保存并测试</button></div>
         {status.text && <div className={`ai-config-status ${status.type}`}>{status.type === "success" ? <CheckCircle size={17} weight="fill"/> : status.type === "error" ? <WarningCircle size={17} weight="fill"/> : <ArrowsClockwise size={17} className="spin"/>}<span>{status.text}</span></div>}
       </section>
@@ -2561,7 +2575,10 @@ const suggestKnowledgeOwners = (module, recurrence) => {
     return mapping ? { owner: mapping.leader || mapping.manager || "", collaborators: [mapping.manager].filter((item) => item && item !== mapping.leader), basis: `供应链映射：${mapping.site || "未标基地"} / ${mapping.workshop}` } : { owner: "", collaborators: [], basis: "未找到厂区+工坊精确映射，待人工核实" };
   }
   if (metadata.pm || metadata.tpm || metadata.productionDirector) return { owner: metadata.pm || metadata.tpm || "", collaborators: [metadata.tpm, metadata.productionDirector].filter((item, index, rows) => item && item !== (metadata.pm || metadata.tpm) && rows.indexOf(item) === index), basis: "问题原始字段：PM/TPM/产总" };
-  const mapping = (config.orgMappings || []).find((item) => item.active !== false && ((metadata.productDept && exactText(item.productDept, metadata.productDept)) || (metadata.pm && exactText(item.pm, metadata.pm)) || (metadata.tpm && exactText(item.tpm, metadata.tpm))));
+  const orgRows = (config.orgMappings || []).map((row) => normalizeOrgRecord(row)).filter((item) => item.active !== false);
+  const group = canonicalProjectGroup(metadata.productDept);
+  const dept = canonicalProductDept(metadata.productDept);
+  const mapping = orgRows.find((item) => (metadata.pm && exactText(item.pm, metadata.pm)) || (metadata.tpm && exactText(item.tpm, metadata.tpm)) || (group && item.projectGroup === group) || (!group && dept && exactText(item.productDept, dept)));
   return mapping ? { owner: mapping.pm || mapping.tpm || "", collaborators: [mapping.tpm, mapping.productionDirector].filter((item, index, rows) => item && item !== (mapping.pm || mapping.tpm) && rows.indexOf(item) === index), basis: `研发组织映射：${mapping.productDept || "产品部待核实"}` } : { owner: "", collaborators: [], basis: "未找到产品部/PM/TPM精确映射，待人工核实" };
 };
 function KnowledgeRecurrenceWorkspace({ module }) {
@@ -4691,6 +4708,7 @@ const parseQmdpMappingWorkbook = async (file, kind) => {
   const records = [];
   workbook.SheetNames.forEach((sheetName) => {
     const matrix = XLSX.utils.sheet_to_json(workbook.Sheets[sheetName], { header: 1, defval: "", blankrows: false });
+    if (kind === "org") { records.push(...parseOrgMappingMatrix(matrix)); return; }
     const headerIndex = matrix.findIndex((line) => expected.every((header) => line.some((value) => String(value ?? "").trim() === header)));
     if (headerIndex < 0) return;
     const header = matrix[headerIndex].map((value) => String(value ?? "").trim());
@@ -4713,7 +4731,7 @@ const parseQmdpMappingWorkbook = async (file, kind) => {
     if (key.replace(/:/g, "")) unique.set(key, row);
   });
   if (!unique.size) throw new Error(`未找到有效的${kind === "org" ? "研发组织" : "供应链"}映射表头：${expected.join(" / ")}`);
-  return [...unique.values()];
+  return { rows: [...unique.values()], sheetNames: workbook.SheetNames };
 };
 
 const projectNameRuleFields = [
@@ -4769,6 +4787,8 @@ const projectMappingKeyText = (key = {}) => projectNameRuleFields.map((field) =>
 const reportConfig = () => ({ ...defaultQmdpSystemConfig, ...safeParse(localStorage.getItem(qmdpSystemKey), {}) });
 const reportActiveMappings = (rows = []) => (Array.isArray(rows) ? rows : []).filter((row) => row.active !== false);
 const reportNames = (value) => String(value || "").split(/[、,，/\n]/).map((item) => item.trim()).filter((item) => item && !["待配置", "未配置", "新产品部"].includes(item));
+const reportProductDept = (value) => canonicalProductDept(value) || "未分配";
+const reportMappingDept = (row) => canonicalProductDept(normalizeOrgRecord(row || {}).productDept);
 const reportDqaScope = (role, recipient, dqa) => {
   const config = reportConfig();
   const mappings = reportActiveMappings(config.orgMappings);
@@ -4779,7 +4799,7 @@ const reportDqaScope = (role, recipient, dqa) => {
   if (role === "PM报告") scope = mappings.filter((row) => reportNames(row.pm).includes(selected));
   if (role === "TPM报告") scope = mappings.filter((row) => reportNames(row.tpm).includes(selected) || reportNames(row.pm).includes(selected));
   if (role === "产总报告") scope = mappings.filter((row) => reportNames(row.productionDirector).includes(selected));
-  const divisions = [...new Set(scope.map((row) => row.productDept).filter(Boolean))];
+  const divisions = [...new Set(scope.map((row) => reportMappingDept(row)).filter((name) => name && name !== "未分配"))];
   const tpms = [...new Set(scope.flatMap((row) => reportNames(row.tpm)).filter(Boolean))];
   const scopedRows = stageRows.filter((row) => (tpms.length ? tpms.includes(row.name) : divisions.includes(row.division)) || (role === "TPM报告" && row.name === selected));
   return { mappings: scope, stageRows: scopedRows.length ? scopedRows : stageRows.filter((row) => role === "PM报告" ? row.name === selected || row.division === selected : role === "TPM报告" ? row.name === selected : divisions.includes(row.division) || row.name === selected), divisions, tpms };
@@ -4919,7 +4939,7 @@ const reportDqaEngineerRows = (files = [], dqa = {}, dateRange) => {
   rawRows.forEach((row) => {
     const name = reportDqaEngineerField(row);
     if (!name) return;
-    const division = String(row["产品部"] || row["产品线"] || "未分配").trim();
+    const division = reportProductDept(row["产品部"] || row["产品线"]);
     const tpm = String(row["TPM"] || row["TPM姓名"] || row["负责TPM"] || "").trim();
     const pm = String(row["PM"] || row["PM姓名"] || row["负责PM"] || "").trim();
     const productionDirector = String(row["产总"] || row["产品部负责人"] || "").trim();
@@ -4935,7 +4955,7 @@ const reportDqaEngineerRows = (files = [], dqa = {}, dateRange) => {
     .forEach((row) => {
       const name = reportDqaEngineerField(row);
       if (!name) return;
-      const division = String(row["产品部"] || row["申请部门"] || "未分配").trim();
+      const division = reportProductDept(row["产品部"] || row["申请部门"]);
       getItem(division, name).ecn += 1;
     });
   files.filter((file) => file.module === "DQA" && reportDqaSourceKind(file) === "DQA_ENGINEER_NON_BOM")
@@ -4944,7 +4964,7 @@ const reportDqaEngineerRows = (files = [], dqa = {}, dateRange) => {
     .forEach((row) => {
       const name = reportDqaEngineerField(row);
       if (!name) return;
-      const division = String(row["产品部"] || "未分配").trim();
+      const division = reportProductDept(row["产品部"]);
       const item = getItem(division, name);
       item.nonBom += Math.max(reportNumber(row["申请数量"]), 1);
       item.nonBomRequests += 1;
@@ -5107,7 +5127,7 @@ function buildWebRoleReport(data, role, recipient, dateRange, files = []) {
       return reportNames(row.productionDirector).includes(name);
     });
     const scopedData = (scopeRows) => {
-      const divisions = new Set(scopeRows.map((row) => row.productDept).filter(Boolean));
+      const divisions = new Set(scopeRows.map((row) => reportMappingDept(row)).filter((name) => name && name !== "未分配"));
       const tpms = new Set(uniqueNames(scopeRows.map((row) => row.tpm)));
       const pms = new Set(uniqueNames(scopeRows.map((row) => row.pm)));
       const engineers = rawEngineerRows.filter((row) => (row.tpm && tpms.has(row.tpm)) || (row.pm && pms.has(row.pm)) || (row.division && divisions.has(row.division)));
@@ -5145,7 +5165,7 @@ function buildWebRoleReport(data, role, recipient, dateRange, files = []) {
       ? selectedChildren.slice().sort((a, b) => (reportNumber(b.ecn) + total(b)) - (reportNumber(a.ecn) + total(a))).slice(0, 12).map((row) => ({ name: `${row.roleLabel || "研发记录"} · ${row.name}`, value: `${total(row)}项`, detail: `ECN ${row.ecn || 0}；评审 ${row.review || 0}；生产 ${row.production || 0}；现场 ${row.onsite || 0}` }))
       : role === "TPM报告"
         ? [...pmRows.filter((row) => selectedData.pms.includes(row.name)).map((row) => ({ name: `PM · ${row.name}`, value: `${total(row)}项`, detail: `ECN ${row.ecn || 0}；研发问题 ${total(row)}` }))]
-        : [...selectedData.divisions.map((division) => { const row = groupRow(division, "产品部范围", mappings.filter((item) => item.productDept === division)); return { name: `产品部 · ${division}`, value: `${total(row)}项`, detail: `ECN ${row.ecn || 0}；评审 ${row.review || 0}；生产 ${row.production || 0}；现场 ${row.onsite || 0}` }; }), ...tpmRows.filter((row) => selectedData.tpms.includes(row.name)).map((row) => ({ name: `TPM · ${row.name}`, value: `${total(row)}项`, detail: `PM范围汇总；ECN ${row.ecn || 0}` }))];
+        : [...selectedData.divisions.map((division) => { const row = groupRow(division, "产品部范围", mappings.filter((item) => reportMappingDept(item) === division)); return { name: `产品部 · ${division}`, value: `${total(row)}项`, detail: `ECN ${row.ecn || 0}；评审 ${row.review || 0}；生产 ${row.production || 0}；现场 ${row.onsite || 0}` }; }), ...tpmRows.filter((row) => selectedData.tpms.includes(row.name)).map((row) => ({ name: `TPM · ${row.name}`, value: `${total(row)}项`, detail: `PM范围汇总；ECN ${row.ecn || 0}` }))];
     trendItems = [{ name: "评审阶段", value: reportNumber(selected?.review), detail: "问题在设计前端暴露的数量" }, { name: "生产阶段", value: reportNumber(selected?.production), detail: "问题在生产导入后暴露的数量" }, { name: "现场阶段", value: reportNumber(selected?.onsite), detail: "问题在现场/售后暴露的数量" }].filter((row) => row.value > 0);
     closureItems = focusItems.slice(0, 5).map((row) => ({ name: `责任闭环：${row.name}`, value: "待验证", detail: "责任人、交付物、验证证据和复发升级规则必须完整" }));
     scopeText = role === "PM报告" ? "PM负责范围内的研发工程师具体记录" : role === "TPM报告" ? "TPM负责范围内的PM聚合记录" : "产总负责范围内的产品部、TPM和PM聚合记录";
@@ -5779,7 +5799,7 @@ function BackgroundSnapshotPage({ data = {}, files = [], dateRange = {}, auth, o
           <div className="qmdp-snapshot-date-controls">
             <label>2026统计范围<input type="date" min="2026-01-01" max="2026-12-31" value={moduleSnapshotPeriod.start2026} disabled={running} onChange={(event) => setModuleSnapshotPeriod((current) => ({ ...current, start2026: event.target.value }))}/><i>—</i><input type="date" min="2026-01-01" max="2026-12-31" value={moduleSnapshotPeriod.end2026} disabled={running} onChange={(event) => setModuleSnapshotPeriod((current) => ({ ...current, end2026: event.target.value }))}/></label>
           </div>
-          <button type="button" className="qmdp-secondary-btn" disabled={!editable} onClick={() => openSnapshotStorage("module").then(() => setStatus("已打开部门快照保存目录")).catch((error) => setStatus(error?.message || "无法打开快照目录"))}><FolderOpen size={15}/>打开快照</button>
+          <label className="qmdp-snapshot-select-all"><input type="checkbox" checked={registry.rules.length > 0 && registry.rules.every((rule) => selected.includes(rule.id))} disabled={!editable || running || !registry.rules.length} onChange={(event) => setSelected(event.target.checked ? registry.rules.map((rule) => rule.id) : [])}/><span>全选</span></label><button type="button" className="qmdp-secondary-btn" disabled={!editable} onClick={() => openSnapshotStorage("module").then(() => setStatus("已打开部门快照保存目录")).catch((error) => setStatus(error?.message || "无法打开快照目录"))}><FolderOpen size={15}/>打开快照</button>
           <button type="button" className={`qmdp-primary-btn snapshot-generate-btn ${running ? "snapshot-running" : ""}`} disabled={running} onClick={() => startModuleSnapshot()}>
             <ArrowsClockwise size={15} className={running ? "spin" : ""}/>
             {running ? "正在生成…" : "生成快照"}
@@ -5897,7 +5917,7 @@ function BackgroundSnapshotPage({ data = {}, files = [], dateRange = {}, auth, o
         <div className="qmdp-snapshot-task-history"><strong>任务历史</strong>{(roleRegistry.maintenance?.taskHistory || []).slice(0, 8).map((task) => <div key={task.id}><span>{task.kind} · {new Date(task.startedAt).toLocaleString("zh-CN")}</span><b className={task.status === "completed" ? "done" : "cancelled"}>{task.status === "completed" ? "已完成" : task.status === "failed" ? "有失败" : "已取消"}</b><small>{task.done}/{task.total} · 失败 {task.failed || 0} · {task.rules?.join("、")}</small>{task.failedItems?.length ? <em>{task.failedItems.slice(0, 6).map((item) => `${item.role || item.module || ""} ${item.periodKey || ""}`.trim()).join("；")}</em> : null}{task.status !== "completed" && <button className="snapshot-view-btn" disabled={!editable || running || roleRunning} onClick={() => retrySnapshotTask(task)}>重试失败项</button>}</div>)}{!(roleRegistry.maintenance?.taskHistory || []).length && <small>暂无任务记录</small>}</div>
         <details className="qmdp-snapshot-task-history"><summary className="qmdp-text-btn">当前队列</summary><select value={roleQueueFilter} onChange={(event) => setRoleQueueFilter(event.target.value)}><option>未完成</option><option>全部</option><option value="queued">排队中</option><option value="running">执行中</option><option value="failed">失败</option><option value="completed">已完成</option></select>{roleQueueJobs.slice(0, 6).map((job) => <div key={job.id}><span>{job.kind} · {job.batchId || job.id}</span><b className={job.status === "completed" ? "done" : job.status === "failed" ? "cancelled" : ""}>{job.status === "completed" ? "已完成" : job.status === "failed" ? "失败" : job.status === "running" ? "执行中" : "排队中"}</b><small>{job.progress || 0}% · {job.message || "等待执行"}</small></div>)}{!roleQueueJobs.length && <small>暂无服务端队列。</small>}</details>
         <div className="qmdp-snapshot-maintenance"><strong>自动维护</strong><label><input type="checkbox" checked={roleRegistry.maintenance?.enabled !== false} onChange={(event) => updateRoleMaintenance({ enabled: event.target.checked })}/>启用</label><label><input type="checkbox" checked={roleRegistry.maintenance?.autoArchive !== false} onChange={(event) => updateRoleMaintenance({ autoArchive: event.target.checked })}/>自动归档旧版本</label><label>每个周期保留<select value={roleRegistry.maintenance?.retention || 3} onChange={(event) => updateRoleMaintenance({ retention: Number(event.target.value) })}>{[1,2,3,5,10].map((value) => <option key={value} value={value}>{value} 个</option>)}</select></label><small>相同角色、周期、来源、Skill 和 Profile 的快照会复用。</small></div>
-        <div className="qmdp-snapshot-toolbar"><span>{roleStatus || `已保存角色快照：${roleRegistry.history.length} 条`}</span><button type="button" className="qmdp-secondary-btn" disabled={!editable} onClick={() => openSnapshotStorage("role").then(() => setRoleStatus("已打开角色快照保存目录")).catch((error) => setRoleStatus(error?.message || "无法打开快照目录"))}><FolderOpen size={15}/>打开快照</button><button type="button" className={`qmdp-primary-btn snapshot-generate-btn ${roleRunning ? "snapshot-running" : ""}`} disabled={roleRunning} onClick={() => startRoleSnapshot()}><ArrowsClockwise size={15} className={roleRunning ? "spin" : ""}/>{roleRunning ? "正在生成…" : "生成快照"}</button>{snapshotTask?.kind === "角色" && <div className="qmdp-snapshot-task-progress snapshot-task-inline"><div><strong>角色快照任务</strong><span>{snapshotTask.done}/{snapshotTask.total}</span></div><i><b style={{ width: `${snapshotTask.total ? snapshotTask.done / snapshotTask.total * 100 : 0}%` }}/></i><small>{snapshotTask.current}</small><button className="qmdp-danger-btn" onClick={cancelSnapshotTask}>停止任务</button></div>}</div>
+        <div className="qmdp-snapshot-toolbar"><span>{roleStatus || `已保存角色快照：${roleRegistry.history.length} 条`}</span><label className="qmdp-snapshot-select-all"><input type="checkbox" checked={roleRegistry.rules.length > 0 && roleRegistry.rules.every((rule) => roleSelected.includes(rule.id))} disabled={!editable || roleRunning || !roleRegistry.rules.length} onChange={(event) => setRoleSelected(event.target.checked ? roleRegistry.rules.map((rule) => rule.id) : [])}/><span>全选</span></label><button type="button" className="qmdp-secondary-btn" disabled={!editable} onClick={() => openSnapshotStorage("role").then(() => setRoleStatus("已打开角色快照保存目录")).catch((error) => setRoleStatus(error?.message || "无法打开快照目录"))}><FolderOpen size={15}/>打开快照</button><button type="button" className={`qmdp-primary-btn snapshot-generate-btn ${roleRunning ? "snapshot-running" : ""}`} disabled={roleRunning} onClick={() => startRoleSnapshot()}><ArrowsClockwise size={15} className={roleRunning ? "spin" : ""}/>{roleRunning ? "正在生成…" : "生成快照"}</button>{snapshotTask?.kind === "角色" && <div className="qmdp-snapshot-task-progress snapshot-task-inline"><div><strong>角色快照任务</strong><span>{snapshotTask.done}/{snapshotTask.total}</span></div><i><b style={{ width: `${snapshotTask.total ? snapshotTask.done / snapshotTask.total * 100 : 0}%` }}/></i><small>{snapshotTask.current}</small><button className="qmdp-danger-btn" onClick={cancelSnapshotTask}>停止任务</button></div>}</div>
         <div className="qmdp-role-snapshot-options">
           {roleRegistry.rules.map((rule) => <article className={`qmdp-role-snapshot-card ${roleSelected.includes(rule.id) ? "selected" : ""}`} key={rule.id}>
             <div className="qmdp-role-snapshot-card-head"><label><input type="checkbox" checked={roleSelected.includes(rule.id)} disabled={!editable || roleRunning} onChange={() => setRoleSelected((current) => current.includes(rule.id) ? current.filter((id) => id !== rule.id) : [...current, rule.id])}/><strong>{rule.role}</strong></label><small>{rule.id}</small></div>
@@ -5919,11 +5939,27 @@ function BackgroundSnapshotPage({ data = {}, files = [], dateRange = {}, auth, o
   );
 }
 
+function ImportedFileTable({ files = [], editable = false, onDelete, empty = "尚未导入文件" }) {
+  return <div className="source-file-table">
+    <div className="source-file-row source-file-head"><span>文件名</span><span>数据行数</span><span>工作表</span><span>导入时间</span><span>操作</span></div>
+    {files.map((file) => <div className="source-file-row" key={file.id || file.sourceId || file.name}><strong><FileXls size={16}/>{file.name}</strong><span>{Number(file.rowCount ?? file.rows?.length ?? 0).toLocaleString()}</span><span>{Array.isArray(file.sheetNames) ? file.sheetNames.length : Array.isArray(file.sheets) ? file.sheets.length : (file.sheets || "—")}</span><span>{file.importedAt ? new Date(file.importedAt).toLocaleString("zh-CN", { hour12: false }) : "—"}</span><button type="button" className="delete-source" disabled={!editable} onClick={() => onDelete(file)}><Trash size={15}/>删除</button></div>)}
+    {!files.length && <div className="source-empty">{empty}</div>}
+  </div>;
+}
+
 function DqaAgentProjectMappingPanel({ raw, editable, onSave }) {
   const [query, setQuery] = useState(""); const [selected, setSelected] = useState(null); const rows = raw?.projectMappings || [];
   const visible = useMemo(() => rows.filter((row) => !query.trim() || `${row.costObject} ${row.projectName} ${row.pm} ${row.tpm}`.toLowerCase().includes(query.trim().toLowerCase())).slice(0, 100), [rows, query]);
   const saveRow = async () => { if (!selected || !editable) return; await onSave({ ...raw, updatedAt: new Date().toISOString(), projectMappings: rows.map((row) => row.recordId === selected.recordId ? selected : row) }); };
-  return <Panel title="研发项目映射" subtitle="用于非BOM的研发工程师、PM、TPM责任归属；独立于质量数据-DQA和OQC项目名称映射。"><div className="qmdp-toolbar"><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索成本对象、项目名称、PM或TPM"/><span>共 {rows.length.toLocaleString()} 条 · 当前显示 {visible.length} 条</span></div><div className="qmdp-admin-table"><div className="qmdp-admin-row head"><span>成本对象</span><span>项目名称</span><span>PM</span><span>TPM</span><span>操作</span></div>{visible.map((row) => <div className="qmdp-admin-row" key={row.recordId}><span>{row.costObject}</span><span>{row.projectName}</span><input value={row.pm || ""} disabled={!editable || selected?.recordId !== row.recordId} onChange={(event) => setSelected((current) => ({ ...(current || row), pm: event.target.value }))}/><input value={row.tpm || ""} disabled={!editable || selected?.recordId !== row.recordId} onChange={(event) => setSelected((current) => ({ ...(current || row), tpm: event.target.value }))}/><span>{selected?.recordId === row.recordId ? <button className="qmdp-primary-btn" onClick={saveRow}>保存</button> : <button className="qmdp-secondary-btn" onClick={() => setSelected({ ...row })}>编辑</button>}</span></div>)}</div>{!rows.length && <div className="qmdp-empty compact">尚未导入项目映射表。</div>}</Panel>;
+  const deleteRow = async (recordId) => { if (!editable) return; await onSave({ ...raw, updatedAt: new Date().toISOString(), projectMappings: rows.filter((row) => row.recordId !== recordId) }); if (selected?.recordId === recordId) setSelected(null); };
+  const mappingFiles = (raw?.files || []).filter((file) => file.kind === "PROJECT_MAPPING");
+  const deleteImportedProjectFile = async (sourceId, name) => {
+    const count = sourceId ? rows.filter((row) => row.sourceId === sourceId).length : rows.length;
+    if (!window.confirm(`删除导入文件「${name}」？其中 ${count} 条映射会一起删除。`)) return;
+    await onSave({ ...raw, updatedAt: new Date().toISOString(), projectMappings: sourceId ? rows.filter((row) => row.sourceId !== sourceId) : [], files: sourceId ? (raw?.files || []).filter((file) => file.sourceId !== sourceId) : (raw?.files || []).filter((file) => file.kind !== "PROJECT_MAPPING") });
+    setSelected(null);
+  };
+  return <Panel title="研发项目映射" subtitle="用于非BOM的研发工程师、PM、TPM责任归属；独立于质量数据-DQA和OQC项目名称映射。"><div className="qmdp-toolbar"><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索成本对象、项目名称、PM或TPM"/><span>共 {rows.length.toLocaleString()} 条 · 当前显示 {visible.length} 条</span></div><ImportedFileTable files={mappingFiles.length ? mappingFiles.map((file) => ({ ...file, id: file.sourceId || file.name, name: file.name || file.sourceName, rowCount: file.rowCount || rows.filter((row) => row.sourceId === file.sourceId).length })) : (rows.length ? [{ id: "legacy-project", name: "已导入的研发项目映射", rowCount: rows.length, sheets: "—", importedAt: raw?.updatedAt }] : [])} editable={editable} onDelete={(file) => deleteImportedProjectFile(file.id === "legacy-project" ? "" : (file.sourceId || file.id), file.name)} /><div className="qmdp-admin-table"><div className="qmdp-admin-row head"><span>成本对象</span><span>项目名称</span><span>PM</span><span>TPM</span><span>操作</span></div>{visible.map((row) => <div className="qmdp-admin-row" key={row.recordId}><span>{row.costObject}</span><span>{row.projectName}</span><input value={row.pm || ""} disabled={!editable || selected?.recordId !== row.recordId} onChange={(event) => setSelected((current) => ({ ...(current || row), pm: event.target.value }))}/><input value={row.tpm || ""} disabled={!editable || selected?.recordId !== row.recordId} onChange={(event) => setSelected((current) => ({ ...(current || row), tpm: event.target.value }))}/><span className="qmdp-row-actions">{selected?.recordId === row.recordId ? <button className="qmdp-primary-btn" onClick={saveRow}>保存</button> : <button className="qmdp-secondary-btn" onClick={() => setSelected({ ...row })}>编辑</button>}<button type="button" className="qmdp-secondary-btn qmdp-row-delete" disabled={!editable} onClick={() => deleteRow(row.recordId)}><Trash size={14}/>删除</button></span></div>)}</div>{!rows.length && <div className="qmdp-empty compact">尚未导入项目映射表。</div>}</Panel>;
 }
 
 function SystemManagementPage({ active, onNavigate, data, auth, files = [], dateRange = {}, onEnsureAgentSources, dqaAgentRaw, onLoadDqaAgentRaw, onSaveDqaAgentRaw }) {
@@ -5941,6 +5977,11 @@ function SystemManagementPage({ active, onNavigate, data, auth, files = [], date
   const [importingKind, setImportingKind] = useState("");
   const mappingInputRef = useRef(null);
   useEffect(() => { localStorage.setItem(qmdpSystemKey, JSON.stringify(config)); }, [config]);
+  useEffect(() => {
+    const apply = (event) => { if (event.detail?.orgMappings) setConfig(event.detail); };
+    window.addEventListener("qms-org-mapping-changed", apply);
+    return () => window.removeEventListener("qms-org-mapping-changed", apply);
+  }, []);
   useEffect(() => { setTab(active); }, [active]);
   useEffect(() => {
     if (tab !== "企业微信" && tab !== "员工信息") return;
@@ -5967,6 +6008,49 @@ function SystemManagementPage({ active, onNavigate, data, auth, files = [], date
   const log = (message) => setConfig((current) => ({ ...current, logs: [{ id: Date.now(), message, at: new Date().toISOString() }, ...(current.logs || [])].slice(0, 100) }));
   const setField = (section, index, field, value) => setConfig((current) => ({ ...current, [section]: current[section].map((row, rowIndex) => rowIndex === index ? { ...row, [field]: value } : row) }));
   const addRow = (section, row) => { setConfig((current) => ({ ...current, [section]: [...(current[section] || []), row] })); log(`新增${section}记录`); };
+  const removeRow = (section, index) => { setConfig((current) => {
+    const rows = current[section] || [];
+    const removed = rows[index];
+    const kind = section === "orgMappings" ? "org" : section === "supplyMappings" ? "supply" : section === "employees" ? "employee" : "";
+    let importFiles = current.importFiles;
+    if (kind && removed?.sourceFileId && importFiles?.[kind]) {
+      importFiles = { ...importFiles, [kind]: importFiles[kind].map((file) => {
+        if (file.id !== removed.sourceFileId) return file;
+        const nextRows = (file.rows || []).filter((row) => mappingRowKey(kind, row) !== mappingRowKey(kind, removed));
+        return { ...file, rows: nextRows, rowCount: nextRows.length };
+      }) };
+    }
+    return { ...current, [section]: rows.filter((_, rowIndex) => rowIndex !== index), importFiles };
+  }); log(`删除${section}第 ${index + 1} 条`); setStatus("已删除 1 条"); };
+  const deleteImportFile = (kind, file) => {
+    const count = Number(file?.rowCount ?? file?.rows?.length ?? 0);
+    if (!window.confirm(`删除导入文件「${file?.name || "未命名文件"}」？其中 ${count} 条会一起删除。`)) return;
+    setConfig((current) => {
+      const next = withoutMappingFile(current, kind, file);
+      const saved = { ...next, logs: [{ id: Date.now(), message: `已删除导入文件 ${file?.name || ""}`, at: new Date().toISOString() }, ...(next.logs || [])].slice(0, 100) };
+      localStorage.setItem(qmdpSystemKey, JSON.stringify(saved));
+      if (kind === "employee") saveWecomConfig({ employees: saved.employees }).catch((error) => setStatus(error?.message || "员工文件已删除，同步发送服务失败"));
+      return saved;
+    });
+    setStatus(`已删除 ${file?.name || "导入文件"}`);
+  };
+  const mappingFilesOf = (kind) => {
+    const stored = config.importFiles?.[kind];
+    if (Array.isArray(stored)) return stored;
+    const rows = kind === "org" ? (config.orgMappings || []) : kind === "employee" ? (config.employees || []) : (config.supplyMappings || []);
+    const meta = config.importMeta?.[kind];
+    if (!rows.length || meta?.suppressed || (kind === "employee" && !meta?.name)) return [];
+    if (!meta?.name) return [{ id: `legacy-${kind}`, name: "已导入数据（文件名未记录）", rowCount: rows.length, sheets: "—", importedAt: "" }];
+    return [{ id: kind === "org" ? "linked-org" : `legacy-${kind}`, name: meta.name, rowCount: meta.count || rows.length, sheets: kind === "org" ? "组织映射表" : kind === "employee" ? "员工信息" : "供应链映射", importedAt: meta.importedAt || "" }];
+  };
+  const reconnectOrgMapping = async () => {
+    const current = { ...defaultQmdpSystemConfig, ...safeParse(localStorage.getItem(qmdpSystemKey), {}) };
+    const next = { ...current, importMeta: { ...(current.importMeta || {}), org: { ...(current.importMeta?.org || {}), suppressed: false, linked: true, signature: "" } } };
+    localStorage.setItem(qmdpSystemKey, JSON.stringify(next));
+    const result = await syncLinkedOrgMapping();
+    setConfig(result?.config || next);
+    setStatus(result?.updated ? `已重新连接映射表，${result.payload.count} 条` : "已重新连接映射表");
+  };
   const saveMessage = (message) => { log(message); setStatus(message); setTimeout(() => setStatus(""), 2200); };
   const updateQualityRule = (id, patch) => setQualityRules((current) => current.map((rule) => rule.id === id ? { ...rule, ...patch } : rule));
   const saveQualityRuleConfig = async () => { if (!editable) return; await saveReportQualityRules({ version: 1, rules: qualityRules, updatedAt: new Date().toISOString() }); saveMessage("报告质量校验规则已保存"); };
@@ -5980,22 +6064,69 @@ function SystemManagementPage({ active, onNavigate, data, auth, files = [], date
       setProjectMappingStatus(`已保存到本机，服务器同步失败：${error?.message || "请检查服务"}`);
     }
   };
+  const parseEmployeeWorkbook = async (file) => {
+    const workbook = XLSX.read(await file.arrayBuffer(), { type: "array", cellDates: false, dense: true });
+    const rows = [];
+    workbook.SheetNames.forEach((sheetName) => {
+      const matrix = XLSX.utils.sheet_to_json(workbook.Sheets[sheetName], { header: 1, defval: "", blankrows: false });
+      const headerIndex = matrix.findIndex((line) => (line || []).some((value) => ["姓名", "员工姓名", "名字"].includes(String(value ?? "").trim())));
+      if (headerIndex < 0) return;
+      const header = matrix[headerIndex].map((value) => String(value ?? "").trim());
+      const col = (...names) => names.map((name) => header.indexOf(name)).find((index) => index >= 0) ?? -1;
+      const idCol = col("工号", "员工工号", "编号");
+      const nameCol = col("姓名", "员工姓名", "名字");
+      const deptCol = col("部门");
+      const roleCol = col("职位", "岗位", "角色");
+      const wecomCol = col("企业微信 userid", "企业微信userid", "userid", "企业微信", "微信userid");
+      matrix.slice(headerIndex + 1).forEach((values) => {
+        const cell = (index) => index >= 0 ? String(values[index] ?? "").trim() : "";
+        const name = cell(nameCol);
+        const id = cell(idCol);
+        const wecom = cell(wecomCol);
+        if (!name && !id && !wecom) return;
+        rows.push({ id, name, dept: cell(deptCol), role: cell(roleCol), wecom });
+      });
+    });
+    const seen = new Set();
+    const unique = rows.filter((row) => {
+      const key = row.id || row.name || row.wecom;
+      if (!key || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+    if (!unique.length) throw new Error("未找到员工表，请确认包含姓名列，可选工号、部门、职位、企业微信 userid");
+    return { rows: unique, sheetNames: workbook.SheetNames };
+  };
   const importMapping = async (event, kind) => {
     const file = event.target.files?.[0];
     event.target.value = "";
     if (!file) return;
     setImportingKind(kind);
     try {
+      if (kind === "employees") {
+        const parsed = await parseEmployeeWorkbook(file);
+        const importedAt = new Date().toISOString();
+        const record = { id: `employee-${Date.now()}`, name: file.name, rowCount: parsed.rows.length, sheets: (parsed.sheetNames || []).join("、") || "—", sheetNames: parsed.sheetNames || [], kind: "员工信息", importedAt, rows: parsed.rows };
+        setConfig((current) => {
+          const next = { ...withMappingFile(current, "employee", record), logs: [{ id: Date.now(), message: `员工信息已从 ${file.name} 导入 ${parsed.rows.length} 人`, at: importedAt }, ...(current.logs || [])].slice(0, 100) };
+          localStorage.setItem(qmdpSystemKey, JSON.stringify(next));
+          saveWecomConfig({ employees: next.employees }).catch((error) => setStatus(error?.message || "员工名单已导入，同步发送服务失败"));
+          return next;
+        });
+        setStatus(`员工信息导入成功：${parsed.rows.length} 人`);
+        return;
+      }
       if (kind === "projectRules") {
         const rules = await parseProjectNameRuleWorkbook(file);
         const next = { ...projectMapping, rules };
         await saveProjectMappingState(next, `商务代码规则已导入：${Object.values(rules.fields).reduce((sum, items) => sum + items.length, 0)} 条`);
         return;
       }
-      const rows = await parseQmdpMappingWorkbook(file, kind);
-      const section = kind === "org" ? "orgMappings" : "supplyMappings";
-      setConfig((current) => ({ ...current, [section]: rows, importMeta: { ...(current.importMeta || {}), [kind]: { name: file.name, importedAt: new Date().toISOString(), count: rows.length } }, logs: [{ id: Date.now(), message: `${kind === "org" ? "研发组织" : "供应链"}映射已从 ${file.name} 导入 ${rows.length} 条`, at: new Date().toISOString() }, ...(current.logs || [])].slice(0, 100) }));
-      setStatus(`${kind === "org" ? "研发组织" : "供应链"}映射导入成功：${rows.length} 条`);
+      const parsed = await parseQmdpMappingWorkbook(file, kind);
+      const importedAt = new Date().toISOString();
+      const record = { id: `${kind}-${Date.now()}`, name: file.name, rowCount: parsed.rows.length, sheets: (parsed.sheetNames || []).join("、") || "—", sheetNames: parsed.sheetNames || [], kind: kind === "org" ? "研发组织映射" : "供应链映射", importedAt, rows: parsed.rows };
+      setConfig((current) => ({ ...withMappingFile(current, kind, record), logs: [{ id: Date.now(), message: `${kind === "org" ? "研发组织" : "供应链"}映射已从 ${file.name} 导入 ${parsed.rows.length} 条`, at: importedAt }, ...(current.logs || [])].slice(0, 100) }));
+      setStatus(`${kind === "org" ? "研发组织" : "供应链"}映射导入成功：${parsed.rows.length} 条`);
     } catch (error) {
       setStatus(`导入失败：${error?.message || "无法解析 Excel"}`);
     } finally {
@@ -6025,6 +6156,15 @@ function SystemManagementPage({ active, onNavigate, data, auth, files = [], date
     const next = { ...projectMapping, overrides: [...(projectMapping.overrides || []).filter((item) => item.sourceName !== sourceName), { sourceName, values: projectOverrideValues, updatedAt: new Date().toISOString() }] };
     await saveProjectMappingState(next, `已保存“${sourceName}”的项目规则字段`);
   };
+  const removeProjectOverride = async () => {
+    const sourceName = projectNameText(selectedProjectName);
+    if (!sourceName) return setProjectMappingStatus("请先选择一个原始治具名称");
+    await saveProjectMappingState({ ...projectMapping, overrides: (projectMapping.overrides || []).filter((item) => item.sourceName !== sourceName) }, `已删除“${sourceName}”的字段校正`);
+  };
+  const clearProjectRules = async () => {
+    if (!window.confirm("删除已导入的商务代码规则文件？全部规则会清掉，已保存的字段校正会保留。")) return;
+    await saveProjectMappingState({ ...projectMapping, rules: {} }, "已删除导入的商务代码规则");
+  };
   const bindProjectName = async () => {
     const sourceName = projectNameText(selectedProjectName);
     if (!sourceName) return setProjectMappingStatus("请先选择一个原始治具名称");
@@ -6048,9 +6188,9 @@ function SystemManagementPage({ active, onNavigate, data, auth, files = [], date
     await saveProjectMappingState({ ...projectMapping, mappings: (projectMapping.mappings || []).filter((item) => item.id !== id) }, "标准项目类别已删除，相关原始名称将恢复独立统计");
     if (mappingTargetId === id) setMappingTargetId("new");
   };
-  const renderMapping = () => <div className="qmdp-admin-table"><div className="qmdp-admin-row head"><span>产品部/厂区</span><span>负责人</span><span>TPM</span><span>PM/交付经理</span><span>状态</span></div>{mappings.map((row, index) => <div className="qmdp-admin-row" key={index}><input disabled={!editable} value={row.productDept || ""} onChange={(event) => setField("orgMappings", index, "productDept", event.target.value)}/><input disabled={!editable} value={row.productionDirector || ""} onChange={(event) => setField("orgMappings", index, "productionDirector", event.target.value)}/><input disabled={!editable} value={row.tpm || ""} onChange={(event) => setField("orgMappings", index, "tpm", event.target.value)}/><input disabled={!editable} value={row.pm || ""} onChange={(event) => setField("orgMappings", index, "pm", event.target.value)}/><select disabled={!editable} value={row.active ? "启用" : "停用"} onChange={(event) => setField("orgMappings", index, "active", event.target.value === "启用")}><option>启用</option><option>停用</option></select></div>)}</div>;
-  const renderSupply = () => <div className="qmdp-admin-table"><div className="qmdp-admin-row head"><span>厂区</span><span>工坊</span><span>交付经理</span><span>机长</span><span>状态</span></div>{supply.map((row, index) => <div className="qmdp-admin-row" key={index}><input disabled={!editable} value={row.site || ""} onChange={(event) => setField("supplyMappings", index, "site", event.target.value)}/><input disabled={!editable} value={row.workshop || ""} onChange={(event) => setField("supplyMappings", index, "workshop", event.target.value)}/><input disabled={!editable} value={row.manager || ""} onChange={(event) => setField("supplyMappings", index, "manager", event.target.value)}/><input disabled={!editable} value={row.leader || ""} onChange={(event) => setField("supplyMappings", index, "leader", event.target.value)}/><select disabled={!editable} value={row.active ? "启用" : "停用"} onChange={(event) => setField("supplyMappings", index, "active", event.target.value === "启用")}><option>启用</option><option>停用</option></select></div>)}</div>;
-  const renderEmployees = () => <div className="qmdp-admin-table"><div className="qmdp-admin-row head"><span>工号</span><span>姓名</span><span>部门</span><span>职位</span><span>企业微信 userid</span></div>{employees.map((row, index) => <div className="qmdp-admin-row" key={index}>{["id", "name", "dept", "role", "wecom"].map((field) => <input key={field} disabled={!editable} value={row[field] || ""} onChange={(event) => setField("employees", index, field, event.target.value)}/>)}</div>)}</div>;
+  const renderMapping = () => <div className="qmdp-admin-table qmdp-admin-table-org"><div className="qmdp-admin-row head"><span>产品部</span><span>项目组</span><span>产总</span><span>TPM</span><span>PM</span><span>状态</span><span>操作</span></div>{mappings.map((row, index) => <div className="qmdp-admin-row" key={index}><input disabled={!editable} value={row.productDept || ""} onChange={(event) => setField("orgMappings", index, "productDept", event.target.value)}/><input disabled={!editable} value={row.projectGroup || ""} onChange={(event) => setField("orgMappings", index, "projectGroup", event.target.value)}/><input disabled={!editable} value={row.productionDirector || ""} onChange={(event) => setField("orgMappings", index, "productionDirector", event.target.value)}/><input disabled={!editable} value={row.tpm || ""} onChange={(event) => setField("orgMappings", index, "tpm", event.target.value)}/><input disabled={!editable} value={row.pm || ""} onChange={(event) => setField("orgMappings", index, "pm", event.target.value)}/><select disabled={!editable} value={row.active ? "启用" : "停用"} onChange={(event) => setField("orgMappings", index, "active", event.target.value === "启用")}><option>启用</option><option>停用</option></select><button type="button" className="qmdp-secondary-btn qmdp-row-delete" disabled={!editable} onClick={() => removeRow("orgMappings", index)}><Trash size={14}/>删除</button></div>)}</div>;
+  const renderSupply = () => <div className="qmdp-admin-table qmdp-admin-table-deletable"><div className="qmdp-admin-row head"><span>厂区</span><span>工坊</span><span>交付经理</span><span>机长</span><span>状态</span><span>操作</span></div>{supply.map((row, index) => <div className="qmdp-admin-row" key={index}><input disabled={!editable} value={row.site || ""} onChange={(event) => setField("supplyMappings", index, "site", event.target.value)}/><input disabled={!editable} value={row.workshop || ""} onChange={(event) => setField("supplyMappings", index, "workshop", event.target.value)}/><input disabled={!editable} value={row.manager || ""} onChange={(event) => setField("supplyMappings", index, "manager", event.target.value)}/><input disabled={!editable} value={row.leader || ""} onChange={(event) => setField("supplyMappings", index, "leader", event.target.value)}/><select disabled={!editable} value={row.active ? "启用" : "停用"} onChange={(event) => setField("supplyMappings", index, "active", event.target.value === "启用")}><option>启用</option><option>停用</option></select><button type="button" className="qmdp-secondary-btn qmdp-row-delete" disabled={!editable} onClick={() => removeRow("supplyMappings", index)}><Trash size={14}/>删除</button></div>)}</div>;
+  const renderEmployees = () => <div className="qmdp-admin-table qmdp-admin-table-deletable"><div className="qmdp-admin-row head"><span>工号</span><span>姓名</span><span>部门</span><span>职位</span><span>企业微信 userid</span><span>操作</span></div>{employees.map((row, index) => <div className="qmdp-admin-row" key={index}>{["id", "name", "dept", "role", "wecom"].map((field) => <input key={field} disabled={!editable} value={row[field] || ""} onChange={(event) => setField("employees", index, field, event.target.value)}/>)}<button type="button" className="qmdp-secondary-btn qmdp-row-delete" disabled={!editable} onClick={() => removeRow("employees", index)}><Trash size={14}/>删除</button></div>)}</div>;
   const renderLegacyProjectNameMapping = () => {
     const ruleCount = Object.values(projectMapping.rules?.fields || {}).reduce((sum, items) => sum + (items?.length || 0), 0);
     const mappedSourceNames = new Set((projectMapping.mappings || []).flatMap((item) => item.sourceNames || []));
@@ -6081,6 +6221,7 @@ function SystemManagementPage({ active, onNavigate, data, auth, files = [], date
     const rulesNeedRefresh = Boolean(projectMapping.rules?.sourceName) && ["customerProductCategory", "businessCategory", "productForm"].some((key) => !(projectMapping.rules?.fields?.[key] || []).length);
     return <>
       <Panel title="项目名称规则" subtitle="保留项目名称中可稳定识别的七个字段，用于 OQC 设备离散分析的分类统计。" action={<div className="qmdp-project-rule-action"><button className="qmdp-secondary-btn" disabled={!editable || importingKind === "projectRules"} onClick={() => openMappingImport("projectRules")}><UploadSimple size={15}/>{importingKind === "projectRules" ? "解析中…" : "导入商务代码规则"}</button><small>{projectMapping.rules?.sourceName ? `${projectMapping.rules.sourceName} · ${ruleCount} 条规则` : "尚未导入规则表"}</small></div>}>
+        <ImportedFileTable files={projectMapping.rules?.sourceName ? [{ id: "project-rules", name: projectMapping.rules.sourceName, rowCount: ruleCount, sheets: "商务代码规则", importedAt: projectMapping.rules.importedAt }] : []} editable={editable} onDelete={() => clearProjectRules()} empty="尚未导入商务代码规则" />
         <div className="qmdp-project-rule-dimensions">{projectNameRuleFields.map((field) => <section key={field.key}><strong>{field.label}</strong><b>{projectMapping.rules?.fields?.[field.key]?.length || 0}</b><small>{projectMapping.rules?.fields?.[field.key]?.slice(0, 6).map((item) => item.code).join(" · ") || "待导入"}</small></section>)}</div>
         <div className="qmdp-note"><Database size={15}/>选择其中任一字段后，系统按字段值汇总机台数。无法从项目名称解析的记录会显示为“未识别”，不参与漏统或猜测归类。</div>
         {rulesNeedRefresh && <div className="qmdp-note"><Warning size={15}/>规则分类已升级为七个字段，请重新导入商务代码规则，以启用客户产品大类、业务类别和产品形态统计。</div>}
@@ -6088,13 +6229,13 @@ function SystemManagementPage({ active, onNavigate, data, auth, files = [], date
       <Panel title="历史项目字段补充" subtitle="仅对自动解析失败或不完整的项目逐字段校正；保存后会直接进入对应的分类统计。">
         <div className="qmdp-project-override-layout"><label>原始治具名称<select value={selectedProjectName} disabled={projectMappingLoading} onChange={(event) => selectProjectForRules(event.target.value)}><option value="">选择 OQC 原始治具名称</option>{sourceProjectNames.map((name) => <option key={name} value={name}>{(projectMapping.overrides || []).some((item) => item.sourceName === name) ? "已校正 · " : ""}{name}</option>)}</select></label>
           <div className="qmdp-project-override-grid">{projectNameRuleFields.map((field) => <label key={field.key}>{field.label}<select disabled={!editable || !selectedProjectName} value={projectOverrideValues[field.key]?.code || ""} onChange={(event) => { const entry = (projectMapping.rules?.fields?.[field.key] || []).find((item) => item.code === event.target.value) || {}; setProjectOverrideValues((current) => ({ ...current, [field.key]: entry.code ? { code: entry.code, name: entry.name || "", label: entry.name && entry.name !== entry.code ? `${entry.code} · ${entry.name}` : entry.code } : {} })); }}><option value="">未识别 / 不适用</option>{(projectMapping.rules?.fields?.[field.key] || []).map((item) => <option key={item.code} value={item.code}>{item.name && item.name !== item.code ? `${item.code} · ${item.name}` : item.code}</option>)}</select></label>)}</div>
-          <div className="qmdp-project-override-actions"><button className="qmdp-primary-btn" disabled={!editable || !selectedProjectName} onClick={saveProjectRuleOverride}><FloppyDisk size={15}/>保存字段校正</button><small>{overrideCount ? `已校正 ${overrideCount} 个历史项目名称` : "尚未保存人工校正"}</small>{projectMappingStatus && <small className="qmdp-inline-status-text">{projectMappingStatus}</small>}</div>
+          <div className="qmdp-project-override-actions"><button className="qmdp-primary-btn" disabled={!editable || !selectedProjectName} onClick={saveProjectRuleOverride}><FloppyDisk size={15}/>保存字段校正</button><button className="qmdp-secondary-btn" disabled={!editable || !selectedProjectName || !(projectMapping.overrides || []).some((item) => item.sourceName === selectedProjectName)} onClick={removeProjectOverride}><Trash size={15}/>删除校正</button><small>{overrideCount ? `已校正 ${overrideCount} 个历史项目名称` : "尚未保存人工校正"}</small>{projectMappingStatus && <small className="qmdp-inline-status-text">{projectMappingStatus}</small>}</div>
         </div>
       </Panel>
     </>;
   };
-  const importActions = (kind, section) => <div style={{ display: "flex", gap: 8, alignItems: "center" }}><button className="qmdp-secondary-btn" disabled={!editable || importingKind === kind} onClick={() => openMappingImport(kind)}><UploadSimple size={15}/>{importingKind === kind ? "解析中…" : "导入 Excel"}</button><span style={{ color: "#8190a2", fontSize: 10 }}>{config.importMeta?.[kind]?.name ? `最近导入：${config.importMeta[kind].name}（${config.importMeta[kind].count} 条）` : `支持 ${kind === "org" ? "产品部 / 产总 / TPM / PM" : "厂区 / 工坊 / 交付经理 / 机长"} 表头`}</span></div>;
-  const content = tab === "Agent配置" ? <Panel title="Agent配置 · 报告质量校验" subtitle="管理员配置 Agent 报告生成后的结构、数据、图表和闭环检查。"><div className="qmdp-admin-table"><div className="qmdp-admin-row head"><span>启用</span><span>规则</span><span>分组</span><span>级别</span></div>{qualityRules.map((rule) => <div className="qmdp-admin-row" key={rule.id}><input type="checkbox" checked={rule.enabled !== false} disabled={!editable} onChange={(event) => updateQualityRule(rule.id, { enabled: event.target.checked })}/><strong>{rule.label}</strong><span>{rule.group}</span><select value={rule.severity} disabled={!editable} onChange={(event) => updateQualityRule(rule.id, { severity: event.target.value })}><option value="block">阻断</option><option value="warn">警告</option><option value="info">提示</option></select></div>)}</div><div className="qmdp-note"><Database size={15}/>阻断项会标记报告质量校验失败；警告项允许查看报告但提示管理员；提示项只记录不阻断。</div><button className="qmdp-primary-btn" disabled={!editable} onClick={saveQualityRuleConfig}><FloppyDisk size={15}/>保存校验规则</button></Panel> : tab === "后台快照" ? <BackgroundSnapshotPage data={data} files={files} dateRange={dateRange} auth={auth} onEnsureAgentSources={onEnsureAgentSources}/> : tab === "研发项目映射" ? <DqaAgentProjectMappingPanel raw={dqaAgentRaw} editable={editable} onSave={onSaveDqaAgentRaw}/> : tab === "研发组织映射" ? <><Panel title="研发组织映射维护" subtitle="产品部、产总、TPM、PM 的责任关系" action={importActions("org", "orgMappings")}>{renderMapping()}<button className="qmdp-secondary-btn" disabled={!editable} onClick={() => addRow("orgMappings", { productDept: "新产品部", productionDirector: "", tpm: "", pm: "", active: true })}><Plus size={15}/>新增映射</button></Panel></> : tab === "供应链映射" ? <><Panel title="供应商/供应链人员映射" subtitle="厂区、工坊、交付经理与机长" action={importActions("supply", "supplyMappings")}>{renderSupply()}<button className="qmdp-secondary-btn" disabled={!editable} onClick={() => addRow("supplyMappings", { site: "深圳", workshop: "", manager: "", leader: "", active: true })}><Plus size={15}/>新增映射</button></Panel></> : tab === "项目名称映射" ? renderProjectNameMapping() : tab === "员工信息" ? <><Panel title="员工信息 / 企业微信 userid">{renderEmployees()}<div style={{display:"flex",gap:8,flexWrap:"wrap"}}><button className="qmdp-secondary-btn" disabled={!editable} onClick={() => addRow("employees", { id: "", name: "", dept: "", role: "", wecom: "" })}><Plus size={15}/>新增员工</button><button className="qmdp-primary-btn" disabled={!editable} onClick={async () => { try { await saveWecomConfig({ employees: config.employees }); saveMessage("员工名单已同步到发送服务"); } catch (error) { saveMessage(error?.message || "同步失败"); } }}>同步到发送服务</button></div></Panel></> : tab === "评分权重" ? <Panel title="质量风险评分权重" subtitle="权重总和应为 100"><div className="qmdp-weight-grid">{[["ecn", "ECN个人占比"], ["issue", "研发问题数量"], ["severity", "高严重度问题"], ["review", "设计评审问题占比"], ["nonBom", "非BOM加工件比例"], ["open", "未关闭问题数量"]].map(([key, label]) => <label key={key}><span>{label}</span><input type="number" min="0" max="100" value={config.weights?.[key] ?? 0} disabled={!editable} onChange={(event) => setConfig((current) => ({ ...current, weights: { ...current.weights, [key]: Number(event.target.value) } }))}/></label>)}</div><div className="qmdp-weight-total">当前权重合计：<strong>{Object.values(config.weights || {}).reduce((sum, value) => sum + Number(value || 0), 0)}%</strong><button className="qmdp-primary-btn" disabled={!editable} onClick={() => saveMessage("质量评分权重已保存")}>保存权重</button></div></Panel> : tab === "企业微信" ? <Panel title="企业微信应用配置" subtitle="CorpId / AgentId / Secret 保存在服务器，发送按钮通过企业微信自建应用接口把 PDF 发给当事人"><div className="qmdp-form-grid">{[["corpId", "CorpId"], ["agentId", "AgentId"], ["secret", "Secret"]].map(([key, label]) => <label key={key}><span>{label}</span><input type={key === "secret" ? "password" : "text"} value={config.wecom?.[key] || ""} disabled={!editable} onChange={(event) => setConfig((current) => ({ ...current, wecom: { ...current.wecom, [key]: event.target.value } }))}/></label>)}</div><div className="qmdp-form-grid"><label><span>测试 userid</span><input id="wecom-test-userid" placeholder="先填自己的企业微信 userid"/></label></div><div style={{display:"flex",gap:8,flexWrap:"wrap"}}><button className="qmdp-primary-btn" disabled={!editable} onClick={async () => { try { await saveWecomConfig({ ...config.wecom, employees: config.employees }); saveMessage("企业微信配置已保存到服务器"); } catch (error) { saveMessage(error?.message || "保存失败"); } }}>保存到服务器</button><button className="qmdp-secondary-btn" disabled={!editable} onClick={async () => { const userid = document.getElementById("wecom-test-userid")?.value?.trim(); if (!userid) { saveMessage("请先填写测试 userid"); return; } try { const result = await testWecomSend(userid); saveMessage(result.message || "测试已发送"); } catch (error) { saveMessage(error?.message || "测试失败"); } }}>发给自己试一条</button></div></Panel> : <Panel title="操作日志" subtitle="记录映射、权重与发送配置的变更"><div className="qmdp-log-list">{(config.logs || []).map((item) => <div key={item.id}><span>{formatSyncDateTime(item.at)}</span><strong>{item.message}</strong></div>)}{!(config.logs || []).length && <div className="qmdp-empty compact">暂无操作日志。</div>}</div></Panel>;
+  const importActions = (kind, section) => <div style={{ display: "flex", gap: 8, alignItems: "center" }}><button className="qmdp-secondary-btn" disabled={!editable || importingKind === kind} onClick={() => openMappingImport(kind)}><UploadSimple size={15}/>{importingKind === kind ? "解析中…" : "导入 Excel"}</button>{kind === "org" && config.importMeta?.org?.suppressed ? <button type="button" className="qmdp-secondary-btn" disabled={!editable} onClick={reconnectOrgMapping}>重新连接</button> : null}<span style={{ color: "#8190a2", fontSize: 10 }}>{config.importMeta?.[kind]?.suppressed ? "已删除导入文件，自动同步已停止" : config.importMeta?.[kind]?.linked ? `已连接 ${config.importMeta[kind].name} · ${config.importMeta[kind].count} 条 · 文件更新后自动同步` : config.importMeta?.[kind]?.name ? `最近导入：${config.importMeta[kind].name}（${config.importMeta[kind].count} 条）` : `支持 ${kind === "org" ? "产品部 / 产总 / TPM / PM" : "厂区 / 工坊 / 交付经理 / 机长"} 表头`}</span></div>;
+  const content = tab === "Agent配置" ? <Panel title="Agent配置 · 报告质量校验" subtitle="管理员配置 Agent 报告生成后的结构、数据、图表和闭环检查。"><div className="qmdp-admin-table"><div className="qmdp-admin-row head"><span>启用</span><span>规则</span><span>分组</span><span>级别</span></div>{qualityRules.map((rule) => <div className="qmdp-admin-row" key={rule.id}><input type="checkbox" checked={rule.enabled !== false} disabled={!editable} onChange={(event) => updateQualityRule(rule.id, { enabled: event.target.checked })}/><strong>{rule.label}</strong><span>{rule.group}</span><select value={rule.severity} disabled={!editable} onChange={(event) => updateQualityRule(rule.id, { severity: event.target.value })}><option value="block">阻断</option><option value="warn">警告</option><option value="info">提示</option></select></div>)}</div><div className="qmdp-note"><Database size={15}/>阻断项会标记报告质量校验失败；警告项允许查看报告但提示管理员；提示项只记录不阻断。</div><button className="qmdp-primary-btn" disabled={!editable} onClick={saveQualityRuleConfig}><FloppyDisk size={15}/>保存校验规则</button></Panel> : tab === "后台快照" ? <BackgroundSnapshotPage data={data} files={files} dateRange={dateRange} auth={auth} onEnsureAgentSources={onEnsureAgentSources}/> : tab === "研发项目映射" ? <DqaAgentProjectMappingPanel raw={dqaAgentRaw} editable={editable} onSave={onSaveDqaAgentRaw}/> : tab === "研发组织映射" ? <><Panel title="研发组织映射维护" subtitle="产品部只有半导体&北美、产品五部、海外亚太项目开发部、FPC事业部。项目组只属于半导体&北美：北美项目部、传感器产品部、IC载版。其它产品部项目组留空。" action={importActions("org", "orgMappings")}>{<ImportedFileTable files={mappingFilesOf("org")} editable={editable} onDelete={(file) => deleteImportFile("org", file)} />}{renderMapping()}<button className="qmdp-secondary-btn" disabled={!editable} onClick={() => addRow("orgMappings", { productDept: "", projectGroup: "", productionDirector: "", tpm: "", pm: "", active: true })}><Plus size={15}/>新增映射</button></Panel></> : tab === "供应链映射" ? <><Panel title="供应商/供应链人员映射" subtitle="厂区、工坊、交付经理与机长" action={importActions("supply", "supplyMappings")}>{<ImportedFileTable files={mappingFilesOf("supply")} editable={editable} onDelete={(file) => deleteImportFile("supply", file)} />}{renderSupply()}<button className="qmdp-secondary-btn" disabled={!editable} onClick={() => addRow("supplyMappings", { site: "深圳", workshop: "", manager: "", leader: "", active: true })}><Plus size={15}/>新增映射</button></Panel></> : tab === "项目名称映射" ? renderProjectNameMapping() : tab === "员工信息" ? <><Panel title="员工信息 / 企业微信 userid" subtitle="Excel 列：工号、姓名、部门、职位、企业微信 userid。姓名必填。" action={<button className="qmdp-secondary-btn" disabled={!editable || importingKind === "employees"} onClick={() => openMappingImport("employees")}><UploadSimple size={15}/>{importingKind === "employees" ? "解析中…" : "导入 Excel"}</button>}>{<ImportedFileTable files={mappingFilesOf("employee")} editable={editable} onDelete={(file) => deleteImportFile("employee", file)} empty="尚未导入员工文件" />}{renderEmployees()}<div style={{display:"flex",gap:8,flexWrap:"wrap"}}><button className="qmdp-secondary-btn" disabled={!editable} onClick={() => addRow("employees", { id: "", name: "", dept: "", role: "", wecom: "" })}><Plus size={15}/>新增员工</button><button className="qmdp-primary-btn" disabled={!editable} onClick={async () => { try { await saveWecomConfig({ employees: config.employees }); saveMessage("员工名单已同步到发送服务"); } catch (error) { saveMessage(error?.message || "同步失败"); } }}>同步到发送服务</button></div></Panel></> : tab === "评分权重" ? <Panel title="质量风险评分权重" subtitle="权重总和应为 100"><div className="qmdp-weight-grid">{[["ecn", "ECN个人占比"], ["issue", "研发问题数量"], ["severity", "高严重度问题"], ["review", "设计评审问题占比"], ["nonBom", "非BOM加工件比例"], ["open", "未关闭问题数量"]].map(([key, label]) => <label key={key}><span>{label}</span><input type="number" min="0" max="100" value={config.weights?.[key] ?? 0} disabled={!editable} onChange={(event) => setConfig((current) => ({ ...current, weights: { ...current.weights, [key]: Number(event.target.value) } }))}/></label>)}</div><div className="qmdp-weight-total">当前权重合计：<strong>{Object.values(config.weights || {}).reduce((sum, value) => sum + Number(value || 0), 0)}%</strong><button className="qmdp-primary-btn" disabled={!editable} onClick={() => saveMessage("质量评分权重已保存")}>保存权重</button></div></Panel> : tab === "企业微信" ? <Panel title="企业微信应用配置" subtitle="CorpId / AgentId / Secret 保存在服务器，发送按钮通过企业微信自建应用接口把 PDF 发给当事人"><div className="qmdp-form-grid">{[["corpId", "CorpId"], ["agentId", "AgentId"], ["secret", "Secret"]].map(([key, label]) => <label key={key}><span>{label}</span><input type={key === "secret" ? "password" : "text"} value={config.wecom?.[key] || ""} disabled={!editable} onChange={(event) => setConfig((current) => ({ ...current, wecom: { ...current.wecom, [key]: event.target.value } }))}/></label>)}</div><div className="qmdp-form-grid"><label><span>测试 userid</span><input id="wecom-test-userid" placeholder="先填自己的企业微信 userid"/></label></div><div style={{display:"flex",gap:8,flexWrap:"wrap"}}><button className="qmdp-primary-btn" disabled={!editable} onClick={async () => { try { await saveWecomConfig({ ...config.wecom, employees: config.employees }); saveMessage("企业微信配置已保存到服务器"); } catch (error) { saveMessage(error?.message || "保存失败"); } }}>保存到服务器</button><button className="qmdp-secondary-btn" disabled={!editable} onClick={async () => { const userid = document.getElementById("wecom-test-userid")?.value?.trim(); if (!userid) { saveMessage("请先填写测试 userid"); return; } try { const result = await testWecomSend(userid); saveMessage(result.message || "测试已发送"); } catch (error) { saveMessage(error?.message || "测试失败"); } }}>发给自己试一条</button></div></Panel> : <Panel title="操作日志" subtitle="记录映射、权重与发送配置的变更"><div className="qmdp-log-list">{(config.logs || []).map((item) => <div key={item.id}><span>{formatSyncDateTime(item.at)}</span><strong>{item.message}</strong></div>)}{!(config.logs || []).length && <div className="qmdp-empty compact">暂无操作日志。</div>}</div></Panel>;
   return <div className="qmdp-page"><input ref={mappingInputRef} type="file" accept=".xlsx,.xls,.xlsm" hidden onChange={(event) => importMapping(event, mappingInputRef.current?.getAttribute("data-kind") || "supply")}/><QmdpPageHeader icon={GearSix} eyebrow="系统管理 / Administration" title={tab} description={editable ? "副管理员和主管理员可维护映射、权重与发送配置。" : "当前账号仅可查看系统配置。"} action={status && <span className="qmdp-inline-status"><CheckCircle size={15}/>{status}</span>}/><div className="qmdp-admin-tabs">{qmdpMenuGroups.find((group) => group.label === "系统管理").children.map((item) => <button key={item} className={tab === item ? "active" : ""} onClick={() => { setTab(item); onNavigate?.(item); }}>{item}</button>)}</div>{content}<div className="qmdp-note"><Database size={15}/>系统管理数据与现有数据导入、IPQC过程管控、研发质量分析相互隔离。</div></div>;
 }
 
@@ -6317,7 +6458,7 @@ function ExecutiveDashboard({ data, files, dqaEngineerSupplement, dqaAgentRaw, o
     if (menuDenied || qmdpReportView || (active === "数据导入" && !allowImport) || (active === "AI分析" && !canUseFeature(auth, permissions, "aiAnalysis")) || ([...qualityAgentMenuItems, ...agentRoleMenuItems, ...agentUtilityMenuItems].includes(active) && !canUseFeature(auth, permissions, "qualityAgent")) || (active === "AI接口" && !canUseFeature(auth, permissions, "aiInterface")) || (active === "权限设置" && !auth?.isAdmin)) setActive("总览");
   }, [active, allowImport, auth, menuDenied, permissions]);
   useEffect(() => {
-    if (!qualityAgentView && !agentRoleReportView) onClearAgentSources?.();
+    if (!qualityAgentView && !agentRoleReportView && !hasRunningRoleReportJobs()) onClearAgentSources?.();
   }, [active, qualityAgentView, agentRoleReportView, onClearAgentSources]);
   const changeSidebarWidth = (value) => setSidebarWidth((current) => { const next = clampSidebarWidth(value); if (next !== current) localStorage.setItem("qms-sidebar-width", String(next)); return next; });
   const shellStyle = { "--sidebar-width": `${sidebarCollapsed ? 70 : sidebarWidth}px` };
@@ -7606,6 +7747,7 @@ const ecnBuildDimensionRows = (entities, years, numeratorRows, denominatorRows, 
   return {
     name,
     division: entity.division,
+    projectGroup: entity.projectGroup || "",
     tpm: entity.tpm,
     years: years.map((year) => {
       const numerator = numeratorRows.filter((row) => row.year === year && entityGetter(row) === name).length;
@@ -7619,6 +7761,7 @@ const ecnBuildReasonRows = (entities, values, years, numeratorRows, entityGetter
   return {
     name,
     division: entity.division,
+    projectGroup: entity.projectGroup || "",
     tpm: entity.tpm,
     years: years.map((year) => {
       const source = numeratorRows.filter((row) => row.year === year && entityGetter(row) === name);
@@ -7730,11 +7873,12 @@ function EcnRatePanel({ title, subtitle, rows, chartKey, numeratorLabel = "ECN�
 const ecnTpmDisplayName = (name) => String(name || "").split("\n").pop();
 
 function EcnTpmReasonTable({ rows, values }) {
-  const groups = [...new Set(rows.map((row) => row.division).filter(Boolean))];
+  const groupKey = (row) => `${row.division || ""}::${row.projectGroup || ""}`;
+  const groups = [...new Set(rows.map(groupKey))];
   return <div className="dqa-compare-table ecn-tpm-reason-table">
-    <div className="dqa-compare-row dqa-compare-head" style={{ "--dqa-cols": values.length }}><span>产品部</span><span>TPM</span><span>年度</span><span>ECN数</span>{values.map((value) => <span key={value}>{value}</span>)}</div>
-    {groups.flatMap((division) => rows.filter((row) => row.division === division).flatMap((row, rowIndex) => row.years.map((year, yearIndex) => <div className="dqa-compare-row ecn-tpm-table-row" key={`${row.name}-${year.year}`} style={{ "--dqa-cols": values.length }}>
-      <strong>{rowIndex === 0 && yearIndex === 0 ? division : ""}</strong><strong>{yearIndex === 0 ? ecnTpmDisplayName(row.name) : ""}</strong><b>{year.year}</b><span>{year.total.toLocaleString()}</span>
+    <div className="dqa-compare-row dqa-compare-head" style={{ "--dqa-cols": values.length }}><span>产品部</span><span>项目组</span><span>TPM</span><span>年度</span><span>ECN数</span>{values.map((value) => <span key={value}>{value}</span>)}</div>
+    {groups.flatMap((key) => rows.filter((row) => groupKey(row) === key).flatMap((row, rowIndex) => row.years.map((year, yearIndex) => <div className="dqa-compare-row ecn-tpm-table-row" key={`${row.name}-${year.year}`} style={{ "--dqa-cols": values.length }}>
+      <strong>{rowIndex === 0 && yearIndex === 0 ? row.division : ""}</strong><strong>{rowIndex === 0 && yearIndex === 0 ? (row.projectGroup || "—") : ""}</strong><strong>{yearIndex === 0 ? ecnTpmDisplayName(row.name) : ""}</strong><b>{year.year}</b><span>{year.total.toLocaleString()}</span>
       {values.map((value) => {
         const count = year.counts[value] || 0;
         const share = Number((count / Math.max(year.total, 1) * 100).toFixed(1));
@@ -7746,17 +7890,18 @@ function EcnTpmReasonTable({ rows, values }) {
 
 function EcnTpmReasonGrouped({ ecn }) {
   const rows = ecn.tpmReasons || [];
+  const groupLabel = (row) => row.projectGroup || row.division;
   const divisions = ["全公司", ...new Set(rows.map((row) => row.division).filter(Boolean))];
   const [division, setDivision] = useState("全公司");
   const filteredRows = division === "全公司" ? rows : rows.filter((row) => row.division === division);
-  const groups = [...new Set(filteredRows.map((row) => row.division).filter(Boolean))].map((division) => ({
-    division,
-    rows: filteredRows.filter((row) => row.division === division),
+  const groups = [...new Set(filteredRows.map(groupLabel).filter(Boolean))].map((label) => ({
+    division: label,
+    rows: filteredRows.filter((row) => groupLabel(row) === label),
   })).filter((group) => group.rows.length);
   const chartRows = filteredRows.map((row) => ({ ...row, name: ecnTpmDisplayName(row.name) }));
   const totalAxisRows = Math.max(1, chartRows.reduce((sum, row) => sum + row.years.length, 0));
   const chartHeight = Math.max(420, totalAxisRows * 28 + 120);
-  return <Panel title="TPM变更原因占比" subtitle="可按产品部或全公司切换；TPM姓名不带产品部前缀">
+  return <Panel title="TPM变更原因占比" subtitle="按产品部切换。半导体&北美下面再按项目组分开，项目组不是产品部">
     <div className="machined-tpm-toolbar">
       <div className="site-tabs machined-division-tabs">
         {divisions.map((item) => <button key={item} className={division === item ? "active" : ""} onClick={() => setDivision(item)}>{item}</button>)}
@@ -7815,10 +7960,10 @@ function DqaEcnAnalysis({ data }) {
         }))}/>
         </>}
       </AxisControlledPanel>
-      <EcnRatePanel title="产品部ECN率同期对比" subtitle="IC载板产品部、北美项目部、传感器产品部合并为半导体&北美" rows={ecn.divisions} chartKey="dqa-ecn-division-rate"/>
+      <EcnRatePanel title="产品部ECN率同期对比" subtitle="北美项目部、传感器产品部、IC载版是半导体&北美的项目组，不单独作为产品部" rows={ecn.divisions} chartKey="dqa-ecn-division-rate"/>
       <DqaComparePanel title="产品部变更原因占比" subtitle="按ECN（分子）中的“变更原因”统计，上方为2025、下方为2026" rows={ecn.divisionReasons} values={ecn.reasonValues}/>
     </div>
-    <div className="dqa-module-title"><span className="section-number">4.E.1</span><div><h2>TPM变更原因合并分析</h2><p>TPM分析使用原始产品部做左侧分组标记，不把IC载板/北美/传感器合并；仅产品部总体分析时才合并为“半导体&北美”。</p></div></div>
+    <div className="dqa-module-title"><span className="section-number">4.E.1</span><div><h2>TPM变更原因合并分析</h2><p>左侧按项目组分组。北美项目部、传感器产品部、IC载版属于半导体&北美，不是产品部。产品五部、FPC事业部没有项目组。</p></div></div>
     <EcnTpmReasonGrouped ecn={ecn}/>
   </div>;
 }
@@ -8100,7 +8245,7 @@ function DqaMachinedPartsAnalysis({ data }) {
   return <div className="dqa-ecn-page dqa-machined-page">
     <div className="dqa-module-title"><span className="section-number">4.N</span><div><h2>ECN和非BOM加工件同期分析</h2><p>加工件占比 = 对象加工件数量 / 同期加工件总数；默认按2025年1-5月 vs 2026年1-5月对比，海外亚太项目开发部、技术中心不统计。</p></div></div>
     <MachinedPartKpiCards parts={parts}/>
-    <div className="dqa-module-title"><span className="section-number">4.N.1</span><div><h2>ECN加工件分析</h2><p>产品一部、IC载板、北美、半导体、传感器统一合并为“半导体&北美”。</p></div></div>
+    <div className="dqa-module-title"><span className="section-number">4.N.1</span><div><h2>ECN加工件分析</h2><p>产品一部、北美项目部、传感器产品部、IC载版统一归入产品部“半导体&北美”，不单独作为产品部。</p></div></div>
     <MachinedPartSection title="ECN加工件" subtitle="产品部按三大产品部合并；2025年产品一部归入半导体&北美" part={parts.ecn} chartPrefix="dqa-machined-ecn"/>
     <div className="dqa-module-title"><span className="section-number">4.N.2</span><div><h2>非BOM加工件分析</h2><p>非BOM加工件作为研发设计/资料完整性风险的前置信号，按产品部和TPM做同期对比。</p></div></div>
     <MachinedPartSection title="非BOM加工件" subtitle="产品部按三大产品部合并；2025年产品一部归入半导体&北美" part={parts.nonBom} chartPrefix="dqa-machined-nonbom"/>
@@ -8132,7 +8277,7 @@ function DqaMachinedPartsAnalysisClean({ data }) {
   return <div className="dqa-ecn-page dqa-machined-page">
     <div className="dqa-module-title"><span className="section-number">4.N</span><div><h2>ECN和非BOM加工件同期分析</h2><p>加工件占比 = 对象加工件数量 / 同期加工件总数；默认按2025年1-5月 vs 2026年1-5月对比，海外亚太项目开发部、技术中心不统计。</p></div></div>
     <MachinedPartKpiCards parts={parts}/>
-    <div className="dqa-module-title"><span className="section-number">4.N.1</span><div><h2>ECN加工件分析</h2><p>产品一部、IC载板、北美、半导体、传感器统一合并为“半导体&北美”。</p></div></div>
+    <div className="dqa-module-title"><span className="section-number">4.N.1</span><div><h2>ECN加工件分析</h2><p>产品一部、北美项目部、传感器产品部、IC载版统一归入产品部“半导体&北美”，不单独作为产品部。</p></div></div>
     <MachinedPartSectionClean title="ECN加工件" subtitle="产品部按三大产品部合并；2025年产品一部归入半导体&北美" part={parts.ecn} chartPrefix="dqa-machined-ecn"/>
     <div className="dqa-module-title"><span className="section-number">4.N.2</span><div><h2>非BOM加工件分析</h2><p>非BOM加工件作为研发设计/资料完整性风险的前置信号，按产品部和TPM做同期对比。</p></div></div>
     <MachinedPartSectionClean title="非BOM加工件" subtitle="产品部按三大产品部合并；2025年产品一部归入半导体&北美" part={parts.nonBom} chartPrefix="dqa-machined-nonbom"/>
@@ -8815,6 +8960,14 @@ export function App() {
   const [lastServerSavedAt, setLastServerSavedAt] = useState(null);
   const [serverSyncStatus, setServerSyncStatus] = useState({ state: "idle", label: "等待服务器同步" });
   const [analysisRevision, setAnalysisRevision] = useState(0);
+  useEffect(() => {
+    let stop = false;
+    const run = () => { if (!stop) syncLinkedOrgMapping().catch(() => {}); };
+    run();
+    const timer = window.setInterval(run, 20000);
+    window.addEventListener("focus", run);
+    return () => { stop = true; window.clearInterval(timer); window.removeEventListener("focus", run); };
+  }, []);
   const agentSourceCacheRef = useRef(new Map());
   const agentSourceLoadingRef = useRef(new Map());
   const agentSourceGroupRef = useRef("");

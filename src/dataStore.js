@@ -46,7 +46,7 @@ const localAgentReportEnvelope = (report = {}) => ({
   visualSpec: report.visualSpec && typeof report.visualSpec === "object" ? report.visualSpec : localReportVisualSpecFromContent(report.content || ""),
 });
 
-const defaultLocalAiConfig = { baseUrl: "https://new.ahei.asia/v1", model: "", apiKey: "" };
+const defaultLocalAiConfig = { baseUrl: "https://new.ahei.asia/v1", model: "", apiKey: "", wireApi: "responses", reasoningEffort: "high", stream: true };
 const readLocalAiConfig = () => {
   if (typeof localStorage === "undefined") return { ...defaultLocalAiConfig };
   try {
@@ -54,12 +54,18 @@ const readLocalAiConfig = () => {
     return { ...defaultLocalAiConfig, ...(value && typeof value === "object" ? value : {}) };
   } catch { return { ...defaultLocalAiConfig }; }
 };
+const normalizeLocalAiCall = (config = {}) => ({
+  wireApi: config.wireApi === "chat" ? "chat" : "responses",
+  reasoningEffort: ["", "high", "xhigh"].includes(config.reasoningEffort) ? config.reasoningEffort : "high",
+  stream: config.stream === false ? false : true,
+});
 const publicLocalAiConfig = (config) => ({
   baseUrl: String(config.baseUrl || defaultLocalAiConfig.baseUrl),
   model: String(config.model || ""),
   hasApiKey: Boolean(config.apiKey),
   apiKeyHint: config.apiKey ? `••••${String(config.apiKey).slice(-4)}` : "",
   apiKey: "",
+  ...normalizeLocalAiCall(config),
 });
 const fullLocalAiConfig = (config = {}) => {
   const current = readLocalAiConfig();
@@ -67,6 +73,7 @@ const fullLocalAiConfig = (config = {}) => {
     baseUrl: String(config.baseUrl || current.baseUrl || defaultLocalAiConfig.baseUrl),
     model: String(config.model ?? current.model ?? ""),
     apiKey: String(config.apiKey || current.apiKey || ""),
+    ...normalizeLocalAiCall({ ...current, ...config, stream: config.stream ?? current.stream }),
   };
 };
 const localAiRequestConfig = (config = {}) => {
@@ -561,6 +568,85 @@ export const saveProjectNameMapping = async (value) => {
   return await saveRemoteState(PROJECT_NAME_MAPPING_KEY, next);
 };
 
+const ORG_MAPPING_STORAGE_KEY = "qms-qmdp-system-config-v1";
+const orgMappingSignature = (rows = []) => rows.map((row) => [row.productDept, row.projectGroup, row.productionDirector, row.tpm, row.pm, row.active !== false].join("|")).join("\n");
+
+export const mappingRowKey = (kind, row = {}) => {
+  if (kind === "employee") return String(row.id || row.name || row.wecom || "").trim();
+  return kind === "org"
+    ? [row.productDept, row.projectGroup, row.productionDirector, row.tpm, row.pm].join("|")
+    : [row.site, row.workshop, row.manager, row.leader].join("|");
+};
+const mappingSection = (kind) => kind === "org" ? "orgMappings" : kind === "employee" ? "employees" : "supplyMappings";
+
+const dedupeMappingRows = (kind, rows = []) => {
+  const seen = new Set();
+  const next = [];
+  rows.forEach((row) => {
+    const key = mappingRowKey(kind, row);
+    if (!key.replace(/\|/g, "") || seen.has(key)) return;
+    seen.add(key);
+    next.push(row);
+  });
+  return next;
+};
+
+export const withMappingFile = (current = {}, kind, file) => {
+  const section = mappingSection(kind);
+  const importFiles = { org: [], supply: [], ...(current.importFiles || {}) };
+  const stamped = { ...file, rowCount: (file.rows || []).length, rows: (file.rows || []).map((row) => ({ ...row, sourceFileId: file.id })) };
+  const files = [stamped, ...(importFiles[kind] || []).filter((item) => item.id !== file.id && item.name !== file.name)];
+  const hadFiles = Array.isArray(current.importFiles?.[kind]) && current.importFiles[kind].length > 0;
+  const manual = kind === "employee"
+    ? (current.employees || []).filter((row) => !row.sourceFileId && (row.id || row.name || row.wecom))
+    : (hadFiles ? (current[section] || []).filter((row) => !row.sourceFileId) : []);
+  const rows = dedupeMappingRows(kind, [...files.flatMap((item) => item.rows || []), ...manual]);
+  const importMeta = { ...(current.importMeta || {}) };
+  if (kind === "org" && file.id === "linked-org") {
+    importMeta.org = { ...(importMeta.org || {}), name: file.name, path: file.path || importMeta.org?.path, importedAt: file.importedAt, count: stamped.rowCount, fileMtime: file.fileMtime, signature: file.signature, linked: true, suppressed: false };
+  } else if (kind === "supply") {
+    importMeta.supply = { name: file.name, importedAt: file.importedAt, count: rows.length };
+  }
+  return { ...current, [section]: rows, importFiles: { ...importFiles, [kind]: files }, importMeta };
+};
+
+export const withoutMappingFile = (current = {}, kind, file = {}) => {
+  const section = mappingSection(kind);
+  const importFiles = { org: [], supply: [], ...(current.importFiles || {}) };
+  const stored = importFiles[kind] || [];
+  const files = stored.filter((item) => item.id !== file.id && item.name !== file.name);
+  const manual = stored.length ? (current[section] || []).filter((row) => !row.sourceFileId) : [];
+  const rows = stored.length ? dedupeMappingRows(kind, [...files.flatMap((item) => item.rows || []), ...manual]) : [];
+  const importMeta = { ...(current.importMeta || {}) };
+  const removingLinked = kind === "org" && (file.id === "linked-org" || !stored.length || file.name === importMeta.org?.name);
+  if (kind === "org" && removingLinked) importMeta.org = { ...(importMeta.org || {}), suppressed: true, linked: false, count: rows.length, clearedAt: new Date().toISOString() };
+  if (kind === "supply") importMeta.supply = files[0] ? { name: files[0].name, importedAt: files[0].importedAt, count: rows.length } : null;
+  return { ...current, [section]: rows, importFiles: { ...importFiles, [kind]: files }, importMeta };
+};
+
+export const syncLinkedOrgMapping = async () => {
+  const response = await requestSharedApi("/org-mapping", { method: "GET", cache: "no-store" });
+  if (!response) return { updated: false };
+  let payload = null;
+  try { payload = await response.json(); } catch { return { updated: false }; }
+  if (!payload || !Array.isArray(payload.rows) || !payload.rows.length) return { updated: false };
+  let current = {};
+  try { current = JSON.parse(localStorage.getItem(ORG_MAPPING_STORAGE_KEY) || "{}"); } catch { current = {}; }
+  const signature = orgMappingSignature(payload.rows);
+  if (current.importMeta?.org?.suppressed) return { updated: false, payload };
+  if (current.importMeta?.org?.signature === signature && (current.importFiles?.org || []).some((item) => item.id === "linked-org")) return { updated: false, payload };
+  const linkedFile = { id: "linked-org", name: payload.fileName, path: payload.path, rowCount: payload.rows.length, sheets: "组织映射表", kind: "研发组织映射", importedAt: new Date().toISOString(), fileMtime: payload.mtimeMs, signature, rows: payload.rows.map((row) => ({ ...row, active: row.active !== false })) };
+  const merged = withMappingFile(current, "org", linkedFile);
+  const next = {
+    ...current,
+    ...merged,
+    logs: [{ id: Date.now(), message: `研发组织映射已从 ${payload.fileName} 自动更新 ${payload.rows.length} 条`, at: new Date().toISOString() }, ...(current.logs || [])].slice(0, 100),
+  };
+  localStorage.setItem(ORG_MAPPING_STORAGE_KEY, JSON.stringify(next));
+  window.dispatchEvent(new CustomEvent("qms-org-mapping-changed", { detail: next }));
+  return { updated: true, payload, config: next };
+};
+
 export const loadCurrentUser = async () => {
   const localAccess = { ip: "local", name: "本机用户", role: "local", isAdmin: false, isDeputy: false, isOrdinary: true, isAuthorized: true, features: {} };
   try {
@@ -657,6 +743,7 @@ export const sendWecomReports = async (fileNames) => await aiApiJson("/ai/wecom-
 export const exportWecomPdfs = async (fileNames) => await aiApiJson("/ai/wecom-export-pdf", { method: "POST", body: JSON.stringify({ fileNames, feature: "qualityAgent" }) });
 export const openWecomPdfFolder = async (folder) => await aiApiJson("/ai/wecom-open-folder", { method: "POST", body: JSON.stringify({ folder, feature: "qualityAgent" }) });
 export const loadAgentDispatches = async () => await aiApiJson("/ai/agent-dispatch", { method: "GET", cache: "no-store" });
+export const saveRoleSkillLessons = async (skillId, lessons = []) => aiApiJson(`/ai/skills/${encodeURIComponent(skillId)}/lessons`, { method: "POST", body: JSON.stringify({ lessons }) });
 export const loadAgentSkills = async (skillIds = null) => {
   const ids = Array.isArray(skillIds) ? skillIds.map((item) => String(item || "").trim()).filter(Boolean) : [];
   const query = ids.length ? `?ids=${encodeURIComponent(ids.join(","))}` : "";
