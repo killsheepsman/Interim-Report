@@ -2,22 +2,35 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { ArrowsClockwise, Brain, CaretDown, CaretRight, CheckCircle, DownloadSimple, Eye, EyeSlash, FileArrowUp, FilePdf, FloppyDisk, Printer, ShareNetwork, Trash, WarningCircle } from "@phosphor-icons/react";
 import { createSourcesSignature, deleteAgentReport, deleteLocalAgentReport, loadAgentReport, loadAgentReports, loadCurrentUser, loadLocalAgentReport, loadLocalAgentReports, loadAgentSkills, loadQualityAgentSnapshotRegistry, requestAiChat, saveAgentReportFile, saveLocalAgentReport } from "../dataStore.js";
 import { loadQualityAgentRunsFromServer, saveQualityAgentRunsToServer, loadReportQualityRules } from "../dataStore.js";
-import { buildQualityAgentSnapshot } from "./qualitySnapshot.js";
+import { alignIqcYieldMetrics, applyQualitySnapshotWindow, buildQualityAgentSnapshot, pickIqcAnalysisSnapshot, sliceIqcSnapshotToWindow } from "./qualitySnapshot.js";
 import { loadDoamPack } from "../doamStore.js";
 import { hydrateDoamDefault, mergeDoamDatasets } from "../doamEngine.js";
-import { closeQualityAgentAction, loadQualityAgentRuns, qualityAgentSnapshotHash, QUALITY_AGENT_STAGES, runQualityAgent, saveQualityAgentRuns } from "./qualityAgent.js";
+import { chooseAgentRunSnapshot, closeQualityAgentAction, iqcSnapshotReady, loadQualityAgentRuns, qualityAgentSnapshotHash, QUALITY_AGENT_STAGES, runQualityAgent, saveQualityAgentRuns } from "./qualityAgent.js";
 import { calloutToneClass, headingClass, isLayoutMarker, isMachineMetadataLine, metricLine, sectionClass, tableToneClass } from "./reportLayout.js";
 import { DEFAULT_REPORT_PRESENTATION_PROFILE, getReportPresentationProfile, normalizeReportPresentationProfile, REPORT_PRESENTATION_PROFILES, reportPresentationClass } from "./reportPresentationProfiles.js";
 import { normalizeQualitySnapshotRegistry, pickLatestQualitySnapshot } from "./snapshotRegistry.js";
 import { extractReportVisualSpec, sanitizeHumanReportContent } from "../reportSanitizer.js";
 import { DEFAULT_REPORT_QUALITY_RULES, reportQualityAdvice, validateReportQuality } from "./reportQualityRules.js";
-import { keepActiveWeekChartRows, trendBucketSelected } from "./roleSnapshotRegistry.js";
+import { chartThemeFromSkill, isRoleChartSkill, keepActiveWeekChartRows, trendBucketSelected } from "./roleSnapshotRegistry.js";
 import { periodChartTitle, renderLieflatFigure } from "./lieflatRoleCharts.js";
 
+const formatBackendLogTime = (value) => {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "--:--:--";
+  return date.toLocaleTimeString("zh-CN", { hour12: false });
+};
+const backendWaitSeconds = (log, now) => {
+  const last = log?.[log.length - 1]?.at;
+  const started = new Date(last || 0).getTime();
+  if (!started) return 0;
+  return Math.max(0, Math.round((now - started) / 1000));
+};
 const AGENT_TITLE = "质量分析 Agent";
 const CORE_SKILL_NAME = "quality-analysis-core";
 const DEFAULT_CORE_SKILL = { id: CORE_SKILL_NAME, name: CORE_SKILL_NAME, description: "质量分析共通证据与闭环规则", content: "只解释固定统计快照，区分事实、推断和待验证假设，并用结果—过程—根因—责任—行动形成闭环。" };
 const REPORT_PRESENTATION_STORAGE_KEY = "qms-quality-agent-report-presentation-v1";
+const CHART_SKILL_STORAGE_KEY = "qms-quality-agent-chart-skill-v1";
+const DEFAULT_ANALYSIS_CHART_SKILL = "quality-role-charts-lieflat";
 const MODULE_DEFAULT_SKILLS = {
   IQC: { id: "quality-analysis-iqc", name: "quality-analysis-iqc", description: "IQC来料质量分析", content: "按公司、基地/厂区和供应商分析来料质量。" },
   IPQC: { id: "quality-analysis-ipqc", name: "quality-analysis-ipqc", description: "IPQC过程质量分析", content: "按公司、基地、工坊和交付经理分析过程质量。" },
@@ -25,6 +38,33 @@ const MODULE_DEFAULT_SKILLS = {
   DQA: { id: "quality-analysis-dqa", name: "quality-analysis-dqa", description: "DQA研发质量分析", content: "综合研发问题、设计评审、ECN和非BOM分析研发质量。" },
   QMS: { id: "quality-analysis-qms", name: "quality-analysis-qms", description: "QMS客户质量分析", content: "综合客户评分、低分率和客户意见分析客户质量。" },
   DOAM: { id: "quality-analysis-doam", name: "quality-analysis-doam", description: "DOAM机台稳定性分析", content: "先报重叠月份再解释2026窗口；重叠不足3个月不得把总体同比写成年度改善。必须带班次分母、剔除局部后加权和带YYYY-MM标签的月度趋势。0-30天只打当前瓶颈，每项行动只有一个Owner。" },
+};
+const ANALYSIS_CHOICE_KEY = "qms-quality-agent-choices-v1";
+const readAnalysisChoices = () => {
+  try {
+    const value = JSON.parse(localStorage.getItem(ANALYSIS_CHOICE_KEY) || "{}");
+    return value && typeof value === "object" ? value : {};
+  } catch {
+    return {};
+  }
+};
+const readModuleChoice = (moduleName) => {
+  const choice = readAnalysisChoices()[moduleName];
+  return choice && typeof choice === "object" ? choice : {};
+};
+const writeModuleChoice = (moduleName, patch) => {
+  try {
+    const all = readAnalysisChoices();
+    const current = all[moduleName] && typeof all[moduleName] === "object" ? all[moduleName] : {};
+    localStorage.setItem(ANALYSIS_CHOICE_KEY, JSON.stringify({ ...all, [moduleName]: { ...current, ...patch } }));
+  } catch {}
+};
+const savedAnalysisPeriod = (moduleName, fallback = {}) => {
+  const choice = readModuleChoice(moduleName);
+  const start2026 = /^\d{4}-\d{2}-\d{2}$/.test(choice.start2026 || "") ? choice.start2026 : "";
+  const end2026 = /^\d{4}-\d{2}-\d{2}$/.test(choice.end2026 || "") ? choice.end2026 : "";
+  if (!start2026 || !end2026) return { ...fallback };
+  return { ...fallback, start2026, end2026 };
 };
 const IMPORTED_REPORTS_KEY = "qms-quality-agent-imported-reports-v1";
 const MAX_IMPORTED_REPORTS_PER_MODULE = 12;
@@ -218,6 +258,7 @@ const isMarkdownTableSeparator = (line) => /^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:
 const reportNumber = (value) => {
   const text = String(value || "").replace(/[,*_`，]/g, "").trim();
   if (!text || /(?:S|M|O|C|X)-[A-Z0-9]+-\d{3}/i.test(text)) return null;
+  if (/(?:\d{4}\s*年|\d{4}-\d{2}-\d{2}|\d{1,2}\s*月\s*\d{1,2}\s*日)/.test(text)) return null;
   const matched = text.match(/[-+]?\d+(?:\.\d+)?/);
   if (!matched) return null;
   const parsed = Number(matched[0]);
@@ -383,13 +424,13 @@ const renderIqcSnapshotCharts = (snapshot) => {
 // Build module-level trend figures from the fixed snapshot.  This keeps
 // charts deterministic when an upstream model omits or misformats its visual
 // contract, while preserving the module's existing metric definitions.
-const buildModulePeriodTrendFigure = ({ module, rows, title, badLabel = "不良数量", totalLabel = "总数量", sectionId = "趋势分析" }) => {
+const buildModulePeriodTrendFigure = ({ module, rows, title, badLabel = "不良数量", totalLabel = "总数量", rateLabel = "不良率", sectionId = "趋势分析" }) => {
   const source = (rows || []).map((row) => {
     const label = String(row.label || row.month || row.period || "").trim();
     const bad = Number(row.bad);
     const total = Number(row.total);
-    if (!label || !Number.isFinite(bad) || !Number.isFinite(total) || total <= 0) return null;
-    return { label, bad: Math.max(0, bad), total: Math.max(0, total), rate: Number((Math.max(0, bad) / total * 100).toFixed(2)) };
+    if (!label || !Number.isFinite(bad) || !Number.isFinite(total) || total < 0 || bad < 0) return null;
+    return { label, bad: Math.max(0, bad), total: Math.max(0, total), rate: total > 0 ? Number((Math.max(0, bad) / total * 100).toFixed(2)) : 0 };
   }).filter(Boolean);
   if (source.length < 2) return null;
   return {
@@ -403,7 +444,7 @@ const buildModulePeriodTrendFigure = ({ module, rows, title, badLabel = "不良�
     series: [
       { name: badLabel, values: source.map((row) => Number(row.bad.toFixed(2))), axis: "left" },
       { name: totalLabel, values: source.map((row) => Number(row.total.toFixed(2))), axis: "left" },
-      { name: "不良率", values: source.map((row) => row.rate), axis: "right", unit: "%" },
+      { name: rateLabel, values: source.map((row) => row.rate), axis: "right", unit: "%" },
     ],
     coverage: "complete",
     sourceEvidenceIds: [],
@@ -425,9 +466,28 @@ const buildModuleVisualSpec = (snapshot, module) => {
     badLabel = "异常数量";
     totalLabel = "送检数量";
   } else if (module === "IQC") {
-    rows = trends.map((row) => ({ label: row.month || row.period, bad: Number(row.y2026Bad), total: Number(row.y2026Qty) }));
-    title = "检验批次与不良批次趋势";
-    badLabel = "不良批次";
+    const cellMonthly = snapshot?.data?.iqcSplit?.cellMonthly;
+    if (Array.isArray(cellMonthly) && cellMonthly.length) {
+      const year = snapshot.data.iqcSplit.trendYear || snapshot?.data?.periodTrend?.year || "";
+      const figures = cellMonthly.map((cell, index) => {
+        const figure = buildModulePeriodTrendFigure({
+          module,
+          rows: (cell.rows || []).map((row) => ({ label: row.month, bad: Number(row.bad), total: Number(row.inspected), rate: Number(row.rate) || 0 })),
+          title: (year ? year + "年" : "") + (cell.label || cell.name) + "月度趋势",
+          badLabel: "不合格批次",
+          totalLabel: "检验批次",
+          rateLabel: "不合格率",
+          sectionId: "四格结果",
+        });
+        return figure ? { ...figure, id: "iqc-cell-trend-" + index, sectionId: "四格结果", year } : null;
+      }).filter(Boolean);
+      if (figures.length) return { version: "1.0", layoutProfile: DEFAULT_REPORT_PRESENTATION_PROFILE, reportKind: "module", subject: { scopeType: "company" }, figures, tableFallbacks: [], sourceLimitations: [] };
+    }
+    const fixed = Array.isArray(snapshot?.data?.periodTrend?.rows) ? snapshot.data.periodTrend.rows : [];
+    rows = fixed.length ? fixed.map((row) => ({ label: row.label || row.month, bad: Number(row.bad), total: Number(row.total) })) : trends.map((row) => ({ label: row.month || row.period, bad: Number(row.y2026Bad), total: Number(row.y2026Qty) }));
+    const trendYear = snapshot?.data?.periodTrend?.year || "";
+    title = trendYear ? trendYear + "年检验批次与不良批次趋势" : "检验批次与不良批次趋势";
+    badLabel = "不合格批次";
     totalLabel = "检验批次";
   } else if (module === "OQC") {
     // OQC stores one monthly row per product division. Aggregate divisions
@@ -451,11 +511,22 @@ const buildModuleVisualSpec = (snapshot, module) => {
     badLabel = "低分样本";
     totalLabel = "有效样本";
   }
+  const endMonth = Number(String(snapshot?.period?.end2026 || "").slice(5, 7)) || 12;
+  rows = rows.filter((row) => {
+    const match = String(row.label || "").match(/(?:^|\D)(\d{1,2})\s*月/) || String(row.label || "").match(/-(\d{2})$/);
+    const month = match ? Number(match[1]) : 0;
+    return !month || month <= endMonth;
+  });
   const figure = buildModulePeriodTrendFigure({ module, rows, title, badLabel, totalLabel });
+  if (figure && snapshot?.data?.periodTrend?.year) figure.year = snapshot.data.periodTrend.year;
   return figure ? { version: "1.0", layoutProfile: DEFAULT_REPORT_PRESENTATION_PROFILE, reportKind: "module", subject: { scopeType: "company" }, figures: [figure], tableFallbacks: [], sourceLimitations: [] } : null;
 };
 const mergeModuleVisualSpec = (baseSpec, snapshot, module) => {
   const moduleSpec = buildModuleVisualSpec(snapshot, module);
+  const baseFigures = Array.isArray(baseSpec?.figures) ? baseSpec.figures : [];
+  const moduleHasCells = (moduleSpec?.figures || []).some((figure) => String(figure?.id || "").startsWith("iqc-cell-trend"));
+  const baseHasCells = baseFigures.some((figure) => String(figure?.id || "").startsWith("iqc-cell-trend"));
+  if (module === "IQC" && !moduleHasCells && baseHasCells) return baseSpec;
   if (!moduleSpec) return baseSpec || null;
   const base = baseSpec && typeof baseSpec === "object" ? baseSpec : {};
   // A fixed module trend is authoritative. Replace a model-provided trend
@@ -482,7 +553,7 @@ const chartableReportTable = (header, body, sectionTitle) => {
   const context = `${sectionTitle} ${header.join(" ")}`;
   const pareto = paretoReportChart(header, body, sectionTitle);
   if (pareto) return pareto;
-  if (/(?:行动|措施|责任|期限|关闭|验证|根因|结论|风险判断|状态|交付物|待办)/i.test(sectionTitle)) return null;
+  if (/(?:行动|措施|责任|期限|关闭|验证|根因|结论|风险判断|状态|交付物|待办|要做的事|完成时间|跟进)/i.test(sectionTitle)) return null;
   if (!/(?:排名|TOP|Pareto|趋势|分布|结构|供应商|缺陷|不良|批次|良率|物料类别|占比|集中|对比)/i.test(context)) return null;
   const ignoredColumn = (column) => /(?:排名|序号|证据|编号|累计|说明|备注)/i.test(header[column] || "");
   const candidateColumns = header.map((_, column) => column).filter((column) => !ignoredColumn(column) && body.filter((row) => reportNumber(row[column]) !== null).length >= Math.max(2, Math.ceil(body.length * 0.7)));
@@ -611,7 +682,7 @@ const figureMatchesSection = (figure, sectionTitle = "") => {
   const fTitle = String(figure.title || "").toLowerCase();
   const intent = `${figure.intent || ""} ${figure.preferredChart || ""} ${figure.type || ""}`.toLowerCase();
   const sectionId = String(figure.sectionId || "").replace(/[.)、]/g, "").toLowerCase();
-  if (sectionId) return title.replace(/[.)、]/g, "") === sectionId;
+  if (sectionId) return title.includes(sectionId) || title.replace(/[.)、]/g, "").includes(sectionId);
   const aliases = [
     ["trend", "趋势"], ["rate-trend", "趋势"], ["pareto", "pareto"],
     ["period-trend", "趋势"], ["dual-column-line", "趋势"], ["period-trend", "过程"], ["dual-column-line", "过程"],
@@ -652,6 +723,27 @@ const renderVisualSpecFigure = (figure, theme = "default") => {
   const ranking = intent.includes("ranking") || String(figure.preferredChart).includes("horizontal");
   return `<figure class="agent-report-auto-chart agent-report-visual-bars ${ranking ? "agent-report-visual-ranking" : ""}${lieflatClass(theme)}"><figcaption><strong>${escapeHtml(title)}</strong><span>图表优先展示 · ${escapeHtml(figure.unit || "")}</span></figcaption><div class="agent-report-visual-legend">${series.map((item, index) => `<span><i class="series-${index + 1}"></i>${escapeHtml(item.name || `指标${index + 1}`)}</span>`).join("")}</div><div class="agent-report-visual-bars-body">${rows.map((row) => `<div class="agent-report-visual-bar-row ${row.focus ? "is-focus" : ""}"><b>${row.focus ? "★ " : ""}${escapeHtml(chartText(row.label, 22))}</b><div>${row.values.map((value, index) => `<i class="series-${index + 1}" style="width:${Math.max(2, value / max * 100).toFixed(2)}%"><span>${value.toLocaleString("zh-CN")}</span></i>`).join("")}</div></div>`).join("")}</div></figure>`;
 };
+
+const renderPeriodTrendTable = (figure) => {
+  const intent = String(figure?.intent || figure?.preferredChart || "");
+  if (!intent.includes("period-trend") && !intent.includes("dual-column-line")) return "";
+  const categories = Array.isArray(figure?.categories) ? figure.categories : [];
+  const series = Array.isArray(figure?.series) ? figure.series : [];
+  if (!categories.length || series.length < 2) return "";
+  const year = figure.year ? String(figure.year) + "年" : "";
+  const header = ["月份", ...series.map((item) => item.name || "数值")];
+  const body = categories.map((label, index) => [String(label), ...series.map((item) => {
+    const value = Number(item.values?.[index]);
+    if (!Number.isFinite(value)) return "";
+    const text = value.toLocaleString("zh-CN");
+    return item.unit === "%" || /率/.test(item.name || "") ? text + "%" : text;
+  })]);
+  return '<div class="agent-report-table-wrap"><table class="agent-report-table"><caption>' + escapeHtml(year) + '年初至所选截止日期</caption><thead><tr>' + header.map((cell) => "<th>" + escapeHtml(cell) + "</th>").join("") + "</tr></thead><tbody>" + body.map((row) => "<tr>" + row.map((cell) => "<td>" + escapeHtml(cell) + "</td>").join("") + "</tr>").join("") + "</tbody></table></div>";
+};
+const renderFigureBlock = (figure, theme) => {
+  const chart = renderVisualSpecFigure(figure, theme);
+  return chart ? chart + renderPeriodTrendTable(figure) : "";
+};
 const renderMarkdownTable = (lines, { chartFirst = false, sectionTitle = "", suppressIqcYieldTable = false, visualFigures = [] } = {}) => {
   const rows = lines.map((line) => line.trim().replace(/^\||\|$/g, "").split("|").map((cell) => cell.trim()));
   if (!rows.length) return "";
@@ -664,10 +756,12 @@ const renderMarkdownTable = (lines, { chartFirst = false, sectionTitle = "", sup
   if (chart) return renderReportChart(header, body, sectionTitle, chart);
   return `<div class="${tableToneClass(sectionTitle)}"><table class="agent-report-table"><thead><tr>${header.map((cell) => `<th scope="col">${escapeHtml(cell)}</th>`).join("")}</tr></thead><tbody>${body.map((row) => `<tr>${header.map((_, index) => `<td>${escapeHtml(row[index] || "")}</td>`).join("")}</tr>`).join("")}</tbody></table></div>`;
 };
-const reportPublisherChrome = (content, fragment, profileId, module = "质量分析") => {
+const reportPublisherChrome = (content, fragment, profileId, module = "质量分析", lede = "") => {
   const source = sanitizeHumanReportContent(content);
   const title = source.match(/^#\s+(.+)$/m)?.[1]?.trim() || `${module} 质量分析报告`;
-  const headings = [...source.matchAll(/^#{2,3}\s+(.+)$/gm)].map((match) => match[1].trim()).filter(Boolean).slice(0, 12);
+  const markdownHeadings = [...source.matchAll(/^#{2,3}\s+(.+)$/gm)].map((match) => match[1].trim()).filter(Boolean);
+  const chineseHeadings = [...source.matchAll(/^[一二三四五六七八九十]+、\s*[^\n]+$/gm)].map((match) => match[0].trim());
+  const headings = (markdownHeadings.length ? markdownHeadings : chineseHeadings).slice(0, 12);
   const metricItems = source.split(/\r?\n/).map((line) => metricLine(line.trim())).filter(Boolean).slice(0, 4);
   const toc = headings.length ? `<nav class="report-publisher-toc"><p>REPORT SECTIONS</p>${headings.map((heading, index) => `<a href="#report-section-${index + 1}">${escapeHtml(heading.replace(/^\d+[.)、]\s*/, ""))}</a>`).join("")}</nav>` : "";
   const quick = metricItems.length ? `<section class="report-publisher-quick"><div class="report-publisher-quick-grid">${metricItems.map((item) => `<div class="report-publisher-quick-item"><b>${inlineReportMarkdown(item.value)}</b><p>${inlineReportMarkdown(item.label)}</p></div>`).join("")}</div></section>` : "";
@@ -676,9 +770,68 @@ const reportPublisherChrome = (content, fragment, profileId, module = "质量分
     const sectionNumber = (before.match(/report-section-/g) || []).length + 1;
     return `<section id="report-section-${sectionNumber}" class="agent-report-section`;
   });
-  return `<div class="report-publisher report-publisher-${escapeHtml(profileId || "research-briefing-v1")}"><div class="report-publisher-masthead"></div><header class="report-publisher-header"><strong>QUALITY <span>INTELLIGENCE</span></strong><small>${escapeHtml(reportLayoutLabel(profileId))}</small></header><section class="report-publisher-hero"><div><span class="report-publisher-eyebrow">QUALITY ANALYSIS AGENT / ${escapeHtml(module)}</span><h1>${inlineReportMarkdown(escapeHtml(title))}</h1><p>固定统计结果、证据卡和改善行动的管理复盘。</p></div></section>${quick}<div class="report-publisher-layout">${toc}<article class="report-publisher-article">${sectionedFragment}</article></div><footer class="report-publisher-footer">${escapeHtml(module)} · Agent 正式报告</footer></div>`;
+  return `<div class="report-publisher report-publisher-${escapeHtml(profileId || "research-briefing-v1")}"><div class="report-publisher-masthead"></div><header class="report-publisher-header"><strong>QUALITY <span>INTELLIGENCE</span></strong><small>${escapeHtml(reportLayoutLabel(profileId))}</small></header><section class="report-publisher-hero"><div><span class="report-publisher-eyebrow">QUALITY ANALYSIS AGENT / ${escapeHtml(module)}</span><h1>${inlineReportMarkdown(escapeHtml(title))}</h1><p>${escapeHtml(lede || "固定统计结果、证据卡和改善行动的管理复盘。")}</p></div></section>${quick}<div class="report-publisher-layout">${toc}<article class="report-publisher-article">${sectionedFragment}</article></div><footer class="report-publisher-footer">${escapeHtml(module)} · Agent 正式报告</footer></div>`;
 };
-export const renderAgentMarkdown = (content, { chartFirst = false, snapshot = null, includeSnapshotCharts = false, publisher = false, profileId = DEFAULT_REPORT_PRESENTATION_PROFILE, module = "质量分析", visualSpec = null, chartTheme = "" } = {}) => {
+const iqcCellLabel = (name) => String(name || "").replace("公司加工", "机加");
+const iqcHtmlTable = (caption, headers, rows) => {
+  if (!rows.length) return "";
+  return '<div class="agent-report-table-wrap"><table class="agent-report-table"><caption>' + escapeHtml(caption) + '</caption><thead><tr>' + headers.map((cell) => "<th>" + escapeHtml(cell) + "</th>").join("") + "</tr></thead><tbody>" + rows.map((row) => "<tr>" + row.map((cell) => "<td>" + escapeHtml(cell) + "</td>").join("") + "</tr>").join("") + "</tbody></table></div>";
+};
+const iqcRateText = (value) => value == null || value === "" ? "" : String(value) + "%";
+const iqcDefectColumnChart = (split, theme = "default") => {
+  const colors = theme === "lieflat" ? ["#1C1C1A", "#5E5D57", "#8F8E88", "#C6C5BF"] : ["#2f80d9", "#ef6c35", "#1f9d55", "#7b61c9"];
+  const groups = [];
+  (split?.cells || []).forEach((cell) => {
+    const items = (cell.defects || []).map((item) => ({ name: String(item.name || "未分类"), count: Number(item.count) || 0 })).filter((item) => item.count > 0);
+    if (items.length) groups.push({ label: iqcCellLabel(cell.name), items });
+  });
+  const rows = groups.flatMap((group, groupIndex) => group.items.map((item) => ({ ...item, group: group.label, groupIndex })));
+  if (rows.length < 2) return "";
+  const width = Math.max(980, rows.length * 54 + 140);
+  const height = 470;
+  const margin = { top: 40, right: 28, bottom: 148, left: 62 };
+  const plotWidth = width - margin.left - margin.right;
+  const plotHeight = height - margin.top - margin.bottom;
+  const maxValue = niceChartMax(Math.max(...rows.map((row) => row.count), 1));
+  const step = plotWidth / rows.length;
+  const barWidth = Math.max(12, Math.min(30, step * 0.62));
+  const bars = rows.map((row, index) => {
+    const center = margin.left + step * index + step / 2;
+    const y = margin.top + plotHeight - (row.count / maxValue) * plotHeight;
+    const barHeight = Math.max(1, margin.top + plotHeight - y);
+    const fill = colors[row.groupIndex % colors.length];
+    return '<g><title>' + escapeHtml(row.group + " " + row.name + "：" + row.count) + '</title><rect x="' + (center - barWidth / 2).toFixed(1) + '" y="' + y.toFixed(1) + '" width="' + barWidth.toFixed(1) + '" height="' + barHeight.toFixed(1) + '" rx="' + (theme === "lieflat" ? 0 : 4) + '" fill="' + fill + '"/><text x="' + center.toFixed(1) + '" y="' + Math.max(margin.top + 12, y - 6).toFixed(1) + '" text-anchor="middle" class="combo-value">' + row.count + '</text><text x="' + center.toFixed(1) + '" y="' + (margin.top + plotHeight + 16) + '" text-anchor="end" transform="rotate(-58 ' + center.toFixed(1) + ' ' + (margin.top + plotHeight + 16) + ')" class="combo-x-label">' + escapeHtml(chartText(row.name, 16)) + '</text></g>';
+  }).join("");
+  const ticks = 4;
+  const grid = Array.from({ length: ticks + 1 }, (_, index) => {
+    const value = Math.round(maxValue * (ticks - index) / ticks);
+    const y = margin.top + plotHeight * index / ticks;
+    return '<text x="' + (margin.left - 8) + '" y="' + (y + 4) + '" text-anchor="end" class="combo-axis-label">' + value + '</text><line x1="' + margin.left + '" y1="' + y + '" x2="' + (width - margin.right) + '" y2="' + y + '" class="combo-grid"/>';
+  }).join("");
+  const legend = groups.map((group, index) => '<span><i class="bar" style="background:' + colors[index % colors.length] + '"></i>' + escapeHtml(group.label) + '</span>').join("");
+  return '<figure class="agent-report-auto-chart agent-report-combo-chart iqc-defect-columns' + lieflatClass(theme) + '" role="img" aria-label="四格缺陷柱形图，柱形为不合格批次"><figcaption><strong>四格缺陷</strong><span>柱形为不合格批次</span></figcaption><div class="agent-report-combo-legend">' + legend + '</div><svg viewBox="0 0 ' + width + ' ' + height + '" preserveAspectRatio="xMidYMid meet" aria-hidden="true">' + grid + '<line x1="' + margin.left + '" y1="' + (margin.top + plotHeight) + '" x2="' + (width - margin.right) + '" y2="' + (margin.top + plotHeight) + '" class="combo-axis"/>' + bars + '</svg></figure>';
+};
+
+const iqcStructuredTable = (split, title, theme = "default") => {
+  if (!split?.cellMonthly?.length) return "";
+  const text = String(title || "");
+  if (text.includes("四格")) {
+    return iqcHtmlTable("四格本月结果", ["分类", "送检批次", "不合格批次", "不合格率", "上月送检", "上月不合格", "上月不合格率"], (split.cells || []).map((cell) => [iqcCellLabel(cell.name), cell.inspected ?? "", cell.bad ?? "", iqcRateText(cell.rate), cell.previousInspected ?? "", cell.previousBad ?? "", iqcRateText(cell.previousRate)]));
+  }
+  if (text.includes("缺陷")) {
+    const rows = [];
+    (split.cells || []).forEach((cell) => (cell.defects || []).forEach((item) => rows.push([iqcCellLabel(cell.name), item.name, item.count])));
+    return iqcDefectColumnChart(split, theme) || iqcHtmlTable("四格缺陷", ["分类", "缺陷", "不合格批次"], rows);
+  }
+  if (text.includes("供应商")) {
+    return iqcHtmlTable("供应商来料", ["厂区", "供应商", "送检批次", "不合格批次", "不合格率", "主要缺陷"], (split.suppliers || []).map((item) => [item.site, item.name, item.inspected ?? "", item.bad ?? "", iqcRateText(item.rate), (item.topDefects || []).map((defect) => defect.name + defect.count).join("、")]));
+  }
+  if (text.includes("公司加工") || text.includes("机加")) {
+    return iqcHtmlTable("公司加工", ["厂区", "送检批次", "不合格批次", "不合格率", "主要缺陷"], (split.companyMachining || []).map((item) => [item.site || item.name, item.inspected ?? "", item.bad ?? "", iqcRateText(item.rate), (item.topDefects || []).map((defect) => defect.name + defect.count).join("、")]));
+  }
+  return "";
+};
+export const renderAgentMarkdown = (content, { chartFirst = false, snapshot = null, includeSnapshotCharts = false, publisher = false, profileId = DEFAULT_REPORT_PRESENTATION_PROFILE, module = "质量分析", visualSpec = null, chartTheme = "", lede = "" } = {}) => {
   // The visual contract is machine-readable metadata, never report prose.
   const visualFigures = visualFigureList(visualSpec || extractReportVisualSpec(content || ""));
   const resolvedChartTheme = chartTheme || (visualSpec?.reportKind === "role" || String(module || "").startsWith("角色报告") ? "lieflat" : "default");
@@ -691,6 +844,7 @@ export const renderAgentMarkdown = (content, { chartFirst = false, snapshot = nu
   const metricBuffer = [];
   let sectionTitle = "";
   let sectionOpen = false;
+  let skipIqcProse = false;
   const flushMetrics = () => {
     if (!metricBuffer.length) return;
     output.push(`<div class="agent-report-kpi-grid">${metricBuffer.splice(0).map((item) => `<article class="agent-report-kpi"><span>${inlineReportMarkdown(item.label)}</span><strong>${inlineReportMarkdown(item.value)}</strong></article>`).join("")}</div>`);
@@ -708,6 +862,9 @@ export const renderAgentMarkdown = (content, { chartFirst = false, snapshot = nu
     const heading = /趋势/.test(title) ? periodChartTitle(title, labels) : title;
     output.push(`<section class="${sectionClass(title)}"><${tag} class="${headingClass(title)}">${inlineReportMarkdown(heading)}</${tag}>`);
     sectionOpen = true;
+    skipIqcProse = Boolean(snapshot?.data?.iqcSplit?.cellMonthly?.length) && /四格|缺陷|供应商|公司加工|机加/.test(title);
+    const structured = iqcStructuredTable(snapshot?.data?.iqcSplit, title, resolvedChartTheme);
+    if (structured) output.push(structured);
   };
   const insertSnapshotChartForSection = (title) => {
     const chartKey = /月度趋势/i.test(title) ? "monthly" : /物料类别.*良率/i.test(title) ? "material" : "";
@@ -719,7 +876,7 @@ export const renderAgentMarkdown = (content, { chartFirst = false, snapshot = nu
   const insertVisualFiguresForSection = (title) => {
     if (!chartFirst) return;
     visualFigures.filter((figure) => !insertedVisualFigures.has(figure.__key) && figureMatchesSection(figure, title)).forEach((figure) => {
-      const markup = renderVisualSpecFigure(figure, resolvedChartTheme);
+      const markup = renderFigureBlock(figure, resolvedChartTheme);
       if (markup) {
         output.push(`<div class="agent-report-inline-chart" data-figure-id="${escapeHtml(figure.__key)}">${markup}</div>`);
         insertedVisualFigures.add(figure.__key);
@@ -728,6 +885,7 @@ export const renderAgentMarkdown = (content, { chartFirst = false, snapshot = nu
   };
   let skippedDocumentTitle = false;
   for (let index = 0; index < lines.length; index += 1) {
+    if (skipIqcProse && !/^#{1,3}\s/.test(lines[index].trim()) && !/^[一二三四五六七八九十]+、/.test(lines[index].trim())) continue;
     const line = lines[index];
     const raw = line.trim();
     if (isLayoutMarker(raw)) continue;
@@ -743,6 +901,8 @@ export const renderAgentMarkdown = (content, { chartFirst = false, snapshot = nu
       index -= 1;
       continue;
     }
+    const chineseSection = raw.match(/^([一二三四五六七八九十]+、\s*\S.*)$/);
+    if (chineseSection && !raw.startsWith("#")) { openSection(chineseSection[1], "h4"); insertSnapshotChartForSection(sectionTitle); insertVisualFiguresForSection(sectionTitle); continue; }
     if (/^###\s/.test(raw)) { openSection(raw.replace(/^###\s/, ""), "h5"); insertSnapshotChartForSection(sectionTitle); insertVisualFiguresForSection(sectionTitle); continue; }
     if (/^##\s/.test(raw)) { openSection(raw.replace(/^##\s/, ""), "h4"); insertSnapshotChartForSection(sectionTitle); insertVisualFiguresForSection(sectionTitle); continue; }
     if (/^#\s/.test(raw)) {
@@ -763,35 +923,43 @@ export const renderAgentMarkdown = (content, { chartFirst = false, snapshot = nu
   closeSection();
   const remainingFigures = visualFigures.filter((figure) => !insertedVisualFigures.has(figure.__key));
   if (chartFirst && remainingFigures.length) {
-    output.push(`<section class="agent-report-section agent-report-visual-appendix"><h4 class="agent-report-section-heading">图表附录</h4>${remainingFigures.map((figure) => { insertedVisualFigures.add(figure.__key); return `<div class="agent-report-inline-chart" data-figure-id="${escapeHtml(figure.__key)}">${renderVisualSpecFigure(figure, resolvedChartTheme)}</div>`; }).join("")}</section>`);
+    output.push(`<section class="agent-report-section agent-report-visual-appendix"><h4 class="agent-report-section-heading">图表附录</h4>${remainingFigures.map((figure) => { insertedVisualFigures.add(figure.__key); return `<div class="agent-report-inline-chart" data-figure-id="${escapeHtml(figure.__key)}">${renderFigureBlock(figure, resolvedChartTheme)}</div>`; }).join("")}</section>`);
   }
   const fragment = output.join("");
-  return publisher ? reportPublisherChrome(reportText, fragment, profileId, module) : fragment;
+  return publisher ? reportPublisherChrome(reportText, fragment, profileId, module, lede) : fragment;
 };
 
 export function QualityAgentPage({ data, files = [], dateRange, module = "DQA", onEnsureAgentSources, canStart = false, canSaveToServer = false, creatorIp = "" }) {
   const [doamDataset, setDoamDataset] = useState(null);
   const initialSkill = MODULE_DEFAULT_SKILLS[module] || MODULE_DEFAULT_SKILLS.DQA;
-  const [skillName, setSkillName] = useState(initialSkill.name);
+  const [skillName, setSkillName] = useState(() => readModuleChoice(module).skillName || initialSkill.name);
   const [skillContent, setSkillContent] = useState(initialSkill.content);
   const [coreSkillContent, setCoreSkillContent] = useState(DEFAULT_CORE_SKILL.content);
   const [skills, setSkills] = useState([initialSkill]);
   const [layoutSkills] = useState(REPORT_PRESENTATION_PROFILES);
-  const [layoutSkillName, setLayoutSkillName] = useState(initialReportLayout);
+  const [chartSkills, setChartSkills] = useState([{ id: DEFAULT_ANALYSIS_CHART_SKILL, name: DEFAULT_ANALYSIS_CHART_SKILL }, { id: "quality-role-charts-default", name: "quality-role-charts-default" }]);
+  const [chartSkillName, setChartSkillName] = useState(() => {
+    try { return readModuleChoice(module).chartSkillName || localStorage.getItem(CHART_SKILL_STORAGE_KEY) || DEFAULT_ANALYSIS_CHART_SKILL; } catch { return DEFAULT_ANALYSIS_CHART_SKILL; }
+  });
+  const [layoutSkillName, setLayoutSkillName] = useState(() => readModuleChoice(module).layoutSkillName || initialReportLayout());
   const [runs, setRuns] = useState(() => loadQualityAgentRuns());
   const [serverRunsReady, setServerRunsReady] = useState(() => !canSaveToServer);
   const [stageOpen, setStageOpen] = useState({});
   const [ledgerOpen, setLedgerOpen] = useState(false);
+  const [backendOpen, setBackendOpen] = useState(false);
+  const [backendNow, setBackendNow] = useState(() => Date.now());
+  const backendLogRef = useRef(null);
   const [closureEvidence, setClosureEvidence] = useState({});
   const [savedReports, setSavedReports] = useState([]);
-  const [selectedReportName, setSelectedReportName] = useState("");
+  const [selectedReportName, setSelectedReportName] = useState(() => readModuleChoice(module).reportName || "");
+  const [reportsLoaded, setReportsLoaded] = useState(false);
   const [selectedReportContent, setSelectedReportContent] = useState("");
   const [selectedReportState, setSelectedReportState] = useState({ status: "idle", message: "" });
   const [showReportComparison, setShowReportComparison] = useState(false);
   const [showQualityDetails, setShowQualityDetails] = useState(false);
   const [qualityRules, setQualityRules] = useState(DEFAULT_REPORT_QUALITY_RULES);
   const [importedReports, setImportedReports] = useState(() => readImportedReports()[module] || []);
-  const [selectedImportedId, setSelectedImportedId] = useState("");
+  const [selectedImportedId, setSelectedImportedId] = useState(() => readModuleChoice(module).importedId || "");
   const [showImportedReport, setShowImportedReport] = useState(false);
   const [downloadTarget, setDownloadTarget] = useState("");
   const [pdfDownload, setPdfDownload] = useState({ signature: "", status: "idle", blob: null, fileName: "", message: "" });
@@ -819,12 +987,14 @@ export function QualityAgentPage({ data, files = [], dateRange, module = "DQA", 
     }).catch(() => {}).finally(() => {});
     return () => { active = false; };
   }, []);
-  const [period, setPeriod] = useState(() => ({ ...dateRange }));
+  const [period, setPeriod] = useState(() => savedAnalysisPeriod(module, dateRange));
   useEffect(() => {
+    const choice = readModuleChoice(module);
+    if (choice.start2026 && choice.end2026) return;
     setPeriod((current) => current.start2026 === dateRange.start2026 && current.end2026 === dateRange.end2026
       ? current
       : { ...current, ...dateRange });
-  }, [dateRange.start2026, dateRange.end2026, dateRange.start2025, dateRange.end2025]);
+  }, [module, dateRange.start2026, dateRange.end2026, dateRange.start2025, dateRange.end2025]);
   useEffect(() => {
     setAgentFiles((current) => {
       const byKey = new Map();
@@ -908,18 +1078,27 @@ export function QualityAgentPage({ data, files = [], dateRange, module = "DQA", 
     const compact = agentFiles.filter((source) => source.module === "DOAM" && (source.kind === "DOAM_COMPACT" || String(source.name || "").toLowerCase().endsWith(".doam.json")));
     return compact.length ? createSourcesSignature(compact, { includeDoam: true }) : JSON.stringify({ files: doamDataset?.quality?.files || doamDataset?.files || [], rowCount: doamDataset?.quality?.rowCount || 0, units: doamDataset?.units?.length || 0, dateMax: doamDataset?.quality?.dateMax || "" });
   }, [agentFiles, module, doamDataset]);
-  const matchedSnapshotEntry = useMemo(() => snapshotRegistry ? pickLatestQualitySnapshot(snapshotRegistry, { module, dateRange: period, sourceSignature, skillName, layoutProfileId: layoutSkillName }) : null, [snapshotRegistry, module, period, sourceSignature, skillName, layoutSkillName]);
+  const matchedSnapshotEntry = useMemo(() => {
+    if (!snapshotRegistry) return null;
+    if (module === "IQC") {
+      const matched = pickIqcAnalysisSnapshot(snapshotRegistry.history, period);
+      if (matched) return matched;
+    }
+    return pickLatestQualitySnapshot(snapshotRegistry, { module, dateRange: period, sourceSignature, skillName, layoutProfileId: layoutSkillName, allowPeriodFallback: true });
+  }, [snapshotRegistry, module, period, sourceSignature, skillName, layoutSkillName]);
   const combinedSkillContent = useMemo(() => `模块 Skill：${skillName}\n${skillContent}\n\n核心 Skill：${CORE_SKILL_NAME}\n${coreSkillContent}`, [skillName, skillContent, coreSkillContent]);
   const record = runs[module] || {};
-  const displaySnapshot = record.snapshot || matchedSnapshotEntry?.snapshot || snapshot;
+  const displaySnapshot = [record.renderSnapshot, record.snapshot, matchedSnapshotEntry?.snapshot, snapshot].find((item) => module === "IQC" ? iqcSnapshotReady(item) : Number(item?.data?.sourceAudit?.totalRows || 0) > 0) || snapshot;
   const moduleVisualSpec = useMemo(() => {
     const embedded = record.visualSpec || extractReportVisualSpec(record.content || "");
     return mergeModuleVisualSpec(embedded, displaySnapshot, module);
   }, [record.visualSpec, record.content, displaySnapshot, module]);
   const activeReportLayoutClass = reportLayoutClass(layoutSkillName);
+  const formalIqcLayout = skillName === "quality-analysis-iqc-machined";
+  const chartTheme = chartThemeFromSkill(chartSkills.find((item) => (item.name || item.id) === chartSkillName) || { name: chartSkillName });
   const finalReportHtml = useMemo(() => record.content
-    ? renderAgentMarkdown(record.content, { chartFirst: true, snapshot: displaySnapshot, includeSnapshotCharts: module === "IQC", publisher: true, profileId: layoutSkillName, module, visualSpec: moduleVisualSpec })
-    : "", [record.content, displaySnapshot, module, layoutSkillName, moduleVisualSpec]);
+    ? renderAgentMarkdown(record.content, { chartFirst: true, snapshot: displaySnapshot, includeSnapshotCharts: module === "IQC" && !formalIqcLayout, publisher: true, profileId: layoutSkillName, module, visualSpec: moduleVisualSpec, lede: formalIqcLayout ? "加工件来料与公司加工质量报告。" : "", chartTheme })
+    : "", [record.content, displaySnapshot, module, layoutSkillName, moduleVisualSpec, chartTheme]);
   // Presentation profiles are deterministic browser rendering. Switching one
   // must never invalidate the completed analysis or trigger another AI call.
   const reportLayoutChanged = false;
@@ -935,12 +1114,17 @@ export function QualityAgentPage({ data, files = [], dateRange, module = "DQA", 
         ? { status: "missing", label: "未命中 DOAM 后台快照", detail: `${skillName} · ${doamFileCount} 个数据源`, meta: `将使用当前导入明细；可在系统管理 / 后台快照生成 DOAM 快照` }
         : { status: "missing", label: "DOAM 数据未就绪", detail: sourceState.message || "请先到质量数据 / 数据导入中上传告警明细", meta: "" })
     : matchedSnapshotEntry
-      ? { status: "matched", label: "已命中有效快照", detail: `${matchedSnapshotEntry.moduleLabel || module} · ${matchedSnapshotEntry.skillName || skillName} · ${matchedSnapshotEntry.layoutProfileId || layoutSkillName}`, meta: `生成于 ${new Date(matchedSnapshotEntry.generatedAt).toLocaleString("zh-CN")} · 来源版本已匹配` }
+      ? { status: "matched", label: matchedSnapshotEntry.matchLevel === "coverage" ? "已命中覆盖快照" : matchedSnapshotEntry.matchLevel === "period" ? "已命中同周期快照" : "已命中有效快照", detail: `${matchedSnapshotEntry.moduleLabel || module} · ${matchedSnapshotEntry.skillName || skillName} · ${matchedSnapshotEntry.layoutProfileId || layoutSkillName}`, meta: matchedSnapshotEntry.matchLevel === "coverage" ? `快照覆盖 ${matchedSnapshotEntry.coverage?.start || matchedSnapshotEntry.dateRange?.start2026} ~ ${matchedSnapshotEntry.coverage?.end || matchedSnapshotEntry.dateRange?.end2026}，本次窗口 ${matchedSnapshotEntry.selectedWindow?.start} ~ ${matchedSnapshotEntry.selectedWindow?.end}。固定数字用这份覆盖快照。` : matchedSnapshotEntry.matchLevel === "period" ? `生成于 ${new Date(matchedSnapshotEntry.generatedAt).toLocaleString("zh-CN")} · 当前 Skill 或来源版本与快照不完全一致，固定数字仍用这份同周期快照` : `生成于 ${new Date(matchedSnapshotEntry.generatedAt).toLocaleString("zh-CN")} · 来源版本已匹配` }
       : snapshotRegistry
         ? { status: "missing", label: "未命中有效快照", detail: "当前周期、来源版本、Skill 或 Profile 没有完全匹配的有效快照", meta: "本次分析将使用当前确定性统计结果；请管理员检查后台快照" }
         : { status: "loading", label: "正在读取快照注册表", detail: "尚未完成快照匹配", meta: "" };
   const snapshotCacheMessage = matchedSnapshotEntry ? "缓存命中：本次分析将复用固定快照，跳过重复统计" : (module === "DOAM" && sourceReady ? "未命中后台快照，使用当前导入明细生成固定统计" : "缓存未命中：本次分析将重新整理当前数据");
   const workflowProgress = record.progress || { percent: record.status === "done" ? 100 : 0, phase: record.status === "running" ? "正在准备分析" : "等待启动", detail: record.status === "done" ? "报告已生成，可直接查看或保存" : "点击“启动 Agent 分析”后开始" };
+  useEffect(() => {
+    if (!backendOpen || record.status !== "running") return undefined;
+    const timer = window.setInterval(() => setBackendNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [backendOpen, record.status]);
   const update = (next) => setRuns((current) => {
     const value = { ...current, [module]: next };
     return value;
@@ -981,23 +1165,24 @@ export function QualityAgentPage({ data, files = [], dateRange, module = "DQA", 
 
   useEffect(() => {
     const reports = readImportedReports()[module] || [];
-    setImportedReports(Array.isArray(reports) ? reports : []);
-    setSelectedImportedId("");
-    setShowImportedReport(false);
+    const list = Array.isArray(reports) ? reports : [];
+    setImportedReports(list);
+    const rememberedImport = readModuleChoice(module).importedId || "";
+    const importExists = list.some((item) => item.id === rememberedImport);
+    setSelectedImportedId(importExists ? rememberedImport : "");
+    setShowImportedReport(importExists);
   }, [module]);
 
   useEffect(() => {
-    if (!importedReports.length) {
+    if (selectedImportedId && importedReports.length && !importedReports.some((item) => item.id === selectedImportedId)) {
       setSelectedImportedId("");
       setShowImportedReport(false);
-      return;
-    }
-    if (!importedReports.some((item) => item.id === selectedImportedId)) {
-      setSelectedImportedId(importedReports[0].id);
+      writeModuleChoice(module, { importedId: "" });
     }
   }, [importedReports, selectedImportedId]);
 
   useEffect(() => {
+    if (!reportsLoaded) return;
     if (!moduleReports.length) {
       if (!requestedReportNameRef.current) setSelectedReportName("");
       setSelectedReportContent("");
@@ -1011,8 +1196,8 @@ export function QualityAgentPage({ data, files = [], dateRange, module = "DQA", 
         return;
       }
     }
-    if (selectedReportName && !moduleReports.some((item) => item.fileName === selectedReportName)) setSelectedReportName("");
-  }, [moduleReports, selectedReportName]);
+    if (selectedReportName && !moduleReports.some((item) => item.fileName === selectedReportName)) { setSelectedReportName(""); writeModuleChoice(module, { reportName: "" }); }
+  }, [moduleReports, selectedReportName, reportsLoaded, module]);
 
   useEffect(() => {
     let active = true;
@@ -1081,11 +1266,20 @@ export function QualityAgentPage({ data, files = [], dateRange, module = "DQA", 
     };
   }, [runs, canSaveToServer, serverRunsReady]);
   useEffect(() => { localStorage.setItem(REPORT_PRESENTATION_STORAGE_KEY, layoutSkillName); }, [layoutSkillName]);
+  useEffect(() => { try { localStorage.setItem(CHART_SKILL_STORAGE_KEY, chartSkillName); } catch {} }, [chartSkillName]);
   useEffect(() => {
+    const choice = readModuleChoice(module);
+    if (choice.chartSkillName) setChartSkillName(choice.chartSkillName);
+    if (choice.layoutSkillName) setLayoutSkillName(normalizeReportPresentationProfile(choice.layoutSkillName));
+    setSelectedReportName(choice.reportName || "");
+    setReportsLoaded(false);
     loadAgentSkills().then((value) => {
-      const next = Array.isArray(value?.skills)
-        ? value.skills.filter((item) => !String(item.id || item.name || "").startsWith("quality-role-"))
-        : [];
+      const allSkills = Array.isArray(value?.skills) ? value.skills : [];
+      const next = allSkills.filter((item) => !String(item.id || item.name || "").startsWith("quality-role-"));
+      const charts = allSkills.filter((item) => isRoleChartSkill(item));
+      const chartList = charts.length ? charts : [{ id: DEFAULT_ANALYSIS_CHART_SKILL, name: DEFAULT_ANALYSIS_CHART_SKILL }, { id: "quality-role-charts-default", name: "quality-role-charts-default" }];
+      setChartSkills(chartList);
+      setChartSkillName((current) => chartList.some((item) => (item.name || item.id) === current) ? current : ((chartList.find((item) => (item.name || item.id) === DEFAULT_ANALYSIS_CHART_SKILL) || chartList[0])?.name || current));
       const core = next.find((item) => (item.name || item.id) === CORE_SKILL_NAME) || DEFAULT_CORE_SKILL;
       setCoreSkillContent(core.content || DEFAULT_CORE_SKILL.content);
       const defaultSkill = MODULE_DEFAULT_SKILLS[module] || MODULE_DEFAULT_SKILLS.DQA;
@@ -1096,16 +1290,18 @@ export function QualityAgentPage({ data, files = [], dateRange, module = "DQA", 
       });
       const available = compatible.length ? compatible : [defaultSkill];
       setSkills(available);
-      const selected = available.find((item) => (item.name || item.id) === defaultSkill.name) || available[0];
-      if (selected) { setSkillName(selected.name); setSkillContent(selected.content || ""); }
+      const rememberedSkill = readModuleChoice(module).skillName;
+      const selected = available.find((item) => (item.name || item.id) === rememberedSkill) || available.find((item) => (item.name || item.id) === defaultSkill.name) || available[0];
+      if (selected) { setSkillName(selected.name); setSkillContent(selected.content || ""); writeModuleChoice(module, { skillName: selected.name }); }
     }).catch(() => {
       const fallback = MODULE_DEFAULT_SKILLS[module] || MODULE_DEFAULT_SKILLS.DQA;
       setSkills([fallback]);
-      setSkillName(fallback.name);
-      setSkillContent(fallback.content);
+      const rememberedSkill = readModuleChoice(module).skillName || fallback.name;
+      setSkillName(rememberedSkill);
+      setSkillContent(rememberedSkill === fallback.name ? fallback.content : "");
       setCoreSkillContent(DEFAULT_CORE_SKILL.content);
     });
-    refreshReports();
+    refreshReports().finally(() => setReportsLoaded(true));
   }, [module]);
 
   const start = async ({ force = false } = {}) => {
@@ -1135,13 +1331,17 @@ export function QualityAgentPage({ data, files = [], dateRange, module = "DQA", 
       // re-reading and re-aggregating raw Excel rows on every run.
       const auditFailed = record.status === "error"
         && (record.currentStage === "audit" || record.stages?.audit?.status === "error");
-      const canUseStoredSnapshot = Boolean(matchedSnapshotEntry?.snapshot)
-        && !auditFailed
-        && (!sourceReady || !sourceSignature || !matchedSnapshotEntry.sourceSignature || matchedSnapshotEntry.sourceSignature === sourceSignature);
-      let snapshotForRun = canUseStoredSnapshot
-        ? matchedSnapshotEntry.snapshot
-        : (sourceReady ? snapshot : (record.snapshot || snapshot));
-      if (module !== "DOAM" && (!sourceReady || auditFailed) && !canUseStoredSnapshot && onEnsureAgentSources) {
+      const sourceChanged = Boolean(sourceReady && sourceSignature && matchedSnapshotEntry?.sourceSignature && matchedSnapshotEntry.sourceSignature !== sourceSignature);
+      const snapshotChoice = chooseAgentRunSnapshot({
+        matchedSnapshot: matchedSnapshotEntry?.snapshot || null,
+        liveSnapshot: snapshot,
+        recordSnapshot: record.snapshot || null,
+        sourceReady,
+        auditFailed,
+      });
+      const canUseStoredSnapshot = snapshotChoice.canUseStoredSnapshot;
+      let snapshotForRun = snapshotChoice.snapshotForRun;
+      if (module !== "DOAM" && snapshotChoice.needsSourceHydration && onEnsureAgentSources) {
         setSourceState({ status: "loading", message: "正在重新加载当前模块原始数据" });
         const nextSources = await onEnsureAgentSources([module], (progress) => {
           if (progress?.label) setSourceState({ status: "loading", message: progress.label });
@@ -1160,6 +1360,12 @@ export function QualityAgentPage({ data, files = [], dateRange, module = "DQA", 
         snapshotForRun = buildQualityAgentSnapshot({ data, files: refreshedFiles, dateRange: period, module });
         setSourceState({ status: "ready", message: "原始数据已重新加载，正在继续 Agent 分析" });
       }
+      if (module === "IQC" && matchedSnapshotEntry?.matchLevel === "coverage" && matchedSnapshotEntry.selectedWindow) {
+        snapshotForRun = sliceIqcSnapshotToWindow(snapshotForRun, matchedSnapshotEntry.selectedWindow, matchedSnapshotEntry.dateRange);
+      }
+      if (matchedSnapshotEntry?.matchLevel === "coverage" && matchedSnapshotEntry.selectedWindow) {
+        snapshotForRun = applyQualitySnapshotWindow(snapshotForRun, matchedSnapshotEntry.selectedWindow);
+      }
       throwIfStopped();
       const currentHash = qualityAgentSnapshotHash(snapshotForRun);
       const sameSnapshot = record.snapshotHash === currentHash || record.snapshotHash === currentHash.slice(0, 80);
@@ -1171,7 +1377,10 @@ export function QualityAgentPage({ data, files = [], dateRange, module = "DQA", 
         if (!window.confirm("当前数据和统计周期均未变化，已生成报告。继续后会从头重新分析并覆盖当前运行缓存；如需保留当前版本，请先点击“保存到项目”。是否继续？")) return;
         existing = null;
       }
-      const next = await runQualityAgent({ snapshot: snapshotForRun, skillName, skillContent: combinedSkillContent, layoutProfileId: layoutSkillName, existing, requestChat: (messages, options = {}) => requestAiChat(messages, { ...options, operation: "quality-agent-start" }), signal: controller.signal, onUpdate: update });
+      const coverageText = matchedSnapshotEntry?.matchLevel === "coverage" ? "。覆盖 " + (matchedSnapshotEntry.coverage?.start || matchedSnapshotEntry.dateRange?.start2026 || "") + " ~ " + (matchedSnapshotEntry.coverage?.end || matchedSnapshotEntry.dateRange?.end2026 || "") + "，本次窗口 " + (matchedSnapshotEntry.selectedWindow?.start || period.start2026 || "") + " ~ " + (matchedSnapshotEntry.selectedWindow?.end || period.end2026 || "") : "";
+      const activitySeed = [canUseStoredSnapshot ? "使用已有快照，本次不重读 Excel" + coverageText + (sourceChanged ? "。当前内存里的文件行数和快照登记不一致，日期仍在覆盖范围内，继续用这份快照" : "") : snapshotChoice.storedSnapshotEmpty ? "已有快照没有来源记录，不能拿来出报告。本次已读取 Excel，并按这份明细重做快照" : matchedSnapshotEntry ? "快照目录有记录，但没有读到快照正文，改为用当前数据现算" : "没有覆盖 " + (period.start2026 || "") + " ~ " + (period.end2026 || "") + " 的快照，改为用当前数据现算"];
+      snapshotForRun = alignIqcYieldMetrics(snapshotForRun);
+      const next = await runQualityAgent({ snapshot: snapshotForRun, skillName, skillContent: combinedSkillContent, layoutProfileId: layoutSkillName, existing, requestChat: (messages, options = {}) => requestAiChat(messages, { ...options, operation: "quality-agent-start" }), signal: controller.signal, onUpdate: update, activitySeed });
       if (next.status === "error") setError(`${next.currentStage || "Agent分析"}：${next.error}`);
       else {
         // Keep the deterministic aggregate snapshot for rendering, but release raw Excel rows.
@@ -1195,34 +1404,28 @@ export function QualityAgentPage({ data, files = [], dateRange, module = "DQA", 
     const controller = abortRef.current;
     if (controller && !controller.signal.aborted) controller.abort();
     if (abortRef.current === controller) abortRef.current = null;
-    const message = controller
-      ? "正在停止本次 Agent 分析；已完成阶段将保留。"
-      : "已停止页面中的中断状态；已完成阶段将保留。";
-    setError(message);
+    const message = "已停止本次分析。已保存到项目的报告不会删除。";
+    setError("");
     setSourceState((current) => ({ ...current, status: "ready", message }));
     setRuns((current) => {
       const active = current[module] || {};
-      if (active.status !== "running") return current;
+      if (active.status !== "running" && active.status !== "error") return current;
       const stageId = active.currentStage || "audit";
       return {
         ...current,
         [module]: {
           ...active,
-          status: "error",
-          error: "已停止本次 Agent 分析，已完成阶段保留，可继续。",
+          status: "idle",
+          error: "",
           stages: {
             ...(active.stages || {}),
             [stageId]: {
               ...(active.stages?.[stageId] || {}),
-              status: "error",
-              error: "已停止本次 Agent 分析，已完成阶段保留，可继续。",
+              status: "pending",
+              error: "",
             },
           },
-          progress: {
-            ...(active.progress || {}),
-            phase: "正在停止",
-            detail: message,
-          },
+          progress: { percent: 0, phase: "已停止", detail: message },
         },
       };
     });
@@ -1252,7 +1455,7 @@ export function QualityAgentPage({ data, files = [], dateRange, module = "DQA", 
       // IndexedDB/local-only saves and PostgreSQL responses that arrive before
       // the report-list refresh is visible to the browser.
       setSavedReports((current) => [entry, ...current.filter((item) => item.fileName !== entry.fileName)]);
-      setSelectedReportName(entry.fileName);
+      setSelectedReportName(entry.fileName); writeModuleChoice(module, { reportName: entry.fileName });
       setSelectedReportContent(String(saved.content || content || ""));
       setSelectedReportState({ status: "loaded", message: "" });
       setSaveState({ status: "saved", message: canSaveToServer ? `已保存到服务器：${saved.relativePath || saved.fileName}` : `已保存到本机：${saved.fileName}` });
@@ -1470,29 +1673,32 @@ export function QualityAgentPage({ data, files = [], dateRange, module = "DQA", 
     <div className={`agent-generation-progress ${record.status === "error" ? "error" : workflowProgress.percent >= 100 ? "done" : ""}`} role="status" aria-live="polite"><div className="agent-generation-progress-head"><strong>{workflowProgress.phase}</strong><b>{Math.round(workflowProgress.percent || 0)}%</b></div><div className="agent-generation-progress-track"><i style={{ width: `${Math.max(0, Math.min(100, workflowProgress.percent || 0))}%` }} /></div><small className="agent-generation-progress-detail">{workflowProgress.detail}</small></div>
     <div className="quality-agent-hero"><div><span className="qmdp-eyebrow">QUALITY ANALYSIS AGENT / {module}</span><h2>{AGENT_TITLE} · {module}</h2><p>基于软件固定统计结果生成可审计的 {module} 质量复盘和改善行动。角色报告、发送任务与考试统计在独立 Agent 页面处理。</p></div><Brain size={42} weight="duotone" /></div>
     <section className="qmdp-card quality-agent-controls">
-      <label>模块分析 Skill<select value={skillName} onChange={(event) => { const selected = skills.find((item) => item.name === event.target.value); setSkillName(event.target.value); setSkillContent(selected?.content || ""); }}>{skills.map((item) => <option key={item.name} value={item.name}>{item.name}</option>)}</select><small>自动叠加 {CORE_SKILL_NAME}</small></label>
-      <label>网页呈现风格<select value={layoutSkillName} onChange={(event) => setLayoutSkillName(normalizeReportPresentationProfile(event.target.value))}>{layoutSkills.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}</select><small>{reportLayoutLabel(layoutSkillName)} · 切换后立即重绘当前、历史和导入报告，不重新调用大模型</small></label>
-      <label>统计开始<input type="date" value={period.start2026 || ""} onChange={(event) => setPeriod((current) => ({ ...current, start2026: event.target.value }))}/></label>
-      <label>统计结束<input type="date" value={period.end2026 || ""} onChange={(event) => setPeriod((current) => ({ ...current, end2026: event.target.value }))}/></label>
+      <label>模块分析 Skill<select value={skillName} onChange={(event) => { const selected = skills.find((item) => item.name === event.target.value); setSkillName(event.target.value); setSkillContent(selected?.content || ""); writeModuleChoice(module, { skillName: event.target.value }); }}>{skills.map((item) => <option key={item.name} value={item.name}>{item.name}</option>)}</select><small>自动叠加 {CORE_SKILL_NAME}</small></label>
+      <label>图表 Skill<select value={chartSkillName} onChange={(event) => { setChartSkillName(event.target.value); writeModuleChoice(module, { chartSkillName: event.target.value }); }}>{chartSkills.map((item) => <option key={item.id || item.name} value={item.name || item.id}>{item.name || item.id}</option>)}</select><small>切换后立即重绘当前、历史和导入报告里的图表，不重新调用大模型</small></label>
+      <label>网页呈现风格<select value={layoutSkillName} onChange={(event) => { const next = normalizeReportPresentationProfile(event.target.value); setLayoutSkillName(next); writeModuleChoice(module, { layoutSkillName: next }); }}>{layoutSkills.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}</select><small>{reportLayoutLabel(layoutSkillName)} · 切换后立即重绘当前、历史和导入报告，不重新调用大模型</small></label>
+      <label>统计开始<input type="date" value={period.start2026 || ""} onChange={(event) => setPeriod((current) => { const next = { ...current, start2026: event.target.value }; writeModuleChoice(module, { start2026: next.start2026, end2026: next.end2026 || "" }); return next; })}/></label>
+      <label>统计结束<input type="date" value={period.end2026 || ""} onChange={(event) => setPeriod((current) => { const next = { ...current, end2026: event.target.value }; writeModuleChoice(module, { start2026: next.start2026 || "", end2026: next.end2026 }); return next; })}/></label>
       <span>分析模块：{module} · 当前周期：{period.start2026}—{period.end2026}{sourceState.message ? ` · ${sourceState.message}` : ""}{snapshotCacheMessage ? ` · ${snapshotCacheMessage}` : ""}{auditSummary.grade && <em className={`quality-agent-audit-grade grade-${String(auditSummary.grade).toLowerCase()}`} title={auditDetail || "数据审计通过"}>数据可信度 {auditSummary.grade}</em>}</span>
       <div className={`quality-agent-snapshot-trace ${snapshotTrace.status}`}><b>{snapshotTrace.label}</b><span>{snapshotTrace.detail}</span><small>{snapshotTrace.meta}</small></div>
       <div className="quality-agent-report-toolbar">
-        <label>项目报告<select value={selectedReportName} onChange={(event) => setSelectedReportName(event.target.value)} disabled={!moduleReports.length}><option value="">{moduleReports.length ? "请选择已保存报告" : "暂无已保存报告"}</option>{moduleReports.map((item) => <option key={item.fileName} value={item.fileName}>{item.fileName} · {new Date(item.updatedAt).toLocaleString("zh-CN")}</option>)}</select></label>
+        <label>项目报告<select value={selectedReportName} onChange={(event) => { setSelectedReportName(event.target.value); writeModuleChoice(module, { reportName: event.target.value }); }} disabled={!moduleReports.length}><option value="">{moduleReports.length ? "请选择已保存报告" : "暂无已保存报告"}</option>{moduleReports.map((item) => <option key={item.fileName} value={item.fileName}>{item.fileName} · {new Date(item.updatedAt).toLocaleString("zh-CN")}</option>)}</select></label>
         <button className="qmdp-secondary-btn" onClick={refreshReports}><ArrowsClockwise size={15}/>刷新报告库</button>
         <span className={`quality-agent-report-check ${reportQuality.status}`} title={reportQuality.issues.join("；") || "报告结构、闭环章节和视觉输出已检查"}>报告质量：{reportQuality.label}</span><button className="qmdp-text-btn" onClick={() => setShowQualityDetails((value) => !value)}>{showQualityDetails ? "收起校验" : "查看校验详情"}</button>
         {selectedReportName && <button className="qmdp-danger-btn" onClick={() => removeSavedReport(selectedReportName)}><Trash size={14}/>删除所选报告</button>}
         <input ref={importInputRef} type="file" accept=".docx,.md,.markdown,.txt,.json,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/markdown,text/plain,application/json" onChange={importReport} hidden/>
         <button className="qmdp-secondary-btn" onClick={() => importInputRef.current?.click()}><FileArrowUp size={15}/>导入 Agent 报告</button>
-        <label>外部报告<select value={selectedImportedId} onChange={(event) => { setSelectedImportedId(event.target.value); setShowImportedReport(Boolean(event.target.value)); }} disabled={!importedReports.length}><option value="">暂无导入报告</option>{importedReports.map((item) => <option key={item.id} value={item.id}>{item.fileName} · {new Date(item.importedAt).toLocaleString("zh-CN")}</option>)}</select></label>
+        <label>外部报告<select value={selectedImportedId} onChange={(event) => { setSelectedImportedId(event.target.value); setShowImportedReport(Boolean(event.target.value)); writeModuleChoice(module, { importedId: event.target.value }); }} disabled={!importedReports.length}><option value="">暂无导入报告</option>{importedReports.map((item) => <option key={item.id} value={item.id}>{item.fileName} · {new Date(item.importedAt).toLocaleString("zh-CN")}</option>)}</select></label>
         {selectedImportedReport && <button className="qmdp-secondary-btn" onClick={() => setShowImportedReport((current) => !current)}><span>{showImportedReport ? <EyeSlash size={15}/> : <Eye size={15}/>}</span>{showImportedReport ? "取消显示外部报告" : "显示外部报告"}</button>}
       </div>
-      {record.status === "running" ? <button className="qmdp-danger-btn" onClick={stop}><WarningCircle size={16}/>停止 Agent分析</button> : <div className="quality-agent-analysis-actions">{record.status === "done" && record.content && <button className="qmdp-secondary-btn" onClick={() => start({ force: true })} disabled={!canStart} title="重新调用大模型，覆盖当前运行缓存"><ArrowsClockwise size={16}/>重复分析</button>}<button className="qmdp-primary-btn" onClick={start} disabled={!canStart} title={!canStart ? "仅主管理员可以启动 Agent 分析" : "启动 Agent 分析"}><Brain size={16}/>{record.status === "error" ? "继续 Agent分析" : "启动 Agent分析"}</button></div>}
+      <div className="quality-agent-analysis-actions">{record.status === "done" && record.content && record.status !== "running" && <button className="qmdp-secondary-btn" onClick={() => start({ force: true })} disabled={!canStart || record.status === "running"} title="重新调用大模型，覆盖当前运行缓存"><ArrowsClockwise size={16}/>重复分析</button>}<button className="qmdp-primary-btn" onClick={start} disabled={!canStart || record.status === "running"} title={!canStart ? "仅主管理员可以启动 Agent 分析" : "启动 Agent 分析"}><Brain size={16}/>{record.status === "error" ? "继续 Agent分析" : "启动 Agent分析"}</button><button className="qmdp-danger-btn" onClick={stop} disabled={record.status !== "running" && record.status !== "error"} title="停止当前模块这次分析，不影响其他模块和已保存报告"><WarningCircle size={16}/>停止分析</button><button type="button" className="qmdp-secondary-btn" onClick={() => setBackendOpen((current) => !current)}>{backendOpen ? "收起后台" : "查看后台"}</button></div>
     </section>
-    <section className="quality-agent-collapsible-workflow">{QUALITY_AGENT_STAGES.filter((stage) => stage.id !== "audit").map((stage) => { const item = record.stages?.[stage.id] || {}; const open = Boolean(stageOpen[stage.id]); return <article className={`qmdp-card quality-agent-stage ${item.status || "pending"}`} key={stage.id}><header><button type="button" className="quality-agent-stage-toggle" onClick={() => setStageOpen((current) => ({ ...current, [stage.id]: !current[stage.id] }))}><span>{item.status === "done" ? <CheckCircle size={18} weight="fill"/> : item.status === "error" ? <WarningCircle size={18} weight="fill"/> : item.status === "running" ? <ArrowsClockwise size={18} className="spin"/> : stage.id === "analysis" ? "1" : stage.id === "actions" ? "2" : "3"}</span><strong>{stage.label}</strong>{open ? <CaretDown size={16}/> : <CaretRight size={16}/>}</button><small>{item.status === "done" ? "已完成" : item.status === "error" ? "失败，可继续" : item.status === "running" ? "执行中" : "等待执行"}</small></header>{open && item.content && <div className="quality-agent-stage-content" dangerouslySetInnerHTML={{ __html: renderAgentMarkdown(item.content) }}/>} {open && item.error && <p className="quality-agent-error">{item.error}</p>}</article>; })}</section>
-    {record.actionLedger && <section className={`qmdp-card quality-agent-action-ledger ${record.actionLedger.status || "warning"}`}><header><button type="button" className="quality-agent-stage-toggle" onClick={() => setLedgerOpen((current) => !current)}><span>{record.actionLedger.status === "ready" ? <CheckCircle size={18} weight="fill"/> : <WarningCircle size={18} weight="fill"/>}</span><strong>改善行动台账</strong>{ledgerOpen ? <CaretDown size={16}/> : <CaretRight size={16}/>}</button><small>{record.actionLedger.message}</small></header>{ledgerOpen && <div className="quality-agent-ledger-body">{record.actionLedger.actions?.length ? <div className="agent-report-table-wrap"><table className="agent-report-table quality-agent-ledger-table"><thead><tr><th>行动</th><th>责任与期限</th><th>验收复查</th><th>状态</th></tr></thead><tbody>{record.actionLedger.actions.map((item) => <tr key={item.id}><td><b>{item.id} · {item.phase}</b><span>{item.action}</span><small>{item.conclusionId} · {item.evidenceIds?.join("、") || "证据待补"}</small></td><td><b>{item.owner}</b><span>{item.dueDate || "期限待定"}</span><small>{item.deliverable || "交付物待补"}</small></td><td><b>{actionMetricLabel(item)}</b><span>复查：{item.reviewDate || "待定"}</span><small>{item.statusReason}</small></td><td><em className={`quality-agent-action-status status-${item.status}`}>{ACTION_STATUS_LABELS[item.status] || item.status}</em>{item.status === "verification-ready" && <div className="quality-agent-close-action"><input value={closureEvidence[item.id] || ""} onChange={(event) => setClosureEvidence((current) => ({ ...current, [item.id]: event.target.value }))} placeholder="关闭证据位置/编号"/><button type="button" className="qmdp-primary-btn" onClick={() => closeAction(item.id)}>核验关闭</button></div>}{item.closureEvidence && <small>关闭证据：{item.closureEvidence}</small>}</td></tr>)}</tbody></table></div> : <p className="quality-agent-save-state error">{record.actionLedger.message}</p>}</div>}</section>}
+    {backendOpen && <section className="quality-agent-backend" aria-live="polite"><header><strong>后台过程</strong><small>{record.status === "running" ? "进行中" : record.status === "error" ? "已停止或失败" : record.status === "done" ? "已完成" : "尚未启动"}</small></header><pre ref={backendLogRef}>{(record.activityLog || []).length ? (record.activityLog || []).map((item) => formatBackendLogTime(item.at) + "  " + item.message).join("\n") : "还没有后台记录。启动分析后，这里会按时间写出每一步。"}{record.status === "running" && record.activityLog?.length ? "\n" + formatBackendLogTime(backendNow) + "  仍在等待上一步返回，已过去 " + backendWaitSeconds(record.activityLog, backendNow) + " 秒。这一步结束前不会有新的模型正文。" : ""}</pre></section>}
+    {formalIqcLayout && <section className="qmdp-card quality-agent-formal-outline"><header><strong>IQC加工件质量报告</strong><small>{record.status === "running" ? "正在生成" : record.status === "done" ? "已生成" : "待生成"}</small></header><ol><li>本月结论</li><li>深圳、杭州的供应商与公司加工</li><li>缺陷</li><li>供应商不合格率</li><li>公司加工</li><li>本月要做的事</li></ol></section>}
+    {!formalIqcLayout && <section className="quality-agent-collapsible-workflow">{QUALITY_AGENT_STAGES.filter((stage) => stage.id !== "audit").map((stage) => { const item = record.stages?.[stage.id] || {}; const open = Boolean(stageOpen[stage.id]); return <article className={`qmdp-card quality-agent-stage ${item.status || "pending"}`} key={stage.id}><header><button type="button" className="quality-agent-stage-toggle" onClick={() => setStageOpen((current) => ({ ...current, [stage.id]: !current[stage.id] }))}><span>{item.status === "done" ? <CheckCircle size={18} weight="fill"/> : item.status === "error" ? <WarningCircle size={18} weight="fill"/> : item.status === "running" ? <ArrowsClockwise size={18} className="spin"/> : stage.id === "analysis" ? "1" : stage.id === "actions" ? "2" : "3"}</span><strong>{stage.label}</strong>{open ? <CaretDown size={16}/> : <CaretRight size={16}/>}</button><small>{item.status === "done" ? "已完成" : item.status === "error" ? "失败，可继续" : item.status === "running" ? "执行中" : "等待执行"}</small></header>{open && item.content && <div className="quality-agent-stage-content" dangerouslySetInnerHTML={{ __html: renderAgentMarkdown(item.content) }}/>} {open && item.error && <p className="quality-agent-error">{item.error}</p>}</article>; })}</section>}
+    {!formalIqcLayout && record.actionLedger && <section className={`qmdp-card quality-agent-action-ledger ${record.actionLedger.status || "warning"}`}><header><button type="button" className="quality-agent-stage-toggle" onClick={() => setLedgerOpen((current) => !current)}><span>{record.actionLedger.status === "ready" ? <CheckCircle size={18} weight="fill"/> : <WarningCircle size={18} weight="fill"/>}</span><strong>改善行动台账</strong>{ledgerOpen ? <CaretDown size={16}/> : <CaretRight size={16}/>}</button><small>{record.actionLedger.message}</small></header>{ledgerOpen && <div className="quality-agent-ledger-body">{record.actionLedger.actions?.length ? <div className="agent-report-table-wrap"><table className="agent-report-table quality-agent-ledger-table"><thead><tr><th>行动</th><th>责任与期限</th><th>验收复查</th><th>状态</th></tr></thead><tbody>{record.actionLedger.actions.map((item) => <tr key={item.id}><td><b>{item.id} · {item.phase}</b><span>{item.action}</span><small>{item.conclusionId} · {item.evidenceIds?.join("、") || "证据待补"}</small></td><td><b>{item.owner}</b><span>{item.dueDate || "期限待定"}</span><small>{item.deliverable || "交付物待补"}</small></td><td><b>{actionMetricLabel(item)}</b><span>复查：{item.reviewDate || "待定"}</span><small>{item.statusReason}</small></td><td><em className={`quality-agent-action-status status-${item.status}`}>{ACTION_STATUS_LABELS[item.status] || item.status}</em>{item.status === "verification-ready" && <div className="quality-agent-close-action"><input value={closureEvidence[item.id] || ""} onChange={(event) => setClosureEvidence((current) => ({ ...current, [item.id]: event.target.value }))} placeholder="关闭证据位置/编号"/><button type="button" className="qmdp-primary-btn" onClick={() => closeAction(item.id)}>核验关闭</button></div>}{item.closureEvidence && <small>关闭证据：{item.closureEvidence}</small>}</td></tr>)}</tbody></table></div> : <p className="quality-agent-save-state error">{record.actionLedger.message}</p>}</div>}</section>}
     {record.content && <section ref={finalReportRef} className={`qmdp-card quality-agent-report quality-agent-final-report ${activeReportLayoutClass}`}><header><div><strong>{AGENT_TITLE}正式报告</strong><span>{reportLayoutLabel(layoutSkillName)}</span></div>{renderReportActions({ id: "current", content: record.content, source: record, reportRef: finalReportRef })}</header>{showQualityDetails && <div className="quality-agent-quality-details"><div><b>通过 {reportQuality.checks?.filter((item) => item.passed).length || 0}</b><b className="warn">警告 {reportQuality.checks?.filter((item) => !item.passed && item.severity !== "block").length || 0}</b><b className="error">阻断 {reportQuality.checks?.filter((item) => !item.passed && item.severity === "block").length || 0}</b></div>{(reportQuality.checks || []).filter((item) => !item.passed).map((item) => <p key={item.id}><strong>{item.label}</strong><span>{reportQualityAdvice(item)}</span></p>)}</div>}<div className={`quality-agent-report-content ${activeReportLayoutClass}`} dangerouslySetInnerHTML={{ __html: finalReportHtml }}/>{saveState.message && <p className={`quality-agent-save-state ${saveState.status}`}>{saveState.message}</p>}</section>}
-    {selectedReportName && <section ref={savedReportRef} className={`qmdp-card quality-agent-saved-report ${activeReportLayoutClass}`}><header><div><strong>已保存报告 · {module}</strong><span>{selectedReport?.updatedAt ? new Date(selectedReport.updatedAt).toLocaleString("zh-CN") : ""}</span></div>{renderReportActions({ id: "saved", content: selectedReportContent, source: { ...(selectedReport || {}), module: selectedReport?.module || module }, reportRef: savedReportRef })}{currentVsSaved && <button className="qmdp-secondary-btn" onClick={() => setShowReportComparison((value) => !value)}>{showReportComparison ? "隐藏历史对比" : "对比当前版本"}</button>}{selectedReportState.status === "loading" && <small>读取中…</small>}</header>{selectedReportState.message && <p className={`quality-agent-save-state ${selectedReportState.status === "error" ? "error" : ""}`}>{selectedReportState.message}</p>}{showReportComparison && currentVsSaved && <div className="quality-agent-history-compare"><span>当前 {currentVsSaved.currentLines} 行</span><span>历史 {currentVsSaved.savedLines} 行</span><span className="added">新增 {currentVsSaved.added} 行</span><span className="removed">减少 {currentVsSaved.removed} 行</span></div>}{selectedReportContent && <div className={`quality-agent-report-content ${activeReportLayoutClass}`} dangerouslySetInnerHTML={{ __html: renderAgentMarkdown(selectedReportContent, { chartFirst: true, publisher: true, profileId: layoutSkillName, module, visualSpec: selectedReport?.visualSpec || extractReportVisualSpec(selectedReportContent) }) }}/>}</section>}
-    {showImportedReport && selectedImportedReport && <section ref={importedReportRef} className={`qmdp-card quality-agent-imported-report ${activeReportLayoutClass}`}><header><div><strong>外部导入报告 · {module}</strong><small>导入的报告独立保存，不覆盖在线分析和项目报告库</small></div>{renderReportActions({ id: "imported", content: selectedImportedReport.content, source: { ...selectedImportedReport, module }, reportRef: importedReportRef })}</header><div className="quality-agent-imported-report-toolbar"><span>{selectedImportedReport.fileName} · {new Date(selectedImportedReport.importedAt).toLocaleString("zh-CN")}</span><div><button className="qmdp-secondary-btn" onClick={() => setShowImportedReport(false)}><EyeSlash size={14}/>取消显示</button><button className="qmdp-danger-btn" onClick={() => removeImportedReport(selectedImportedReport.id)}><Trash size={14}/>删除导入报告</button></div></div><div className={`quality-agent-report-content ${activeReportLayoutClass}`} dangerouslySetInnerHTML={{ __html: renderAgentMarkdown(selectedImportedReport.content, { chartFirst: true, publisher: true, profileId: layoutSkillName, module }) }}/></section>}
+    {selectedReportName && <section ref={savedReportRef} className={`qmdp-card quality-agent-saved-report ${activeReportLayoutClass}`}><header><div><strong>已保存报告 · {module}</strong><span>{selectedReport?.updatedAt ? new Date(selectedReport.updatedAt).toLocaleString("zh-CN") : ""}</span></div>{renderReportActions({ id: "saved", content: selectedReportContent, source: { ...(selectedReport || {}), module: selectedReport?.module || module }, reportRef: savedReportRef })}{currentVsSaved && <button className="qmdp-secondary-btn" onClick={() => setShowReportComparison((value) => !value)}>{showReportComparison ? "隐藏历史对比" : "对比当前版本"}</button>}{selectedReportState.status === "loading" && <small>读取中…</small>}</header>{selectedReportState.message && <p className={`quality-agent-save-state ${selectedReportState.status === "error" ? "error" : ""}`}>{selectedReportState.message}</p>}{showReportComparison && currentVsSaved && <div className="quality-agent-history-compare"><span>当前 {currentVsSaved.currentLines} 行</span><span>历史 {currentVsSaved.savedLines} 行</span><span className="added">新增 {currentVsSaved.added} 行</span><span className="removed">减少 {currentVsSaved.removed} 行</span></div>}{selectedReportContent && <div className={`quality-agent-report-content ${activeReportLayoutClass}`} dangerouslySetInnerHTML={{ __html: renderAgentMarkdown(selectedReportContent, { chartFirst: true, publisher: true, profileId: layoutSkillName, module, visualSpec: selectedReport?.visualSpec || extractReportVisualSpec(selectedReportContent), chartTheme }) }}/>}</section>}
+    {showImportedReport && selectedImportedReport && <section ref={importedReportRef} className={`qmdp-card quality-agent-imported-report ${activeReportLayoutClass}`}><header><div><strong>外部导入报告 · {module}</strong><small>导入的报告独立保存，不覆盖在线分析和项目报告库</small></div>{renderReportActions({ id: "imported", content: selectedImportedReport.content, source: { ...selectedImportedReport, module }, reportRef: importedReportRef })}</header><div className="quality-agent-imported-report-toolbar"><span>{selectedImportedReport.fileName} · {new Date(selectedImportedReport.importedAt).toLocaleString("zh-CN")}</span><div><button className="qmdp-secondary-btn" onClick={() => setShowImportedReport(false)}><EyeSlash size={14}/>取消显示</button><button className="qmdp-danger-btn" onClick={() => removeImportedReport(selectedImportedReport.id)}><Trash size={14}/>删除导入报告</button></div></div><div className={`quality-agent-report-content ${activeReportLayoutClass}`} dangerouslySetInnerHTML={{ __html: renderAgentMarkdown(selectedImportedReport.content, { chartFirst: true, publisher: true, profileId: layoutSkillName, module, chartTheme }) }}/></section>}
     {error && <div className="quality-agent-error-banner"><WarningCircle size={18}/>{error}</div>}
   </div>;
 }

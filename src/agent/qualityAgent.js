@@ -5,7 +5,7 @@ export const QUALITY_AGENT_STAGES = [
   { id: "audit", label: "Agent数据审计", local: true, maxTokens: 900 },
   { id: "analysis", label: "Agent结果与二八分析", maxTokens: 1600 },
   { id: "actions", label: "Agent责任与改善行动", maxTokens: 1800 },
-  { id: "report", label: "Agent正式复盘报告", maxTokens: 2400 },
+  { id: "report", label: "Agent正式复盘报告", maxTokens: 1200 },
 ];
 
 const now = () => new Date().toISOString();
@@ -52,9 +52,10 @@ const compactStoredRun = (run = {}) => {
     startedAt: run.startedAt,
     completedAt: run.completedAt,
     error: run.error,
-    // The full deterministic snapshot is rebuilt from the current app data
-    // before continuing. Never persist it in browser storage.
+    // Raw Excel rows stay out of browser storage. Keep the aggregated facts
+    // the report actually draws, so an empty registry snapshot cannot replace them.
     snapshot: undefined,
+    renderSnapshot: slimAgentRenderSnapshot(run.renderSnapshot || run.snapshot),
     stages,
     actionLedger: run.actionLedger ? {
       ...run.actionLedger,
@@ -114,6 +115,14 @@ const compactSnapshot = (snapshot, retry = false) => {
   return JSON.stringify(compact).slice(0, retry ? 12000 : 24000);
 };
 const snapshotText = (snapshot, retry = false) => compactSnapshot(snapshot, retry);
+const humanizeQualityReport = (content) => String(content || "").split(/\n/).filter((line) => !/证据等级|已证实事实|合理推断|待验证假设|待核实|证据卡|证据编号|证据引用|发布限制|localPareto|口径闸门|责任链|数据审计|K-[A-Z0-9]+-\d{3}|A-[A-Z0-9]+-\d{3}|(?:S|M|O|C|X)-[A-Z0-9]+-\d{3}/.test(line)).join("\n").replace(/\n{3,}/g, "\n\n").trim();
+const composeFormalReport = (record, snapshot) => {
+  const analysis = String(record.stages?.analysis?.content || "").trim();
+  const actions = String(record.stages?.actions?.content || "").trim();
+  const period = snapshot?.period || {};
+  const span = [period.start2026, period.end2026].filter(Boolean).join("—");
+  return ["# " + (snapshot?.module || "") + " 质量复盘", "", span ? "周期：" + span : "", "", "## 结果与二八分析", "", analysis || "分析未完成。", "", "## 责任与改善行动", "", actions || "行动未完成。"].filter((line) => line !== undefined).join("\n");
+};
 const analysisSeed = (snapshot, retry = false) => {
   const data = snapshot?.data || {};
   const metrics = data.metrics || {};
@@ -156,6 +165,7 @@ const analysisSeed = (snapshot, retry = false) => {
       dateMax: metrics.dateMax,
     } : metrics,
     localPareto: compactValue(data.localPareto, 3, retry ? 6 : 12),
+    iqcSplit: data.iqcSplit || null,
     evidenceCatalog: compactValue(compactEvidenceCatalog(data.evidenceCatalog, retry ? 10 : 20), 3, retry ? 10 : 20),
     sourceAudit: compactValue(data.sourceAudit, 2, retry ? 6 : 12),
     organization: compactValue(data.organization, 2, retry ? 4 : 8),
@@ -241,13 +251,37 @@ const periodDate = (value) => {
   const parsed = new Date(`${value || ""}T00:00:00`);
   return Number.isNaN(parsed.getTime()) ? null : parsed;
 };
-const auditReconciliation = (module, metrics) => {
+const yieldFromTrendRows = (rows) => {
+  let qty = 0;
+  let bad = 0;
+  (Array.isArray(rows) ? rows : []).forEach((row) => {
+    const count = numberForAudit(row?.y2026Qty);
+    if (!count) return;
+    qty += count;
+    const explicit = Number(row?.y2026Bad);
+    const rate = Number(row?.y2026Rate);
+    if (Number.isFinite(explicit) && (explicit > 0 || !Number.isFinite(rate))) bad += explicit;
+    else if (Number.isFinite(rate)) bad += count * Math.max(0, 100 - rate) / 100;
+  });
+  if (!qty) return null;
+  return Number(((qty - bad) / qty * 100).toFixed(1));
+};
+const trendQuantity = (rows) => (Array.isArray(rows) ? rows : []).reduce((sum, row) => sum + (numberForAudit(row?.y2026Qty) || 0), 0);
+const auditReconciliation = (module, metrics, evidence) => {
   const checks = [];
   if (module === "IQC" && numberForAudit(metrics.inspectedBatches2026) > 0 && validNumber(metrics.batchYield2026)) {
+    const fromTrends = yieldFromTrendRows(evidence?.trends);
     const denominator = numberForAudit(metrics.inspectedBatches2026);
-    const expected = Number(((denominator - numberForAudit(metrics.issueCount2026)) / denominator * 100).toFixed(1));
-    const actual = auditMetricValue(metrics.batchYield2026);
-    checks.push({ name: "IQC批次良率内部对账", expected, actual, difference: Number(Math.abs(expected - actual).toFixed(2)), tolerance: 0.2 });
+    const machinedQty = trendQuantity(evidence?.trends);
+    // 驾驶舱批次良率含标准件，IQC报告只算加工件。分母对不上时不做这道对账。
+    const differentScope = fromTrends != null && machinedQty > 0 && Math.abs(denominator - machinedQty) / machinedQty > 0.02;
+    if (!differentScope) {
+      const expected = fromTrends == null
+        ? Number(((denominator - numberForAudit(metrics.issueCount2026)) / denominator * 100).toFixed(1))
+        : fromTrends;
+      const actual = auditMetricValue(metrics.batchYield2026);
+      checks.push({ name: "IQC批次良率内部对账", expected, actual, difference: Number(Math.abs(expected - actual).toFixed(2)), tolerance: fromTrends == null ? 0.2 : 1 });
+    }
   }
   if (module === "IPQC" && numberForAudit(metrics.inspectedQuantity2026) > 0 && validNumber(metrics.issueDensity2026)) {
     const expected = Number((numberForAudit(metrics.issueCount2026) / numberForAudit(metrics.inspectedQuantity2026) * 100).toFixed(2));
@@ -264,6 +298,60 @@ const auditReconciliation = (module, metrics) => {
 const numberForAudit = (value) => {
   const parsed = auditMetricValue(value);
   return Number.isFinite(parsed) ? parsed : 0;
+};
+
+export const storedSnapshotRowCount = (snapshot) => Number(snapshot?.data?.sourceAudit?.totalRows || 0);
+
+export const iqcSnapshotReady = (snapshot) => {
+  const cells = snapshot?.data?.iqcSplit?.cellMonthly;
+  return Array.isArray(cells) && cells.some((cell) => (cell.rows || []).some((row) => Number(row.inspected) > 0));
+};
+
+const slimAgentRenderSnapshot = (snapshot) => {
+  if (!snapshot || typeof snapshot !== "object") return undefined;
+  const data = snapshot.data || {};
+  const evidence = data.evidence || {};
+  return {
+    schemaVersion: snapshot.schemaVersion,
+    module: snapshot.module,
+    moduleLabel: snapshot.moduleLabel,
+    period: snapshot.period,
+    selectedWindow: snapshot.selectedWindow,
+    windowResolution: snapshot.windowResolution,
+    generatedAt: snapshot.generatedAt,
+    data: {
+      metrics: data.metrics || {},
+      periodTrend: data.periodTrend || null,
+      iqcSplit: data.iqcSplit || null,
+      sourceAudit: data.sourceAudit || {},
+      evidence: {
+        trends: Array.isArray(evidence.trends) ? evidence.trends : [],
+        categories: Array.isArray(evidence.categories) ? evidence.categories : [],
+        suppliers: Array.isArray(evidence.suppliers) ? evidence.suppliers : [],
+      },
+    },
+  };
+};
+
+export const chooseAgentRunSnapshot = ({
+  matchedSnapshot = null,
+  liveSnapshot = null,
+  recordSnapshot = null,
+  sourceReady = false,
+  auditFailed = false,
+} = {}) => {
+  const storedRows = storedSnapshotRowCount(matchedSnapshot);
+  const storedReady = storedRows > 0 && (matchedSnapshot?.module === "IQC" ? iqcSnapshotReady(matchedSnapshot) : true);
+  const canUseStoredSnapshot = Boolean(matchedSnapshot) && storedReady && !auditFailed;
+  const snapshotForRun = canUseStoredSnapshot
+    ? matchedSnapshot
+    : (sourceReady ? liveSnapshot : (recordSnapshot || liveSnapshot));
+  return {
+    canUseStoredSnapshot,
+    storedSnapshotEmpty: Boolean(matchedSnapshot) && !storedReady,
+    needsSourceHydration: storedSnapshotRowCount(snapshotForRun) <= 0,
+    snapshotForRun,
+  };
 };
 
 export const buildAgentAuditResult = (snapshot) => {
@@ -303,7 +391,7 @@ export const buildAgentAuditResult = (snapshot) => {
   if (mapping.total > 0 && mapping.rate < 80) materialIssues.push(`${mapping.dimension}映射完整率仅${mapping.rate}%`);
   else if (mapping.total > 0 && mapping.rate < 95) warnings.push(`${mapping.dimension}映射完整率为${mapping.rate}%`);
   else if (!mapping.total) warnings.push(`${mapping.dimension || "组织"}没有可核查的映射对象`);
-  const reconciliation = auditReconciliation(snapshot.module, metrics);
+  const reconciliation = auditReconciliation(snapshot.module, metrics, snapshot?.data?.evidence);
   reconciliation.filter((item) => item.status === "不一致").forEach((item) => blockers.push(`${item.name}不一致：快照=${item.actual}，按固定分子分母核对=${item.expected}`));
   if (snapshot.module === "DOAM") {
     const months2025 = Array.isArray(metrics.months2025) ? metrics.months2025 : [];
@@ -413,7 +501,8 @@ export const validateQualityAgentStageGate = ({ stage, record, snapshot, content
     const actions = record?.stages?.actions;
     if (analysis?.status !== "done" || analysis?.evidenceValidation?.status !== "pass") issues.push("二八分析证据门禁未通过");
     if (actions?.status !== "done" || record?.actionLedger?.status !== "ready") issues.push("责任与改善行动门禁未通过");
-    if (evidenceValidation.status !== "pass") issues.push(evidenceValidation.message);
+    if (evidenceValidation.invalid?.length) issues.push(evidenceValidation.message);
+    else if (evidenceValidation.status !== "pass" && analysis?.evidenceValidation?.status !== "pass") issues.push(evidenceValidation.message);
     return { blocked: issues.length > 0, message: issues.join("；"), evidenceValidation };
   }
   return { blocked: false, message: "", evidenceValidation };
@@ -525,20 +614,25 @@ export const closeQualityAgentAction = (run, actionId, closureEvidence) => {
 };
 
 const stagePrompt = ({ stage, snapshot, outputs, skillName, skillContent, retry = false }) => {
+  if (stage === "report") throw new Error("正式复盘报告由已完成的分析和行动在本地组装，不再调用模型");
   const completedOutputs = Object.fromEntries(Object.entries(outputs || {})
     .filter(([, value]) => value?.status === "done" && value.content)
-    .map(([id, value]) => [id, { content: String(value.content).slice(0, stage === "report" ? (retry ? 9000 : 14000) : stage === "actions" ? (retry ? 3600 : 5500) : (retry ? 6000 : 9000)) }]));
+    .map(([id, value]) => [id, { content: String(value.content).slice(0, stage === "actions" ? (retry ? 3600 : 5500) : (retry ? 6000 : 9000)) }]));
   const isAnalysis = stage === "analysis";
   const isActions = stage === "actions";
-  const dataText = isAnalysis ? analysisSeed(snapshot, retry) : (isActions ? actionSeed(snapshot, retry) : snapshotText(snapshot, retry));
-  const skillText = String(skillContent || "").slice(0, isAnalysis ? (retry ? 3600 : 8000) : isActions ? (retry ? 2800 : 6000) : (retry ? 7000 : 12000));
+  const dataText = isAnalysis ? analysisSeed(snapshot, retry) : actionSeed(snapshot, retry);
+  const skillText = String(skillContent || "").slice(0, isAnalysis ? (retry ? 3600 : 8000) : isActions ? (retry ? 2800 : 6000) : 2000);
   const common = `模块技能：${skillName || "quality-analysis-core"}\n核心与模块规则：\n${skillText}\n模块：${snapshot.module}\n模块专项规则：${snapshot.definitions?.moduleRule || "按固定快照分析"}\n模块分析作业要求：${modulePlaybooks[snapshot.module] || "按固定快照中的组织、指标和证据分析"}\n模块责任链：${moduleResponsibilityChains[snapshot.module] || "按输入中的有效组织映射分层"}\n证据卡规则：事实必须引用 evidenceCatalog 的 S/M/O/C/X 编号，例如 S-${snapshot.module}-001、M-${snapshot.module}-001；合理推断和待验证假设不得伪装成事实，必须写验证方法、验证角色和期限。可用证据编号：${(snapshot?.data?.evidenceCatalog?.entries || []).map((item) => item.id).filter(Boolean).slice(0, 24).join("、") || "无"}。正文里必须原样写出至少 2 个编号。\n目标角色：${snapshot.target?.role || "公司级"}\n目标收件人：${snapshot.target?.recipient || "待指定"}\n周期：${JSON.stringify(snapshot.period)}\n${isAnalysis ? "首次分析数据摘要" : "固定数据摘要"}（由本地统计引擎生成，不要重新计算）：\n${dataText}\n已完成Agent阶段摘要（仅引用，不重复计算）：\n${JSON.stringify(completedOutputs)}`;
   if (stage === "analysis") return `${common}\n请完成 Agent结果与二八分析：直接引用固定数据摘要中的 localPareto，区分结果指标和问题暴露量，解释TOP组织、TOP机制及其交叉主题。不得根据截断数组重新排序、重算占比或改变名次；localPareto没有事件时明确写“无法形成Pareto”。Pareto表示问题贡献集中度，不等同于绩效排名。形成3—5张证据卡，每张包含：结论ID（K-${snapshot.module}-三位序号）、证据等级、证据编号、事实、合理推断/待验证假设、验证方法、验证角色、验证期限。输出结构化 Markdown。`;
   if (stage === "actions") return `${common}\n请完成 Agent责任与改善行动。这里只做行动设计，不要重述第一阶段的数据和分析。沿用前序 K 结论ID和证据编号，严格按上述模块责任链拆解责任，最多输出6项最关键行动；每项必须有风险等级、根因证据、30/60/90天动作、责任对象、完成期限、验证指标和关闭条件。没有人员字段或映射证据时不得用上级字段替代，必须写待核实。正文保持精炼，随后必须追加一个且仅一个 <ACTION_LEDGER_JSON>{"actions":[...]}</ACTION_LEDGER_JSON> 数据块；每项包含 id（A-${snapshot.module}-三位序号）、conclusionId、riskLevel、phase、action、mechanism、owner、collaborators、dueDate、reviewDate、deliverable、evidenceLocation、evidenceIds、metricKey、target、direction（lte或gte）、reopenThreshold、closeCriteria、fallback。metricKey只能从固定快照 metrics 的真实键中选择，无法对应时留空；不要把培训、会议或提醒单独作为永久措施。`;
-  return `${common}\n请完成 Agent正式复盘报告：汇总审计、结果、过程、根因、责任和行动，输出管理层可直接审核的报告。正文保留K结论ID和证据等级，但不要逐条展示 S/M/O/C/X 证据编号，不要出现“证据编号：...”列表，不要写“REPORT_VISUAL_SPEC_JSON”标题；若需要机器图表契约，只能在全文最后直接追加标签数据块供系统读取。把“过程断点与根因证据”写成“数据表现→过程判断→具体动作→验证口径”，少用“推断/假设”字样；无法证实的内容改写为“待现场核验项”，并同时给出验证动作、责任人和期限。所有数字必须来自固定快照或前序Agent结果，禁止添加未经证据支持的数字。`;
+  throw new Error("未知质量分析阶段：" + stage);
 };
 
-export const runQualityAgent = async ({ snapshot, skillName, skillContent, layoutProfileId = "research-briefing-v1", existing, requestChat, signal, onUpdate = () => {} } = {}) => {
+const noteActivity = (record, message) => {
+  record.activityLog = [...(record.activityLog || []), { at: new Date().toISOString(), message: String(message || "") }].slice(-100);
+};
+
+export const runQualityAgent = async ({ snapshot, skillName, skillContent, layoutProfileId = "research-briefing-v1", existing, requestChat, signal, onUpdate = () => {}, activitySeed = [] } = {}) => {
   if (!snapshot) throw new Error("缺少质量分析 Agent 数据快照");
   throwIfAborted(signal);
   const currentSnapshotHash = snapshotKey(snapshot);
@@ -556,20 +650,47 @@ export const runQualityAgent = async ({ snapshot, skillName, skillContent, layou
   record.layoutProfileId = layoutProfileId || "research-briefing-v1";
   record.layoutSkillName = record.layoutProfileId;
   record.layoutSkillSignature = "";
+  const formalIqcReport = skillName === "quality-analysis-iqc-machined";
+  const humanQualityReport = ["IQC", "IPQC", "OQC", "DQA", "QMS"].includes(snapshot?.module);
   record.status = "running";
+  record.activityLog = [...(record.activityLog || [])];
+  activitySeed.filter(Boolean).forEach((message) => noteActivity(record, message));
   record.progress = record.progress || { percent: 0, phase: "准备分析", detail: "正在准备固定数据快照" };
+  noteActivity(record, humanQualityReport ? "按正式质量报告生成，不把证据等级和分析过程写进正文" : "分析已启动。数据审计在本地完成；二八分析和改善行动各请求一次模型；正式报告只做本地组装");
   onUpdate(record);
   for (const [stageIndex, stage] of QUALITY_AGENT_STAGES.entries()) {
     throwIfAborted(signal);
-    if (record.stages?.[stage.id]?.status === "done" && record.stages[stage.id].content) continue;
+    if (humanQualityReport && (stage.id === "analysis" || stage.id === "actions")) continue;
+    if (record.stages?.[stage.id]?.status === "done" && record.stages[stage.id].content) {
+      noteActivity(record, stage.label + "已完成，本次跳过");
+      continue;
+    }
     record.currentStage = stage.id;
     record.progress = { percent: Math.round((stageIndex / QUALITY_AGENT_STAGES.length) * 100), phase: stage.label, detail: `正在执行：${stage.label}` };
     record.stages = { ...record.stages, [stage.id]: { status: "running", label: stage.label, startedAt: now() } };
+    noteActivity(record, stage.id === "report" ? "正式报告：不再请求模型，直接使用已完成的分析和行动" : stage.local ? "数据审计：本地核对快照，不请求模型" : stage.label + "：开始");
     onUpdate(record);
     try {
       let content;
       let requestTrace = {};
-      if (stage.local) {
+      if (stage.id === "report" && humanQualityReport) {
+        const prompt = "你是质量部的报告撰写人。按技能写给人看的正式报告。技能里关于证据等级、证据编号、结论卡的要求不要写入正文。\n" + String(skillContent || "").slice(0, 8000) + "\n\n固定数据：\n" + analysisSeed(snapshot, false);
+        const sentAt = Date.now();
+        noteActivity(record, "正式报告：按 Responses（Codex）协议生成，不把分析过程写进正文");
+        onUpdate(record);
+        const response = await requestChat([
+          { role: "system", content: "只写正式的质量报告。禁止出现数据审计、证据、证据等级、已证实事实、证据卡、证据编号、K编号、A编号、localPareto、合理推断、待验证假设、待核实、责任链、口径闸门、发布限制。缺数写未提供。" },
+          { role: "user", content: prompt },
+        ], { max_tokens: stage.maxTokens, agent: true, stream: true, signal });
+        if (response?.model) record.model = String(response.model);
+        content = humanizeQualityReport(response.content);
+        requestTrace = { formal: true, stream: true, usage: response?.usage || null };
+        noteActivity(record, "正式报告：已返回，用时 " + Math.max(1, Math.round((Date.now() - sentAt) / 1000)) + " 秒，正文 " + String(content || "").length + " 字" + (response?.model ? "，模型 " + response.model : ""));
+      } else if (stage.id === "report") {
+        content = composeFormalReport(record, snapshot);
+        requestTrace = { local: true, reason: "正式报告不再单独调用模型，直接使用已完成的分析和行动" };
+        noteActivity(record, "正式报告：本地组装完成，正文 " + String(content || "").length + " 字");
+      } else if (stage.local) {
         const auditResult = buildAgentAuditResult(snapshot);
         content = JSON.stringify(auditResult, null, 2);
         if (auditResult.blocked) {
@@ -577,15 +698,20 @@ export const runQualityAgent = async ({ snapshot, skillName, skillContent, layou
           throw new Error(`数据审计为D级，已阻止在线分析：${auditResult.blockers.join("；")}`);
         }
       } else {
-        const requestStage = async (retry = false, stream = false, responses = false) => {
+        const requestStage = async (retry = false) => {
           throwIfAborted(signal);
           const prompt = stagePrompt({ stage: stage.id, snapshot, outputs: record.stages, skillName, skillContent, retry });
+          const tokens = retry ? Math.min(stage.maxTokens, 1000) : stage.maxTokens;
+          const sentAt = Date.now();
+          noteActivity(record, stage.label + "：" + (retry ? "压缩后再次请求。" : "首次请求。") + "提示词 " + prompt.length + " 字，输出上限 " + tokens + "。按 AI 接口的 Responses（Codex）协议流式发送，不使用 120 秒中断");
+          onUpdate(record);
           const response = await requestChat([
             { role: "system", content: systemPrompt },
             { role: "user", content: prompt },
-          ], { max_tokens: retry ? Math.min(stage.maxTokens, 1600) : stage.maxTokens, agent: true, stream, responses, signal });
+          ], { max_tokens: tokens, agent: true, stream: true, signal });
           if (response?.model) record.model = String(response.model);
-          requestTrace = { promptFingerprint: textSignature(`${systemPrompt}\n${prompt}`), retry, stream, responses, usage: response?.usage || null };
+          noteActivity(record, stage.label + "：网关已返回，用时 " + Math.max(1, Math.round((Date.now() - sentAt) / 1000)) + " 秒，正文 " + String(response?.content || "").length + " 字" + (response?.model ? "，模型 " + response.model : ""));
+          requestTrace = { promptFingerprint: textSignature(`${systemPrompt}\n${prompt}`), retry, stream: true, usage: response?.usage || null };
           return response.content;
         };
         try {
@@ -593,47 +719,38 @@ export const runQualityAgent = async ({ snapshot, skillName, skillContent, layou
         } catch (firstError) {
           const upstreamTimeout = retryableAiError(firstError);
           if (!upstreamTimeout || signal?.aborted) throw firstError;
-          const firstDelay = retryDelayMs(firstError);
-          record.stages = { ...record.stages, [stage.id]: { ...record.stages[stage.id], retrying: true, retryReason: `上游暂不可用，${Math.round(firstDelay / 1000)} 秒后压缩请求重试` } };
+          const firstDelay = Math.min(retryDelayMs(firstError), 8000);
+          record.stages = { ...record.stages, [stage.id]: { ...record.stages[stage.id], retrying: true, retryReason: `上游暂不可用，${Math.round(firstDelay / 1000)} 秒后压缩请求重试一次` } };
+          noteActivity(record, stage.label + "：上游失败。" + String(firstError?.message || firstError || "无错误说明") + "。" + Math.round(firstDelay / 1000) + " 秒后压缩提示词再试一次");
           onUpdate(record);
           await waitForRetry(firstDelay, signal);
-          try {
-            content = await requestStage(true);
-          } catch (secondError) {
-            const secondTimeout = retryableAiError(secondError);
-            if (!secondTimeout || signal?.aborted) throw secondError;
-            const secondDelay = retryDelayMs(secondError);
-            record.stages = { ...record.stages, [stage.id]: { ...record.stages[stage.id], retrying: true, retryReason: `上游仍不可用，${Math.round(secondDelay / 1000)} 秒后改用流式输出重试` } };
-            onUpdate(record);
-            await waitForRetry(secondDelay, signal);
-            try {
-              content = await requestStage(true, true, true);
-            } catch (thirdError) {
-              // If this gateway does not expose /responses, retain the useful
-              // upstream timeout instead of replacing it with a fallback 404.
-              const unsupportedResponses = /404|not supported|unknown endpoint|不存在|不支持/i.test(String(thirdError?.message || ""));
-              throw unsupportedResponses ? secondError : thirdError;
-            }
-          }
+          content = await requestStage(true);
         }
       }
       if (!String(content || "").trim()) throw new Error(`${stage.label}未返回有效内容`);
+      if (stage.id === "report" && !humanQualityReport && !/(?:S|M|O|C|X)-[A-Z0-9]+-\d{3}/.test(String(content || ""))) {
+        const inherited = record.stages?.analysis?.evidenceValidation?.references || [];
+        if (inherited.length) content = `${String(content).trim()}\n\n已核验证据编号：${inherited.join("、")}`;
+      }
       if (stage.id === "actions") {
         const extracted = extractActionLedger(content, snapshot, previousActionLedger);
         content = extracted.content;
         record.actionLedger = extracted.ledger;
       }
-      const gate = validateQualityAgentStageGate({ stage: stage.id, record, snapshot, content });
+      const gate = humanQualityReport && stage.id === "report"
+        ? { blocked: false, message: "", evidenceValidation: { status: "not-required", references: [], invalid: [], message: "正式报告不展示证据编号" } }
+        : validateQualityAgentStageGate({ stage: stage.id, record, snapshot, content });
       const evidenceValidation = gate.evidenceValidation;
       if (gate.blocked) {
         record.status = "error";
         record.error = `${stage.label}门禁未通过：${gate.message}`;
         record.stages = { ...record.stages, [stage.id]: { ...record.stages[stage.id], status: "error", label: stage.label, content: String(content).trim(), completedAt: now(), evidenceValidation, gate, trace: { snapshotFingerprint: textSignature(currentSnapshotHash), skillFingerprint: currentSkillSignature, outputFingerprint: textSignature(content), ...requestTrace } } };
         record.progress = { ...record.progress, phase: `${stage.label}门禁未通过`, detail: record.error };
+        noteActivity(record, stage.label + "：门禁未通过。" + gate.message);
         onUpdate(record);
         return record;
       }
-      if (stage.id === "report") {
+      if (stage.id === "report" && !humanQualityReport) {
         const restrictions = [];
         if (evidenceValidation.status === "warning") restrictions.push(`证据引用完整性待复核：${evidenceValidation.message}。本报告在补齐并核验本地证据编号前，不得把相关推断作为已证实事实发布。`);
         if (record.actionLedger?.status !== "ready") restrictions.push(`行动台账不可自动复查：${record.actionLedger?.message || "尚未生成结构化行动台账"}。需补齐责任、指标、阈值、复查日期和重开条件。`);
@@ -641,6 +758,7 @@ export const runQualityAgent = async ({ snapshot, skillName, skillContent, layou
       }
       record.stages = { ...record.stages, [stage.id]: { status: "done", label: stage.label, content: String(content).trim(), completedAt: now(), evidenceValidation, gate, trace: { snapshotFingerprint: textSignature(currentSnapshotHash), skillFingerprint: currentSkillSignature, outputFingerprint: textSignature(content), ...requestTrace } } };
       record.progress = { percent: Math.round(((stageIndex + 1) / QUALITY_AGENT_STAGES.length) * 100), phase: stage.label, detail: `${stage.label}已完成，准备进入下一阶段` };
+      noteActivity(record, stage.label + "：完成");
       onUpdate(record);
     } catch (error) {
       record.status = "error";
@@ -648,6 +766,7 @@ export const runQualityAgent = async ({ snapshot, skillName, skillContent, layou
       record.error = stopped ? "已停止本次 Agent 分析，已完成阶段保留，可继续。" : error.message;
       record.stages = { ...record.stages, [stage.id]: { ...(record.stages[stage.id] || {}), status: "error", error: record.error } };
       record.progress = { ...record.progress, phase: `${stage.label}失败`, detail: record.error };
+      noteActivity(record, stage.label + "：" + (stopped ? "已停止" : "失败。" + record.error));
       onUpdate(record);
       return record;
     }
@@ -657,6 +776,7 @@ export const runQualityAgent = async ({ snapshot, skillName, skillContent, layou
   record.content = record.stages.report?.content || "";
   record.completedAt = now();
   record.progress = { percent: 100, phase: "已完成", detail: "质量分析 Agent 报告已生成并保存到本地缓存" };
+  noteActivity(record, "全部完成");
   onUpdate(record);
   return record;
 };

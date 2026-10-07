@@ -106,7 +106,7 @@ const rehydrateSnapshotSources = async (sourceIndex, modules = [], onProgress = 
     try { bytes = await fs.readFile(filePath); } catch { throw new Error(`服务器缺少快照来源文件：${moduleName}/${fileName}`); }
     const [parsed] = await parseFiles([{ name: fileName, size: Number(source.size || bytes.length), arrayBuffer: async () => bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) }]);
     if (!parsed?.rows?.length) throw new Error(`快照来源文件未解析出有效记录：${moduleName}/${fileName}`);
-    hydrated.push({ ...source, ...parsed, module: source.module || parsed.module, kind: source.kind || parsed.kind, subKind: source.subKind || parsed.subKind, projectName: source.projectName || parsed.projectName, importedAt: source.importedAt || parsed.importedAt, serverFile: source.serverFile, rowCount: Number(source.rowCount || parsed.rows.length) });
+    hydrated.push({ ...source, ...parsed, module: source.module || parsed.module, kind: source.kind || parsed.kind, subKind: source.subKind || parsed.subKind, projectName: source.projectName || parsed.projectName, importedAt: source.importedAt || parsed.importedAt, serverFile: source.serverFile, rowCount: parsed.rows.length });
   }
   return hydrated;
 };
@@ -1533,6 +1533,14 @@ const processSnapshotJob = async (jobId) => {
       const files = stateList(importedSources);
       const selectedRuleIds = Array.isArray(job.payload?.ruleIds) && job.payload.ruleIds.length ? new Set(job.payload.ruleIds) : null;
       const rules = registry.rules.filter((rule) => rule.enabled !== false && (!selectedRuleIds || selectedRuleIds.has(rule.id)));
+      const hydrateModules = [...new Set(rules.flatMap((rule) => rule.module === "DOAM" ? [] : (rule.sourceModules || [rule.module])))];
+      let hydratedFiles = files;
+      if (hydrateModules.length) {
+        await updateSnapshotJob(jobId, { progress: 2, message: "正在解析原始 Excel" });
+        hydratedFiles = await rehydrateSnapshotSources(files, hydrateModules, async ({ index, total: fileTotal, source }) => {
+          await updateSnapshotJob(jobId, { progress: 2, message: `正在解析原始数据 ${index + 1}/${fileTotal} · ${source.name || source.module}` });
+        });
+      }
       const periods = buildSnapshotPeriods(job.payload?.dateRange || {});
       const retryItems = Array.isArray(job.payload?.retryItems) ? job.payload.retryItems : null;
       const total = rules.length * periods.length;
@@ -1547,7 +1555,7 @@ const processSnapshotJob = async (jobId) => {
           await updateSnapshotJob(jobId, { status: "cancelled", message: "任务已取消", finishedAt: new Date().toISOString() });
           return;
         }
-        const moduleFiles = files.filter((source) => (rule.sourceModules || [rule.module]).includes(source.module));
+        const moduleFiles = hydratedFiles.filter((source) => (rule.sourceModules || [rule.module]).includes(source.module));
         const doamDataset = rule.module === "DOAM" ? await loadDoamAgentDataset(importedSources) : null;
         const doamSignature = rule.module === "DOAM" ? createSourcesSignature(stateList(importedSources).filter(isDoamCompactSource)) : "";
         for (const period of periods) {
@@ -1569,7 +1577,10 @@ const processSnapshotJob = async (jobId) => {
               snapshot = buildQualityAgentSnapshot({ data: { doam: doamDataset }, files: [], dateRange: period, module: "DOAM" });
               sourceSignature = doamSignature;
             } else {
+              const loadedRows = moduleFiles.reduce((sum, file) => sum + (Array.isArray(file.rows) ? file.rows.length : 0), 0);
+              if (!loadedRows) throw new Error("来源文件没有可用记录，未保存空快照");
               snapshot = buildQualityAgentSnapshot({ data, files: moduleFiles, dateRange: period, module: rule.module });
+              if (!snapshot?.data?.sourceAudit?.totalRows) throw new Error("快照没有来源记录，未保存");
             }
             next = mergeQualitySnapshotHistory(next, { rule, snapshot, sourceSignature, dateRange: period, generatedBy: job.creator || "服务器", batchId: job.batchId || `module-batch-${job.id}`, skillName: rule.selectedSkill || rule.defaultSkill, layoutProfileId: rule.layoutProfileId });
           } catch (error) {
@@ -1874,6 +1885,35 @@ const handleExamSessions = async (req, res) => {
   return sendJson(res, 405, { error: "Method not allowed" });
 };
 
+const pruneUploadsNotInSources = async (sources) => {
+  if (!Array.isArray(sources)) return [];
+  const keep = new Set();
+  sources.forEach((source) => {
+    const moduleName = sanitizeSegment(source?.module || "");
+    const name = sanitizeSegment(source?.name || "");
+    if (moduleName && name && moduleName !== "UNKNOWN" && name !== "UNKNOWN") keep.add(moduleName + "/" + name);
+  });
+  const removed = [];
+  let modules = [];
+  try { modules = await fs.readdir(uploadDir); } catch { return removed; }
+  for (const moduleName of modules) {
+    const dir = path.join(uploadDir, moduleName);
+    const dirStat = await fs.stat(dir).catch(() => null);
+    if (!dirStat?.isDirectory()) continue;
+    const names = await fs.readdir(dir);
+    for (const name of names) {
+      const key = sanitizeSegment(moduleName) + "/" + sanitizeSegment(name);
+      if (keep.has(key)) continue;
+      const filePath = path.join(dir, name);
+      const fileStat = await fs.stat(filePath).catch(() => null);
+      if (!fileStat?.isFile() || !filePath.startsWith(dir)) continue;
+      await fs.unlink(filePath);
+      removed.push(key);
+    }
+  }
+  return removed;
+};
+
 const handleApi = async (req, res) => {
   const match = req.url.match(/^\/api\/state\/([^/?#]+)/);
   const key = match?.[1];
@@ -1953,6 +1993,7 @@ const handleApi = async (req, res) => {
   if (req.method === "PUT") {
     const payload = JSON.parse(await readBody(req) || "{}");
     const value = await saveStateValue(key, payload.value ?? defaultValueFor(key));
+    if (key === "imported-sources") await pruneUploadsNotInSources(value);
     return sendJson(res, 200, { key, value, updatedAt: new Date().toISOString() });
   }
 
@@ -2446,7 +2487,9 @@ const server = createServer(async (req, res) => {
     console.error(error);
     if (error?.name === "AbortError" || res.destroyed || res.writableEnded) return;
     if (req.url.startsWith("/api/ai/")) {
-      return sendJson(res, 502, { error: String(error?.message || "AI接口调用失败").slice(0, 1000) });
+      const message = String(error?.message || "AI接口调用失败").slice(0, 1000);
+      const status = /超过\d+秒/.test(message) ? 504 : 502;
+      return sendJson(res, status, { error: message });
     }
     return sendJson(res, 500, { error: "Internal server error" });
   }

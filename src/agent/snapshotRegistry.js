@@ -286,6 +286,17 @@ export const maintainQualitySnapshotHistory = (registry = {}) => {
   return { ...current, history: current.history.map((entry) => keep.has(entry.id) ? { ...entry, active: true, status: "ready" } : { ...entry, active: false, status: "archived" }) };
 };
 
+const selectedYearWindow = (dateRange = {}) => {
+  const normalized = normalizeDateRange(dateRange);
+  return { start: normalized.start2026, end: normalized.end2026 };
+};
+const coverageContainsWindow = (dateRange = {}, queryRange = {}) => {
+  const have = selectedYearWindow(dateRange);
+  const need = selectedYearWindow(queryRange);
+  if (!need.start || !need.end || !have.start || !have.end) return false;
+  return have.start <= need.start && have.end >= need.end;
+};
+
 export const pickLatestQualitySnapshot = (registry = {}, query = {}) => {
   const normalizedRegistry = normalizeQualitySnapshotRegistry(registry);
   const queryRange = query.dateRange || {};
@@ -304,6 +315,34 @@ export const pickLatestQualitySnapshot = (registry = {}, query = {}) => {
     return true;
   });
   if (candidates[0]) return candidates[0];
+  if (query.allowPeriodFallback) {
+    const periodCandidates = normalizedRegistry.history.filter((entry) => {
+      if (entry.active === false || entry.status === "archived") return false;
+      if (query.module && entry.module !== query.module) return false;
+      if (range.start2025 || range.end2025 || range.start2026 || range.end2026 || strictPeriodMatch) {
+        if (!samePeriodSignature(entry.dateRange, range, false)) return false;
+      }
+      return true;
+    });
+    if (periodCandidates[0]) return { ...periodCandidates[0], matchLevel: "period" };
+  }
+    const window = selectedYearWindow(range);
+  if (window.start && window.end) {
+    const coverage = normalizedRegistry.history.filter((entry) => {
+      if (entry.active === false || entry.status === "archived") return false;
+      if (query.module && entry.module !== query.module) return false;
+      return coverageContainsWindow(entry.dateRange, range);
+    }).sort((left, right) => {
+      const leftRange = left.dateRange?.granularity === "range" ? 1 : 0;
+      const rightRange = right.dateRange?.granularity === "range" ? 1 : 0;
+      if (rightRange !== leftRange) return rightRange - leftRange;
+      return String(right.generatedAt || "").localeCompare(String(left.generatedAt || ""));
+    });
+    if (coverage[0]) {
+      const covered = selectedYearWindow(coverage[0].dateRange);
+      return { ...coverage[0], matchLevel: "coverage", selectedWindow: window, coverage: covered };
+    }
+  }
   const hasRestrictiveQuery = Boolean(query.ruleId || query.skillName || query.layoutProfileId || query.sourceSignature
     || range.start2025 || range.end2025 || range.start2026 || range.end2026);
   return hasRestrictiveQuery ? null : (normalizedRegistry.history.find((entry) => entry.active !== false && (!query.module || entry.module === query.module)) || null);

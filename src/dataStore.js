@@ -226,7 +226,13 @@ const stableHash = (value) => {
   return (hash >>> 0).toString(36);
 };
 
-export const sourceRowCount = (source) => Array.isArray(source?.rows) ? source.rows.length : Number(source?.rowCount || 0);
+export const sourceRowCount = (source) => {
+  const loaded = Array.isArray(source?.rows) ? source.rows.length : 0;
+  const listed = Number(source?.rowCount);
+  // A saved index keeps rows: [] as a placeholder. Do not treat that placeholder as a real zero and wipe a known rowCount.
+  if (loaded > 0) return loaded;
+  return Number.isFinite(listed) && listed > 0 ? listed : 0;
+};
 
 export const createSourcesSignature = (sources = [], options = {}) => {
   const payload = sources
@@ -239,7 +245,7 @@ export const createSourcesSignature = (sources = [], options = {}) => {
       subKind: source.subKind || "",
       projectName: source.projectName || "",
       importedAt: source.importedAt || "",
-      rowCount: sourceRowCount(source),
+      rowCount: Number.isFinite(Number(source.rowCount)) ? Number(source.rowCount) : sourceRowCount(source),
       sheets: Array.isArray(source.sheets) ? source.sheets : [],
     }))
     .sort((a, b) => `${a.module}::${a.name}::${a.kind}`.localeCompare(`${b.module}::${b.name}::${b.kind}`));

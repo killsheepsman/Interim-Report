@@ -161,12 +161,18 @@ const teamMembersFromExamples = (examples = [], role = "") => {
     .map((item) => ({ ...item, good: Math.max(0, item.total - item.bad), badRate: item.total ? Number((item.bad / item.total * 100).toFixed(2)) : 0 }))
     .sort((a, b) => b.bad - a.bad || a.name.localeCompare(b.name, "zh-CN"));
 };
+const windowMatchesWholeMonths = (period = {}) => {
+  const { start, end } = selectedPeriodOf(period);
+  if (!/^\d{4}-\d{2}-01$/.test(start) || !/^\d{4}-\d{2}-\d{2}$/.test(end)) return false;
+  return end === lastDayOfMonth(end.slice(0, 7));
+};
 export const overlaySelectedWindowOnSnapshot = (snapshot, period = {}) => {
   if (!snapshot) return snapshot;
   const month = applySelectedWindowToTrend(snapshot.trend?.month || (Array.isArray(snapshot.trend) ? { granularity: "month", rows: snapshot.trend } : null), period);
   const week = applySelectedWindowToTrend(snapshot.trend?.week, period);
   const exact = snapshotMatchesPeriod(snapshot, period);
-  const sliced = selectedWindowTotalsFromTrend(month, period);
+  const useWeek = !windowMatchesWholeMonths(period) && Array.isArray(week?.rows) && week.rows.some((row) => Number(row.bad || row.total || 0) > 0);
+  const sliced = selectedWindowTotalsFromTrend(useWeek ? week : month, period) || selectedWindowTotalsFromTrend(month, period);
   const windowExamples = exact ? snapshot.examples : examplesInSelectedWindow(snapshot.examples, period);
   const windowCategories = exact ? snapshot.categories : categoriesFromExamples(windowExamples);
   const exampleTeam = exact ? [] : teamMembersFromExamples(windowExamples, snapshot.role);
@@ -182,6 +188,7 @@ export const overlaySelectedWindowOnSnapshot = (snapshot, period = {}) => {
   return {
     ...snapshot,
     coveringWindow: !exact,
+    windowResolution: exact ? "exact" : useWeek ? "week" : "month",
     selectedWindow: selectedPeriodOf(period),
     trend: { month, week },
     metrics: sliced ? { ...snapshot.metrics, ...sliced } : snapshot.metrics,
@@ -794,12 +801,20 @@ export const rankRoleSnapshotEntries = (registry, { role, recipient = "", period
     if (wantedRecipient && recipients.length && !recipients.includes(wantedRecipient)) return false;
     return true;
   });
+  const span = history.reduce((current, entry) => {
+    const start = text(entry.period?.start);
+    const end = text(entry.period?.end);
+    if (!start || !end) return current;
+    return { start: !current.start || start < current.start ? start : current.start, end: !current.end || end > current.end ? end : current.end };
+  }, { start: "", end: "" });
+  const spanCovers = Boolean(needed.start && needed.end && span.start && span.end && span.start <= needed.start && span.end >= needed.end);
   return history
     .filter((entry) => {
       const entryPeriod = entry.period || {};
       const exact = text(entryPeriod.start) === needed.start && text(entryPeriod.end) === needed.end;
       const covering = (entryPeriod.granularity || entry.granularity) === "range" && periodCovers(entryPeriod, needed);
-      return Boolean(needed.start && needed.end && (exact || covering));
+      const overlap = text(entryPeriod.start) && text(entryPeriod.end) && text(entryPeriod.end) >= needed.start && text(entryPeriod.start) <= needed.end;
+      return Boolean(needed.start && needed.end && (exact || covering || (spanCovers && overlap)));
     })
     .sort((left, right) => {
       const leftExact = text(left.period?.start) === needed.start && text(left.period?.end) === needed.end ? 1 : 0;
@@ -809,6 +824,11 @@ export const rankRoleSnapshotEntries = (registry, { role, recipient = "", period
       const rightRange = (right.period?.granularity || right.granularity) === "range" ? 1 : 0;
       if (rightRange !== leftRange) return rightRange - leftRange;
       return String(right.generatedAt || "").localeCompare(String(left.generatedAt || ""));
+    })
+    .map((entry) => {
+      const exact = text(entry.period?.start) === needed.start && text(entry.period?.end) === needed.end;
+      if (exact) return entry;
+      return { ...entry, matchLevel: "coverage", coverage: span, selectedWindow: needed };
     });
 };
 export const fillSnapshotWindowDetails = (snapshot, registry, { role = "", recipient = "", period = {} } = {}) => {

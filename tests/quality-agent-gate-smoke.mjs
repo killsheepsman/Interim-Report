@@ -1,4 +1,4 @@
-import { runQualityAgent, validateQualityAgentStageGate } from "../src/agent/qualityAgent.js";
+import { qualityAgentSnapshotHash, runQualityAgent, validateQualityAgentStageGate } from "../src/agent/qualityAgent.js";
 
 const snapshot = {
   module: "IQC",
@@ -72,3 +72,47 @@ if (stoppedRun.status !== "error" || !/已停止/.test(stoppedRun.error || "") |
 }
 
 console.log("quality agent gate smoke: ok");
+const textSignature = (value) => {
+  const text = String(value || "");
+  let hash = 2166136261;
+  for (let index = 0; index < text.length; index += 1) {
+    hash ^= text.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return `${text.length}-${(hash >>> 0).toString(16)}`;
+};
+const reportSnapshot = {
+  module: "IQC",
+  period: { start2026: "2026-01-01", end2026: "2026-08-31" },
+  data: {
+    metrics: { batchYield2026: 93.5 },
+    evidenceCatalog: { entries: [{ id: "M-IQC-001" }] },
+  },
+};
+const reportSkillName = "quality-analysis-iqc";
+const reportSkillContent = "locked";
+let reportModelCalls = 0;
+const assembled = await runQualityAgent({
+  snapshot: reportSnapshot,
+  skillName: reportSkillName,
+  skillContent: reportSkillContent,
+  existing: {
+    workflowVersion: "quality-agent-v2",
+    snapshotHash: qualityAgentSnapshotHash(reportSnapshot),
+    skillName: reportSkillName,
+    skillSignature: textSignature(`${reportSkillName}::${reportSkillContent}`),
+    actionLedger: { status: "ready", actions: [{ id: "A-IQC-001" }] },
+    stages: {
+      audit: { status: "done", content: "{}" },
+      analysis: { status: "done", content: "K-IQC-001：来料批次异常，依据 M-IQC-001。", evidenceValidation: { status: "pass", references: ["M-IQC-001"] } },
+      actions: { status: "done", content: "关闭来料异常，依据 M-IQC-001。", evidenceValidation: { status: "pass", references: ["M-IQC-001"] } },
+    },
+  },
+  requestChat: async () => {
+    reportModelCalls += 1;
+    throw new Error("正式报告不应再调用模型");
+  },
+});
+if (reportModelCalls !== 0 || assembled.status !== "done" || !/K-IQC-001/.test(assembled.content || "") || !/关闭来料异常/.test(assembled.content || "")) {
+  throw new Error(`正式报告仍在调用模型或没有用已完成阶段组装：calls=${reportModelCalls} status=${assembled.status} error=${assembled.error || ""}`);
+}

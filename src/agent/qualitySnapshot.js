@@ -448,6 +448,14 @@ const kpiValue = (data, key) => {
   return item ? { value: number(item.value), delta: number(item.delta), unit: clean(item.unit) } : null;
 };
 const totalBy = (rows, field) => rows.reduce((total, row) => total + number(row?.[field]), 0);
+const badBatchesFromRows = (rows, year) => (rows || []).reduce((sum, row) => {
+  const qty = number(row?.[`y${year}Qty`]);
+  const explicit = Number(row?.[`y${year}Bad`]);
+  const rate = Number(row?.[`y${year}Rate`]);
+  if (Number.isFinite(explicit) && (explicit > 0 || !Number.isFinite(rate))) return sum + explicit;
+  if (qty > 0 && Number.isFinite(rate)) return sum + qty * Math.max(0, 100 - rate) / 100;
+  return sum;
+}, 0);
 
 const aggregateIqcComparisonRows = (rows, labelKey) => {
   const grouped = new Map();
@@ -499,8 +507,8 @@ const genericSnapshot = (data = {}, module, files = []) => {
       metrics: {
         batchYield2026: kpiValue(data, "iqc"),
         supplierCount: new Set(suppliers.map((row) => clean(row.supplier)).filter(Boolean)).size,
-        inspectedBatches2026: totalBy(monthly, "y2026Qty"),
-        issueCount2026: totalBy(monthly, "y2026Bad") || totalBy(issues, "y2026Count"),
+        inspectedBatches2026: totalBy(companyMonthly.length ? companyMonthly : monthly, "y2026Qty"),
+        issueCount2026: Math.round(badBatchesFromRows(companyMonthly.length ? companyMonthly : monthly, 2026)),
       },
       organization: { sites: Object.keys(source.siteMonthly || {}), divisions: [], owners: topRows(suppliers, (row) => number(row.y2026Bad || row.y2026Qty * (100 - row.y2026Rate) / 100), 12) },
       evidence: {
@@ -624,6 +632,203 @@ const buildEvidenceCatalog = (module, period, metrics, sourceAudit, localPareto)
 
 export const QUALITY_AGENT_MODULES = ["IQC", "IPQC", "OQC", "DQA", "QMS", "DOAM"];
 
+
+const iqcIsCompanyMachining = (row) => /一楼自制|内部加工/i.test(clean(row?.["供应商"]));
+const iqcFileSite = (fileName) => clean(fileName).includes("杭州") ? "杭州" : "深圳";
+const monthWindow = (start, end) => {
+  const from = auditDate(start);
+  const to = auditDate(end);
+  if (!from || !to) return null;
+  return { start: from, end: new Date(to.getTime() + 86399999) };
+};
+const previousMonthWindow = (period) => {
+  const start = auditDate(period?.start2026);
+  if (!start) return null;
+  const from = new Date(Date.UTC(start.getUTCFullYear(), start.getUTCMonth() - 1, 1));
+  const to = new Date(Date.UTC(start.getUTCFullYear(), start.getUTCMonth(), 0, 23, 59, 59, 999));
+  return { start: from, end: to, label: from.toISOString().slice(0, 7) };
+};
+const inWindow = (date, window) => Boolean(date && window && date >= window.start && date <= window.end);
+const rateOf = (bad, inspected) => inspected ? Number((bad / inspected * 100).toFixed(1)) : null;
+const emptyIqcCell = () => ({ inspected: 0, bad: 0, defects: new Map(), previousInspected: 0, previousBad: 0 });
+const finishIqcCell = (cell) => {
+  const defects = [...cell.defects.entries()].map(([name, count]) => ({ name, count })).sort((a, b) => b.count - a.count || a.name.localeCompare(b.name, "zh-CN")).slice(0, 5);
+  return {
+    inspected: cell.inspected,
+    bad: cell.bad,
+    rate: rateOf(cell.bad, cell.inspected),
+    previousInspected: cell.previousInspected,
+    previousBad: cell.previousBad,
+    previousRate: rateOf(cell.previousBad, cell.previousInspected),
+    defects,
+  };
+};
+const iqcNamedMonth = (fileName) => {
+  const match = clean(fileName).match(/(?:^|\D)(\d{1,2})\s*月份/);
+  const month = match ? Number(match[1]) : 0;
+  return month >= 1 && month <= 12 ? month : 0;
+};
+const iqcRowMonth = (row) => {
+  const date = dateFromAuditRow(row, "IQC");
+  if (!date) return null;
+  const adjusted = row?.["检验开始时间"] instanceof Date && [15, 16].includes(date.getUTCHours())
+    ? new Date(date.getTime() + 8 * 60 * 60 * 1000 + 60 * 1000)
+    : date;
+  return { year: adjusted.getUTCFullYear(), month: adjusted.getUTCMonth() + 1 };
+};
+const buildIqcMonthlyTrend = (files, period) => {
+  const end = auditDate(period?.end2026);
+  if (!end) return { year: 0, rows: [] };
+  const year = end.getUTCFullYear();
+  const endMonth = end.getUTCMonth() + 1;
+  const standard = (files || []).filter((file) => file.module === "IQC" && file.kind !== "IQC_FOCUS_PROJECT" && file.subKind !== "IQC_FOCUS_PROJECT");
+  const covered = new Set(standard.map((file) => iqcNamedMonth(file.name)).filter(Boolean));
+  const cellNames = ["深圳供应商", "杭州供应商", "深圳公司加工", "杭州公司加工"];
+  const buckets = Array.from({ length: endMonth }, (_, index) => ({ month: `${index + 1}月`, inspected: 0, bad: 0 }));
+  const cellBuckets = Object.fromEntries(cellNames.map((name) => [name, Array.from({ length: endMonth }, (_, index) => ({ month: `${index + 1}月`, inspected: 0, bad: 0 }))]));
+  standard.forEach((file) => {
+    const namedMonth = iqcNamedMonth(file.name);
+    (file.rows || []).forEach((row) => {
+      const point = iqcRowMonth(row);
+      if (!point || point.year !== year || point.month < 1 || point.month > endMonth) return;
+      if (namedMonth && namedMonth !== point.month) return;
+      if (!namedMonth && covered.has(point.month)) return;
+      const bucket = buckets[point.month - 1];
+      const company = iqcIsCompanyMachining(row);
+      const cellName = iqcFileSite(file.name) + (company ? "公司加工" : "供应商");
+      const cellBucket = cellBuckets[cellName]?.[point.month - 1];
+      const bad = clean(row["质检结果"]) === "不合格";
+      bucket.inspected += 1;
+      if (cellBucket) cellBucket.inspected += 1;
+      if (bad) {
+        bucket.bad += 1;
+        if (cellBucket) cellBucket.bad += 1;
+      }
+    });
+  });
+  const finish = (row) => ({ ...row, rate: rateOf(row.bad, row.inspected) ?? 0 });
+  return {
+    year,
+    rows: buckets.map(finish),
+    cells: cellNames.map((name) => ({ name, label: name.replace("公司加工", "机加"), rows: cellBuckets[name].map(finish) })),
+  };
+};
+
+const buildIqcQualitySplit = (files, period) => {
+  const current = monthWindow(period?.start2026, period?.end2026);
+  const previous = previousMonthWindow(period);
+  const cellNames = ["深圳供应商", "杭州供应商", "深圳公司加工", "杭州公司加工"];
+  const cells = Object.fromEntries(cellNames.map((name) => [name, emptyIqcCell()]));
+  const parties = new Map();
+  (files || []).filter((file) => file.module === "IQC" && file.kind !== "IQC_FOCUS_PROJECT" && file.subKind !== "IQC_FOCUS_PROJECT").forEach((file) => {
+    const site = iqcFileSite(file.name);
+    (file.rows || []).forEach((row) => {
+      const date = dateFromAuditRow(row, "IQC");
+      const now = inWindow(date, current);
+      const before = inWindow(date, previous);
+      if (!now && !before) return;
+      const company = iqcIsCompanyMachining(row);
+      const cellName = site + (company ? "公司加工" : "供应商");
+      const cell = cells[cellName];
+      const bad = clean(row["质检结果"]) === "不合格";
+      if (now) {
+        cell.inspected += 1;
+        if (bad) {
+          cell.bad += 1;
+          const defect = normalizeParetoMechanism("IQC", row["异常原因"] ?? row["质检说明"] ?? row["异常描述"]);
+          cell.defects.set(defect, (cell.defects.get(defect) || 0) + 1);
+        }
+        const partyName = company ? site + "公司加工" : clean(row["供应商"]) || "未填写供应商";
+        const key = site + "\u0001" + (company ? "公司加工" : "供应商") + "\u0001" + partyName;
+        const party = parties.get(key) || { site, source: company ? "公司加工" : "供应商", name: partyName, inspected: 0, bad: 0, defects: new Map() };
+        party.inspected += 1;
+        if (bad) {
+          party.bad += 1;
+          const defect = normalizeParetoMechanism("IQC", row["异常原因"] ?? row["质检说明"] ?? row["异常描述"]);
+          party.defects.set(defect, (party.defects.get(defect) || 0) + 1);
+        }
+        parties.set(key, party);
+      } else if (cell) {
+        cell.previousInspected += 1;
+        if (bad) cell.previousBad += 1;
+      }
+    });
+  });
+  const list = (source) => [...parties.values()].filter((item) => item.source === source && item.inspected > 0).map((item) => ({
+    site: item.site,
+    name: item.name,
+    inspected: item.inspected,
+    bad: item.bad,
+    rate: rateOf(item.bad, item.inspected),
+    topDefects: [...item.defects.entries()].map(([name, count]) => ({ name, count })).sort((a, b) => b.count - a.count).slice(0, 3),
+  })).sort((a, b) => (b.rate || 0) - (a.rate || 0) || b.bad - a.bad || a.name.localeCompare(b.name, "zh-CN")).slice(0, 8);
+  const monthlyTrend = buildIqcMonthlyTrend(files, period);
+  return {
+    rule: "导入记录均视为加工件。供应商名称含一楼自制或内部加工的归公司加工，其余归供应商。文件名含杭州归杭州，其余归深圳。趋势从当年1月计到所选截止日期；某月已有“N月份”文件时，只用该文件，避免和全年文件重复计算。",
+    period: { start: period?.start2026 || "", end: period?.end2026 || "" },
+    previousPeriod: previous?.label || "",
+    cells: cellNames.map((name) => ({ name, ...finishIqcCell(cells[name]) })),
+    suppliers: list("供应商"),
+    companyMachining: list("公司加工"),
+    trendYear: monthlyTrend.year,
+    monthly: monthlyTrend.rows,
+    cellMonthly: monthlyTrend.cells,
+  };
+};
+
+const iqcTrendQuantity = (row) => {
+  const count = Number(row?.y2026Qty ?? row?.total ?? row?.inspected);
+  return Number.isFinite(count) && count > 0 ? count : 0;
+};
+const iqcTrendBad = (row, count) => {
+  const explicit = Number(row?.y2026Bad ?? row?.bad);
+  const rate = Number(row?.y2026Rate ?? row?.rate);
+  if (Number.isFinite(explicit) && (explicit > 0 || !Number.isFinite(rate))) return explicit;
+  if (Number.isFinite(rate)) return count * Math.max(0, 100 - rate) / 100;
+  return 0;
+};
+export const alignIqcYieldMetrics = (snapshot) => {
+  // 驾驶舱良率含标准件。这里改用加工件趋势的检验批次和不合格批次。
+  if (snapshot?.module !== "IQC") return snapshot;
+  const trends = snapshot.data?.evidence?.trends;
+  if (!Array.isArray(trends) || !trends.length) return snapshot;
+  let qty = 0;
+  let bad = 0;
+  trends.forEach((row) => {
+    const count = iqcTrendQuantity(row);
+    if (!count) return;
+    qty += count;
+    bad += iqcTrendBad(row, count);
+  });
+  if (!qty) return snapshot;
+  const inspected = Math.round(qty);
+  const issues = Math.round(bad);
+  const yieldValue = Number(((qty - bad) / qty * 100).toFixed(1));
+  const metrics = {
+    ...(snapshot.data.metrics || {}),
+    inspectedBatches2026: inspected,
+    issueCount2026: issues,
+    batchYield2026: { value: yieldValue, unit: "%" },
+  };
+  const catalog = snapshot.data.evidenceCatalog;
+  const replacements = {
+    "2026批次良率": { statement: "2026批次良率：" + yieldValue + "%", value: yieldValue + "%", unit: "%" },
+    "2026检验批次": { statement: "2026检验批次：" + inspected + "批", value: String(inspected), unit: "批" },
+    "2026不良批次": { statement: "2026不良批次：" + issues + "批", value: String(issues), unit: "批" },
+  };
+  const entries = Array.isArray(catalog?.entries)
+    ? catalog.entries.map((entry) => replacements[entry?.subject] ? { ...entry, ...replacements[entry.subject] } : entry)
+    : catalog?.entries;
+  return {
+    ...snapshot,
+    data: {
+      ...snapshot.data,
+      metrics,
+      evidenceCatalog: catalog ? { ...catalog, entries } : catalog,
+    },
+  };
+};
+
 export const buildQualityAgentSnapshot = ({ data = {}, files = [], dateRange = {}, module = "DQA", role = "公司级", recipient = "" } = {}) => {
   const period = {
     start2025: dateRange.start2025 || "",
@@ -636,7 +841,27 @@ export const buildQualityAgentSnapshot = ({ data = {}, files = [], dateRange = {
   const base = module === "DQA" ? dqaSnapshot(data, { role, recipient }, files) : genericSnapshot(snapshotData, module, files);
   const sourceAudit = buildSourceAudit(snapshotData, files, module, period);
   const localPareto = buildLocalPareto(snapshotData, files, module, { start2026: period.start2026, end2026: period.end2026 });
-  return {
+  const iqcSplit = module === "IQC" ? buildIqcQualitySplit(files, period) : null;
+  const iqcTrendReady = Boolean(iqcSplit?.monthly?.some((row) => row.inspected > 0));
+  const snapshotBase = iqcTrendReady ? {
+    ...base,
+    periodTrend: {
+      year: iqcSplit.trendYear,
+      start: `${iqcSplit.trendYear}-01-01`,
+      end: period.end2026 || "",
+      rows: iqcSplit.monthly.map((row) => ({ label: row.month, bad: row.bad, total: row.inspected, rate: row.rate ?? 0 })),
+    },
+    evidence: {
+      ...(base.evidence || {}),
+      trends: iqcSplit.monthly.map((row) => ({
+        month: row.month,
+        y2026Qty: row.inspected,
+        y2026Bad: row.bad,
+        y2026Rate: row.inspected ? Number(((row.inspected - row.bad) / row.inspected * 100).toFixed(1)) : 0,
+      })),
+    },
+  } : base;
+  const built = {
     schemaVersion: "quality-agent-snapshot-v3",
     agentTitle: "质量分析 Agent",
     module,
@@ -649,6 +874,145 @@ export const buildQualityAgentSnapshot = ({ data = {}, files = [], dateRange = {
       aiRule: "AI只解释已计算结果，不重新计算指标；缺少证据时必须标记待核实。",
       moduleRule: moduleRules[module] || "按固定快照中的组织、指标和证据进行分析。",
     },
-    data: { ...base, sourceAudit, localPareto, evidenceCatalog: buildEvidenceCatalog(module, period, base.metrics || {}, sourceAudit, localPareto) },
+    data: { ...snapshotBase, sourceAudit, localPareto, ...(iqcSplit ? { iqcSplit } : {}), evidenceCatalog: buildEvidenceCatalog(module, period, snapshotBase.metrics || {}, sourceAudit, localPareto) },
+  };
+  return alignIqcYieldMetrics(built);
+};
+
+
+
+const iqcMonthBounds = (year, label) => {
+  const match = String(label || "").match(/(\d{1,2})\s*月/);
+  const month = match ? Number(match[1]) : 0;
+  if (!year || month < 1 || month > 12) return null;
+  const start = year + "-" + String(month).padStart(2, "0") + "-01";
+  const end = year + "-" + String(month).padStart(2, "0") + "-" + String(new Date(Date.UTC(Number(year), month, 0)).getUTCDate()).padStart(2, "0");
+  return { month, start, end };
+};
+const iqcRangesOverlap = (start, end, otherStart, otherEnd) => Boolean(start && end && otherStart && otherEnd && start <= otherEnd && end >= otherStart);
+const iqcEntryReady = (entry) => {
+  const cells = entry?.snapshot?.data?.iqcSplit?.cellMonthly;
+  return Number(entry?.snapshot?.data?.sourceAudit?.totalRows || 0) > 0 && Array.isArray(cells) && cells.some((cell) => (cell.rows || []).some((row) => Number(row.inspected) > 0));
+};
+export const pickIqcAnalysisSnapshot = (history = [], period = {}) => {
+  const start = period.start2026 || "";
+  const end = period.end2026 || "";
+  const ready = (history || []).filter((entry) => entry?.active !== false && entry?.module === "IQC" && iqcEntryReady(entry));
+  if (!start || !end || !ready.length) return null;
+  const span = (entry) => Date.parse(entry.dateRange?.end2026 + "T00:00:00Z") - Date.parse(entry.dateRange?.start2026 + "T00:00:00Z");
+  const exact = ready.filter((entry) => entry.dateRange?.start2026 === start && entry.dateRange?.end2026 === end).sort((a, b) => String(b.generatedAt || "").localeCompare(String(a.generatedAt || "")));
+  if (exact[0]) return { ...exact[0], matchLevel: "exact-2026" };
+  const covering = ready.filter((entry) => entry.dateRange?.start2026 && entry.dateRange?.end2026 && entry.dateRange.start2026 <= start && entry.dateRange.end2026 >= end).sort((a, b) => span(a) - span(b) || String(b.generatedAt || "").localeCompare(String(a.generatedAt || "")));
+  if (!covering[0]) return null;
+  return { ...covering[0], matchLevel: "coverage", selectedWindow: { start, end }, coverage: { start: covering[0].dateRange.start2026, end: covering[0].dateRange.end2026 } };
+};
+export const sliceIqcSnapshotToWindow = (snapshot, window = {}, sourcePeriod = null) => {
+  if (!snapshot || snapshot.module !== "IQC") return snapshot;
+  const start = window.start || "";
+  const end = window.end || "";
+  if (!start || !end) return snapshot;
+  const ownStart = sourcePeriod?.start2026 || snapshot.period?.start2026 || "";
+  const ownEnd = sourcePeriod?.end2026 || snapshot.period?.end2026 || "";
+  if (ownStart === start && ownEnd === end) return snapshot;
+  const split = snapshot.data?.iqcSplit;
+  const monthly = split?.cellMonthly || [];
+  if (!monthly.length) return snapshot;
+  const year = start.slice(0, 4);
+  const endMonth = Number(end.slice(5, 7)) || 12;
+  const inWindow = (label) => {
+    const bounds = iqcMonthBounds(year, label);
+    return Boolean(bounds && iqcRangesOverlap(bounds.start, bounds.end, start, end));
+  };
+  const throughEnd = (label) => {
+    const bounds = iqcMonthBounds(year, label);
+    return Boolean(bounds && bounds.month <= endMonth);
+  };
+  const sumRows = (rows) => (rows || []).reduce((acc, row) => ({ inspected: acc.inspected + Number(row.inspected || 0), bad: acc.bad + Number(row.bad || 0) }), { inspected: 0, bad: 0 });
+  const previousMonth = new Date(Date.UTC(Number(start.slice(0, 4)), Number(start.slice(5, 7)) - 2, 1)).getUTCMonth() + 1;
+  const sameMonth = ownStart.slice(0, 7) && ownStart.slice(0, 7) === start.slice(0, 7) && ownEnd.slice(0, 7) === end.slice(0, 7);
+  const chartCells = monthly.map((cell) => ({ ...cell, rows: (cell.rows || []).filter((row) => throughEnd(row.month)) }));
+  const windowCells = monthly.map((cell) => ({ ...cell, rows: (cell.rows || []).filter((row) => inWindow(row.month)) }));
+  const cells = windowCells.map((cell, index) => {
+    const totals = sumRows(cell.rows);
+    const original = (split.cells || [])[index] || {};
+    const prev = (cell.rows.length ? monthly[index]?.rows : monthly[index]?.rows || []).find((row) => iqcMonthBounds(year, row.month)?.month === previousMonth);
+    const rate = totals.inspected ? Number((totals.bad / totals.inspected * 100).toFixed(1)) : null;
+    return {
+      ...original,
+      name: original.name || cell.name,
+      inspected: totals.inspected,
+      bad: totals.bad,
+      rate,
+      previousInspected: Number(prev?.inspected || 0),
+      previousBad: Number(prev?.bad || 0),
+      previousRate: prev?.inspected ? Number((Number(prev.bad || 0) / Number(prev.inspected) * 100).toFixed(1)) : null,
+      defects: sameMonth ? (original.defects || []) : [],
+    };
+  });
+  const monthLabels = chartCells[0]?.rows || [];
+  const monthlyRows = monthLabels.map((row, rowIndex) => {
+    const inspected = chartCells.reduce((sum, cell) => sum + Number(cell.rows?.[rowIndex]?.inspected || 0), 0);
+    const bad = chartCells.reduce((sum, cell) => sum + Number(cell.rows?.[rowIndex]?.bad || 0), 0);
+    return { month: row.month, inspected, bad, rate: inspected ? Number((bad / inspected * 100).toFixed(1)) : 0 };
+  });
+  const selectedLabels = new Set((windowCells[0]?.rows || []).map((row) => row.month));
+  const trends = monthlyRows.filter((row) => selectedLabels.has(row.month)).map((row) => ({ month: row.month, y2026Qty: row.inspected, y2026Bad: row.bad, y2026Rate: row.rate }));
+  return {
+    ...snapshot,
+    period: { ...(snapshot.period || {}), start2026: start, end2026: end },
+    selectedWindow: { start, end },
+    data: {
+      ...snapshot.data,
+      periodTrend: snapshot.data?.periodTrend ? { ...snapshot.data.periodTrend, end, rows: monthlyRows.map((row) => ({ label: row.month, bad: row.bad, total: row.inspected, rate: row.rate })) } : snapshot.data?.periodTrend,
+      evidence: { ...(snapshot.data?.evidence || {}), trends },
+      iqcSplit: { ...split, cells, cellMonthly: chartCells, monthly: monthlyRows, suppliers: sameMonth ? split.suppliers : [], companyMachining: sameMonth ? split.companyMachining : [] },
+    },
+  };
+};
+
+const qualityMonthStart = (label, fallbackYear) => {
+  const textLabel = String(label || "");
+  const iso = textLabel.match(/^(\d{4})-(\d{2})/);
+  if (iso) return `${iso[1]}-${iso[2]}-01`;
+  const month = textLabel.match(/(\d{1,2})\s*月/);
+  if (!month || !fallbackYear) return "";
+  return `${fallbackYear}-${String(month[1]).padStart(2, "0")}-01`;
+};
+const qualityMonthEnd = (start) => {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(start)) return "";
+  const year = Number(start.slice(0, 4));
+  const month = Number(start.slice(5, 7));
+  return `${start.slice(0, 7)}-${String(new Date(Date.UTC(year, month, 0)).getUTCDate()).padStart(2, "0")}`;
+};
+export const applyQualitySnapshotWindow = (snapshot, window = {}) => {
+  const start = String(window.start || "");
+  const end = String(window.end || "");
+  if (!snapshot || !start || !end) return snapshot;
+  const trends = Array.isArray(snapshot.data?.evidence?.trends) ? snapshot.data.evidence.trends : [];
+  const year = start.slice(0, 4);
+  const marked = trends.map((row) => {
+    const monthStart = qualityMonthStart(row.month || row.label, year);
+    const monthEnd = qualityMonthEnd(monthStart);
+    const selected = Boolean(monthStart) && monthStart <= end && monthEnd >= start;
+    return { ...row, selected };
+  }).filter((row) => {
+    const monthStart = qualityMonthStart(row.month || row.label, year);
+    return !monthStart || monthStart <= end;
+  });
+  const selectedRows = marked.filter((row) => row.selected);
+  if (!selectedRows.length) return { ...snapshot, selectedWindow: { start, end }, windowResolution: "unsliceable" };
+  const qty = selectedRows.reduce((sum, row) => sum + Number(row.y2026Qty || row.total || 0), 0);
+  const bad = selectedRows.reduce((sum, row) => sum + Number(row.y2026Bad || row.bad || 0), 0);
+  const metrics = { ...(snapshot.data?.metrics || {}) };
+  if ("inspectedBatches2026" in metrics) metrics.inspectedBatches2026 = Math.round(qty);
+  if ("inspectedQuantity2026" in metrics) metrics.inspectedQuantity2026 = Math.round(qty);
+  if ("issueCount2026" in metrics) metrics.issueCount2026 = Math.round(bad);
+  if (metrics.batchYield2026 && qty) metrics.batchYield2026 = { ...(typeof metrics.batchYield2026 === "object" ? metrics.batchYield2026 : { value: metrics.batchYield2026 }), value: Number(((qty - bad) / qty * 100).toFixed(1)) };
+  return {
+    ...snapshot,
+    period: { ...(snapshot.period || {}), start2026: start, end2026: end },
+    selectedWindow: { start, end },
+    windowResolution: "month",
+    data: { ...(snapshot.data || {}), metrics, evidence: { ...(snapshot.data?.evidence || {}), trends: marked } },
   };
 };

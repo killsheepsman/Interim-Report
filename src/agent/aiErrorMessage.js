@@ -24,9 +24,10 @@ const stripHtml = (value) => String(value || "").replace(/<[^>]+>/g, " ").replac
 
 export const describeAiError = (error, fallback = "模型请求失败") => {
   const raw = String(error?.message || error || "");
+  if (/超过\d+秒/.test(raw)) return raw.startsWith("问题：") ? raw : `问题：${stripHtml(raw).slice(0, 180)}`;
   const code = statusCodeFrom(error);
   const problem = PROBLEM_BY_CODE[code];
-  if (problem) return `问题：${problem}（${code}）`;
+  if (problem && !/超过\d+秒|Responses|Codex/.test(raw)) return `问题：${problem}（${code}）`;
   if (/<!DOCTYPE html|<html/i.test(raw) || /web server is returning an unknown error/i.test(raw)) {
     return "问题：模型网关返回了网页错误页，不是分析结果";
   }

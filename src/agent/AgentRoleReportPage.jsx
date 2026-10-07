@@ -29,6 +29,27 @@ const ROLE_CHART_SKILL_STORAGE_KEY = "qms-agent-role-chart-skill-v1";
 const ROLE_ACCEPTANCE_SKILL_STORAGE_KEY = "qms-agent-acceptance-skill-v1";
 const ROLE_CHART_FONT_KEY = "qms-role-chart-font-size-v1";
 const ROLE_RECIPIENT_STORAGE_KEY = "qms-role-report-display-recipient-v1";
+const ROLE_HISTORY_CHOICE_KEY = "qms-role-report-history-choice-v1";
+const ROLE_LAYOUT_BY_ROLE_KEY = "qms-agent-role-report-layout-by-role-v1";
+const readRoleHistoryChoice = (roleName, person) => {
+  try { return String(JSON.parse(localStorage.getItem(ROLE_HISTORY_CHOICE_KEY) || "{}")[roleName + "::" + (person || "")] || "current"); } catch { return "current"; }
+};
+const writeRoleHistoryChoice = (roleName, person, historyKey) => {
+  if (!roleName || typeof localStorage === "undefined") return;
+  const current = (() => { try { return JSON.parse(localStorage.getItem(ROLE_HISTORY_CHOICE_KEY) || "{}") || {}; } catch { return {}; } })();
+  current[roleName + "::" + (person || "")] = historyKey || "current";
+  localStorage.setItem(ROLE_HISTORY_CHOICE_KEY, JSON.stringify(current));
+};
+const readRoleLayoutChoice = (roleName) => {
+  try { return String(JSON.parse(localStorage.getItem(ROLE_LAYOUT_BY_ROLE_KEY) || "{}")?.[roleName] || ""); } catch { return ""; }
+};
+const writeRoleLayoutChoice = (roleName, layoutName) => {
+  if (!roleName || !layoutName || typeof localStorage === "undefined") return;
+  const current = (() => { try { return JSON.parse(localStorage.getItem(ROLE_LAYOUT_BY_ROLE_KEY) || "{}") || {}; } catch { return {}; } })();
+  current[roleName] = layoutName;
+  localStorage.setItem(ROLE_LAYOUT_BY_ROLE_KEY, JSON.stringify(current));
+};
+
 const readRoleRecipient = (roleName) => {
   try { return String(JSON.parse(localStorage.getItem(ROLE_RECIPIENT_STORAGE_KEY) || "{}")?.[roleName] || ""); } catch { return ""; }
 };
@@ -1204,7 +1225,7 @@ export function AgentRoleReportPage({ initialRole = "组装人员", data = {}, f
   const [baseline, setBaseline] = useState({ contents: {}, files: [] });
   const [cacheEntry, setCacheEntry] = useState(() => readCache()[role] || null);
   const [savedRoleReports, setSavedRoleReports] = useState([]);
-  const [selectedHistoryKey, setSelectedHistoryKey] = useState("current");
+  const [selectedHistoryKey, setSelectedHistoryKey] = useState(() => readRoleHistoryChoice(role, readRoleRecipient(role)));
   const [savedRoleContent, setSavedRoleContent] = useState("");
   const [historyRevision, setHistoryRevision] = useState(0);
   const [localReportRecipients, setLocalReportRecipients] = useState([]);
@@ -1216,7 +1237,7 @@ export function AgentRoleReportPage({ initialRole = "组装人员", data = {}, f
   const [acceptanceSkills, setAcceptanceSkills] = useState(() => [{ id: DEFAULT_ACCEPTANCE_SKILL_ID, name: DEFAULT_ACCEPTANCE_SKILL_ID, content: elonMuskPerspectiveSkill }]);
   const [acceptanceSkill, setAcceptanceSkill] = useState(() => ({ id: DEFAULT_ACCEPTANCE_SKILL_ID, name: DEFAULT_ACCEPTANCE_SKILL_ID, content: elonMuskPerspectiveSkill }));
   const [layoutSkills] = useState(REPORT_PRESENTATION_PROFILES);
-  const [layoutSkillName, setLayoutSkillName] = useState(initialRoleLayout);
+  const [layoutSkillName, setLayoutSkillName] = useState(() => normalizeReportPresentationProfile(readRoleLayoutChoice(role) || initialRoleLayout()));
   const [recipient, setRecipient] = useState(() => readRoleRecipient(role));
   const [recipientPickerQuery, setRecipientPickerQuery] = useState("");
   const [recipientPickerOpen, setRecipientPickerOpen] = useState(false);
@@ -1246,7 +1267,7 @@ export function AgentRoleReportPage({ initialRole = "组装人员", data = {}, f
     // Otherwise React briefly renders the old report against the new person,
     // which makes consecutive selections much slower than the first one.
     historyRequestIdRef.current += 1;
-    setSelectedHistoryKey("current");
+    setSelectedHistoryKey(readRoleHistoryChoice(role, name));
     setSavedRoleContent("");
     setSavedRoleReports([]);
     setHistoryState({ status: name ? "loading" : "idle", message: name ? "正在读取历史报告…" : "" });
@@ -1380,7 +1401,7 @@ export function AgentRoleReportPage({ initialRole = "组装人员", data = {}, f
   const selectedRoleSnapshot = selectedRoleSnapshotIndex;
   const roleSnapshotTrace = roleSnapshotRegistry
     ? (selectedRoleSnapshot
-      ? { status: "matched", label: "已命中有效角色快照", detail: `${role} · ${selectedRoleSnapshotIndex?.period?.granularity === "range" ? "总周期" : selectedRoleSnapshotIndex?.period?.periodKey || "当前周期"}`, meta: generationProgress.visible && (generationProgress.currentName || state.status === "running")
+      ? { status: "matched", label: selectedRoleSnapshotIndex?.matchLevel === "coverage" ? "已命中覆盖快照" : "已命中有效角色快照", detail: selectedRoleSnapshotIndex?.matchLevel === "coverage" ? `${role} · 覆盖 ${selectedRoleSnapshotIndex.coverage?.start || selectedRoleSnapshotIndex.period?.start} ~ ${selectedRoleSnapshotIndex.coverage?.end || selectedRoleSnapshotIndex.period?.end} · 本次窗口 ${period.start} ~ ${period.end}` : `${role} · ${selectedRoleSnapshotIndex?.period?.granularity === "range" ? "总周期" : selectedRoleSnapshotIndex?.period?.periodKey || "当前周期"}`, meta: generationProgress.visible && (generationProgress.currentName || state.status === "running")
         ? `正在生成：${generationProgress.currentName || "准备中"} · ${generationScopeLabel}${recipient ? ` · 查看中：${recipient}` : ""}`
         : `当前人员：${recipient} · 固定数据已就绪` }
       : { status: "missing", label: recipient ? "未命中有效角色快照" : "等待选择人员", detail: recipient ? "当前人员或统计周期没有有效快照" : "选择人员后显示快照匹配状态", meta: recipient ? "本次生成将回退到确定性人员证据" : "" })
@@ -1566,7 +1587,7 @@ export function AgentRoleReportPage({ initialRole = "组装人员", data = {}, f
       return;
     }
     if (recipient) return;
-    if (!recipientManualClearRef.current) setRecipient(recipients[0] || "");
+    
   }, [recipients, recipient, role]);
   useEffect(() => { setRecipientPickerQuery(recipient || ""); }, [recipient]);
   useEffect(() => {
@@ -1574,7 +1595,7 @@ export function AgentRoleReportPage({ initialRole = "组装人员", data = {}, f
     // saved report. Keep the selector on its lightweight "current" entry
     // until the user explicitly picks a history version.
     historyRequestIdRef.current += 1;
-    setSelectedHistoryKey("current");
+    setSelectedHistoryKey(readRoleHistoryChoice(role, readRoleRecipient(role)));
     setSavedRoleContent("");
   }, [role, recipient]);
   useEffect(() => {
@@ -1603,16 +1624,23 @@ export function AgentRoleReportPage({ initialRole = "组装人员", data = {}, f
       .sort((left, right) => String(right.updatedAt || right.savedAt || "").localeCompare(String(left.updatedAt || left.savedAt || "")));
     setSavedRoleReports(merged);
     if (!merged.length) {
-      setSelectedHistoryKey("current");
+      setSelectedHistoryKey(readRoleHistoryChoice(role, recipient));
       setSavedRoleContent("");
       setHistoryState({ status: "done", message: "暂无历史报告" });
       return () => { active = false; };
     }
-    const latest = merged[0];
+    const rememberedHistory = readRoleHistoryChoice(role, recipient);
+    const chosen = rememberedHistory === "current" ? null : merged.find((item) => item.historyKey === rememberedHistory);
+    if (!chosen) {
+      setSelectedHistoryKey("current");
+      setSavedRoleContent("");
+      setHistoryState({ status: "done", message: "共 " + merged.length + " 份历史报告" });
+      return () => { active = false; };
+    }
     const requestId = ++historyRequestIdRef.current;
-    setSelectedHistoryKey(latest.historyKey);
-    setHistoryState({ status: "loading", message: "正在加载最新报告…" });
-    loadRoleHistoryDetail(latest)
+    setSelectedHistoryKey(chosen.historyKey);
+    setHistoryState({ status: "loading", message: "正在加载上次选择的报告…" });
+    loadRoleHistoryDetail(chosen)
       .then((value) => {
         if (!active || historyRequestIdRef.current !== requestId) return;
         const content = String(value?.content || "");
@@ -1621,11 +1649,11 @@ export function AgentRoleReportPage({ initialRole = "组装人员", data = {}, f
           setHistoryState({ status: "error", message: "最新历史报告内容为空" });
           return;
         }
-        setSavedRoleReports((current) => current.map((item) => item.historyKey === latest.historyKey
+        setSavedRoleReports((current) => current.map((item) => item.historyKey === chosen.historyKey
           ? { ...item, visualSpec: value?.visualSpec || item.visualSpec, period: value?.period || item.period, model: value?.model || item.model, layoutProfileId: value?.layoutProfileId || item.layoutProfileId }
           : item));
         setSavedRoleContent(content);
-        setHistoryState({ status: "done", message: `已加载最新报告 · 共 ${merged.length} 份` });
+        setHistoryState({ status: "done", message: `已加载上次选择 · 共 ${merged.length} 份` });
       })
       .catch((error) => {
         if (!active || historyRequestIdRef.current !== requestId) return;
@@ -1637,6 +1665,7 @@ export function AgentRoleReportPage({ initialRole = "组装人员", data = {}, f
   const openHistoryReport = useCallback((historyKey) => {
     const requestId = ++historyRequestIdRef.current;
     setSelectedHistoryKey(historyKey);
+    writeRoleHistoryChoice(role, recipient, historyKey);
     if (historyKey === "current") {
       setSavedRoleContent("");
       return;
@@ -1753,7 +1782,7 @@ export function AgentRoleReportPage({ initialRole = "组装人员", data = {}, f
     const snapshotEntryFor = (name) => pickRoleSnapshotEntry(generationRoleSnapshotRegistry, { role, recipient: name, period: { start: period.start, end: period.end } });
     const snapshotReady = targetRecipients.length > 0 && targetRecipients.every((name) => {
       const entry = snapshotEntryFor(name);
-      return Boolean(snapshotFor(name) && snapshotMatchesPeriod(entry || {}, period));
+      return Boolean(snapshotFor(name) && (snapshotMatchesPeriod(entry || {}, period) || entry?.matchLevel === "coverage"));
     });
     const storedEvidenceReady = ["PM", "TPM", "产总"].includes(role) && targetRecipients.length > 0 && targetRecipients.every((name) => snapshotFor(name)?.reportEvidence);
     let generationDqaAgentMetrics = dqaAgentMetrics;
@@ -2352,7 +2381,9 @@ export function AgentRoleReportPage({ initialRole = "组装人员", data = {}, f
     writeRoleChartSkillPreference(role, selected.name || selected.id);
   };
   const selectLayoutSkill = (name) => {
-    setLayoutSkillName(normalizeReportPresentationProfile(name));
+    const next = normalizeReportPresentationProfile(name);
+    setLayoutSkillName(next);
+    writeRoleLayoutChoice(role, next);
   };
   const completedNameSet = new Set(generationProgress.completedNames || []);
   const progressRecipientNames = generationProgress.recipientNames?.length

@@ -1537,7 +1537,7 @@ const buildAiCrossStagePrompt = ({ stage, reportPackage, outputs, skillName }) =
 };
 
 function AiAnalysisPage({ data, dateRange, analysisKey, canSaveToServer = false }) {
-  const [module, setModule] = useState("IQC");
+  const [module, setModule] = useState(() => localStorage.getItem("qms-ai-selected-module") || "IQC");
   const [skillName, setSkillName] = useState(() => localStorage.getItem("qms-ai-selected-skill") || "generate-quality-review-report");
   const [revision, setRevision] = useState(0);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
@@ -1550,7 +1550,7 @@ function AiAnalysisPage({ data, dateRange, analysisKey, canSaveToServer = false 
   const review = useMemo(() => buildApprovedAiReview(module === aiCrossModule ? "公司综合" : module, data), [module, analysisKey, revision, data]);
   const rerun = () => { setIsAnalyzing(true); window.setTimeout(() => { setRevision((value) => value + 1); setIsAnalyzing(false); }, 420); };
   useEffect(() => { localStorage.setItem(aiGeneratedStorageKey, JSON.stringify(generated)); }, [generated]);
-  useEffect(() => { localStorage.setItem("qms-ai-selected-skill", skillName); }, [skillName]);
+  useEffect(() => { localStorage.setItem("qms-ai-selected-skill", skillName); }, [skillName]); useEffect(() => { localStorage.setItem("qms-ai-selected-module", module); }, [module]);
   const runModuleAi = async (targetModule) => {
     if (!targetModule || targetModule === aiCrossModule) return;
     setModule(targetModule); setIsAnalyzing(true); setAiError("");
@@ -5370,8 +5370,8 @@ function ReportTaskCenterPage() {
   const [tasks, setTasks] = useState(() => safeParse(localStorage.getItem(qmdpReportTasksKey), []));
   const [snapshots, setSnapshots] = useState(() => safeParse(localStorage.getItem(qmdpReportSnapshotsKey), []));
   const agentTasks = [];
-  const [query, setQuery] = useState(""); const [roleFilter, setRoleFilter] = useState("全部"); const [statusFilter, setStatusFilter] = useState("全部"); const [fromDate, setFromDate] = useState(""); const [toDate, setToDate] = useState("");
-  useEffect(() => { localStorage.setItem(qmdpReportTasksKey, JSON.stringify(tasks)); }, [tasks]);
+  const [query, setQuery] = useState(() => { try { return JSON.parse(localStorage.getItem("qms-report-task-filters-v1") || "{}").query || ""; } catch { return ""; } }); const [roleFilter, setRoleFilter] = useState(() => { try { return JSON.parse(localStorage.getItem("qms-report-task-filters-v1") || "{}").role || "全部"; } catch { return "全部"; } }); const [statusFilter, setStatusFilter] = useState(() => { try { return JSON.parse(localStorage.getItem("qms-report-task-filters-v1") || "{}").status || "全部"; } catch { return "全部"; } }); const [fromDate, setFromDate] = useState(() => { try { return JSON.parse(localStorage.getItem("qms-report-task-filters-v1") || "{}").from || ""; } catch { return ""; } }); const [toDate, setToDate] = useState(() => { try { return JSON.parse(localStorage.getItem("qms-report-task-filters-v1") || "{}").to || ""; } catch { return ""; } });
+  useEffect(() => { localStorage.setItem(qmdpReportTasksKey, JSON.stringify(tasks)); }, [tasks]); useEffect(() => { try { localStorage.setItem("qms-report-task-filters-v1", JSON.stringify({ query, role: roleFilter, status: statusFilter, from: fromDate, to: toDate })); } catch {} }, [query, roleFilter, statusFilter, fromDate, toDate]);
   const refresh = () => { setTasks(safeParse(localStorage.getItem(qmdpReportTasksKey), [])); setSnapshots(safeParse(localStorage.getItem(qmdpReportSnapshotsKey), [])); };
   const addTask = () => { const item = { id: `SEND-${Date.now()}`, role: "待选择", recipient: "待填写", module: "质量报告", date: new Date().toISOString(), status: "待发送" }; setTasks((current) => [item, ...current]); };
   const roles = ["全部", ...roleReportNames];
@@ -6241,8 +6241,8 @@ function SystemManagementPage({ active, onNavigate, data, auth, files = [], date
 
 function ReportHistoryComparePage() {
   const [reports, setReports] = useState([]);
-  const [leftKey, setLeftKey] = useState("");
-  const [rightKey, setRightKey] = useState("");
+  const [leftKey, setLeftKey] = useState(() => { try { return JSON.parse(localStorage.getItem("qms-report-compare-choice-v1") || "{}").left || ""; } catch { return ""; } });
+  const [rightKey, setRightKey] = useState(() => { try { return JSON.parse(localStorage.getItem("qms-report-compare-choice-v1") || "{}").right || ""; } catch { return ""; } });
   const [contents, setContents] = useState({});
   const [loading, setLoading] = useState(false);
   const [qualityRules, setQualityRules] = useState(DEFAULT_REPORT_QUALITY_RULES);
@@ -6253,7 +6253,7 @@ function ReportHistoryComparePage() {
       if (!active) return;
       const merged = [...(Array.isArray(local) ? local.map((item) => ({ ...item, localOnly: true })) : []), ...(Array.isArray(server?.reports) ? server.reports : [])];
       const unique = [...new Map(merged.filter((item) => item?.fileName).map((item) => [item.fileName, item])).values()].sort((a, b) => String(b.updatedAt || b.savedAt || "").localeCompare(String(a.updatedAt || a.savedAt || "")));
-      setReports(unique); setLeftKey(unique[0]?.fileName || ""); setRightKey(unique[1]?.fileName || "");
+      setReports(unique); setLeftKey((current) => unique.some((item) => item.fileName === current) ? current : (unique[0]?.fileName || "")); setRightKey((current) => unique.some((item) => item.fileName === current) ? current : (unique[1]?.fileName || unique[0]?.fileName || ""));
     });
     return () => { active = false; };
   }, []);
@@ -6264,7 +6264,7 @@ function ReportHistoryComparePage() {
   };
   useEffect(() => { loadContent(leftKey); loadContent(rightKey); }, [leftKey, rightKey, reports]);
   useEffect(() => { loadReportQualityRules().then((value) => { if (Array.isArray(value?.rules)) setQualityRules(value.rules); }).catch(() => {}); }, []);
-  const left = contents[leftKey] || ""; const right = contents[rightKey] || "";
+  useEffect(() => { try { localStorage.setItem("qms-report-compare-choice-v1", JSON.stringify({ left: leftKey, right: rightKey })); } catch {} }, [leftKey, rightKey]); const left = contents[leftKey] || ""; const right = contents[rightKey] || "";
   const metricLines = (content) => String(content).split(/\r?\n/).filter((line) => /\d/.test(line) && /[:：|]/.test(line)).slice(0, 24);
   const parseMetrics = (content) => metricLines(content).map((line) => { const values = [...line.matchAll(/-?\d+(?:\.\d+)?%?/g)].map((match) => match[0]); return { label: line.replace(/^[#*\s|\-]+|[:：|].*$/g, "").trim() || "指标", value: values[0] || "-", line }; }).filter((item) => item.label && item.value !== "-").slice(0, 12);
   const extractSection = (content, words) => { const lines = String(content).split(/\r?\n/); const start = lines.findIndex((line) => words.some((word) => line.includes(word))); if (start < 0) return []; return lines.slice(start + 1, start + 9).map((line) => line.trim()).filter((line) => line && !/^#{1,6}\s/.test(line)); };
