@@ -1,4 +1,5 @@
 import { canonicalProductDept, normalizeOrgRecord } from "../orgMappingParse.js";
+import { monthlyMachinedCount } from "../dataEngine.js";
 export const pmPerson = (value) => String(value || "").replace(/\s+/g, " ").trim();
 const unique = (values = []) => [...new Set((Array.isArray(values) ? values : []).map(pmPerson).filter(Boolean))];
 const numberOrNull = (value) => {
@@ -102,16 +103,16 @@ export const metricsFromRecords = (records = [], projectBom = {}) => {
   const projects = unique(ecn.map((row) => row.project));
   const bomTotal = projects.reduce((sum, project) => sum + Number(bomMap?.[project]?.bomTotal || 0), 0);
   const machinedBom = projects.reduce((sum, project) => sum + Number(bomMap?.[project]?.bomMachinedTotal || 0), 0);
-  const ecnMachined = ecn.filter((row) => row.isMachined).length;
-  const nonBomMachined = nonBom.filter((row) => row.isMachined).length;
+  const ecnMachined = monthlyMachinedCount(ecn, 'ECN');
+  const nonBomMachined = monthlyMachinedCount(nonBom, '非BOM');
   return {
     ecnCount: ecn.length,
     nonBomCount: nonBom.length,
     projectCount: projects.length,
     ecnMachinedCount: ecnMachined,
-    ecnStandardCount: Math.max(0, ecn.length - ecnMachined),
+    ecnStandardCount: ecn.filter((row) => !row.isMachined).length,
     nonBomMachinedCount: nonBomMachined,
-    nonBomStandardCount: Math.max(0, nonBom.length - nonBomMachined),
+    nonBomStandardCount: nonBom.filter((row) => !row.isMachined).length,
     bomDenominator: bomTotal,
     machinedBomDenominator: machinedBom,
     ecnRate: ratePercent(ecn.length, bomTotal),

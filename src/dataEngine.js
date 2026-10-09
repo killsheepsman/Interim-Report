@@ -696,7 +696,7 @@ export async function parseDqaEngineerSupplementFiles(files = []) {
       records.forEach((row) => {
         const engineer = supplementPerson(row["\u521b\u5efa\u4eba"]);
         if (!engineer) return;
-        result.ecnRecords.push({ ...sourceMeta, engineer, date: supplementDate(row["\u7533\u8bf7\u65e5\u671f"]), ecnNo: supplementText(row["ECN\u7f16\u53f7"]), reason: supplementText(row["\u53d8\u66f4\u539f\u56e0"]), changeType: supplementText(row["\u53d8\u66f4\u7c7b\u578b"]), materialCode: supplementText(row["\u7269\u6599\u4ee3\u7801"]), property: supplementText(row["ECN\u5c5e\u6027"]), isMachined: supplementText(row["\u7269\u6599\u4ee3\u7801"]).startsWith("35") });
+        result.ecnRecords.push({ ...sourceMeta, engineer, date: supplementDate(row["\u7533\u8bf7\u65e5\u671f"]), ecnNo: supplementText(row["ECN\u7f16\u53f7"]), reason: supplementText(row["\u53d8\u66f4\u539f\u56e0"]), changeType: supplementText(row["\u53d8\u66f4\u7c7b\u578b"]), materialCode: supplementText(row["\u7269\u6599\u4ee3\u7801"]), property: supplementText(row["ECN\u5c5e\u6027"]), engineerAdvice: ecnEngineerAdvice(row), isMachined: supplementText(row["\u7269\u6599\u4ee3\u7801"]).startsWith("35") });
       });
       result.files.push({ ...sourceMeta, name: file.name, kind: "ECN", rowCount: records.length, sheets: workbook.SheetNames, importedAt: result.updatedAt });
     } else if (lowerName.includes("\u975ebom") || records.some((row) => row["\u7533\u8bf7\u4eba"] != null && row["\u7269\u6599\u4ee3\u7801"] != null)) {
@@ -734,6 +734,32 @@ export const keepFirstSheetHeaders = (headers = []) => {
     return name;
   });
 };
+const MACHINED_EXCLUDED_ECN_REASONS = ['分批下单/多人协作下单', '装配3D更新(无物料变更)', 'PLM系统原因', '提前采购相关事宜'];
+const MACHINED_EXCLUDED_ECN_ADVICE = ['无需处理', '退料'];
+const cleanMachinedText = (value) => String(value ?? '').replace(/\s+/g, ' ').trim();
+export const ecnEngineerAdvice = (row = {}) => cleanMachinedText(row['工程师建议'] || row.engineerAdvice || row['产品在制']);
+export const excludeEcnMachinedRow = (row = {}) => {
+  const reason = cleanMachinedText(row.reason || row['变更原因']);
+  if (MACHINED_EXCLUDED_ECN_REASONS.some((item) => reason === item || reason.includes(item))) return true;
+  const advice = ecnEngineerAdvice(row);
+  return MACHINED_EXCLUDED_ECN_ADVICE.some((item) => advice === item);
+};
+export const monthlyMachinedCount = (records = [], source = 'ECN') => {
+  const seen = new Set();
+  let count = 0;
+  (Array.isArray(records) ? records : []).forEach((row) => {
+    if (!row?.isMachined) return;
+    if (source === 'ECN' && excludeEcnMachinedRow(row)) return;
+    const code = cleanMachinedText(row.materialCode);
+    const month = String(row.date || '').slice(0, 7);
+    if (!code || !/^\d{4}-\d{2}$/.test(month)) return;
+    const key = source + '|' + month + '|' + cleanMachinedText(row.pm) + '|' + code;
+    if (seen.has(key)) return;
+    seen.add(key);
+    count += 1;
+  });
+  return count;
+};
 const agentMaterialCode = (value) => supplementText(value).trim();
 const agentRecordId = (sourceId, index) => `${sourceId}:${index}`;
 export async function parseDqaAgentRawFiles(files = []) {
@@ -748,7 +774,7 @@ export async function parseDqaAgentRawFiles(files = []) {
     if (lowerName.includes("ecn") || records.some((row) => row["ECN编号"] != null || row["创建人"] != null)) {
       records.forEach((row, index) => {
         const materialCode = agentMaterialCode(row["物料代码"]);
-        result.ecnRecords.push({ ...sourceMeta, recordId: agentRecordId(sourceId, index), engineer: agentPerson(row["创建人"]), pm: agentPerson(row["PM审核人"]), date: supplementDate(row["申请日期"]), ecnNo: supplementText(row["ECN编号"]), projectName: supplementText(row["项目名称"]), reason: supplementText(row["变更原因"]), materialCode, bomTotal: number(row["BOM物料总款数"]), bomMachinedTotal: number(row["BOM(加工件)"]), isMachined: materialCode.startsWith("35") });
+        result.ecnRecords.push({ ...sourceMeta, recordId: agentRecordId(sourceId, index), engineer: agentPerson(row["创建人"]), pm: agentPerson(row["PM审核人"]), date: supplementDate(row["申请日期"]), ecnNo: supplementText(row["ECN编号"]), projectName: supplementText(row["项目名称"]), reason: supplementText(row["变更原因"]), materialCode, bomTotal: number(row["BOM物料总款数"]), bomMachinedTotal: number(row["BOM(加工件)"]), engineerAdvice: ecnEngineerAdvice(row), isMachined: materialCode.startsWith('35') });
       });
       result.files.push({ ...sourceMeta, name: file.name, kind: "ECN_AGENT_RAW", rowCount: records.length, sheets: workbook.SheetNames, importedAt: result.updatedAt });
     } else if (lowerName.includes("非bom") || lowerName.includes("nonbom") || records.some((row) => row["申请人"] != null && row["物料代码"] != null)) {
@@ -819,7 +845,7 @@ export async function parseDqaRdImportFiles(files = []) {
     if (kind === "ecn") {
       records.forEach((row, index) => {
         const materialCode = agentMaterialCode(row["物料代码"]);
-        agentRaw.ecnRecords.push({ ...sourceMeta, recordId: agentRecordId(sourceId, index), engineer: agentPerson(row["创建人"]), pm: agentPerson(row["PM审核人"]), date: supplementDate(row["申请日期"]), ecnNo: supplementText(row["ECN编号"]), projectName: supplementText(row["项目名称"]), reason: supplementText(row["变更原因"]), materialCode, bomTotal: number(row["BOM物料总款数"]), bomMachinedTotal: number(row["BOM(加工件)"]), isMachined: materialCode.startsWith("35") });
+        agentRaw.ecnRecords.push({ ...sourceMeta, recordId: agentRecordId(sourceId, index), engineer: agentPerson(row["创建人"]), pm: agentPerson(row["PM审核人"]), date: supplementDate(row["申请日期"]), ecnNo: supplementText(row["ECN编号"]), projectName: supplementText(row["项目名称"]), reason: supplementText(row["变更原因"]), materialCode, bomTotal: number(row["BOM物料总款数"]), bomMachinedTotal: number(row["BOM(加工件)"]), engineerAdvice: ecnEngineerAdvice(row), isMachined: materialCode.startsWith('35') });
       });
       agentRaw.files.push({ ...sourceMeta, name: file.name, kind: "ECN_AGENT_RAW", rowCount: records.length, sheets: workbook.SheetNames, importedAt: agentRaw.updatedAt });
     } else if (kind === "nonbom") {
@@ -899,13 +925,13 @@ export const buildDqaAgentRawMetrics = (raw = {}, range = {}) => {
     const projects = [...new Set(ecn.map((row) => row.project).filter(Boolean))];
     const bomDenominator = projects.reduce((sum, project) => sum + Number(bomByProject.get(project)?.bomTotal || 0), 0);
     const machinedBomDenominator = projects.reduce((sum, project) => sum + Number(bomByProject.get(project)?.bomMachinedTotal || 0), 0);
-    const ecnMachined = ecn.filter((row) => row.isMachined).length;
-    const ecnStandard = ecn.length - ecnMachined;
+    const ecnMachined = monthlyMachinedCount(ecn, 'ECN');
+    const ecnStandard = ecn.filter((row) => !row.isMachined).length;
     const standardBomDenominator = Math.max(0, bomDenominator - machinedBomDenominator);
     const machinedEcnRate = machinedBomDenominator ? ecnMachined / machinedBomDenominator : null;
     const standardEcnRate = standardBomDenominator ? ecnStandard / standardBomDenominator : null;
     const reasonMap = agentRawGroup(ecn, (row) => row.reason || "未填写原因");
-    return { ecnCount: ecn.length, nonBomCount: nonBom.length, projectCount: projects.length, ecnMachinedCount: ecnMachined, ecnStandardCount: ecnStandard, nonBomMachinedCount: nonBom.filter((row) => row.isMachined).length, nonBomStandardCount: nonBom.filter((row) => !row.isMachined).length, bomDenominator, machinedBomDenominator, standardBomDenominator, ecnRate: bomDenominator ? ecn.length / bomDenominator : null, machinedEcnRate, standardEcnRate, machinedToStandardEcnRateRatio: machinedEcnRate != null && standardEcnRate ? machinedEcnRate / standardEcnRate : null, ecnReasons: [...reasonMap.entries()].map(([name, items]) => ({ name, count: items.length })).sort((left, right) => right.count - left.count) };
+    return { ecnCount: ecn.length, nonBomCount: nonBom.length, projectCount: projects.length, ecnMachinedCount: ecnMachined, ecnStandardCount: ecnStandard, nonBomMachinedCount: monthlyMachinedCount(nonBom, '非BOM'), nonBomStandardCount: nonBom.filter((row) => !row.isMachined).length, bomDenominator, machinedBomDenominator, standardBomDenominator, ecnRate: bomDenominator ? ecn.length / bomDenominator : null, machinedEcnRate, standardEcnRate, machinedToStandardEcnRateRatio: machinedEcnRate != null && standardEcnRate ? machinedEcnRate / standardEcnRate : null, ecnReasons: [...reasonMap.entries()].map(([name, items]) => ({ name, count: items.length })).sort((left, right) => right.count - left.count) };
   };
   return { range: { start: range.start || range.start2026 || "", end: range.end || range.end2026 || "" }, sourceRows: { ecn: ecnRecords.length, nonBom: nonBomRecords.length, projectsWithBom: bomByProject.size }, overall: metricsFor(withOwnership), byEngineer: Object.fromEntries([...byEngineer.entries()].map(([name, rows]) => [name, metricsFor(rows)])), projectBom: Object.fromEntries(bomByProject), records: withOwnership };
 };

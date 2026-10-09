@@ -339,7 +339,13 @@ const formatRateLabel = (rate) => {
   return `${text}%`;
 };
 
-export const renderLieflatPairedTrend = ({ title, rows = [], barLabels = ["不良数量", "总数量"], lineLabel = "不良率", grain = "week", compact = false } = {}) => {
+export const renderLieflatPairedTrend = ({ title, rows = [], barLabels = ["不良数量", "总数量"], lineLabel = "不良率", grain = "week", compact = false, targetRate = null, singleBar = false, lineSuffix = "%" } = {}) => {
+  const lineText = (rate) => {
+    if (lineSuffix === "%") return formatRateLabel(rate);
+    const n = Number(rate) || 0;
+    const shown = n >= 10 ? n.toFixed(0) : n.toFixed(1).replace(/\.0$/, "");
+    return lineSuffix ? shown + lineSuffix : shown;
+  };
   const source = (rows || [])
     .map((row) => ({
       label: String(row.label || ""),
@@ -352,7 +358,9 @@ export const renderLieflatPairedTrend = ({ title, rows = [], barLabels = ["不�
   if (grain === "category" ? !source.length : source.length < 2) return "";
   const scale = compressedRungs(source.flatMap((row) => [row.bad, row.total]));
   const { maxRungs, rungsFor, useCompress } = scale;
-  const rateMax = niceRateMax(Math.max(...source.map((row) => row.rate), 0));
+  const targetNumber = Number(targetRate);
+  const hasTarget = Number.isFinite(targetNumber) && targetNumber > 0;
+  const rateMax = niceRateMax(Math.max(...source.map((row) => row.rate), hasTarget ? targetNumber : 0, 0));
   const bandSize = grain === "week" && source.length > 12 ? 12 : source.length;
   const bands = [];
   for (let index = 0; index < source.length; index += bandSize) bands.push(source.slice(index, index + bandSize));
@@ -379,16 +387,16 @@ export const renderLieflatPairedTrend = ({ title, rows = [], barLabels = ["不�
       const center = x0(index);
       const xa = center - pairOffset;
       const xb = center + pairOffset;
-      const faint = drawRungs({ x: xa, count: rungsFor(row.total), color: PALM.FAINTDATA, hw, base, step, seed: absolute + 11 });
+      const faint = singleBar ? { lines: "", topY: base } : drawRungs({ x: xa, count: rungsFor(row.total), color: PALM.FAINTDATA, hw, base, step, seed: absolute + 11 });
       const solid = drawRungs({ x: xb, count: rungsFor(row.bad), color: PALM.DATA, hw, base, step, seed: absolute + 31 });
-      const tip = `${row.label}：${barLabels[0]} ${row.bad}；${barLabels[1]} ${row.total}；${lineLabel} ${row.rate}%`;
+      const tip = `${row.label}：${barLabels[0]} ${row.bad}；${barLabels[1]} ${row.total}；${lineLabel} ${lineText(row.rate)}`;
       const selectedClass = undefined;
       const groupClass = row.selected ? "lieflat-selected-group" : "";
       const groupId = absolute === firstSelected ? "lieflat-selected-start" : undefined;
       const axisLines = fittedAxis.wrapped[index] || [shortPeriodLabel(row.label, grain)];
       const axisY = base + box.axisLabelOffset;
       const axisText = node("text", { class: "lieflat-axis", x: center.toFixed(1), y: axisY, "font-size": fittedAxis.fontSize, "font-weight": 700, fill: PALM.MUT, style: undefined, "text-anchor": "middle" }, axisLines.map((line, lineIndex) => `<tspan x="${center.toFixed(1)}" dy="${lineIndex === 0 ? 0 : fittedAxis.fontSize + 3}">${escapeHtml(line)}</tspan>`).join(""));
-      return `<g${groupClass ? ` class="${groupClass}"` : ""}${groupId ? ` id="${groupId}"` : ""}>${titleNode(tip)}${faint.lines}${solid.lines}${node("text", { class: selectedClass, x: xa.toFixed(1), y: (faint.topY - 8).toFixed(1), "font-size": compact ? 10 : 8, "font-weight": 700, fill: PALM.FAINTDATA, style: undefined, "text-anchor": "middle" }, row.total)}${node("text", { class: selectedClass, x: xb.toFixed(1), y: (solid.topY - 8).toFixed(1), "font-size": compact ? 11 : 9, "font-weight": 800, fill: PALM.TXT, style: undefined, "text-anchor": "middle" }, row.bad)}${axisText}</g>`;
+      return `<g${groupClass ? ` class="${groupClass}"` : ""}${groupId ? ` id="${groupId}"` : ""}>${titleNode(tip)}${faint.lines}${solid.lines}${singleBar ? "" : node("text", { class: selectedClass, x: xa.toFixed(1), y: (faint.topY - 8).toFixed(1), "font-size": compact ? 10 : 8, "font-weight": 700, fill: PALM.FAINTDATA, style: undefined, "text-anchor": "middle" }, row.total)}${node("text", { class: selectedClass, x: xb.toFixed(1), y: (solid.topY - 8).toFixed(1), "font-size": compact ? 11 : 9, "font-weight": 800, fill: PALM.TXT, style: undefined, "text-anchor": "middle" }, row.bad)}${axisText}</g>`;
     }).join("");
     const ratePath = `M${band.map((row, index) => `${x0(index).toFixed(1)} ${rateY(row.rate).toFixed(1)}`).join(" L ")}`;
     const rateDots = band.map((row, index) => `<g>${node("circle", {
@@ -398,15 +406,16 @@ export const renderLieflatPairedTrend = ({ title, rows = [], barLabels = ["不�
       x: x0(index).toFixed(1), y: (rateY(row.rate) - 10).toFixed(1),
       "font-size": compact ? 9 : 8, "font-weight": 800, fill: PALM.HERO, "text-anchor": "middle",
       style: `fill:${PALM.HERO};paint-order:stroke;stroke:${PALM.BG};stroke-width:3px`,
-    }, formatRateLabel(row.rate))}</g>`).join("");
+    }, lineText(row.rate))}</g>`).join("");
     const rateTicks = [0, rateMax / 2, rateMax];
     const rateAxis = rateTicks.map((tick) => {
       const y = rateY(tick);
-      return `${node("line", { x1: padX, y1: y.toFixed(1), x2: (width - rateAxisPad + 8).toFixed(1), y2: y.toFixed(1), stroke: PALM.GRID, "stroke-width": 0.6 })}${node("text", { x: (width - 4).toFixed(1), y: (y + 3).toFixed(1), "font-size": 8, "font-weight": 700, fill: PALM.MUT, "text-anchor": "end" }, formatRateLabel(tick))}`;
+      return `${node("line", { x1: padX, y1: y.toFixed(1), x2: (width - rateAxisPad + 8).toFixed(1), y2: y.toFixed(1), stroke: PALM.GRID, "stroke-width": 0.6 })}${node("text", { x: (width - 4).toFixed(1), y: (y + 3).toFixed(1), "font-size": 8, "font-weight": 700, fill: PALM.MUT, "text-anchor": "end" }, lineText(tick))}`;
     }).join("");
+    const targetLine = hasTarget ? node("line", { x1: padX, y1: rateY(targetNumber).toFixed(1), x2: (width - rateAxisPad).toFixed(1), y2: rateY(targetNumber).toFixed(1), stroke: "#C4473A", "stroke-width": 1.2, "stroke-dasharray": "4 3" }) + node("text", { x: (padX + 2).toFixed(1), y: (rateY(targetNumber) - 4).toFixed(1), "font-size": 8, "font-weight": 800, fill: "#C4473A" }, "达标 " + targetNumber + "%") : "";
     const splitLine = node("line", { x1: padX, y1: (lineBase + splitGap / 2).toFixed(1), x2: (width - rateAxisPad + 8).toFixed(1), y2: (lineBase + splitGap / 2).toFixed(1), stroke: PALM.FLOOR, "stroke-width": 0.8, "stroke-dasharray": "3 4" });
     return svgRoot(width, height,
-      `${rateAxis}${splitLine}${groups}${node("line", { x1: 28, y1: base + 4, x2: width - rateAxisPad, y2: base + 4, stroke: PALM.GRID, "stroke-width": 0.8 })}${node("path", { d: ratePath, fill: "none", stroke: PALM.HERO, "stroke-width": 2 })}${rateDots}`);
+      `${rateAxis}${targetLine}${splitLine}${groups}${node("line", { x1: 28, y1: base + 4, x2: width - rateAxisPad, y2: base + 4, stroke: PALM.GRID, "stroke-width": 0.8 })}${node("path", { d: ratePath, fill: "none", stroke: PALM.HERO, "stroke-width": 2 })}${rateDots}`);
   };
   const paged = bands.length > 1;
   const svg = paged
@@ -417,7 +426,7 @@ export const renderLieflatPairedTrend = ({ title, rows = [], barLabels = ["不�
     title: chartTitle,
     sub: paged
       ? `浅柱=${barLabels[1] || "送检"}，深柱=${barLabels[0] || "不良"}，折线=${lineLabel || "不良率"} · 折线在上层、柱在下层 · 次坐标按实际比例缩放 · 按每12周分段`
-      : `浅柱=${barLabels[1] || "送检"}，深柱=${barLabels[0] || "不良"}，折线=${lineLabel || "不良率"} · 折线在上层、柱在下层 · 次坐标按实际比例缩放 · 柱顶为真实数量${useCompress ? " · 柱高已开方压缩" : ""}`,
+      : `浅柱=${barLabels[1] || "送检"}，深柱=${barLabels[0] || "不良"}，折线=${lineLabel || "不良率"} · 折线在上层、柱在下层 · 次坐标按实际比例缩放 · 柱顶为真实数量${useCompress ? " · 柱高已开方压缩" : ""}${hasTarget ? " · 红虚线=达标" + targetNumber + "%" : ""}${singleBar ? " · 只画数量柱" : ""}`,
     src: "PAIRED RUNGS · PALM · 质量",
     svg,
     wide: true,
@@ -474,4 +483,364 @@ export const renderLieflatFigure = (figure = {}, { compact = false } = {}) => {
     return { label: item.name || item.label || "未命名", name: item.name || item.label, value: Number(valueSeries?.values?.[index]) || 0, rate: Number.isFinite(rate) ? rate : null, focus: Boolean(item.focus), rank: item.rank, rankTotal: item.rankTotal || item.total };
   });
   return renderLieflatRungBars({ title, rows: values, valueLabel: valueSeries?.name || figure.unit || "数量", compact });
+};
+
+const HEAT_INK = "#1C1C1A";
+const HEAT_PAPER = "#F0EFEB";
+const heatFill = (value) => {
+  if (value == null || Number.isNaN(Number(value))) return "";
+  const rate = Number(value);
+  if (rate >= 95) return HEAT_INK;
+  if (rate >= 90) return "#4A4944";
+  if (rate >= 80) return "#8F8E88";
+  if (rate >= 70) return "#B0AFA9";
+  return "#D8D7D1";
+};
+const heatTextFill = (fill) => (fill === HEAT_INK || fill === "#4A4944" || fill === "#8F8E88" ? HEAT_PAPER : HEAT_INK);
+const heatLabel = (value) => {
+  const rate = Number(value);
+  if (!Number.isFinite(rate)) return "";
+  return Number.isInteger(rate) ? String(rate) : String(Math.round(rate * 10) / 10);
+};
+
+export const renderLieflatMatrixHeat = ({ title, columns = [], rows = [], valueLabel = "5分率" } = {}) => {
+  const cols = (Array.isArray(columns) ? columns : []).map((item) => String(item || "")).filter(Boolean);
+  const body = (Array.isArray(rows) ? rows : []).filter((row) => row && String(row.label || "").trim());
+  if (!cols.length || !body.length) return "";
+  const labelW = Math.max(120, ...body.map((row) => measureAxisLine(row.label, 14) + 18));
+  const pitch = Math.max(50, Math.min(72, Math.floor((760 - labelW - 36) / cols.length)));
+  const cell = pitch - 8;
+  const top = 46;
+  const width = Math.max(640, labelW + 20 + cols.length * pitch + 12);
+  const legendY = top + body.length * pitch + 8;
+  const height = legendY + 28;
+  const parts = [];
+  cols.forEach((label, index) => {
+    const x = labelW + index * pitch + cell / 2;
+    parts.push(node("text", {
+      x: x.toFixed(1),
+      y: 28,
+      "text-anchor": "middle",
+      "font-weight": 700,
+      fill: "#6A6963",
+    }, escapeHtml(label)));
+  });
+  let worst = null;
+  body.forEach((row, rowIndex) => {
+    const y = top + rowIndex * pitch;
+    parts.push(node("text", {
+      x: labelW - 12,
+      y: (y + cell / 2 + 5).toFixed(1),
+      "text-anchor": "end",
+      "font-weight": 700,
+      fill: "#6A6963",
+    }, escapeHtml(row.label)));
+    cols.forEach((_, colIndex) => {
+      const cellData = row.cells?.[colIndex] || {};
+      const x = labelW + colIndex * pitch;
+      const count = Number(cellData.count) || 0;
+      const value = count > 0 && cellData.value != null && cellData.value !== "" ? Number(cellData.value) : null;
+      if (value == null) {
+        parts.push(node("circle", {
+          cx: (x + cell / 2).toFixed(1),
+          cy: (y + cell / 2).toFixed(1),
+          r: 2.2,
+          fill: "#D8D6CE",
+        }, titleNode(row.label + " " + cols[colIndex] + " 没有出货")));
+        return;
+      }
+      const fill = heatFill(value);
+      const tip = row.label + " " + cols[colIndex] + " " + valueLabel + " " + heatLabel(value);
+      parts.push(node("rect", {
+        x: x.toFixed(1),
+        y: y.toFixed(1),
+        width: cell,
+        height: cell,
+        rx: 4,
+        fill,
+      }, titleNode(tip)));
+      parts.push(node("text", {
+        x: (x + cell / 2).toFixed(1),
+        y: (y + cell / 2 + 5).toFixed(1),
+        "text-anchor": "middle",
+        "font-weight": 800,
+        fill: heatTextFill(fill),
+      }, escapeHtml(heatLabel(value))));
+      if (!worst || value < worst.value || (value === worst.value && colIndex > worst.colIndex)) {
+        worst = { x, y, value, colIndex };
+      }
+    });
+  });
+  if (worst) {
+    parts.push(node("rect", {
+      x: (worst.x - 3.5).toFixed(1),
+      y: (worst.y - 3.5).toFixed(1),
+      width: cell + 7,
+      height: cell + 7,
+      rx: 6,
+      fill: "none",
+      stroke: HEAT_INK,
+      "stroke-width": 1.2,
+      "stroke-dasharray": "3 3",
+    }));
+  }
+  const legend = [
+    ["#D8D7D1", "<70"],
+    ["#B0AFA9", "70–79"],
+    ["#8F8E88", "80–89"],
+    ["#4A4944", "90–94"],
+    [HEAT_INK, "95+"],
+  ];
+  parts.push(node("text", { x: 8, y: legendY + 16, "font-weight": 700, fill: "#B0AFA9" }, "颜色 = " + escapeHtml(valueLabel)));
+  legend.forEach(([color, label], index) => {
+    const x = 132 + index * 78;
+    parts.push(node("rect", { x, y: legendY + 4, width: 14, height: 14, rx: 3, fill: color }));
+    parts.push(node("text", { x: x + 18, y: legendY + 16, "font-weight": 700, fill: "#8F8E88" }, escapeHtml(label)));
+  });
+  parts.push(node("circle", { cx: 132 + legend.length * 78 + 6, cy: legendY + 11, r: 2.2, fill: "#D8D6CE" }));
+  parts.push(node("text", { x: 132 + legend.length * 78 + 14, y: legendY + 16, "font-weight": 700, fill: "#8F8E88" }, "没有出货"));
+  const svg = svgRoot(width, height, parts.join(""));
+  return wrapCard({
+    badge: "L16 MATRIX HEAT",
+    title: title || "TPM 5分率",
+    sub: "行是 TPM，列是月份。颜色越深，5分率越高。小点是该月没有出货。最后一列是当年1月到截止月的累计。虚线框是最低的5分率。",
+    src: "MATRIX HEAT · L16 · 5分率",
+    svg,
+    wide: false,
+    compact: false,
+    scroll: false,
+  }).replace("lieflat-card", "lieflat-card lieflat-heat");
+};
+
+const PASS_BG = "#1F7A45";
+const FAIL_BG = "#C4473A";
+const AVG_OK = "#137A3A";
+const AVG_BAD = "#B42318";
+const LOW_INK = "#F5C518";
+const percentText = (value) => {
+  const rate = Number(value);
+  if (!Number.isFinite(rate)) return "";
+  return (Number.isInteger(rate) ? String(rate) : String(Math.round(rate * 10) / 10)) + "%";
+};
+const averageText = (value) => {
+  const score = Number(value);
+  if (!Number.isFinite(score)) return "";
+  return String(Math.round(score * 100) / 100);
+};
+const markedText = (attrs, content, { fill, conflict }) => node("text", {
+  ...attrs,
+  fill,
+  stroke: conflict ? "#FFFFFF" : "none",
+  "stroke-width": conflict ? 3 : 0,
+  "paint-order": "stroke",
+  "stroke-linejoin": "round",
+}, content);
+
+export const renderOqcTargetMatrix = ({ title, columns = [], rows = [], division = "" } = {}) => {
+  const cols = (Array.isArray(columns) ? columns : []).map((item) => String(item || "")).filter(Boolean);
+  const body = (Array.isArray(rows) ? rows : []).filter((row) => row && String(row.label || "").trim());
+  if (!cols.length || !body.length) return "";
+  const labelW = Math.max(132, ...body.map((row) => measureAxisLine(row.label, 14) + 18));
+  const cellW = 92;
+  const cellH = 62;
+  const gap = 8;
+  const pitchX = cellW + gap;
+  const pitchY = cellH + gap;
+  const top = 42;
+  const width = Math.max(720, labelW + 16 + cols.length * pitchX + 8);
+  const legendY = top + body.length * pitchY + 6;
+  const height = legendY + 28;
+  const parts = [];
+  const totalIndex = cols.findIndex((label) => label === "累计");
+  if (totalIndex >= 0) {
+    const bandX = labelW + totalIndex * pitchX - 6;
+    const bandY = 6;
+    const bandH = top + body.length * pitchY - bandY - 2;
+    parts.push(node("rect", {
+      x: bandX.toFixed(1),
+      y: bandY.toFixed(1),
+      width: cellW + 12,
+      height: bandH.toFixed(1),
+      rx: 12,
+      fill: "#D5DDE8",
+    }));
+  }
+  cols.forEach((label, index) => {
+    parts.push(node("text", {
+      x: (labelW + index * pitchX + cellW / 2).toFixed(1),
+      y: 24,
+      "text-anchor": "middle",
+      "font-weight": 700,
+      fill: "#6A6963",
+      class: "lieflat-heat-month",
+    }, escapeHtml(label)));
+  });
+  body.forEach((row, rowIndex) => {
+    const y = top + rowIndex * pitchY;
+    parts.push(node("text", {
+      x: labelW - 12,
+      y: (y + cellH / 2 + 5).toFixed(1),
+      "text-anchor": "end",
+      "font-weight": 700,
+      fill: "#6A6963",
+      class: "lieflat-heat-name",
+    }, escapeHtml(row.label)));
+    cols.forEach((month, colIndex) => {
+      const cell = row.cells?.[colIndex] || {};
+      const x = labelW + colIndex * pitchX;
+      const count = Number(cell.count) || 0;
+      const five = count > 0 && cell.value != null && cell.value !== "" ? Number(cell.fiveRate ?? cell.value) : null;
+      if (five == null) {
+        parts.push(node("circle", {
+          cx: (x + cellW / 2).toFixed(1),
+          cy: (y + cellH / 2).toFixed(1),
+          r: 2.4,
+          fill: "#D8D6CE",
+        }, titleNode(row.label + " " + month + " 没有出货")));
+        return;
+      }
+      const target = Number(cell.target);
+      const judged = Number.isFinite(target);
+      const passed = judged && five >= target;
+      const bg = judged ? (passed ? PASS_BG : FAIL_BG) : "#D8D7D1";
+      const avg = Number(cell.avg);
+      const low = Number(cell.lowRate);
+      const avgOk = Number.isFinite(avg) && avg >= 4.2;
+      parts.push(node("rect", {
+        x: x.toFixed(1), y: y.toFixed(1), width: cellW, height: cellH, rx: 6, fill: bg,
+      }, titleNode(row.label + " " + month + " 5分率 " + percentText(five) + (judged ? (passed ? " 达标" : " 未达标") : " 未匹配项目组") + " 平均分 " + averageText(avg) + " 低分率 " + percentText(low))));
+      if (Number.isFinite(avg)) {
+        const avgFill = avgOk ? AVG_OK : AVG_BAD;
+        const conflict = bg === PASS_BG || bg === FAIL_BG;
+        parts.push(markedText({
+          x: (x + 6).toFixed(1),
+          y: (y + 16).toFixed(1),
+          class: "lieflat-heat-corner",
+          "font-weight": 800,
+        }, escapeHtml(averageText(avg)), { fill: avgFill, conflict }));
+      }
+      if (Number.isFinite(low)) {
+        parts.push(markedText({
+          x: (x + cellW - 6).toFixed(1),
+          y: (y + 16).toFixed(1),
+          "text-anchor": "end",
+          class: "lieflat-heat-corner",
+          "font-weight": 800,
+        }, escapeHtml(percentText(low)), { fill: LOW_INK, conflict: judged }));
+      }
+      parts.push(node("text", {
+        x: (x + cellW / 2).toFixed(1),
+        y: (y + cellH / 2 + 10).toFixed(1),
+        "text-anchor": "middle",
+        "font-weight": 800,
+        fill: judged ? "#FFFFFF" : "#1C1C1A",
+        class: "lieflat-heat-center",
+      }, escapeHtml(percentText(five))));
+    });
+  });
+  const legend = [["#1F7A45", "5分率达标"], ["#C4473A", "5分率未达标"], ["#D8D7D1", "未匹配项目组"]];
+  parts.push(node("text", { x: 8, y: legendY + 16, "font-weight": 700, fill: "#8F8E88", class: "lieflat-heat-legend" }, "底色"));
+  legend.forEach(([color, label], index) => {
+    const x = 48 + index * 132;
+    parts.push(node("rect", { x, y: legendY + 4, width: 14, height: 14, rx: 3, fill: color }));
+    parts.push(node("text", { x: x + 18, y: legendY + 16, "font-weight": 700, fill: "#6A6963", class: "lieflat-heat-legend" }, escapeHtml(label)));
+  });
+  const sub = division === "半导体&北美"
+    ? "中间白字是5分率。北美项目部达到65%为绿，传感器产品部和IC载版达到70%为绿。左上角是平均分，4.2及以上为绿字。右上角黄字是低分率。小点是该月没有出货。"
+    : "中间白字是5分率，达到60%为绿，未达到为红。左上角是平均分，4.2及以上为绿字。右上角黄字是低分率。小点是该月没有出货。";
+  const svg = svgRoot(width, height, parts.join(""));
+  return wrapCard({
+    badge: "TPM 月度结果",
+    title: title || "TPM 月度结果",
+    sub,
+    src: "达标矩阵 · 5分率 / 平均分 / 低分率",
+    svg,
+    wide: false,
+    compact: false,
+    scroll: false,
+  }).replace("lieflat-card", "lieflat-card lieflat-heat");
+};
+
+
+
+const smoothLine = (points) => {
+  if (points.length < 2) return "";
+  const fmt = (n) => Number(n).toFixed(1);
+  if (points.length === 2) return "M" + fmt(points[0].x) + " " + fmt(points[0].y) + " L " + fmt(points[1].x) + " " + fmt(points[1].y);
+  let d = "M" + fmt(points[0].x) + " " + fmt(points[0].y);
+  for (let i = 0; i < points.length - 1; i += 1) {
+    const p0 = points[i - 1] || points[i];
+    const p1 = points[i];
+    const p2 = points[i + 1];
+    const p3 = points[i + 2] || p2;
+    const c1x = p1.x + (p2.x - p0.x) / 6;
+    const c1y = p1.y + (p2.y - p0.y) / 6;
+    const c2x = p2.x - (p3.x - p1.x) / 6;
+    const c2y = p2.y - (p3.y - p1.y) / 6;
+    d += " C" + fmt(c1x) + " " + fmt(c1y) + " " + fmt(c2x) + " " + fmt(c2y) + " " + fmt(p2.x) + " " + fmt(p2.y);
+  }
+  return d;
+};
+export const renderLieflatMultiLine = ({ title, subtitle = "", months = [], series = [], target = null } = {}) => {
+  const lines = (series || []).filter((item) => (item.values || []).some((value) => value != null && value !== ""));
+  if (months.length < 2 || !lines.length) return "";
+  const numbers = lines.flatMap((item) => (item.values || []).filter((value) => value != null && value !== "").map(Number));
+  const targetNumber = Number(target);
+  const hasTarget = Number.isFinite(targetNumber) && targetNumber > 0;
+  const max = niceRateMax(Math.max(hasTarget ? targetNumber : 0, ...numbers, 0));
+  const count = months.length;
+  const left = 54;
+  const right = 28;
+  const top = 18;
+  const plot = 168;
+  const base = top + plot;
+  const gap = Math.max(72, Math.min(104, Math.floor(640 / Math.max(count - 1, 1))));
+  const width = left + right + (count - 1) * gap;
+  const height = base + 36;
+  const x = (index) => left + index * gap;
+  const y = (value) => base - (Math.max(0, Number(value) || 0) / max) * plot;
+  const ink = ["#C1121F", "#1D4ED8", "#15803D", "#C2410C", "#7C3AED", "#0F766E", "#A16207", "#BE185D", "#111827", "#0369A1", "#4D7C0F", "#9A3412"];
+  const floor = months.map((_, index) => node("line", {
+    x1: x(index).toFixed(1), y1: base, x2: x(index).toFixed(1), y2: base - 7,
+    stroke: "#CFCEC7", "stroke-width": 0.6,
+  })).join("");
+  const axis = [0, max / 2, max].map((value) => {
+    const yy = y(value).toFixed(1);
+    return node("line", { x1: left - 8, y1: yy, x2: width - 16, y2: yy, stroke: PALM.GRID, "stroke-width": 0.6 })
+      + node("text", { x: left - 12, y: (Number(yy) + 3).toFixed(1), "font-size": 8, "font-weight": 650, fill: PALM.MUT, "text-anchor": "end" }, formatRateLabel(value));
+  }).join("");
+  const baseline = node("line", { x1: left - 8, y1: base, x2: width - 16, y2: base, stroke: PALM.GRID, "stroke-width": 0.8 });
+  const paths = lines.map((item, index) => {
+    const color = ink[index % ink.length];
+    const points = (item.values || []).map((value, pointIndex) => value == null || value === "" ? null : { index: pointIndex, value: Number(value), x: x(pointIndex), y: y(value) }).filter(Boolean);
+    if (!points.length) return "";
+    const d = smoothLine(points);
+    const peak = points.reduce((best, point) => point.value > best.value ? point : best, points[0]);
+    const dots = points.map((point) => "<g>" + titleNode(item.name + " " + months[point.index] + " " + formatRateLabel(point.value)) + node("circle", {
+      cx: point.x.toFixed(1), cy: point.y.toFixed(1), r: point === peak ? 3.4 : 2.1,
+      fill: color, stroke: color, "stroke-width": 0,
+    }) + "</g>").join("");
+    const label = node("text", {
+      x: peak.x.toFixed(1), y: (peak.y - 8).toFixed(1), "font-size": 8.5, "font-weight": 800, fill: color, "text-anchor": "middle",
+      style: "paint-order:stroke;stroke:#F0EFEB;stroke-width:3px",
+    }, formatRateLabel(peak.value));
+    return node("path", { d, fill: "none", stroke: color, "stroke-width": 2.2 }) + dots + label;
+  }).join("");
+  const targetLine = hasTarget
+    ? node("line", { x1: left - 8, y1: y(targetNumber).toFixed(1), x2: width - 16, y2: y(targetNumber).toFixed(1), stroke: "#C4473A", "stroke-width": 1, "stroke-dasharray": "3 3" })
+      + node("text", { x: width - 14, y: (y(targetNumber) - 5).toFixed(1), "font-size": 8, "font-weight": 700, fill: "#C4473A", "text-anchor": "end" }, formatRateLabel(targetNumber))
+    : "";
+  const labels = months.map((month, index) => node("text", {
+    x: x(index).toFixed(1), y: base + 18, "font-size": 8, "font-weight": 650, fill: PALM.MUT, "text-anchor": "middle", "letter-spacing": ".04em",
+  }, escapeHtml(String(month).replace(/^\d{4}[-年]/, "")))).join("");
+  const legend = lines.map((item, index) => '<span style="display:inline-flex;align-items:center;gap:5px;margin:0 12px 4px 0;color:#58402E;font-size:11px"><i style="width:16px;height:3px;border-radius:2px;background:' + ink[index % ink.length] + ';display:inline-block"></i>' + escapeHtml(item.name) + "</span>").join("");
+  const svg = svgRoot(width, height, floor + axis + baseline + targetLine + paths + labels);
+  return wrapCard({
+    badge: "LUPI 基础型 · 折线",
+    title,
+    sub: subtitle || "发丝折线 · 一点一月 · 纵轴为比例 · 虚线为 0.8%",
+    src: "HAIRLINE LINE · PALM · 质量",
+    svg,
+    wide: true,
+  }).replace("</figure>", '<div class="lieflat-sub" style="margin-top:8px">' + legend + "</div></figure>");
 };

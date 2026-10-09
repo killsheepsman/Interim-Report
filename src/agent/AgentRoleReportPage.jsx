@@ -20,6 +20,7 @@ import zengShiqiangPerspectiveSkill from "./standards/zeng-shiqiang-perspective.
 import { TIMEOUT_FALLBACK_NOTE, actionTableRowCount, aiParticipationModel, buildDeterministicAnalysisMarkdown, buildFixedDataRoleReport, buildPmAiMessages, buildRoleAnalysisBrief, defaultAnalysisMarkdown, directorDeptLabel, extractAnalysisMarkdown, hasTimeoutFallbackMarker, needsRoleModelAnalysis, buildElonAcceptanceMessages, parseElonAcceptance, pmAcceptanceGaps, pmLessonsFromGaps, repairPmAiAnalysis, selectPreviousRoleReport, pmParetoReasons, previousReportExcerpt, repairRoleAnalysis, stitchRoleReportParts } from "./roleFixedEvidenceReport.js";
 import { emptyRoleReportProgress, getRoleReportJob, isRoleReportJobRunning, patchRoleReportJob, readRoleReportPeriod, subscribeRoleReportJob, writeRoleReportPeriod } from "./roleReportJobRuntime.js";
 import { describeAiError } from "./aiErrorMessage.js";
+import { referenceSecondsFor, writeReportDuration } from "./reportDuration.js";
 import { recordsForPm, recordsInRange, engineerRowsForPm, reviewStatsForNames, rdIssuesForNames, buildPmPeerRows, rankMetricRows, tpmForPm, countTrendFromDates, pmPerson, normalizeIssueDate, buildPmDqaMetrics, orgMappedPeople, selectedRolePeriod, pickDiverseIssueExamples, pmScopedEngineerNames, peerRatesComparable, peerRatesDefined, attributeReviewSessions, reviewStatsForPm, assembleTpmEvidence, buildTpmOqc, assembleDirectorEvidence, buildDirectorOqc, splitRoleLineCounts } from "./pmRoleEvidence.js";
 
 const ROLE_CACHE_KEY = "qms-agent-role-report-cache-v2";
@@ -1736,10 +1737,41 @@ export function AgentRoleReportPage({ initialRole = "组装人员", data = {}, f
     if (isRoleReportJobRunning(getRoleReportJob(role))) return;
     const controller = new AbortController();
     abortRef.current = controller;
+    const durationKey = "role:" + role;
+    const referenceSeconds = referenceSecondsFor(durationKey);
+    const batchStartedAt = Date.now();
+    let personStartedAt = batchStartedAt;
+    let finishedCount = 0;
+    let progressTimer = 0;
+    const roleProgressPercent = () => {
+      const total = Math.max(1, targetRecipients.length);
+      const fraction = Math.min(0.95, Math.max(0, (Date.now() - personStartedAt) / 1000) / Math.max(1, referenceSeconds));
+      return Math.min(99, Math.round((finishedCount + fraction) / total * 100));
+    };
+    const roleDurationDetail = (elapsed) => "已用 " + elapsed + " 秒";
+    const stopProgressTimer = () => {
+      if (progressTimer) window.clearInterval(progressTimer);
+      progressTimer = 0;
+    };
+    const paintDurationProgress = () => {
+      const current = getRoleReportJob(role)?.progress;
+      if (!current?.visible || ["已完成", "已停止", "生成失败", "数据准备失败"].includes(current.phase)) return;
+      const elapsed = Math.max(1, Math.round((Date.now() - batchStartedAt) / 1000));
+      const detail = String(current.detail || "正在生成").replace(/ · 已用 \d+ 秒.*$/, "");
+      patchRoleReportJob(role, { progress: { ...current, percent: roleProgressPercent(), detail: detail + " · " + roleDurationDetail(elapsed) } });
+    };
     const setGenerationProgress = (updater) => {
       const current = getRoleReportJob(role)?.progress || emptyRoleReportProgress();
       const next = typeof updater === "function" ? updater(current) : updater;
-      patchRoleReportJob(role, { progress: next });
+      const terminal = ["已完成", "已停止", "生成失败", "数据准备失败"].includes(next?.phase);
+      const explicit = updater && typeof updater !== "function" && Object.prototype.hasOwnProperty.call(updater, "percent") ? Number(updater.percent) : NaN;
+      patchRoleReportJob(role, {
+        progress: {
+          ...next,
+          percent: Number.isFinite(explicit) ? explicit : (terminal ? (Number(current.percent) || 0) : roleProgressPercent()),
+        },
+      });
+      if (!terminal) paintDurationProgress();
     };
     const setState = (next) => patchRoleReportJob(role, { state: next });
     const setSourceState = (next) => patchRoleReportJob(role, { sourceState: next });
@@ -1749,10 +1781,14 @@ export function AgentRoleReportPage({ initialRole = "组装人员", data = {}, f
       patchRoleReportJob(role, { cacheEntry: value });
     };
     const releaseController = () => {
+      stopProgressTimer();
       if (getRoleReportJob(role)?.controller === controller) patchRoleReportJob(role, { controller: null });
       if (abortRef.current === controller) abortRef.current = null;
     };
-    patchRoleReportJob(role, { controller, progress: { visible: true, recipientNames: [...targetRecipients], completedNames: [], currentName: "", total: targetRecipients.length, phase: "准备生成", detail: "正在读取角色快照和固定证据" }, state: { status: "running", message: "正在读取角色快照和固定证据…" } });
+    patchRoleReportJob(role, { controller, progress: { visible: true, recipientNames: [...targetRecipients], completedNames: [], currentName: "", total: targetRecipients.length, percent: 0, phase: "准备生成", detail: "正在读取角色快照和固定证据" }, state: { status: "running", message: "正在读取角色快照和固定证据…" } });
+    progressTimer = window.setInterval(paintDurationProgress, 1000);
+    try {
+    paintDurationProgress();
     // First paint only loads metadata. Fetch the few Markdown baselines and,
     // for R&D roles, detailed ECN/non-BOM evidence only after an explicit
     // generation command. This keeps role navigation independent of data size.
@@ -1841,6 +1877,7 @@ export function AgentRoleReportPage({ initialRole = "组装人员", data = {}, f
     if (!recipients.length) { setState({ status: "error", message: "没有找到可用的人员名单，请先检查原始数据或映射表" }); releaseController(); return; }
     const selectedAlreadyCached = targetRecipients.some((name) => cacheEntry?.reports?.[name]);
     if (selectedAlreadyCached && !window.confirm(`当前勾选的 ${targetRecipients.length} 人已有缓存报告。确定按新规则重新生成吗？`)) {
+      stopProgressTimer();
       patchRoleReportJob(role, { controller: null, state: { status: "idle", message: "" }, progress: emptyRoleReportProgress() });
       abortRef.current = null;
       return;
@@ -1924,6 +1961,8 @@ export function AgentRoleReportPage({ initialRole = "组装人员", data = {}, f
         if (controller.signal.aborted) throw new DOMException("aborted", "AbortError");
         const name = targetRecipients[index];
         if (reports[name]) {
+          finishedCount = index + 1;
+          personStartedAt = Date.now();
           setGenerationProgress((current) => ({ ...current, visible: true, completedNames: [...new Set([...(current.completedNames || []), name])], currentName: "", phase: "读取缓存", detail: `已跳过 ${name}，完成 ${index + 1}/${targetRecipients.length} 份` }));
           setState({ status: "running", message: `正在使用缓存 ${role} 报告（${index + 1}/${targetRecipients.length}）…` });
           continue;
@@ -2245,12 +2284,15 @@ export function AgentRoleReportPage({ initialRole = "组装人员", data = {}, f
           setCacheEntry(cacheUpdate);
           writeRoleCache(role, cacheUpdate);
         }
+        finishedCount = index + 1;
+        personStartedAt = Date.now();
         setGenerationProgress((current) => ({ ...current, visible: true, completedNames: [...new Set([...(current.completedNames || []), name])], currentName: "", phase: "保存缓存", detail: `已完成 ${index + 1}/${targetRecipients.length} 份报告` }));
         setState({ status: "running", message: `正在批量生成 ${role} 报告（${index + 1}/${targetRecipients.length}）…` });
       }
       setCacheEntry(compactRoleCacheEntry({ role, sourceSignature: generationSourceSignature, generatedAt: new Date().toISOString(), layoutSkillName, reports }));
       writeRoleCache(role, { role, sourceSignature: generationSourceSignature, generatedAt: new Date().toISOString(), layoutSkillName, reports });
-      setGenerationProgress({ visible: true, recipientNames: [...targetRecipients], completedNames: targetRecipients, currentName: "", total: targetRecipients.length, phase: "已完成", detail: `已生成并保存 ${targetRecipients.length} 份 ${role} 报告` });
+      writeReportDuration(durationKey, ((Date.now() - batchStartedAt) / 1000) / Math.max(1, targetRecipients.length), 5);
+      setGenerationProgress({ visible: true, recipientNames: [...targetRecipients], completedNames: targetRecipients, currentName: "", total: targetRecipients.length, percent: 100, phase: "已完成", detail: `已生成并保存 ${targetRecipients.length} 份 ${role} 报告` });
       setHistoryRevision((current) => current + 1);
       // Reload metadata once, after the whole batch is persisted.
       refresh().catch(() => {});
@@ -2259,6 +2301,7 @@ export function AgentRoleReportPage({ initialRole = "组装人员", data = {}, f
       setGenerationProgress((current) => ({ ...current, visible: true, phase: error?.name === "AbortError" || controller.signal.aborted ? "已停止" : "生成失败", detail: error?.name === "AbortError" || controller.signal.aborted ? "已保留已完成报告，可继续生成" : describeAiError(error) }));
       setState({ status: "error", message: error?.name === "AbortError" || controller.signal.aborted ? "已停止批量生成，已完成报告已缓存，可继续生成" : `批量生成失败，${describeAiError(error)}` });
     } finally { releaseController(); }
+    } finally { stopProgressTimer(); }
   };
 
   const stop = () => {
@@ -2429,7 +2472,7 @@ export function AgentRoleReportPage({ initialRole = "组装人员", data = {}, f
       <button className="qmdp-secondary-btn" onClick={refresh} disabled={state.status === "running"}><ArrowsClockwise size={15}/>刷新基线</button>
       {state.status === "running" && abortRef.current ? <button className="qmdp-danger-btn" onClick={stop}><WarningCircle size={15}/>停止批量生成</button> : <button className="qmdp-primary-btn" onClick={generateAll} disabled={!canGenerate || sourceState.status === "loading" || !generationRecipients.length} title={!canGenerate ? "仅主管理员可以生成全部角色报告" : sourceState.status === "loading" ? "正在加载角色数据" : !generationRecipients.length ? "请先勾选人员" : "只生成当前勾选的人员"}><Brain size={16}/>{reportLayoutChanged ? "应用排版并重新生成" : selectedCachedComplete ? `重新生成已选 ${generationRecipients.length} 人报告` : generationRecipients.length === recipients.length ? "生成全部角色报告" : `生成已选 ${generationRecipients.length} 人报告`}</button>}
     </section>
-    {generationProgress.visible && <div className={`agent-generation-progress agent-generation-grid-progress ${state.status === "error" ? "error" : progressTotal > 0 && progressDone >= progressTotal ? "done" : ""}`} role="status" aria-live="polite"><div className="agent-generation-progress-head"><strong>{generationProgress.phase || "正在生成"}</strong><b>{progressDone}/{progressTotal}</b></div><div className="agent-generation-progress-cells" role="img" aria-label={`已完成 ${progressDone} 份，共 ${progressTotal} 份`}>{progressRecipientNames.map((name) => <i key={name} className={`${completedNameSet.has(name) ? "is-complete" : ""} ${generationProgress.currentName === name ? "is-current" : ""}`} title={`${name} · ${completedNameSet.has(name) ? "已完成" : generationProgress.currentName === name ? "正在生成" : "待生成"}`} />)}</div><small className="agent-generation-progress-detail">{generationProgress.detail}</small></div>}
+    {generationProgress.visible && <div className={`agent-generation-progress agent-generation-grid-progress ${state.status === "error" ? "error" : (Number(generationProgress.percent) >= 100 || (progressTotal > 0 && progressDone >= progressTotal)) ? "done" : ""}`} role="status" aria-live="polite"><div className="agent-generation-progress-head"><strong>{generationProgress.phase || "正在生成"}</strong><b>{Math.round(Number.isFinite(Number(generationProgress.percent)) ? Number(generationProgress.percent) : (progressTotal ? progressDone / progressTotal * 100 : 0))}% · {progressDone}/{progressTotal}</b></div><div className="agent-generation-progress-track"><i style={{ width: `${Math.max(0, Math.min(100, Number.isFinite(Number(generationProgress.percent)) ? Number(generationProgress.percent) : (progressTotal ? progressDone / progressTotal * 100 : 0)))}%` }} /></div><div className="agent-generation-progress-cells" role="img" aria-label={`已完成 ${progressDone} 份，共 ${progressTotal} 份`}>{progressRecipientNames.map((name) => <i key={name} className={`${completedNameSet.has(name) ? "is-complete" : ""} ${generationProgress.currentName === name ? "is-current" : ""}`} title={`${name} · ${completedNameSet.has(name) ? "已完成" : generationProgress.currentName === name ? "正在生成" : "待生成"}`} />)}</div><small className="agent-generation-progress-detail">{generationProgress.detail}</small></div>}
     <section className="qmdp-card quality-agent-base-preview"><header><strong>角色报告基线</strong><span>{baseline.files.map((item) => `${item.module || spec.modules.find((module) => baselineMatchesModule(item, module))} · ${item.imported ? "外部导入" : item.fileName.startsWith("本地缓存-") ? "本地缓存" : "项目报告库"}`).join("、") || "尚未找到对应 Agent 报告"}</span></header><p>供应链角色只使用 IPQC Agent；研发角色同时使用 OQC、DQA、QMS Agent。个人证据不足时报告必须标记“待核实”。外部导入报告仅作为角色报告基线使用，不会覆盖项目报告库。</p></section>
     {isBulkGenerating && <section className="qmdp-card quality-agent-report"><header><strong>正在批量生成报告</strong><span>报告内容和全员排名将在全部任务完成后按需加载，避免研发大数据量导致页面卡顿。</span></header></section>}
     {renderedReportContent && <section className={`qmdp-card quality-agent-report quality-agent-role-report ${activeReportLayoutClass}`} data-chart-font={chartFontSize}><header><strong>{role} · {recipient}</strong><span>{displayedReportFileName ? `报告名称：${displayedReportFileName}` : selectedHistoryKey === "current" ? "当前缓存尚未保存到报告库" : "报告名称未记录"} · {selectedHistoryKey === "current" ? `当前缓存 · ${reportLayoutLabel(layoutSkillName)}` : `${roleHistoryLabel(selectedHistoryReport || {})} · ${reportLayoutLabel(layoutSkillName)}`} <em className={`quality-agent-report-check ${roleQuality.status}`} title={roleQuality.failed.map((item) => item.label).join("；")}>报告质量：{roleQuality.label}</em> <button className="qmdp-text-btn" onClick={() => setShowQualityDetails((value) => !value)}>{showQualityDetails ? "收起校验" : "查看校验详情"}</button></span><div className="quality-agent-report-actions"><div className="font-size-control" title="只放大报告里的图表文字"><span>图表字号</span>{ROLE_CHART_FONT_STEPS.map(([key, label]) => <button type="button" key={key} className={chartFontSize === key ? "active" : ""} onClick={() => setChartFontSize(key)}>{label}</button>)}</div><button className="qmdp-secondary-btn" onClick={download}><DownloadSimple size={15}/>导出报告</button><button className="qmdp-primary-btn" onClick={save}><FloppyDisk size={15}/>保存报告</button>{canSaveToServer && <button className="qmdp-primary-btn" onClick={dispatch}><PaperPlaneTilt size={15}/>创建发送任务</button>}</div></header>{showQualityDetails && <div className="quality-agent-quality-details"><div><b>通过 {roleQuality.checks?.filter((item) => item.passed).length || 0}</b><b className="warn">警告 {roleQuality.failed.filter((item) => item.severity !== "block").length}</b><b className="error">阻断 {roleQuality.failed.filter((item) => item.severity === "block").length}</b></div>{roleQuality.failed.map((item, index) => <p key={`${item.id || item.label}-${index}`}><strong>{item.label}</strong><span>{reportQualityAdvice(item)}</span></p>)}</div>}<div className={`quality-agent-report-content ${activeReportLayoutClass}`}><div dangerouslySetInnerHTML={{ __html: rankedReportHtml }}/></div></section>}

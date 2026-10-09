@@ -1349,3 +1349,29 @@
 .quality-agent-backend header strong{font-size:13px}
 .quality-agent-backend header small{color:#8ea3b8;font-size:11px}
 .quality-agent-backend pre{max-height:280px;overflow:auto;margin:8px 0 0;color:#d7e4ef;background:transparent;font:12px/1.65 Consolas,"Courier New",monospace;white-space:pre-wrap}
+
+.quality-agent-final-report,
+.quality-agent-saved-report,
+.quality-agent-imported-report { --lieflat-font-scale: .9; }
+.quality-agent-final-report .lieflat-card.lieflat-wide svg,
+.quality-agent-saved-report .lieflat-card.lieflat-wide svg,
+.quality-agent-imported-report .lieflat-card.lieflat-wide svg { min-width: 0 !important; width: 100% !important; max-width: 100% !important; height: auto !important; }
+.quality-agent-final-report .lieflat-svg-wrap,
+.quality-agent-saved-report .lieflat-svg-wrap,
+.quality-agent-imported-report .lieflat-svg-wrap { overflow-x: hidden; }
+.ipqc-defect-chart .combo-x-label,
+.ipqc-defect-chart .combo-value,
+.ipqc-defect-chart .combo-axis-label { font-size: 15px !important; font-weight: 700; fill: #17324d; }
+.ipqc-density-rank .ipqc-rank-name { font-size: 14px; font-weight: 700; fill: #24384b; font-family: "Microsoft YaHei", "PingFang SC", sans-serif; }
+.ipqc-density-rank .ipqc-rank-value { font-size: 14px; font-weight: 800; fill: #17324d; font-family: "Microsoft YaHei", "PingFang SC", sans-serif; }
+.ipqc-density-rank svg { max-width: 100%; }
+
+
+.lieflat-card.lieflat-heat svg{width:100%!important;max-width:100%!important;min-width:0!important;max-height:none!important;height:auto!important}
+.lieflat-card.lieflat-heat svg text{font-size:14px!important;font-weight:700}
+
+.lieflat-card.lieflat-heat svg text.lieflat-heat-center{font-size:16px!important;font-weight:800}
+.lieflat-card.lieflat-heat svg text.lieflat-heat-corner{font-size:11px!important;font-weight:800}
+.lieflat-card.lieflat-heat svg text.lieflat-heat-month,
+.lieflat-card.lieflat-heat svg text.lieflat-heat-name,
+.lieflat-card.lieflat-heat svg text.lieflat-heat-legend{font-size:13px!important;font-weight:700}

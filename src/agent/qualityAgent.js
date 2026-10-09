@@ -1,3 +1,6 @@
+import { ipqcSnapshotReady } from "./ipqcAssemblySplit.js";
+import { durationProgressDetail, referenceSecondsFor } from "./reportDuration.js";
+import { oqcSnapshotReady } from "./oqcShipmentSplit.js";
 const AGENT_STORAGE_KEY = "qms-quality-agent-runs-v1";
 const WORKFLOW_VERSION = "quality-agent-v2";
 
@@ -123,6 +126,61 @@ const composeFormalReport = (record, snapshot) => {
   const span = [period.start2026, period.end2026].filter(Boolean).join("—");
   return ["# " + (snapshot?.module || "") + " 质量复盘", "", span ? "周期：" + span : "", "", "## 结果与二八分析", "", analysis || "分析未完成。", "", "## 责任与改善行动", "", actions || "行动未完成。"].filter((line) => line !== undefined).join("\n");
 };
+
+const compactIpqcSplit = (split) => {
+  if (!split) return null;
+  return {
+    rule: split.rule,
+    period: split.period,
+    previousPeriod: split.previousPeriod,
+    totals: split.totals || null,
+    cells: (split.cells || []).map((cell) => ({
+      name: cell.name,
+      inspected: cell.inspected,
+      bad: cell.bad,
+      rate: cell.rate,
+      previousInspected: cell.previousInspected,
+      previousBad: cell.previousBad,
+      previousRate: cell.previousRate,
+      defects: (cell.defects || []).slice(0, 5),
+      crossWorkshop: (cell.crossWorkshop || []).slice(0, 5),
+    })),
+    managers: (split.managers || []).slice(0, 20).map((item) => ({ site: item.site, source: item.source, name: item.name, inspected: item.inspected, bad: item.bad, rate: item.rate, topDefects: (item.topDefects || []).slice(0, 3) })),
+    focus: (split.focus || []).slice(0, 8),
+  };
+};
+const slimIpqcSplit = (split) => {
+  if (!split) return null;
+  const copy = { ...split };
+  delete copy.monthFacts;
+  return copy;
+};
+
+const compactOqcSplit = (split) => {
+  if (!split) return null;
+  return {
+    rule: split.rule,
+    period: split.period,
+    previousPeriod: split.previousPeriod,
+    totals: split.totals || null,
+    divisions: split.divisions || [],
+    machines: split.machines || [],
+    tpms: (split.tpms || []).slice(0, 24),
+    focus: split.focus || [],
+  };
+};
+const slimOqcSplit = (split) => {
+  if (!split) return null;
+  const copy = { ...split };
+  delete copy.monthFacts;
+  return copy;
+};
+const slimDqaSplit = (split) => {
+  if (!split) return null;
+  const copy = { ...split };
+  delete copy.monthFacts;
+  return copy;
+};
 const analysisSeed = (snapshot, retry = false) => {
   const data = snapshot?.data || {};
   const metrics = data.metrics || {};
@@ -166,6 +224,11 @@ const analysisSeed = (snapshot, retry = false) => {
     } : metrics,
     localPareto: compactValue(data.localPareto, 3, retry ? 6 : 12),
     iqcSplit: data.iqcSplit || null,
+    ipqcSplit: compactIpqcSplit(data.ipqcSplit),
+    oqcSplit: compactOqcSplit(data.oqcSplit),
+    dqaSplit: slimDqaSplit(data.dqaSplit),
+    qmsSplit: data.qmsSplit || null,
+    doamSplit: data.doamSplit || null,
     evidenceCatalog: compactValue(compactEvidenceCatalog(data.evidenceCatalog, retry ? 10 : 20), 3, retry ? 10 : 20),
     sourceAudit: compactValue(data.sourceAudit, 2, retry ? 6 : 12),
     organization: compactValue(data.organization, 2, retry ? 4 : 8),
@@ -323,6 +386,9 @@ const slimAgentRenderSnapshot = (snapshot) => {
       metrics: data.metrics || {},
       periodTrend: data.periodTrend || null,
       iqcSplit: data.iqcSplit || null,
+      ipqcSplit: slimIpqcSplit(data.ipqcSplit),
+      oqcSplit: slimOqcSplit(data.oqcSplit),
+      dqaSplit: slimDqaSplit(data.dqaSplit),
       sourceAudit: data.sourceAudit || {},
       evidence: {
         trends: Array.isArray(evidence.trends) ? evidence.trends : [],
@@ -341,7 +407,7 @@ export const chooseAgentRunSnapshot = ({
   auditFailed = false,
 } = {}) => {
   const storedRows = storedSnapshotRowCount(matchedSnapshot);
-  const storedReady = storedRows > 0 && (matchedSnapshot?.module === "IQC" ? iqcSnapshotReady(matchedSnapshot) : true);
+  const storedReady = storedRows > 0 && (matchedSnapshot?.module === "IQC" ? iqcSnapshotReady(matchedSnapshot) : matchedSnapshot?.module === "IPQC" ? ipqcSnapshotReady(matchedSnapshot) : matchedSnapshot?.module === "OQC" ? oqcSnapshotReady(matchedSnapshot) : true);
   const canUseStoredSnapshot = Boolean(matchedSnapshot) && storedReady && !auditFailed;
   const snapshotForRun = canUseStoredSnapshot
     ? matchedSnapshot
@@ -632,7 +698,30 @@ const noteActivity = (record, message) => {
   record.activityLog = [...(record.activityLog || []), { at: new Date().toISOString(), message: String(message || "") }].slice(-100);
 };
 
-export const runQualityAgent = async ({ snapshot, skillName, skillContent, layoutProfileId = "research-briefing-v1", existing, requestChat, signal, onUpdate = () => {}, activitySeed = [] } = {}) => {
+
+const agentStagePlan = (humanQualityReport) => QUALITY_AGENT_STAGES
+  .filter((stage) => !(humanQualityReport && (stage.id === "analysis" || stage.id === "actions")));
+const progressPhaseLabel = (stage, humanQualityReport) => {
+  if (!humanQualityReport) return stage.label;
+  if (stage.id === "audit") return "核对数据";
+  if (stage.id === "report") return "撰写报告";
+  return stage.label;
+};
+const runDurationPercent = (startedAt, seconds) => {
+  const elapsed = Math.max(1, (Date.now() - startedAt) / 1000);
+  const ratio = seconds ? Math.min(0.96, elapsed / seconds) : Math.min(0.96, 1 - Math.exp(-elapsed / 75));
+  return Math.max(1, Math.round(ratio * 100));
+};
+const watchStageProgress = (record, label, onUpdate, reference) => {
+  const timer = setInterval(() => {
+    const elapsed = Math.max(1, Math.round((Date.now() - reference.startedAt) / 1000));
+    record.progress = { percent: runDurationPercent(reference.startedAt, reference.seconds), phase: label, detail: "正在执行：" + label + "，" + durationProgressDetail(elapsed, reference.key) };
+    onUpdate(record);
+  }, 1000);
+  return () => clearInterval(timer);
+};
+
+export const runQualityAgent = async ({ snapshot, skillName, skillContent, layoutProfileId = "research-briefing-v1", existing, requestChat, signal, onUpdate = () => {}, activitySeed = [], durationKey = "" } = {}) => {
   if (!snapshot) throw new Error("缺少质量分析 Agent 数据快照");
   throwIfAborted(signal);
   const currentSnapshotHash = snapshotKey(snapshot);
@@ -651,26 +740,31 @@ export const runQualityAgent = async ({ snapshot, skillName, skillContent, layou
   record.layoutSkillName = record.layoutProfileId;
   record.layoutSkillSignature = "";
   const formalIqcReport = skillName === "quality-analysis-iqc-machined";
-  const humanQualityReport = ["IQC", "IPQC", "OQC", "DQA", "QMS"].includes(snapshot?.module);
+  const humanQualityReport = ["IQC", "IPQC", "OQC", "DQA", "QMS", "DOAM"].includes(snapshot?.module);
   record.status = "running";
   record.activityLog = [...(record.activityLog || [])];
   activitySeed.filter(Boolean).forEach((message) => noteActivity(record, message));
-  record.progress = record.progress || { percent: 0, phase: "准备分析", detail: "正在准备固定数据快照" };
+  const stagePlan = agentStagePlan(humanQualityReport);
+  const runStartedAt = Date.now();
+  const referenceSeconds = referenceSecondsFor(durationKey);
+  record.progress = { percent: 0, phase: "准备分析", detail: "正在准备数据" };
   noteActivity(record, humanQualityReport ? "按正式质量报告生成，不把证据等级和分析过程写进正文" : "分析已启动。数据审计在本地完成；二八分析和改善行动各请求一次模型；正式报告只做本地组装");
   onUpdate(record);
-  for (const [stageIndex, stage] of QUALITY_AGENT_STAGES.entries()) {
+  for (const stage of stagePlan) {
     throwIfAborted(signal);
-    if (humanQualityReport && (stage.id === "analysis" || stage.id === "actions")) continue;
     if (record.stages?.[stage.id]?.status === "done" && record.stages[stage.id].content) {
       noteActivity(record, stage.label + "已完成，本次跳过");
       continue;
     }
     record.currentStage = stage.id;
-    record.progress = { percent: Math.round((stageIndex / QUALITY_AGENT_STAGES.length) * 100), phase: stage.label, detail: `正在执行：${stage.label}` };
+    const phaseLabel = progressPhaseLabel(stage, humanQualityReport);
+    record.progress = { percent: runDurationPercent(runStartedAt, referenceSeconds), phase: phaseLabel, detail: `正在执行：${phaseLabel}` };
     record.stages = { ...record.stages, [stage.id]: { status: "running", label: stage.label, startedAt: now() } };
-    noteActivity(record, stage.id === "report" ? "正式报告：不再请求模型，直接使用已完成的分析和行动" : stage.local ? "数据审计：本地核对快照，不请求模型" : stage.label + "：开始");
+    noteActivity(record, stage.id === "report" && humanQualityReport ? "正式报告：正在撰写" : stage.id === "report" ? "正式报告：不再请求模型，直接使用已完成的分析和行动" : stage.local ? "数据审计：本地核对快照，不请求模型" : stage.label + "：开始");
     onUpdate(record);
+    let stopWatch = () => {};
     try {
+      stopWatch = watchStageProgress(record, phaseLabel, onUpdate, { startedAt: runStartedAt, seconds: referenceSeconds, key: durationKey });
       let content;
       let requestTrace = {};
       if (stage.id === "report" && humanQualityReport) {
@@ -757,7 +851,7 @@ export const runQualityAgent = async ({ snapshot, skillName, skillContent, layou
         if (restrictions.length) content = `${String(content).trim()}\n\n## 发布限制\n\n${restrictions.map((item) => `- ${item}`).join("\n")}`;
       }
       record.stages = { ...record.stages, [stage.id]: { status: "done", label: stage.label, content: String(content).trim(), completedAt: now(), evidenceValidation, gate, trace: { snapshotFingerprint: textSignature(currentSnapshotHash), skillFingerprint: currentSkillSignature, outputFingerprint: textSignature(content), ...requestTrace } } };
-      record.progress = { percent: Math.round(((stageIndex + 1) / QUALITY_AGENT_STAGES.length) * 100), phase: stage.label, detail: `${stage.label}已完成，准备进入下一阶段` };
+      record.progress = { percent: runDurationPercent(runStartedAt, referenceSeconds), phase: phaseLabel, detail: phaseLabel + "已完成" };
       noteActivity(record, stage.label + "：完成");
       onUpdate(record);
     } catch (error) {
@@ -765,10 +859,12 @@ export const runQualityAgent = async ({ snapshot, skillName, skillContent, layou
       const stopped = error?.name === "AbortError" || signal?.aborted;
       record.error = stopped ? "已停止本次 Agent 分析，已完成阶段保留，可继续。" : error.message;
       record.stages = { ...record.stages, [stage.id]: { ...(record.stages[stage.id] || {}), status: "error", error: record.error } };
-      record.progress = { ...record.progress, phase: `${stage.label}失败`, detail: record.error };
+      record.progress = { ...record.progress, phase: phaseLabel + "失败", detail: record.error };
       noteActivity(record, stage.label + "：" + (stopped ? "已停止" : "失败。" + record.error));
       onUpdate(record);
       return record;
+    } finally {
+      stopWatch();
     }
   }
   record.status = "done";

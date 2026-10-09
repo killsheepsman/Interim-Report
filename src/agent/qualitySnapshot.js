@@ -1,4 +1,10 @@
 import { buildDoamAgentSnapshotData } from "../doamEngine.js";
+import { buildIpqcAssemblySplit, ipqcSnapshotReady, pickIpqcAnalysisSnapshot, sliceIpqcSnapshotToWindow } from "./ipqcAssemblySplit.js";
+import { buildOqcShipmentSplit, oqcSnapshotReady, pickOqcAnalysisSnapshot, sliceOqcSnapshotToWindow } from "./oqcShipmentSplit.js";
+import { buildDqaRdSplit, sliceDqaRdSnapshotToWindow } from "./dqaRdSplit.js";
+import { buildQmsCustomerSplit } from "./qmsCustomerSplit.js";
+import { buildDoamStabilitySplit } from "./doamStabilitySplit.js";
+export { ipqcSnapshotReady, pickIpqcAnalysisSnapshot, sliceIpqcSnapshotToWindow, oqcSnapshotReady, pickOqcAnalysisSnapshot, sliceOqcSnapshotToWindow, sliceDqaRdSnapshotToWindow };
 const number = (value) => {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : 0;
@@ -829,7 +835,7 @@ export const alignIqcYieldMetrics = (snapshot) => {
   };
 };
 
-export const buildQualityAgentSnapshot = ({ data = {}, files = [], dateRange = {}, module = "DQA", role = "公司级", recipient = "" } = {}) => {
+export const buildQualityAgentSnapshot = ({ data = {}, files = [], dateRange = {}, module = "DQA", role = "公司级", recipient = "", orgMappings = [], agentRaw = null } = {}) => {
   const period = {
     start2025: dateRange.start2025 || "",
     end2025: dateRange.end2025 || "",
@@ -842,25 +848,78 @@ export const buildQualityAgentSnapshot = ({ data = {}, files = [], dateRange = {
   const sourceAudit = buildSourceAudit(snapshotData, files, module, period);
   const localPareto = buildLocalPareto(snapshotData, files, module, { start2026: period.start2026, end2026: period.end2026 });
   const iqcSplit = module === "IQC" ? buildIqcQualitySplit(files, period) : null;
+  const ipqcSplit = module === "IPQC" ? buildIpqcAssemblySplit(files, period) : null;
+  const oqcSplit = module === "OQC" ? buildOqcShipmentSplit(files, period) : null;
+  const dqaSplit = module === "DQA" ? buildDqaRdSplit(files, period, orgMappings, agentRaw) : null;
+  const qmsSplit = module === "QMS" ? buildQmsCustomerSplit({ qms: data.qms, files, period }) : null;
+  const doamSplit = module === "DOAM" ? buildDoamStabilitySplit(data.doam || {}, period) : null;
   const iqcTrendReady = Boolean(iqcSplit?.monthly?.some((row) => row.inspected > 0));
-  const snapshotBase = iqcTrendReady ? {
-    ...base,
-    periodTrend: {
-      year: iqcSplit.trendYear,
-      start: `${iqcSplit.trendYear}-01-01`,
-      end: period.end2026 || "",
-      rows: iqcSplit.monthly.map((row) => ({ label: row.month, bad: row.bad, total: row.inspected, rate: row.rate ?? 0 })),
-    },
-    evidence: {
-      ...(base.evidence || {}),
-      trends: iqcSplit.monthly.map((row) => ({
-        month: row.month,
-        y2026Qty: row.inspected,
-        y2026Bad: row.bad,
-        y2026Rate: row.inspected ? Number(((row.inspected - row.bad) / row.inspected * 100).toFixed(1)) : 0,
-      })),
-    },
-  } : base;
+  const ipqcTrendReady = Boolean(ipqcSplit?.monthly?.some((row) => row.inspected > 0));
+  let snapshotBase = base;
+  if (iqcTrendReady) {
+    snapshotBase = {
+      ...base,
+      periodTrend: {
+        year: iqcSplit.trendYear,
+        start: `${iqcSplit.trendYear}-01-01`,
+        end: period.end2026 || "",
+        rows: iqcSplit.monthly.map((row) => ({ label: row.month, bad: row.bad, total: row.inspected, rate: row.rate ?? 0 })),
+      },
+      evidence: {
+        ...(base.evidence || {}),
+        trends: iqcSplit.monthly.map((row) => ({
+          month: row.month,
+          y2026Qty: row.inspected,
+          y2026Bad: row.bad,
+          y2026Rate: row.inspected ? Number(((row.inspected - row.bad) / row.inspected * 100).toFixed(1)) : 0,
+        })),
+      },
+    };
+  }
+  if (ipqcTrendReady) {
+    const density = ipqcSplit.totals?.rate;
+    const metrics = { ...(snapshotBase.metrics || {}) };
+    metrics.inspectedQuantity2026 = ipqcSplit.totals.inspected;
+    metrics.issueCount2026 = ipqcSplit.totals.bad;
+    metrics.issueDensity2026 = metrics.issueDensity2026 && typeof metrics.issueDensity2026 === "object"
+      ? { ...metrics.issueDensity2026, value: density, unit: "%" }
+      : { value: density, unit: "%" };
+    snapshotBase = {
+      ...snapshotBase,
+      metrics,
+      periodTrend: {
+        year: ipqcSplit.trendYear,
+        start: `${ipqcSplit.trendYear}-01-01`,
+        end: period.end2026 || "",
+        rows: ipqcSplit.monthly.map((row) => ({ label: row.month, bad: row.bad, total: row.inspected, rate: row.rate ?? 0 })),
+      },
+      evidence: {
+        ...(snapshotBase.evidence || {}),
+        trends: ipqcSplit.monthly.map((row) => ({ month: row.month, y2026Qty: row.inspected, y2026Bad: row.bad, y2026Rate: row.rate ?? 0 })),
+      },
+    };
+  }
+  if (oqcSplit?.totals?.count > 0) {
+    const metrics = { ...(snapshotBase.metrics || {}) };
+    metrics.sampleCount2026 = oqcSplit.totals.count;
+    metrics.fiveRate2026 = oqcSplit.totals.fiveRate;
+    metrics.lowRate2026 = oqcSplit.totals.lowRate;
+    metrics.overall2026 = { ...(metrics.overall2026 && typeof metrics.overall2026 === "object" ? metrics.overall2026 : {}), count: oqcSplit.totals.count, avg: oqcSplit.totals.avg, fiveRate: oqcSplit.totals.fiveRate, lowRate: oqcSplit.totals.lowRate };
+    snapshotBase = {
+      ...snapshotBase,
+      metrics,
+      periodTrend: {
+        year: oqcSplit.trendYear,
+        start: `${oqcSplit.trendYear}-01-01`,
+        end: period.end2026 || "",
+        rows: oqcSplit.monthly.map((row) => ({ label: row.month, bad: row.five, total: row.count, rate: row.fiveRate ?? 0 })),
+      },
+      evidence: {
+        ...(snapshotBase.evidence || {}),
+        trends: oqcSplit.monthly.map((row) => ({ month: row.month, y2026Qty: row.count, y2026Bad: row.low, y2026Rate: row.fiveRate ?? 0 })),
+      },
+    };
+  }
   const built = {
     schemaVersion: "quality-agent-snapshot-v3",
     agentTitle: "质量分析 Agent",
@@ -874,7 +933,7 @@ export const buildQualityAgentSnapshot = ({ data = {}, files = [], dateRange = {
       aiRule: "AI只解释已计算结果，不重新计算指标；缺少证据时必须标记待核实。",
       moduleRule: moduleRules[module] || "按固定快照中的组织、指标和证据进行分析。",
     },
-    data: { ...snapshotBase, sourceAudit, localPareto, ...(iqcSplit ? { iqcSplit } : {}), evidenceCatalog: buildEvidenceCatalog(module, period, snapshotBase.metrics || {}, sourceAudit, localPareto) },
+    data: { ...snapshotBase, sourceAudit, localPareto, ...(iqcSplit ? { iqcSplit } : {}), ...(ipqcSplit ? { ipqcSplit } : {}), ...(oqcSplit ? { oqcSplit } : {}), ...(dqaSplit ? { dqaSplit } : {}), ...(qmsSplit ? { qmsSplit } : {}), ...(doamSplit ? { doamSplit } : {}), evidenceCatalog: buildEvidenceCatalog(module, period, snapshotBase.metrics || {}, sourceAudit, localPareto) },
   };
   return alignIqcYieldMetrics(built);
 };
@@ -1007,6 +1066,10 @@ export const applyQualitySnapshotWindow = (snapshot, window = {}) => {
   if ("inspectedBatches2026" in metrics) metrics.inspectedBatches2026 = Math.round(qty);
   if ("inspectedQuantity2026" in metrics) metrics.inspectedQuantity2026 = Math.round(qty);
   if ("issueCount2026" in metrics) metrics.issueCount2026 = Math.round(bad);
+  if ("issueDensity2026" in metrics) {
+    const density = qty ? Number((bad / qty * 100).toFixed(2)) : null;
+    metrics.issueDensity2026 = metrics.issueDensity2026 && typeof metrics.issueDensity2026 === "object" ? { ...metrics.issueDensity2026, value: density } : density;
+  }
   if (metrics.batchYield2026 && qty) metrics.batchYield2026 = { ...(typeof metrics.batchYield2026 === "object" ? metrics.batchYield2026 : { value: metrics.batchYield2026 }), value: Number(((qty - bad) / qty * 100).toFixed(1)) };
   return {
     ...snapshot,
