@@ -61,7 +61,7 @@ const mergeDict = (target, source) => {
   });
 };
 const blankCells = () => Object.fromEntries(CELL_NAMES.map((name) => [name, { inspected: 0, bad: 0, defects: {}, workshops: {} }]));
-const blankBag = () => ({ cells: blankCells(), managers: new Map() });
+const blankBag = () => ({ cells: blankCells(), managers: new Map(), shops: new Map() });
 const crossWorkshop = (workshops) => {
   const counts = new Map();
   Object.entries(workshops || {}).forEach(([workshop, defects]) => {
@@ -98,6 +98,13 @@ const addPoint = (bag, point) => {
     manager.leaders.set(point.leader, leader);
   }
   bag.managers.set(key, manager);
+  if (point.workshop && point.workshop !== "未分工坊") {
+    const shopKey = point.site + "\u0001" + point.workshop;
+    const shop = bag.shops.get(shopKey) || { site: point.site, workshop: point.workshop, inspected: 0, bad: 0 };
+    shop.inspected += point.qty;
+    shop.bad += point.bad;
+    bag.shops.set(shopKey, shop);
+  }
 };
 const addCellOnly = (cells, point) => {
   const cell = cells[point.cellName];
@@ -183,9 +190,18 @@ const finishScope = (bag) => {
       });
     });
   });
+  const workshops = [...(bag.shops || new Map()).values()].map((shop) => ({
+    site: shop.site,
+    workshop: shop.workshop,
+    inspected: shop.inspected,
+    bad: shop.bad,
+    rate: densityOf(shop.bad, shop.inspected),
+  })).filter((shop) => shop.inspected > 0 || shop.bad > 0)
+    .sort((a, b) => (b.rate || 0) - (a.rate || 0) || b.bad - a.bad || (a.site + a.workshop).localeCompare(b.site + b.workshop, "zh-CN"));
   return {
     cells,
     managers: managers.map(({ defects, leaders, ...item }) => item),
+    workshops,
     focus,
   };
 };
@@ -343,6 +359,7 @@ export const buildIpqcAssemblySplit = (files, period) => {
     trendYear,
     cells,
     managers: scope.managers,
+    workshops: scope.workshops || [],
     focus: scope.focus,
     monthly,
     cellMonthly,

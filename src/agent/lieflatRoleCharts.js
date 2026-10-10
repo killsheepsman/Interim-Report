@@ -115,11 +115,8 @@ const wrapCard = ({ badge, title, sub, src, svg, wide = false, compact = false, 
   return compact
     ? `<figure class="agent-report-auto-chart lieflat-card lieflat-compact${extra}"><div class="lieflat-svg-wrap">${svg}</div></figure>`
     : `<figure class="agent-report-auto-chart lieflat-card${extra}">
-  <span class="lieflat-badge">${escapeHtml(badge)}</span>
   <h2>${escapeHtml(title)}</h2>
-  <div class="lieflat-sub">${escapeHtml(sub)}</div>
   <div class="lieflat-svg-wrap">${svg}</div>
-  <div class="lieflat-src">${escapeHtml(src)}</div>
 </figure>`;
 };
 const svgRoot = (width, height, inner) => node("svg", {

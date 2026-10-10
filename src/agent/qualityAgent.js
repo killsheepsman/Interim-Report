@@ -127,6 +127,28 @@ const composeFormalReport = (record, snapshot) => {
   return ["# " + (snapshot?.module || "") + " 质量复盘", "", span ? "周期：" + span : "", "", "## 结果与二八分析", "", analysis || "分析未完成。", "", "## 责任与改善行动", "", actions || "行动未完成。"].filter((line) => line !== undefined).join("\n");
 };
 
+const compactIqcSplit = (split) => {
+  if (!split) return null;
+  return {
+    rule: split.rule,
+    period: split.period,
+    previousPeriod: split.previousPeriod,
+    cells: (split.cells || []).map((cell) => ({
+      name: cell.name,
+      inspected: cell.inspected,
+      bad: cell.bad,
+      rate: cell.rate,
+      previousInspected: cell.previousInspected,
+      previousBad: cell.previousBad,
+      previousRate: cell.previousRate,
+      defects: (cell.defects || []).slice(0, 5),
+    })),
+    suppliers: (split.suppliers || []).slice(0, 8),
+    companyMachining: split.companyMachining || [],
+    trendYear: split.trendYear,
+    monthly: (split.monthly || []).map((row) => ({ month: row.month, inspected: row.inspected, bad: row.bad, rate: row.rate })),
+  };
+};
 const compactIpqcSplit = (split) => {
   if (!split) return null;
   return {
@@ -222,8 +244,8 @@ const analysisSeed = (snapshot, retry = false) => {
       dateMin: metrics.dateMin,
       dateMax: metrics.dateMax,
     } : metrics,
+    iqcSplit: compactIqcSplit(data.iqcSplit),
     localPareto: compactValue(data.localPareto, 3, retry ? 6 : 12),
-    iqcSplit: data.iqcSplit || null,
     ipqcSplit: compactIpqcSplit(data.ipqcSplit),
     oqcSplit: compactOqcSplit(data.oqcSplit),
     dqaSplit: slimDqaSplit(data.dqaSplit),
@@ -389,6 +411,8 @@ const slimAgentRenderSnapshot = (snapshot) => {
       ipqcSplit: slimIpqcSplit(data.ipqcSplit),
       oqcSplit: slimOqcSplit(data.oqcSplit),
       dqaSplit: slimDqaSplit(data.dqaSplit),
+      qmsSplit: data.qmsSplit || null,
+      doamSplit: data.doamSplit || null,
       sourceAudit: data.sourceAudit || {},
       evidence: {
         trends: Array.isArray(evidence.trends) ? evidence.trends : [],

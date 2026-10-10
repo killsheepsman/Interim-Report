@@ -1,4 +1,6 @@
 import { buildDoamAgentSnapshotData } from "../doamEngine.js";
+
+
 import { buildIpqcAssemblySplit, ipqcSnapshotReady, pickIpqcAnalysisSnapshot, sliceIpqcSnapshotToWindow } from "./ipqcAssemblySplit.js";
 import { buildOqcShipmentSplit, oqcSnapshotReady, pickOqcAnalysisSnapshot, sliceOqcSnapshotToWindow } from "./oqcShipmentSplit.js";
 import { buildDqaRdSplit, sliceDqaRdSnapshotToWindow } from "./dqaRdSplit.js";
@@ -682,18 +684,39 @@ const iqcRowMonth = (row) => {
     : date;
   return { year: adjusted.getUTCFullYear(), month: adjusted.getUTCMonth() + 1 };
 };
+const iqcDefectName = (row) => normalizeParetoMechanism("IQC", row["异常原因"] ?? row["质检说明"] ?? row["异常描述"]);
+const iqcNamedCounts = (map, limit = 5) => [...(map instanceof Map ? map.entries() : Object.entries(map || {}))]
+  .map(([name, count]) => ({ name, count: Number(count) || 0 }))
+  .filter((item) => item.name && item.count > 0)
+  .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name, "zh-CN"))
+  .slice(0, limit);
+const iqcPartyLists = (parties) => {
+  const list = (source) => [...parties.values()].filter((item) => item.source === source && Number(item.inspected) > 0).map((item) => ({
+    site: item.site,
+    name: item.name,
+    inspected: item.inspected,
+    bad: item.bad,
+    rate: rateOf(item.bad, item.inspected),
+    topDefects: item.defects instanceof Map ? iqcNamedCounts(item.defects, 3) : iqcNamedCounts(item.defects || item.topDefects, 3),
+  })).sort((a, b) => (b.rate || 0) - (a.rate || 0) || b.bad - a.bad || a.name.localeCompare(b.name, "zh-CN")).slice(0, 8);
+  return { suppliers: list("供应商"), companyMachining: list("公司加工") };
+};
+const iqcStandardFiles = (files) => (files || []).filter((file) => file.module === "IQC" && file.kind !== "IQC_FOCUS_PROJECT" && file.subKind !== "IQC_FOCUS_PROJECT");
 const buildIqcMonthlyTrend = (files, period) => {
   const end = auditDate(period?.end2026);
-  if (!end) return { year: 0, rows: [] };
+  if (!end) return { year: 0, rows: [], cells: [], monthFacts: [] };
   const year = end.getUTCFullYear();
   const endMonth = end.getUTCMonth() + 1;
-  const standard = (files || []).filter((file) => file.module === "IQC" && file.kind !== "IQC_FOCUS_PROJECT" && file.subKind !== "IQC_FOCUS_PROJECT");
+  const standard = iqcStandardFiles(files);
   const covered = new Set(standard.map((file) => iqcNamedMonth(file.name)).filter(Boolean));
   const cellNames = ["深圳供应商", "杭州供应商", "深圳公司加工", "杭州公司加工"];
   const buckets = Array.from({ length: endMonth }, (_, index) => ({ month: `${index + 1}月`, inspected: 0, bad: 0 }));
   const cellBuckets = Object.fromEntries(cellNames.map((name) => [name, Array.from({ length: endMonth }, (_, index) => ({ month: `${index + 1}月`, inspected: 0, bad: 0 }))]));
+  const monthCellDefects = Array.from({ length: endMonth }, () => Object.fromEntries(cellNames.map((name) => [name, new Map()])));
+  const monthParties = Array.from({ length: endMonth }, () => new Map());
   standard.forEach((file) => {
     const namedMonth = iqcNamedMonth(file.name);
+    const site = iqcFileSite(file.name);
     (file.rows || []).forEach((row) => {
       const point = iqcRowMonth(row);
       if (!point || point.year !== year || point.month < 1 || point.month > endMonth) return;
@@ -701,32 +724,55 @@ const buildIqcMonthlyTrend = (files, period) => {
       if (!namedMonth && covered.has(point.month)) return;
       const bucket = buckets[point.month - 1];
       const company = iqcIsCompanyMachining(row);
-      const cellName = iqcFileSite(file.name) + (company ? "公司加工" : "供应商");
+      const cellName = site + (company ? "公司加工" : "供应商");
       const cellBucket = cellBuckets[cellName]?.[point.month - 1];
       const bad = clean(row["质检结果"]) === "不合格";
       bucket.inspected += 1;
       if (cellBucket) cellBucket.inspected += 1;
+      const partyName = company ? site + "公司加工" : clean(row["供应商"]) || "未填写供应商";
+      const parties = monthParties[point.month - 1];
+      const party = parties.get(partyName + "\u0001" + cellName) || { site, source: company ? "公司加工" : "供应商", name: partyName, inspected: 0, bad: 0, defects: new Map() };
+      party.inspected += 1;
       if (bad) {
         bucket.bad += 1;
         if (cellBucket) cellBucket.bad += 1;
+        const defect = iqcDefectName(row);
+        const defects = monthCellDefects[point.month - 1][cellName];
+        if (defects) defects.set(defect, (defects.get(defect) || 0) + 1);
+        party.bad += 1;
+        party.defects.set(defect, (party.defects.get(defect) || 0) + 1);
       }
+      parties.set(partyName + "\u0001" + cellName, party);
     });
   });
   const finish = (row) => ({ ...row, rate: rateOf(row.bad, row.inspected) ?? 0 });
+  const monthFacts = monthParties.map((parties, index) => ({
+    month: `${index + 1}月`,
+    cells: cellNames.map((name) => ({ name, defects: iqcNamedCounts(monthCellDefects[index][name], 12) })),
+    parties: [...parties.values()].filter((item) => item.inspected > 0).map((item) => ({
+      site: item.site,
+      source: item.source,
+      name: item.name,
+      inspected: item.inspected,
+      bad: item.bad,
+      defects: iqcNamedCounts(item.defects, 5),
+    })),
+  })).filter((fact) => fact.parties.length || fact.cells.some((cell) => cell.defects.length));
   return {
     year,
     rows: buckets.map(finish),
     cells: cellNames.map((name) => ({ name, label: name.replace("公司加工", "机加"), rows: cellBuckets[name].map(finish) })),
+    monthFacts,
   };
 };
 
-const buildIqcQualitySplit = (files, period) => {
+export const buildIqcQualitySplit = (files, period) => {
   const current = monthWindow(period?.start2026, period?.end2026);
   const previous = previousMonthWindow(period);
   const cellNames = ["深圳供应商", "杭州供应商", "深圳公司加工", "杭州公司加工"];
   const cells = Object.fromEntries(cellNames.map((name) => [name, emptyIqcCell()]));
   const parties = new Map();
-  (files || []).filter((file) => file.module === "IQC" && file.kind !== "IQC_FOCUS_PROJECT" && file.subKind !== "IQC_FOCUS_PROJECT").forEach((file) => {
+  iqcStandardFiles(files).forEach((file) => {
     const site = iqcFileSite(file.name);
     (file.rows || []).forEach((row) => {
       const date = dateFromAuditRow(row, "IQC");
@@ -741,7 +787,7 @@ const buildIqcQualitySplit = (files, period) => {
         cell.inspected += 1;
         if (bad) {
           cell.bad += 1;
-          const defect = normalizeParetoMechanism("IQC", row["异常原因"] ?? row["质检说明"] ?? row["异常描述"]);
+          const defect = iqcDefectName(row);
           cell.defects.set(defect, (cell.defects.get(defect) || 0) + 1);
         }
         const partyName = company ? site + "公司加工" : clean(row["供应商"]) || "未填写供应商";
@@ -750,7 +796,7 @@ const buildIqcQualitySplit = (files, period) => {
         party.inspected += 1;
         if (bad) {
           party.bad += 1;
-          const defect = normalizeParetoMechanism("IQC", row["异常原因"] ?? row["质检说明"] ?? row["异常描述"]);
+          const defect = iqcDefectName(row);
           party.defects.set(defect, (party.defects.get(defect) || 0) + 1);
         }
         parties.set(key, party);
@@ -760,25 +806,19 @@ const buildIqcQualitySplit = (files, period) => {
       }
     });
   });
-  const list = (source) => [...parties.values()].filter((item) => item.source === source && item.inspected > 0).map((item) => ({
-    site: item.site,
-    name: item.name,
-    inspected: item.inspected,
-    bad: item.bad,
-    rate: rateOf(item.bad, item.inspected),
-    topDefects: [...item.defects.entries()].map(([name, count]) => ({ name, count })).sort((a, b) => b.count - a.count).slice(0, 3),
-  })).sort((a, b) => (b.rate || 0) - (a.rate || 0) || b.bad - a.bad || a.name.localeCompare(b.name, "zh-CN")).slice(0, 8);
+  const ranked = iqcPartyLists(parties);
   const monthlyTrend = buildIqcMonthlyTrend(files, period);
   return {
     rule: "导入记录均视为加工件。供应商名称含一楼自制或内部加工的归公司加工，其余归供应商。文件名含杭州归杭州，其余归深圳。趋势从当年1月计到所选截止日期；某月已有“N月份”文件时，只用该文件，避免和全年文件重复计算。",
     period: { start: period?.start2026 || "", end: period?.end2026 || "" },
     previousPeriod: previous?.label || "",
     cells: cellNames.map((name) => ({ name, ...finishIqcCell(cells[name]) })),
-    suppliers: list("供应商"),
-    companyMachining: list("公司加工"),
+    suppliers: ranked.suppliers,
+    companyMachining: ranked.companyMachining,
     trendYear: monthlyTrend.year,
     monthly: monthlyTrend.rows,
     cellMonthly: monthlyTrend.cells,
+    monthFacts: monthlyTrend.monthFacts,
   };
 };
 
@@ -965,20 +1005,140 @@ export const pickIqcAnalysisSnapshot = (history = [], period = {}) => {
   if (!covering[0]) return null;
   return { ...covering[0], matchLevel: "coverage", selectedWindow: { start, end }, coverage: { start: covering[0].dateRange.start2026, end: covering[0].dateRange.end2026 } };
 };
-export const sliceIqcSnapshotToWindow = (snapshot, window = {}, sourcePeriod = null) => {
+const iqcMonthNumber = (label) => {
+  const match = String(label || "").match(/(\d{1,2})\s*月/);
+  const month = match ? Number(match[1]) : 0;
+  return month >= 1 && month <= 12 ? month : 0;
+};
+const iqcOverlapMonths = (start, end) => {
+  const year = String(start || "").slice(0, 4);
+  const months = [];
+  for (let month = 1; month <= 12; month += 1) {
+    const bounds = iqcMonthBounds(year, month + "月");
+    if (bounds && iqcRangesOverlap(bounds.start, bounds.end, start, end)) months.push(month);
+  }
+  return months;
+};
+const iqcFactsForMonths = (facts, months) => (Array.isArray(facts) ? facts : []).filter((fact) => months.includes(iqcMonthNumber(fact.month)));
+const iqcDetailsFromFacts = (facts) => {
+  const cellDefects = new Map();
+  const parties = new Map();
+  facts.forEach((fact) => {
+    (fact.cells || []).forEach((cell) => {
+      const bag = cellDefects.get(cell.name) || new Map();
+      (cell.defects || []).forEach((item) => {
+        const count = Number(item.count) || 0;
+        if (item.name && count > 0) bag.set(item.name, (bag.get(item.name) || 0) + count);
+      });
+      cellDefects.set(cell.name, bag);
+    });
+    (fact.parties || []).forEach((party) => {
+      const key = (party.site || "") + "\u0001" + (party.source || "") + "\u0001" + (party.name || "");
+      const current = parties.get(key) || { site: party.site, source: party.source, name: party.name, inspected: 0, bad: 0, defects: new Map() };
+      current.inspected += Number(party.inspected) || 0;
+      current.bad += Number(party.bad) || 0;
+      (party.defects || []).forEach((item) => {
+        const count = Number(item.count) || 0;
+        if (item.name && count > 0) current.defects.set(item.name, (current.defects.get(item.name) || 0) + count);
+      });
+      parties.set(key, current);
+    });
+  });
+  const lists = iqcPartyLists(parties);
+  return {
+    resolved: true,
+    useOriginal: false,
+    suppliers: lists.suppliers,
+    companyMachining: lists.companyMachining,
+    defectsFor: (name) => iqcNamedCounts(cellDefects.get(name) || new Map(), 5),
+  };
+};
+const iqcSnapshotWindow = (entry = {}) => ({
+  start: entry.dateRange?.start2026 || entry.snapshot?.period?.start2026 || "",
+  end: entry.dateRange?.end2026 || entry.snapshot?.period?.end2026 || "",
+  granularity: entry.dateRange?.granularity || entry.granularity || "",
+});
+const iqcSplitHasDetails = (split) => Boolean(split && ((split.suppliers || []).length || (split.companyMachining || []).length || (split.cells || []).some((cell) => (cell.defects || []).length)));
+const iqcFactsFromSplit = (split, label) => ({
+  month: label,
+  cells: (split.cells || []).map((cell) => ({ name: cell.name, defects: cell.defects || [] })),
+  parties: [
+    ...(split.suppliers || []).map((item) => ({ site: item.site, source: "供应商", name: item.name, inspected: item.inspected, bad: item.bad, defects: item.topDefects || item.defects || [] })),
+    ...(split.companyMachining || []).map((item) => ({ site: item.site, source: "公司加工", name: item.name || ((item.site || "") + "公司加工"), inspected: item.inspected, bad: item.bad, defects: item.topDefects || item.defects || [] })),
+  ],
+});
+export const iqcDetailsFromSnapshotHistory = (history = [], start = "", end = "") => {
+  const pieces = (history || []).filter((entry) => {
+    if (!entry || entry.active === false || entry.module !== "IQC") return false;
+    const piece = iqcSnapshotWindow(entry);
+    if (piece.granularity !== "week" && piece.granularity !== "month") return false;
+    if (!piece.start || !piece.end || piece.end < start || piece.start > end) return false;
+    return iqcSplitHasDetails(entry.snapshot?.data?.iqcSplit);
+  });
+  const weeks = pieces.filter((entry) => iqcSnapshotWindow(entry).granularity === "week");
+  const chosen = weeks.length ? weeks : pieces.filter((entry) => iqcSnapshotWindow(entry).granularity === "month");
+  if (!chosen.length) return null;
+  return iqcDetailsFromFacts(chosen.map((entry) => iqcFactsFromSplit(entry.snapshot.data.iqcSplit, iqcSnapshotWindow(entry).start)));
+};
+const iqcWindowDetails = (split, start, end, history, ownStart, ownEnd) => {
+  const months = iqcOverlapMonths(start, end);
+  const facts = iqcFactsForMonths(split?.monthFacts, months);
+  if (facts.length) return iqcDetailsFromFacts(facts);
+  const fromSnapshots = iqcDetailsFromSnapshotHistory(history, start, end);
+  if (fromSnapshots?.resolved) return fromSnapshots;
+  const ownMonths = iqcOverlapMonths(ownStart, ownEnd);
+  const sameSpan = ownMonths.length === months.length && ownMonths.every((month, index) => month === months[index]);
+  if (sameSpan && iqcSplitHasDetails(split)) {
+    return {
+      resolved: true,
+      useOriginal: true,
+      suppliers: split?.suppliers || [],
+      companyMachining: split?.companyMachining || [],
+      defectsFor: (name) => (split?.cells || []).find((cell) => cell.name === name)?.defects || [],
+    };
+  }
+  return { resolved: false, useOriginal: false, suppliers: [], companyMachining: [], defectsFor: () => [] };
+};
+export const iqcSplitDetailsMissing = (split) => {
+  if (!split) return false;
+  if (!(split.cells || []).some((cell) => Number(cell.bad) > 0)) return false;
+  return !iqcSplitHasDetails(split);
+};
+export const refillIqcSnapshotDetails = (snapshot, history = [], window = null) => {
+  if (!snapshot || snapshot.module !== "IQC" || !iqcSplitDetailsMissing(snapshot.data?.iqcSplit)) return snapshot;
+  const start = window?.start || snapshot.selectedWindow?.start || snapshot.period?.start2026 || "";
+  const end = window?.end || snapshot.selectedWindow?.end || snapshot.period?.end2026 || "";
+  if (!start || !end) return snapshot;
+  const details = iqcWindowDetails(snapshot.data.iqcSplit, start, end, history, start, end);
+  if (!details.resolved || details.useOriginal) return snapshot;
+  const split = snapshot.data.iqcSplit;
+  return {
+    ...snapshot,
+    data: {
+      ...snapshot.data,
+      iqcSplit: {
+        ...split,
+        cells: (split.cells || []).map((cell) => ({ ...cell, defects: details.defectsFor(cell.name) })),
+        suppliers: details.suppliers,
+        companyMachining: details.companyMachining,
+      },
+    },
+  };
+};
+export const sliceIqcSnapshotToWindow = (snapshot, window = {}, sourcePeriod = null, history = null) => {
   if (!snapshot || snapshot.module !== "IQC") return snapshot;
   const start = window.start || "";
   const end = window.end || "";
   if (!start || !end) return snapshot;
   const ownStart = sourcePeriod?.start2026 || snapshot.period?.start2026 || "";
   const ownEnd = sourcePeriod?.end2026 || snapshot.period?.end2026 || "";
-  if (ownStart === start && ownEnd === end) return snapshot;
   const split = snapshot.data?.iqcSplit;
+  if (ownStart === start && ownEnd === end && !iqcSplitDetailsMissing(split)) return snapshot;
   const monthly = split?.cellMonthly || [];
-  if (!monthly.length) return snapshot;
+  if (!monthly.length) return refillIqcSnapshotDetails(snapshot, history, { start, end });
   const year = start.slice(0, 4);
   const endMonth = Number(end.slice(5, 7)) || 12;
-  const inWindow = (label) => {
+  const inSelectedMonth = (label) => {
     const bounds = iqcMonthBounds(year, label);
     return Boolean(bounds && iqcRangesOverlap(bounds.start, bounds.end, start, end));
   };
@@ -988,24 +1148,25 @@ export const sliceIqcSnapshotToWindow = (snapshot, window = {}, sourcePeriod = n
   };
   const sumRows = (rows) => (rows || []).reduce((acc, row) => ({ inspected: acc.inspected + Number(row.inspected || 0), bad: acc.bad + Number(row.bad || 0) }), { inspected: 0, bad: 0 });
   const previousMonth = new Date(Date.UTC(Number(start.slice(0, 4)), Number(start.slice(5, 7)) - 2, 1)).getUTCMonth() + 1;
-  const sameMonth = ownStart.slice(0, 7) && ownStart.slice(0, 7) === start.slice(0, 7) && ownEnd.slice(0, 7) === end.slice(0, 7);
+  const details = iqcWindowDetails(split, start, end, history, ownStart, ownEnd);
   const chartCells = monthly.map((cell) => ({ ...cell, rows: (cell.rows || []).filter((row) => throughEnd(row.month)) }));
-  const windowCells = monthly.map((cell) => ({ ...cell, rows: (cell.rows || []).filter((row) => inWindow(row.month)) }));
+  const windowCells = monthly.map((cell) => ({ ...cell, rows: (cell.rows || []).filter((row) => inSelectedMonth(row.month)) }));
   const cells = windowCells.map((cell, index) => {
     const totals = sumRows(cell.rows);
     const original = (split.cells || [])[index] || {};
-    const prev = (cell.rows.length ? monthly[index]?.rows : monthly[index]?.rows || []).find((row) => iqcMonthBounds(year, row.month)?.month === previousMonth);
+    const prev = (monthly[index]?.rows || []).find((row) => iqcMonthBounds(year, row.month)?.month === previousMonth);
     const rate = totals.inspected ? Number((totals.bad / totals.inspected * 100).toFixed(1)) : null;
+    const name = original.name || cell.name;
     return {
       ...original,
-      name: original.name || cell.name,
+      name,
       inspected: totals.inspected,
       bad: totals.bad,
       rate,
       previousInspected: Number(prev?.inspected || 0),
       previousBad: Number(prev?.bad || 0),
       previousRate: prev?.inspected ? Number((Number(prev.bad || 0) / Number(prev.inspected) * 100).toFixed(1)) : null,
-      defects: sameMonth ? (original.defects || []) : [],
+      defects: details.defectsFor(name),
     };
   });
   const monthLabels = chartCells[0]?.rows || [];
@@ -1024,7 +1185,7 @@ export const sliceIqcSnapshotToWindow = (snapshot, window = {}, sourcePeriod = n
       ...snapshot.data,
       periodTrend: snapshot.data?.periodTrend ? { ...snapshot.data.periodTrend, end, rows: monthlyRows.map((row) => ({ label: row.month, bad: row.bad, total: row.inspected, rate: row.rate })) } : snapshot.data?.periodTrend,
       evidence: { ...(snapshot.data?.evidence || {}), trends },
-      iqcSplit: { ...split, cells, cellMonthly: chartCells, monthly: monthlyRows, suppliers: sameMonth ? split.suppliers : [], companyMachining: sameMonth ? split.companyMachining : [] },
+      iqcSplit: { ...split, cells, cellMonthly: chartCells, monthly: monthlyRows, suppliers: details.suppliers, companyMachining: details.companyMachining },
     },
   };
 };

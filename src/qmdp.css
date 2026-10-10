@@ -1375,3 +1375,7 @@
 .lieflat-card.lieflat-heat svg text.lieflat-heat-month,
 .lieflat-card.lieflat-heat svg text.lieflat-heat-name,
 .lieflat-card.lieflat-heat svg text.lieflat-heat-legend{font-size:13px!important;font-weight:700}
+
+.quality-agent-report-content.report-profile-porcelain-sheet-v1{max-width:none!important;padding:0!important;background:rgb(247,242,235)}
+.quality-agent-final-report.report-profile-porcelain-sheet-v1,.quality-agent-saved-report.report-profile-porcelain-sheet-v1,.quality-agent-imported-report.report-profile-porcelain-sheet-v1,.quality-agent-role-report.report-profile-porcelain-sheet-v1{background:rgb(247,242,235);padding:12px}
+.quality-agent-final-report.report-profile-porcelain-sheet-v1>header{background:rgb(247,242,235)}

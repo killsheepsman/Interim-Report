@@ -1914,6 +1914,20 @@ const pruneUploadsNotInSources = async (sources) => {
   return removed;
 };
 
+
+const snapshotEntryHasBody = (entry) => Boolean(entry?.snapshot && (entry.snapshot.data || entry.snapshot.module || entry.snapshot.schemaVersion));
+const preserveSnapshotBodies = (current, incoming) => {
+  if (!incoming || typeof incoming !== "object" || !Array.isArray(incoming.history)) return incoming;
+  const stored = new Map((Array.isArray(current?.history) ? current.history : []).filter((entry) => entry?.id).map((entry) => [entry.id, entry]));
+  return {
+    ...incoming,
+    history: incoming.history.map((entry) => {
+      const previous = stored.get(entry?.id);
+      if (!snapshotEntryHasBody(entry) && snapshotEntryHasBody(previous)) return { ...entry, snapshot: previous.snapshot };
+      return entry;
+    }),
+  };
+};
 const handleApi = async (req, res) => {
   const match = req.url.match(/^\/api\/state\/([^/?#]+)/);
   const key = match?.[1];
@@ -1992,7 +2006,11 @@ const handleApi = async (req, res) => {
 
   if (req.method === "PUT") {
     const payload = JSON.parse(await readBody(req) || "{}");
-    const value = await saveStateValue(key, payload.value ?? defaultValueFor(key));
+    let nextValue = payload.value ?? defaultValueFor(key);
+    if ((key === QUALITY_SNAPSHOT_REGISTRY_KEY || key === QUALITY_ROLE_SNAPSHOT_REGISTRY_KEY) && nextValue && typeof nextValue === "object") {
+      nextValue = preserveSnapshotBodies(await loadStateValue(key), nextValue);
+    }
+    const value = await saveStateValue(key, nextValue);
     if (key === "imported-sources") await pruneUploadsNotInSources(value);
     return sendJson(res, 200, { key, value, updatedAt: new Date().toISOString() });
   }

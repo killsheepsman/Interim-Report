@@ -1,9 +1,11 @@
-// Vite provides import.meta.glob in the browser build; the Node server only
-// needs the fallback profile and must not evaluate the Vite-only helper.
-const profileModules = typeof import.meta.glob === "function"
-  ? import.meta.glob("../../skills/report-web-publisher/profiles/*.json", { eager: true, import: "default" })
-  : {};
-
+const porcelainProfile = {
+  id: "porcelain-sheet-v1",
+  label: "青瓷经营网页风格",
+  description: "青瓷底、左侧书脊、发丝折线和底部大数。选择后按这个版式出页。",
+  renderer: "porcelainSheet",
+  riskPalette: { red: "#081F5C", orange: "#334EAC", yellow: "#7096D1", blue: "#081F5C" },
+  tablePolicy: "chart-first",
+};
 const fallbackProfile = {
   id: "research-briefing-v1",
   label: "研究简报网页风格",
@@ -13,17 +15,21 @@ const fallbackProfile = {
   tablePolicy: "chart-first",
 };
 
-const loadedProfiles = Object.values(profileModules)
-  .filter((profile) => profile && typeof profile === "object" && /^[a-z0-9][a-z0-9-]{0,80}$/i.test(String(profile.id || "")))
-  .map((profile) => ({ ...fallbackProfile, ...profile }));
 
-export const REPORT_PRESENTATION_PROFILES = (loadedProfiles.length ? loadedProfiles : [fallbackProfile])
-  .sort((left, right) => String(left.label).localeCompare(String(right.label), "zh-CN"));
-export const DEFAULT_REPORT_PRESENTATION_PROFILE = REPORT_PRESENTATION_PROFILES.find((item) => item.id === fallbackProfile.id)?.id
-  || REPORT_PRESENTATION_PROFILES[0].id;
+const basicsProfile = {
+  id: "basics-sheet-v1",
+  label: "基础对照网页风格",
+  description: "比率用哑铃，可数排名用刻度条。按各模块数据选图，不套同一页。",
+  renderer: "basicsSheet",
+  riskPalette: { red: "#1C1C1A", orange: "#5E5D57", yellow: "#8F8E88", blue: "#1C1C1A" },
+  tablePolicy: "chart-first",
+};
+export const REPORT_PRESENTATION_PROFILES = [fallbackProfile, porcelainProfile, basicsProfile];
+export const DEFAULT_REPORT_PRESENTATION_PROFILE = fallbackProfile.id;
 
-export const normalizeReportPresentationProfile = (value) => REPORT_PRESENTATION_PROFILES.some((item) => item.id === value)
+export const normalizeReportPresentationProfile = (value) => REPORT_PRESENTATION_PROFILES.some((profile) => profile.id === value)
   ? value
   : DEFAULT_REPORT_PRESENTATION_PROFILE;
-export const getReportPresentationProfile = (value) => REPORT_PRESENTATION_PROFILES.find((item) => item.id === normalizeReportPresentationProfile(value));
+export const getReportPresentationProfile = (value) => REPORT_PRESENTATION_PROFILES.find((profile) => profile.id === normalizeReportPresentationProfile(value)) || fallbackProfile;
+export const presentationOwnsCharts = (value) => getReportPresentationProfile(value).renderer !== "researchBriefing";
 export const reportPresentationClass = (value) => `report-profile-${normalizeReportPresentationProfile(value)}`;
