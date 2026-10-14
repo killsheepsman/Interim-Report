@@ -9,11 +9,25 @@ const periodText = (period = {}) => {
   return start && end ? `${start} 至 ${end}` : "周期未标注";
 };
 
-export function WecomReportSendPanel({ role = "", recipient = "", currentFileName = "", canSend = true }) {
+const roleReportNames = ["组装人员", "机长", "交付经理", "供应链经理", "研发工程师", "PM", "TPM", "产总"];
+const isRoleReport = (row) => String(row.module || "").includes("角色报告") || roleReportNames.includes(row.role);
+const periodOverlaps = (row, fromDate, toDate) => {
+  if (!fromDate && !toDate) return true;
+  const start = row.period?.start || row.period?._periodStart || "";
+  const end = row.period?.end || row.period?._periodEnd || "";
+  if (!start && !end) return false;
+  if (fromDate && end && end < fromDate) return false;
+  if (toDate && start && start > toDate) return false;
+  return true;
+};
+
+export function WecomReportSendPanel({ role = "", recipient = "", currentFileName = "", canSend = true, roleReportsOnly = false }) {
   const [reports, setReports] = useState([]);
   const [selected, setSelected] = useState([]);
   const [roleFilter, setRoleFilter] = useState(role || "全部");
   const [keyword, setKeyword] = useState(recipient || "");
+  const [periodFrom, setPeriodFrom] = useState("");
+  const [periodTo, setPeriodTo] = useState("");
   const [status, setStatus] = useState({ type: "", message: "" });
   const [preview, setPreview] = useState(null);
   const [sending, setSending] = useState(false);
@@ -56,8 +70,9 @@ export function WecomReportSendPanel({ role = "", recipient = "", currentFileNam
   useEffect(() => { if (role) setRoleFilter(role); }, [role]);
   useEffect(() => { if (recipient) setKeyword(recipient); }, [recipient]);
 
-  const roles = useMemo(() => ["全部", ...[...new Set(reports.map((row) => row.role).filter(Boolean))]], [reports]);
-  const visible = reports.filter((row) => (roleFilter === "全部" || row.role === roleFilter) && (!keyword || `${row.recipient} ${row.role} ${row.fileName}`.includes(keyword.trim())));
+  const scoped = roleReportsOnly ? reports.filter(isRoleReport) : reports;
+  const roles = useMemo(() => ["全部", ...[...new Set(scoped.map((row) => row.role).filter(Boolean))]], [scoped]);
+  const visible = scoped.filter((row) => (roleFilter === "全部" || row.role === roleFilter) && (!keyword || `${row.recipient} ${row.role} ${row.fileName}`.includes(keyword.trim())) && periodOverlaps(row, periodFrom, periodTo));
   const allVisibleSelected = visible.length > 0 && visible.every((row) => selected.includes(row.fileName));
   const selectedRows = reports.filter((row) => selected.includes(row.fileName));
 
@@ -66,12 +81,12 @@ export function WecomReportSendPanel({ role = "", recipient = "", currentFileNam
 
   const runPreview = async () => {
     if (!selectedRows.length) { setStatus({ type: "error", message: "请先勾选要发送的报告" }); return; }
-    setStatus({ type: "", message: "正在核对姓名和 userid…" });
+    setStatus({ type: "", message: "正在核对姓名和发送地址…" });
     try {
       const payload = await previewWecomSend(selectedRows.map((row) => ({ fileName: row.fileName, recipient: row.recipient, role: row.role })));
       setPreview(payload);
       const blocked = (payload.rows || []).filter((row) => row.status !== "ok");
-      setStatus({ type: blocked.length ? "warn" : "ok", message: payload.configured ? `可发送 ${(payload.rows || []).filter((row) => row.status === "ok").length} 份，需处理 ${blocked.length} 份` : "企业微信配置还不完整，请先到系统管理-企业微信保存 CorpId / AgentId / Secret" });
+      setStatus({ type: blocked.length ? "warn" : "ok", message: payload.configured ? `可发送 ${(payload.rows || []).filter((row) => row.status === "ok").length} 份，需处理 ${blocked.length} 份` : "还没有可发送的地址。请先在员工信息填写群机器人 Webhook，并同步到发送服务" });
     } catch (error) {
       setStatus({ type: "error", message: error.message || "预览失败" });
     }
@@ -115,11 +130,11 @@ export function WecomReportSendPanel({ role = "", recipient = "", currentFileNam
     if (!exportFolder) return;
     try { await openWecomPdfFolder(exportFolder); } catch (error) { setStatus({ type: "error", message: error.message || "无法打开文件夹" }); }
   };
-  const matchLabel = (row) => ({ ok: "可发送", missing: "缺人员", "no-userid": "缺userid", duplicate: "重名", error: "失败" }[row.status] || row.status || "");
+  const matchLabel = (row) => row.status === "ok" && row.channel === "webhook" ? "发到群" : ({ ok: "可发送", missing: "缺人员", "no-userid": "缺地址", "bad-webhook": "地址不对", duplicate: "重名", error: "失败" }[row.status] || row.status || "");
 
   return <section className="qmdp-card wecom-send-panel">
     <header>
-      <div><strong>企业微信发送</strong><span>角色报告保存后会自动出现在这里。导出 PDF 按勾选的那一份，不会改成别的月份。</span></div>
+      <div><strong>批量发送角色报告</strong><span>按姓名对上群机器人 Webhook 后发送，不需要企业微信管理员。报告发到该机器人所在的群，群里的人都能看见。</span></div>
       <div>
         <button className="qmdp-secondary-btn" onClick={refresh} disabled={loading}><ArrowsClockwise size={14}/>刷新报告</button>
         <button className="qmdp-secondary-btn" onClick={exportPdfs} disabled={!selected.length || sending || exporting}><FilePdf size={14}/>{exporting ? "正在导出…" : `导出已选 PDF ${selected.length}`}</button>
@@ -131,9 +146,11 @@ export function WecomReportSendPanel({ role = "", recipient = "", currentFileNam
     <div className="qmdp-toolbar">
       <select value={roleFilter} onChange={(event) => setRoleFilter(event.target.value)}>{roles.map((item) => <option key={item}>{item}</option>)}</select>
       <input value={keyword} onChange={(event) => setKeyword(event.target.value)} placeholder="按姓名筛选"/>
+      <label>周期从<input type="date" value={periodFrom} onChange={(event) => setPeriodFrom(event.target.value)}/></label>
+      <label>到<input type="date" value={periodTo} onChange={(event) => setPeriodTo(event.target.value)}/></label>
       <label className="wecom-send-check"><input type="checkbox" checked={latestOnly} onChange={(event) => setLatestOnly(event.target.checked)}/>只看每人最新</label>
       <label className="wecom-send-check"><input type="checkbox" checked={allVisibleSelected} onChange={toggleVisible}/>全选当前列表（{visible.length}）</label>
-      <span>已保存 {reports.length} 份 · 当前显示 {visible.length} 份{latestOnly ? " · 已按人员+周期同步最新" : ""}</span>
+      <span>已保存 {scoped.length} 份 · 当前显示 {visible.length} 份{latestOnly ? " · 已按人员+周期同步最新" : ""}</span>
     </div>
     {status.message && <p className={`wecom-send-status ${status.type}`}>{status.message}</p>}
     <div className="qmdp-admin-table wecom-send-table">
@@ -153,4 +170,11 @@ export function WecomReportSendPanel({ role = "", recipient = "", currentFileNam
       {!visible.length && <div className="qmdp-empty compact">{loading ? "正在读取已保存报告…" : "没有符合筛选的已保存报告。请先在角色报告页保存。"}</div>}
     </div>
   </section>;
+}
+
+export function RoleReportBatchSendPage({ canSend = false }) {
+  return <div className="qmdp-page quality-agent-page">
+    <div className="quality-agent-hero"><div><span className="qmdp-eyebrow">ROLE REPORT / WECOM</span><h2>批量发送</h2><p>按岗位、人员和报告周期勾选已保存的角色报告，发到对应人员的群机器人。单份报告仍在各岗位报告页发送。</p></div></div>
+    <WecomReportSendPanel canSend={canSend} roleReportsOnly />
+  </div>;
 }

@@ -556,6 +556,7 @@ const actionHtml = (source) => {
   return '<div class="secthead"><span class="line"></span><span class="t">' + escapeHtml(title) + "</span></div>" + noteHtml + grid;
 };
 const spineTitle = (title, module) => {
+  if (String(module || "").startsWith("角色报告")) return String(title || "").trim() || "质量报告";
   const source = title + module;
   if (/出货评分|OQC/.test(source)) return "出货评分";
   if (/加工件|IQC/.test(source)) return "加工件质量";
@@ -964,6 +965,12 @@ const renderPoster = (source, options) => {
   const charts = composed.rows.map(porcelainRow).join("");
   const stats = statsBand(slots, composed.folded);
   const actions = actionHtml(source);
-  return '<div class="porcelain-wrap report-publisher"><div class="sheet"><div class="spine"><div class="t">' + escapeHtml(spineTitle(title, options.module)) + '</div><div class="b">QMS</div></div><div class="content"><div class="tophead"><span class="site">QMS</span><span class="sep">|</span><span class="tag">' + escapeHtml(period || options.module || "") + "</span></div>" + charts + stats + (actions ? '<div class="sheet-action">' + actions + "</div>" : "") + '<div class="foot"><span>' + escapeHtml(title) + "</span><span>青瓷经营网页风格</span></div></div></div></div>";
+  const personal = String(options.module || "").startsWith("角色报告");
+  const spine = personal ? title : spineTitle(title, options.module);
+  const spineSize = personal ? (spine.length > 16 ? 16 : spine.length > 12 ? 18 : 22) : 46;
+  const head = personal
+    ? '<div class="tophead personal-title"><span class="site">' + escapeHtml(title) + "</span></div>"
+    : '<div class="tophead"><span class="site">QMS</span><span class="sep">|</span><span class="tag">' + escapeHtml(period || options.module || "") + "</span></div>";
+  return '<div class="porcelain-wrap report-publisher"><div class="sheet"><div class="spine"><div class="t' + (personal ? " is-personal" : "") + '" style="font-size:' + spineSize + 'px">' + escapeHtml(spine) + '</div><div class="b">QMS</div></div><div class="content">' + head + charts + stats + (actions ? '<div class="sheet-action">' + actions + "</div>" : "") + '<div class="foot"><span>' + escapeHtml(title) + "</span><span>青瓷经营网页风格</span></div></div></div></div>";
 };
 export const renderDataSheet = (content, options = {}) => renderPoster(String(content || ""), options);

@@ -69,6 +69,35 @@ export const reportTitlePeriod = (period = {}) => {
   return from ? `${from.month}月` : "";
 };
 
+export const composePersonalReportTitle = ({ recipient = "", period = {}, role = "", existing = "" } = {}) => {
+  const name = String(recipient || "").trim();
+  const roleName = String(role || "").replace(/^角色报告-/, "").trim();
+  const current = String(existing || "").replace(/^#\s*/, "").trim();
+  const titledTime = current.match(/(\d{4}年)?(\d{1,2}至\d{1,2}月|\d{1,2}月至\d{1,2}月|\d{1,2}月)/);
+  const when = reportTitlePeriod(period) || (titledTime ? `${titledTime[1] || ""}${titledTime[2]}` : "");
+  const type = `${roleName}质量报告`;
+  if (!name) return current;
+  const timeKey = when.replace(/^\d{4}年/, "");
+  const hasName = current.includes(name);
+  const hasTime = Boolean(timeKey) && current.includes(timeKey);
+  const hasRole = !roleName || current.includes(roleName);
+  const hasType = current.includes("质量报告");
+  if (hasName && hasTime && hasRole && hasType) return current;
+  return `${name}-${when || "本期"}${type}`;
+};
+
+export const ensurePersonalReportHeading = (content = "", options = {}) => {
+  const moduleName = String(options.module || "");
+  const role = options.role || (moduleName.startsWith("角色报告-") ? moduleName.slice("角色报告-".length) : "");
+  if (!options.recipient && !moduleName.startsWith("角色报告")) return String(content || "");
+  const text = String(content || "");
+  const existing = text.match(/^#\s+(.+)$/m)?.[1] || "";
+  const title = composePersonalReportTitle({ recipient: options.recipient, period: options.period, role, existing });
+  if (!title) return text;
+  if (/^#\s+/m.test(text)) return text.replace(/^#\s+.+$/m, `# ${title}`);
+  return `# ${title}\n\n${text}`;
+};
+
 const fillGreeting = (template, name, when, dept = "") => String(template || "")
   .replaceAll("{name}", name)
   .replaceAll("{when}", when)
@@ -958,7 +987,7 @@ export const buildFixedDataRoleReport = ({ role = "", recipient = "", period = {
   const good = liveHasCounts ? Number(ipqc.goodRecords || 0) : Number(snapshotMetrics.good ?? Math.max(0, inspected - bad));
   const badRate = liveHasCounts ? ipqc.badRate : snapshotMetrics.badRate;
   const lines = [
-    `# ${recipient}-${reportTitlePeriod(period) || "本期"}质量报告`,
+    `# ${composePersonalReportTitle({ recipient, period, role })}`,
     "",
     `角色：${role}`,
     `统计周期：${start || "待核实"}—${end || "待核实"}`,

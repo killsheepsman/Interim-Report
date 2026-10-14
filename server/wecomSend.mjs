@@ -8,6 +8,14 @@ const CONFIG_VERSION = "qms-wecom-config-v1";
 
 const personKey = (value) => String(value || "").normalize("NFKC").replace(/[\s\u00a0]/g, "");
 
+export const normalizeWebhook = (value) => {
+  const text = String(value || "").trim();
+  if (!text) return "";
+  const keyed = text.match(/[?&]key=([A-Za-z0-9-]{8,})/);
+  const key = keyed?.[1] || (/^[A-Za-z0-9-]{16,}$/.test(text) ? text : "");
+  return key ? `https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=${key}` : "";
+};
+
 export const publicWecomConfig = (config = {}) => ({
   corpId: String(config.corpId || ""),
   agentId: String(config.agentId || ""),
@@ -19,6 +27,7 @@ export const publicWecomConfig = (config = {}) => ({
     dept: String(row.dept || ""),
     role: String(row.role || ""),
     wecom: String(row.wecom || ""),
+    webhook: String(row.webhook || ""),
   })) : [],
   updatedAt: config.updatedAt || "",
 });
@@ -45,6 +54,7 @@ export const saveWecomConfig = async (filePath, next = {}, current = {}) => {
       dept: String(row.dept || "").trim(),
       role: String(row.role || "").trim(),
       wecom: String(row.wecom || "").trim(),
+      webhook: normalizeWebhook(row.webhook) || String(row.webhook || "").trim(),
     })),
     updatedAt: new Date().toISOString(),
   };
@@ -53,17 +63,39 @@ export const saveWecomConfig = async (filePath, next = {}, current = {}) => {
   return saved;
 };
 
+const sendTarget = (row = {}) => {
+  const rawWebhook = String(row.webhook || "").trim();
+  const webhook = normalizeWebhook(rawWebhook);
+  const userid = String(row.wecom || "").trim();
+  if (webhook) return { channel: "webhook", webhook, userid };
+  if (rawWebhook) return { channel: "bad-webhook", webhook: "", userid };
+  if (userid) return { channel: "app", webhook: "", userid };
+  return null;
+};
+
 export const matchEmployee = (employees = [], name = "") => {
   const key = personKey(name);
-  if (!key) return { status: "missing", reason: "没有收件人姓名", matches: [] };
+  if (!key) return { status: "missing", reason: "没有收件人姓名", channel: "", matches: [] };
   const matches = (Array.isArray(employees) ? employees : []).filter((row) => personKey(row.name) === key);
-  if (!matches.length) return { status: "missing", reason: `员工信息中没有「${name}」`, matches: [] };
-  const withUser = matches.filter((row) => String(row.wecom || "").trim());
-  if (!withUser.length) return { status: "no-userid", reason: `「${name}」还没有企业微信 userid`, matches };
-  const userids = [...new Set(withUser.map((row) => String(row.wecom).trim()))];
-  if (userids.length > 1) return { status: "duplicate", reason: `「${name}」对应多个 userid，请先在员工信息中确认`, matches: withUser };
-  return { status: "ok", userid: userids[0], employee: withUser[0], matches: withUser };
+  if (!matches.length) return { status: "missing", reason: `员工信息中没有「${name}」`, channel: "", matches: [] };
+  const targeted = matches.map((row) => ({ row, target: sendTarget(row) })).filter((item) => item.target);
+  if (!targeted.length) return { status: "no-userid", reason: `「${name}」还不能发送。请在员工信息填写群机器人 Webhook`, channel: "", matches };
+  if (targeted.some((item) => item.target.channel === "bad-webhook") && !targeted.some((item) => item.target.channel === "webhook" || item.target.channel === "app")) {
+    return { status: "bad-webhook", reason: `「${name}」的群机器人 Webhook 格式不对，请粘贴完整地址`, channel: "", matches };
+  }
+  const usable = targeted.filter((item) => item.target.channel === "webhook" || item.target.channel === "app");
+  const identities = [...new Set(usable.map((item) => item.target.channel === "webhook" ? `webhook:${item.target.webhook}` : `app:${item.target.userid}`))];
+  if (identities.length > 1) return { status: "duplicate", reason: `「${name}」对应多个发送地址，请先在员工信息中确认`, channel: "", matches: usable.map((item) => item.row) };
+  const chosen = usable[0];
+  return { status: "ok", channel: chosen.target.channel, userid: chosen.target.userid, webhook: chosen.target.webhook, employee: chosen.row, matches: usable.map((item) => item.row) };
 };
+
+export const publicEmployeeMatch = (match = {}) => ({
+  status: match.status || "",
+  reason: match.reason || "",
+  channel: match.channel || "",
+  userid: match.channel === "app" ? String(match.userid || "") : "",
+});
 
 const tokenCache = { value: "", expireAt: 0 };
 
@@ -85,7 +117,8 @@ const wecomError = (payload, fallback) => {
     40013: "CorpId 不正确",
     40001: "Secret 无效，请重新保存企业微信配置",
     40014: "应用令牌失效，请重试",
-    60020: "当前应用没有发消息权限，请在企业微信管理后台给自建应用开通「发送消息」",
+    60020: "调用企业微信的出口 IP 不在企业可信 IP 里，自建应用发不出去。请改用群机器人 Webhook",
+    93000: "群机器人 Webhook 无效或已被删除",
     81013: "userid 不存在或已离职，请核对员工信息",
     60111: "userid 不存在",
     45009: "发送过于频繁，请稍后再试",
@@ -299,21 +332,59 @@ export const reportPdfTitle = (report = {}) => {
   return [report.recipient || "质量报告", report.role, when, "质量报告"].filter(Boolean).join("-");
 };
 
+const webhookPace = new Map();
+const waitForWebhook = async (key) => {
+  const wait = 7000 - (Date.now() - (webhookPace.get(key) || 0));
+  if (wait > 0) await new Promise((resolve) => setTimeout(resolve, wait));
+  webhookPace.set(key, Date.now());
+};
+
+const postWebhook = async (key, body) => {
+  const response = await fetch(`https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=${encodeURIComponent(key)}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (Number(payload.errcode) !== 0) throw new Error(wecomError(payload, "群机器人发送失败"));
+  return payload;
+};
+
+export const sendWebhookReport = async (webhook, { text, fileName, buffer }) => {
+  const key = normalizeWebhook(webhook).split("key=")[1] || "";
+  if (!key) throw new Error("群机器人 Webhook 不正确，请粘贴完整地址");
+  await waitForWebhook(key);
+  if (text) await postWebhook(key, { msgtype: "text", text: { content: String(text).slice(0, 1800) } });
+  const form = new FormData();
+  form.append("media", new File([buffer], fileName, { type: "application/pdf" }));
+  const uploadedResponse = await fetch(`https://qyapi.weixin.qq.com/cgi-bin/webhook/upload_media?key=${encodeURIComponent(key)}&type=file`, { method: "POST", body: form });
+  const uploaded = await uploadedResponse.json().catch(() => ({}));
+  if (!uploaded.media_id) throw new Error(wecomError(uploaded, "群机器人上传 PDF 失败"));
+  return postWebhook(key, { msgtype: "file", file: { media_id: uploaded.media_id } });
+};
+
 export const sendOneReport = async ({ config, report, content, pdfDir }) => {
   const match = matchEmployee(config.employees, report.recipient);
-  if (match.status !== "ok") return { ok: false, ...match, recipient: report.recipient, fileName: report.fileName };
+  if (match.status !== "ok") return { ok: false, status: match.status, reason: match.reason, channel: match.channel || "", recipient: report.recipient, fileName: report.fileName };
   const title = reportPdfTitle(report);
   const html = markdownToHtml(title, content, visualSpecFromReport(report, content));
   const safe = String(title).replace(/[\\/:*?"<>|]/g, "-").slice(0, 80);
   const pdfPath = path.join(pdfDir, `${safe}-${Date.now()}.pdf`);
   const buffer = await printHtmlToPdf(html, pdfPath);
-  const token = await getWecomToken(config);
-  const mediaId = await uploadWecomFile(token, buffer, `${safe}.pdf`);
   const period = report.period || {};
-  const text = [`您的质量报告已出具，请查收附件 PDF。`, `角色：${report.role || ""}`, `人员：${report.recipient || ""}`, period.start && period.end ? `周期：${period.start} 至 ${period.end}` : ""].filter(Boolean).join("\n");
-  await sendWecomFile(config, { userid: match.userid, mediaId, text });
-  try { await fs.unlink(pdfPath); } catch {}
-  return { ok: true, status: "ok", recipient: report.recipient, userid: match.userid, fileName: report.fileName, title };
+  const text = ["质量报告已出具，请查收附件 PDF。", `角色：${report.role || ""}`, `人员：${report.recipient || ""}`, period.start && period.end ? `周期：${period.start} 至 ${period.end}` : ""].filter(Boolean).join("\n");
+  try {
+    if (match.channel === "webhook") await sendWebhookReport(match.webhook, { text, fileName: `${safe}.pdf`, buffer });
+    else {
+      if (!config.corpId || !config.secret || !config.agentId) throw new Error("自建应用还没配齐，而且当前出口 IP 需要管理员放行。请改填群机器人 Webhook");
+      const token = await getWecomToken(config);
+      const mediaId = await uploadWecomFile(token, buffer, `${safe}.pdf`);
+      await sendWecomFile(config, { userid: match.userid, mediaId, text });
+    }
+  } finally {
+    try { await fs.unlink(pdfPath); } catch {}
+  }
+  return { ok: true, status: "ok", channel: match.channel, recipient: report.recipient, userid: match.channel === "app" ? match.userid : "", fileName: report.fileName, title };
 };
 
 export const safePdfName = (title) => String(title || "质量报告").replace(/[\\/:*?"<>|]/g, "-").replace(/\s+/g, " ").trim().slice(0, 80) || "质量报告";

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { matchEmployee, markdownToHtml, publicWecomConfig, reportPdfTitle, safePdfName } from "../server/wecomSend.mjs";
+import { matchEmployee, normalizeWebhook, publicEmployeeMatch, markdownToHtml, publicWecomConfig, reportPdfTitle, safePdfName } from "../server/wecomSend.mjs";
 import { chartLayoutRules } from "../src/agent/lieflatRoleCharts.js";
 
 const employees = [
@@ -13,6 +13,10 @@ assert.equal(matchEmployee(employees, "朱 从军").userid, "zhucongjun");
 assert.equal(matchEmployee(employees, "王亮").status, "duplicate");
 assert.equal(matchEmployee(employees, "邓海新").status, "no-userid");
 assert.equal(matchEmployee(employees, "不存在").status, "missing");
+assert.equal(matchEmployee([{ name: "韩瑞丽", webhook: "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=abc-def-123" }], "韩瑞丽").channel, "webhook");
+assert.equal(publicEmployeeMatch(matchEmployee([{ name: "韩瑞丽", webhook: "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=abc-def-123" }], "韩瑞丽")).userid, "");
+assert.equal(normalizeWebhook("abc-def-1234567890"), "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=abc-def-1234567890");
+assert.equal(normalizeWebhook("不是地址"), "");
 assert.equal(publicWecomConfig({ secret: "abcd1234", corpId: "ww" }).hasSecret, true);
 assert.equal(publicWecomConfig({ secret: "abcd1234" }).secret, undefined);
 assert.match(markdownToHtml("标题", "| A | B |\n|---|---|\n| 1 | 2 |"), /<table>/);

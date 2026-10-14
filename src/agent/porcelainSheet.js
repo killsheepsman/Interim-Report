@@ -120,7 +120,7 @@ const sheetCss = `
 .porcelain-wrap{background:rgb(247,242,235);color:rgb(8,31,92);font-family:Inter,"Noto Sans SC","Microsoft YaHei",sans-serif;padding:28px 12px 40px}
 .porcelain-wrap .sheet{width:1080px;max-width:100%;margin:0 auto;display:grid;grid-template-columns:110px minmax(0,1fr)}
 .porcelain-wrap .spine{position:relative;border-right:1px solid rgb(8,31,92);min-height:100%}
-.porcelain-wrap .spine .t{position:absolute;top:0;left:14px;writing-mode:vertical-rl;font-family:"Noto Sans SC","Microsoft YaHei",sans-serif;font-weight:900;font-size:46px;line-height:1.1;letter-spacing:.06em;white-space:nowrap}
+.porcelain-wrap{overflow:visible}.porcelain-wrap .sheet{overflow:visible}.porcelain-wrap .spine{overflow:visible}.porcelain-wrap .spine .t{position:absolute;top:0;left:14px;writing-mode:vertical-rl;font-family:"Noto Sans SC","Microsoft YaHei",sans-serif;font-weight:900;font-size:46px;line-height:1.1;letter-spacing:.06em;white-space:nowrap}.porcelain-wrap .spine .t.is-personal{left:2px;width:96px;height:auto;white-space:normal;word-break:keep-all;line-height:1.15;letter-spacing:0;overflow:visible}.porcelain-wrap .tophead.personal-title{display:block}.porcelain-wrap .tophead.personal-title .site{font-family:"Noto Sans SC","Microsoft YaHei",sans-serif;font-size:22px;font-weight:800;letter-spacing:0;line-height:1.4;white-space:normal}
 .porcelain-wrap .spine .b{position:absolute;bottom:0;left:48px;writing-mode:vertical-rl;font-size:9px;font-weight:700;letter-spacing:.26em;color:rgba(8,31,92,.6)}
 .porcelain-wrap .content{padding-left:40px;min-width:0}
 .porcelain-wrap .tophead{display:flex;gap:18px;align-items:baseline;border-bottom:1px solid rgb(8,31,92);padding-bottom:10px;margin-bottom:40px}

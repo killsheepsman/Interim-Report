@@ -1318,9 +1318,13 @@ const buildIqcDetails = (iqcFiles, dateRange, specialAsBad = false) => {
 
   const siteMonthly = {};
   const issueBySite = {};
+  const issueSourceBySite = {};
+  const issueSuppliersBySite = {};
+  const issueInspectedBySite = {};
   const materialBySite = {};
   const mainSuppliers = {};
   const supplierCandidates = {};
+  const sortSupplierNames = (names) => [...names].sort((a, b) => String(a).localeCompare(String(b), "zh-CN", { sensitivity: "base", numeric: true }));
 
   Object.entries(siteRows).forEach(([site, rows]) => {
     const processingRows = rows.filter((row) => !/PCB|标准件|电子|电气/i.test(text(row["材质分类"])));
@@ -1336,6 +1340,29 @@ const buildIqcDetails = (iqcFiles, dateRange, specialAsBad = false) => {
       return { month: `${month}月`, ...stats };
     });
 
+    const issueSource = [];
+    const inspected = new Map();
+    processingRows.forEach((row) => {
+      const supplierName = text(row["供应商"]) || "未填写";
+      const year = yearOf(row["检验开始时间"]);
+      if (year === 2025 || year === 2026) {
+        const item = inspected.get(supplierName) || { supplier: supplierName, y2025: 0, y2026: 0 };
+        item[`y${year}`] += 1;
+        inspected.set(supplierName, item);
+      }
+      const result = iqcResult(row);
+      if (result !== "不合格" && result !== "特采") return;
+      if (year !== 2025 && year !== 2026) return;
+      issueSource.push({
+        supplier: supplierName,
+        year,
+        category: classify(iqcIssueText(row), rules.iqc),
+        special: result === "特采",
+      });
+    });
+    issueSourceBySite[site] = issueSource;
+    issueInspectedBySite[site] = [...inspected.values()];
+    issueSuppliersBySite[site] = sortSupplierNames(inspected.keys());
     const issueCounts = { 2025: new Map(), 2026: new Map() };
     processingRows.filter((row) => iqcResult(row) === "不合格").forEach((row) => {
       const year = yearOf(row["检验开始时间"]);
@@ -1401,8 +1428,18 @@ const buildIqcDetails = (iqcFiles, dateRange, specialAsBad = false) => {
   });
   siteMonthly["全公司"] = mergeIqcMonthly(siteMonthly["深圳"] || [], siteMonthly["杭州"] || []);
   issueBySite["全公司"] = mergeIqcNamedCounts(issueBySite["深圳"] || [], issueBySite["杭州"] || [], 10);
+  issueSourceBySite["全公司"] = [...(issueSourceBySite["深圳"] || []), ...(issueSourceBySite["杭州"] || [])];
+  issueSuppliersBySite["全公司"] = sortSupplierNames(new Set([...(issueSuppliersBySite["深圳"] || []), ...(issueSuppliersBySite["杭州"] || [])]));
+  const inspectedAll = new Map();
+  [...(issueInspectedBySite["深圳"] || []), ...(issueInspectedBySite["杭州"] || [])].forEach((row) => {
+    const current = inspectedAll.get(row.supplier) || { supplier: row.supplier, y2025: 0, y2026: 0 };
+    current.y2025 += row.y2025 || 0;
+    current.y2026 += row.y2026 || 0;
+    inspectedAll.set(row.supplier, current);
+  });
+  issueInspectedBySite["全公司"] = [...inspectedAll.values()];
   materialBySite["全公司"] = mergeIqcNamedCounts(materialBySite["深圳"] || [], materialBySite["杭州"] || []);
-  return { siteMonthly, issueBySite, materialBySite, mainSuppliers, supplierCandidates };
+  return { siteMonthly, issueBySite, issueSourceBySite, issueSuppliersBySite, issueInspectedBySite, materialBySite, mainSuppliers, supplierCandidates };
 };
 
 

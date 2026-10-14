@@ -519,6 +519,7 @@ body{margin:0;background:#f5f5f7;font-family:"PingFang SC","Microsoft YaHei",sys
 
 .doam-category-table>div{cursor:pointer}.doam-category-table .head{cursor:default}.doam-category-table>div.active{background:#fff4ea;color:#a45a14}.doam-category-table>div.active strong{color:#a45a14}
 .qmdp-admin-table-deletable .qmdp-admin-row{grid-template-columns:repeat(5,minmax(110px,1fr)) 76px}
+.qmdp-admin-table-employees .qmdp-admin-row{grid-template-columns:90px 100px 120px 120px minmax(150px,1fr) minmax(240px,1.7fr) 76px;min-width:1100px}
 .qmdp-row-actions{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
 .qmdp-row-delete{height:34px;padding:0 8px;white-space:nowrap}
 
@@ -531,3 +532,24 @@ body{margin:0;background:#f5f5f7;font-family:"PingFang SC","Microsoft YaHei",sys
 .ai-config-preview>span{display:block;margin-bottom:8px;color:#93c5fd;font-size:11px;font-weight:800}
 .ai-config-preview pre{margin:0;white-space:pre-wrap;font:12px/1.6 ui-monospace,Consolas,monospace}
 .ai-config-preview small{color:#94a3b8}
+
+.iqc-issue-filters{display:flex;flex-wrap:wrap;align-items:center;gap:10px;padding:8px 16px 0}.iqc-issue-filters label{display:flex;align-items:center;gap:6px;color:#5c6878;font-size:12px}.iqc-issue-filters select{height:32px;min-width:220px;max-width:420px;border:1px solid #d9e1eb;border-radius:7px;background:#fff;color:#1f2937;padding:0 8px}.iqc-apple-page .iqc-issue-filters select{height:34px;border-radius:10px;border-color:#dce7f5}
+
+.iqc-issue-clear{margin:18px 16px 22px;padding:16px;border:1px solid #b7e4c7;border-radius:10px;background:#f3fbf6;color:#166534}.iqc-issue-clear strong{display:block;font-size:16px}.iqc-issue-clear p{margin:6px 0 0;color:#3f6b52;font-size:13px}
+
+.iqc-supplier-multi{position:relative;min-width:220px}.iqc-supplier-multi summary{height:32px;display:flex;align-items:center;padding:0 10px;border:1px solid #d9e1eb;border-radius:7px;background:#fff;color:#1f2937;cursor:pointer;list-style:none}.iqc-supplier-multi summary::-webkit-details-marker{display:none}.iqc-supplier-multi[open] summary{border-color:#8cb6e8}.iqc-supplier-multi[open]{z-index:5}.iqc-supplier-option{display:flex;align-items:center;gap:8px;min-height:30px;padding:0 10px}.iqc-supplier-multi[open] .iqc-supplier-option{background:#fff}.iqc-supplier-multi[open]{position:relative}.iqc-supplier-multi[open] summary+label,.iqc-supplier-multi[open] .iqc-supplier-option{box-shadow:0 0 0 1px #d9e1eb}.iqc-supplier-multi[open]{display:inline-block}.iqc-supplier-multi[open] .iqc-supplier-option:first-of-type{border-top:1px solid #d9e1eb}.iqc-supplier-multi{display:inline-block}.iqc-supplier-multi .iqc-supplier-option{display:none}.iqc-supplier-multi[open] .iqc-supplier-option{display:flex}.iqc-supplier-multi[open]{position:relative}.iqc-supplier-multi[open]::after{content:'';}.iqc-supplier-panel{display:none}.iqc-supplier-multi[open]{max-width:420px}.iqc-supplier-multi[open] .iqc-supplier-option{max-width:420px}
+
+.iqc-supplier-multi{position:relative;display:inline-block;min-width:240px}.iqc-supplier-multi summary{height:32px;display:flex;align-items:center;padding:0 10px;border:1px solid #d9e1eb;border-radius:7px;background:#fff;color:#1f2937;cursor:pointer;list-style:none}.iqc-supplier-multi summary::-webkit-details-marker{display:none}.iqc-supplier-menu{display:none;position:absolute;z-index:8;top:36px;left:0;width:360px;max-height:280px;overflow:auto;background:#fff;border:1px solid #d9e1eb;border-radius:8px;box-shadow:0 10px 24px rgba(16,24,40,.12)}.iqc-supplier-multi[open] .iqc-supplier-menu{display:block}.iqc-supplier-option{display:flex;align-items:flex-start;gap:8px;min-height:30px;padding:7px 10px;font-size:12px;color:#1f2937}.iqc-supplier-option input{margin-top:2px}
+
+.iqc-supplier-fold{flex:1;min-width:240px;border:1px solid #d9e1eb;border-radius:8px;background:#fff}
+.iqc-supplier-fold summary{display:flex;align-items:center;gap:8px;min-height:34px;padding:0 12px;cursor:pointer;list-style:none;color:#1f2937;font-size:12px}
+.iqc-supplier-fold summary::-webkit-details-marker{display:none}
+.iqc-supplier-fold summary b{font-weight:700}
+.iqc-supplier-fold summary::after{margin-left:auto;color:#5c6878;content:"展开"}
+.iqc-supplier-fold[open] summary::after{content:"收起"}
+.iqc-supplier-grid{display:flex;flex-wrap:wrap;gap:8px;max-height:220px;overflow:auto;padding:0 12px 12px}
+.iqc-supplier-chip{display:inline-flex;align-items:center;gap:6px;min-height:30px;margin:0;padding:0 10px;border:1px solid #d9e1eb;border-radius:999px;background:#fff;color:#334155;font-size:12px;cursor:pointer}
+.iqc-supplier-chip.on{border-color:#8cb6e8;background:#eef6ff;color:#0f4e91}
+.iqc-supplier-chip input{margin:0}
+.iqc-apple-page .iqc-supplier-fold{border-radius:14px;border-color:#dce7f5}
+.iqc-apple-page .iqc-supplier-chip{border-radius:999px}

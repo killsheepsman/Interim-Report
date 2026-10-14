@@ -17,7 +17,7 @@ import { gzip } from "node:zlib";
 import { promisify } from "node:util";
 import { deletePostgresAgentReport, initPostgres, listPostgresAgentReports, readPostgresAgentReport, readPostgresState, writePostgresAgentReport, writePostgresState } from "./postgresStore.mjs";
 import { createKnowledgeService } from "./knowledgeService.mjs";
-import { exportOnePdf, loadWecomConfig, matchEmployee, publicWecomConfig, saveWecomConfig, sendOneReport, sendWecomText } from "./wecomSend.mjs";
+import { exportOnePdf, loadWecomConfig, matchEmployee, publicEmployeeMatch, publicWecomConfig, saveWecomConfig, sendOneReport, sendWecomText } from "./wecomSend.mjs";
 import { orgMappingFilePath, readLinkedOrgMapping } from "./orgMappingSource.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -2168,16 +2168,17 @@ const handleAi = async (req, res) => {
     const config = await loadWecomConfig(wecomConfigFile);
     const items = Array.isArray(payload.items) ? payload.items : [];
     const rows = items.map((item) => {
-      const match = matchEmployee(config.employees, item.recipient || item.name);
+      const match = publicEmployeeMatch(matchEmployee(config.employees, item.recipient || item.name));
       return { fileName: item.fileName || "", recipient: item.recipient || item.name || "", role: item.role || "", ...match };
     });
-    return sendJson(res, 200, { configured: Boolean(config.corpId && config.secret && config.agentId), rows });
+    const hasApp = Boolean(config.corpId && config.secret && config.agentId);
+    const hasWebhook = (config.employees || []).some((row) => String(row.webhook || "").includes("key="));
+    return sendJson(res, 200, { configured: hasApp || hasWebhook, rows });
   }
   if (pathname === "/api/ai/wecom-send" && req.method === "POST") {
     if (!user.isAdmin) return sendJson(res, 403, { error: "只有主管理员可以从服务器发送企业微信" });
     const payload = await getPayload();
     const config = await loadWecomConfig(wecomConfigFile);
-    if (!config.corpId || !config.secret || !config.agentId) return sendJson(res, 400, { error: "请先在系统管理-企业微信中保存 CorpId、AgentId 和 Secret" });
     const fileNames = [...new Set((Array.isArray(payload.fileNames) ? payload.fileNames : []).map((item) => String(item || "")).filter((name) => /^QMS-Agent报告-.+\.md$/i.test(name) && !name.includes("..")))];
     if (!fileNames.length) return sendJson(res, 400, { error: "请先勾选要发送的报告" });
     const results = [];
