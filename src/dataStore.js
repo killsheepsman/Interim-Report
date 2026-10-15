@@ -876,6 +876,7 @@ const knowledgeApiJson = async (path, options = {}) => {
   return payload;
 };
 
+export const askKnowledgeQuestion = async (payload = {}) => knowledgeApiJson("/knowledge/qa", { method: "POST", body: JSON.stringify(payload) });
 export const loadKnowledgeDocuments = async () => knowledgeApiJson("/knowledge/documents", { method: "GET", cache: "no-store" });
 export const loadKnowledgeConsistency = async () => knowledgeApiJson("/knowledge/consistency", { method: "GET", cache: "no-store" });
 export const loadKnowledgeDataQuality = async () => knowledgeApiJson("/knowledge/data-quality", { method: "GET", cache: "no-store" });

@@ -18,6 +18,7 @@ import { clearDoamPack, removeDoamFile, upsertDoamFiles } from "./doamStore.js";
 import { deleteKnowledgeJob } from "./dataStore.js";
 import { loadKnowledgeDataQuality, repairKnowledgeDataQuality } from "./dataStore.js";
 import { cleanupKnowledgeDataQuality } from "./dataStore.js";
+import { askKnowledgeQuestion } from "./dataStore.js";
 import { mergeKnowledgeCards } from "./dataStore.js";
 import { sampleData } from "./sampleData.js";
 import { BarCompare, Donut, EquipmentQuantityDistributionPareto, HorizontalRank, MachinedTpmCompareChart, OqcDivisionMetricCombo, OqcDivisionShipmentCombo, OqcDivisionSingleMetricCombo, OqcShipmentMetricsCombo, OqcTpmMonthlyCombo, Pareto, QmsDivisionCombo, QmsScoreCompare, QmsTpmRank, QmsTrendCombo, QuantityRateCombo, QuantityRateMultiCombo, ReportBarChart, ReportStatusDonut, ScoreMonthlyCombo, ScoreYearCompare, StackedStage, WorkshopCategoryHeatmap, YearStackedCompare, useLabelControlsVisible } from "./charts.jsx";
@@ -108,6 +109,7 @@ const defaultApiPermissions = {
   "GET /api/uploads/*": { public: true, deputy: true, label: "读取原始Excel" },
   "GET /api/exam-results": { public: true, deputy: true, label: "读取知识考试结果" },
   "GET /api/knowledge/*": { public: true, deputy: true, label: "读取知识库" },
+  "POST /api/knowledge/qa": { public: true, deputy: true, label: "标准问答" },
   "POST /api/knowledge/*": { public: false, deputy: true, label: "维护知识库" },
   "PUT /api/knowledge/*": { public: false, deputy: true, label: "更新知识任务" },
   "DELETE /api/knowledge/*": { public: false, deputy: true, label: "删除知识文件" },
@@ -823,7 +825,7 @@ const qmdpMenuGroups = [
   { label: "质量数据", icon: ChartBar, children: ["总览", "IQC", "IPQC", "OQC", "DQA", "QMS", "DOAM", "数据导入"] },
   { label: "质量分析报告", icon: Brain, children: ["IQC分析报告", "IPQC分析报告", "OQC分析报告", "DQA分析报告", "QMS分析报告", "DOAM分析报告"] },
   { label: "岗位角色报告", icon: ChartBar, children: ["组装人员报告", "机长报告", "交付经理报告", "供应链经理报告", "研发工程师报告", "PM报告", "TPM报告", "产总报告", "批量发送"] },
-  { label: "知识管理", icon: Database, children: ["知识库", "题库管理", "知识考试", "后台知识管理", "报告任务中心"] },
+  { label: "知识管理", icon: Database, children: ["知识库", "题库管理", "标准问答", "后台知识管理", "报告任务中心"] },
   { label: "系统管理", icon: GearSix, children: ["AI接口", "权限设置", "研发组织映射", "供应链映射", "项目名称映射", "研发项目映射", "后台快照", "员工信息", "评分权重", "企业微信", "操作日志"] },
 ];
 const menuPermissionDefinitions = [
@@ -4227,6 +4229,40 @@ const mergeExamResultRecords = (remote = [], local = []) => {
   return [...byKey.values()].sort((left, right) => String(right.submittedAt || right.createdAt || "").localeCompare(String(left.submittedAt || left.createdAt || "")));
 };
 
+function StandardQaPage() {
+  const [question, setQuestion] = useState("");
+  const [category, setCategory] = useState("");
+  const [sourceLevel, setSourceLevel] = useState("");
+  const [role, setRole] = useState("");
+  const [state, setState] = useState({ status: "idle", answer: "", sources: [], model: "", recalled: 0, error: "" });
+  const ask = async () => {
+    const text = question.trim();
+    if (text.length < 2 || state.status === "running") return;
+    setState({ status: "running", answer: "", sources: [], model: "", recalled: 0, error: "" });
+    try {
+      const result = await askKnowledgeQuestion({ question: text, category, sourceLevel, role });
+      setState({ status: "done", answer: result.answer || "知识库没有对应条款", sources: result.sources || [], model: result.model || "", recalled: Number(result.recalled || 0), error: "" });
+    } catch (error) {
+      setState({ status: "error", answer: "", sources: [], model: "", recalled: 0, error: error?.message || "标准问答失败" });
+    }
+  };
+  return <div className="qmdp-page"><QmdpPageHeader icon={Question} eyebrow="知识管理 / 标准问答" title="标准问答" description="先从已发布知识卡片里找条款，再由当前模型只根据这些条款回答。找不到对应条款时，不会编造答案。"/>
+    <section className="qmdp-standard-qa">
+      <textarea value={question} onChange={(event) => setQuestion(event.target.value)} placeholder="输入问题，例如：针模模芯底部间隙大时应该怎么处理" onKeyDown={(event) => { if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) ask(); }}/>
+      <div className="qmdp-toolbar">
+        <select value={category} onChange={(event) => setCategory(event.target.value)} aria-label="资料类别"><option value="">全部资料类别</option>{["研发设计规范", "组装工艺", "研发 Lesson Learned", "调试 SOP"].map((item) => <option key={item} value={item}>{item}</option>)}</select>
+        <select value={sourceLevel} onChange={(event) => setSourceLevel(event.target.value)} aria-label="资料等级"><option value="">全部资料等级</option><option value="A">A 国家/行业标准</option><option value="B">B 企业标准</option><option value="C">C 经验案例</option></select>
+        <select value={role} onChange={(event) => setRole(event.target.value)} aria-label="适用角色"><option value="">全部适用角色</option>{["研发工程师", "组装人员", "PM", "TPM", "交付经理", "机长", "供应链经理", "产总"].map((item) => <option key={item} value={item}>{item}</option>)}</select>
+        <button className="qmdp-primary-btn" onClick={ask} disabled={question.trim().length < 2 || state.status === "running"}><Sparkle size={15}/>{state.status === "running" ? "正在查找并回答…" : "提问"}</button>
+      </div>
+      {state.status === "running" && <p className="qmdp-standard-qa-status">正在从已发布知识卡片查找，再交给当前模型判断哪些条款能回答。</p>}
+      {state.status === "error" && <p className="qmdp-standard-qa-status error">{state.error}</p>}
+      {state.status === "done" && <article className="qmdp-standard-qa-answer"><header><strong>{state.answer === "知识库没有对应条款" ? "未找到对应条款" : "回答"}</strong>{state.model ? <span>当前模型 {state.model}</span> : null}</header><p>{state.answer}</p>{state.answer === "知识库没有对应条款" ? <small>{state.recalled ? `已核对 ${state.recalled} 条已发布卡片，没有能直接回答的条款。` : "已发布知识卡片里没有能对上的条款。"}</small> : null}</article>}
+      {state.sources?.length ? <div className="qmdp-standard-qa-sources">{state.sources.map((item) => <article key={`${item.index}-${item.documentName}-${item.clauseNumber}`}><header><b>{item.documentName || "未标注文件"}</b><span>{item.sourceLevel || "C"} 级</span></header><small>{item.clauseNumber ? `条款 ${item.clauseNumber}` : "条款号未标注"}{item.title ? ` · ${item.title}` : ""}</small><p>{item.quote}</p></article>)}</div> : null}
+    </section>
+  </div>;
+}
+
 function KnowledgeExamPage() {
   const examToken = examTokenFromUrl();
   const [remoteSession, setRemoteSession] = useState(null);
@@ -4648,6 +4684,7 @@ function KnowledgeAdminPage({ auth }) {
 function KnowledgeManagementPage({ active, qualitySources, onEnsureAgentSources, auth }) {
   if (active === "报告任务中心") return <ReportTaskCenterPage/>;
   if (active === "题库管理") return <QuestionBankPage/>;
+  if (active === "标准问答") return <StandardQaPage/>;
   if (active === "知识考试") return <KnowledgeExamPage/>;
   if (active === "后台知识管理") return <KnowledgeAdminPage auth={auth}/>;
   return <KnowledgeBasePage qualitySources={qualitySources} onEnsureAgentSources={onEnsureAgentSources} auth={auth}/>;
@@ -6427,7 +6464,7 @@ function ExecutiveDashboard({ data, files, dqaEngineerSupplement, dqaAgentRaw, o
   const [sidebarWidth, setSidebarWidth] = useState(() => clampSidebarWidth(localStorage.getItem("qms-sidebar-width") || sidebarWidthLimits.default));
   const moduleView = ["IQC", "IPQC", "OQC", "DQA", "QMS", "DOAM"].includes(active) ? active : null;
   const doamView = active === "DOAM";
-  const qmdpKnowledgeView = ["知识库", "题库管理", "知识考试", "后台知识管理", "报告任务中心"].includes(active);
+  const qmdpKnowledgeView = ["知识库", "题库管理", "标准问答", "知识考试", "后台知识管理", "报告任务中心"].includes(active);
   const qmdpReportView = ["IPQC操作报告", "机长报告", "交付经理报告", "供应链经理报告", "研发工程师报告", "PM报告", "TPM报告", "产总报告", "董事长报告"].includes(active) && !agentRoleMenuItems.includes(active);
   const qmdpSystemView = ["研发组织映射", "供应链映射", "项目名称映射", "研发项目映射", "后台快照", "员工信息", "评分权重", "企业微信", "操作日志"].includes(active);
   const qualityAgentView = qualityAgentMenuItems.includes(active);
@@ -6459,7 +6496,7 @@ function ExecutiveDashboard({ data, files, dqaEngineerSupplement, dqaAgentRaw, o
     <ExecutiveSidebar active={active} setActive={setActive} uiTheme={uiTheme} onThemeChange={onThemeChange} collapsed={sidebarCollapsed} onToggleCollapsed={onToggleSidebar} permissions={permissions} auth={auth} width={sidebarWidth} onWidthChange={changeSidebarWidth} />
     <main className="executive-main">
       <header className="executive-topbar">
-        <div><h1>{moduleView === "DOAM" ? "DOAM 告警质量分析" : moduleView ? `${moduleView} 专题分析` : batchSendView ? "批量发送" : qmdpView ? active : active === "AI分析" ? "AI质量经营分析" : active === "AI接口" ? "AI接口配置" : active === "数据导入" ? "数据源管理" : "经营驾驶舱"}</h1><p>{moduleView === "DOAM" ? "按日期、班次和去重机台计算告警质量指标" : moduleView ? "从原始数据下钻到TOP问题与责任对象" : qmdpKnowledgeView ? "知识文件、题库与考试" : batchSendView ? "按岗位和周期批量发送已保存的角色报告" : qmdpReportView ? "按角色和管理范围生成质量报告" : qualityAgentView ? "独立的质量分析 Agent 工作流，不改变现有统计和报告" : qmdpSystemView ? "组织、人员、评分与发送配置" : active === "AI分析" ? "展示 generate-quality-review-report 正式审核版结论" : active === "AI接口" ? "AI接口配置" : "全局质量运营总览"}</p></div>
+        <div><h1>{moduleView === "DOAM" ? "DOAM 告警质量分析" : moduleView ? `${moduleView} 专题分析` : batchSendView ? "批量发送" : qmdpView ? active : active === "AI分析" ? "AI质量经营分析" : active === "AI接口" ? "AI接口配置" : active === "数据导入" ? "数据源管理" : "经营驾驶舱"}</h1><p>{moduleView === "DOAM" ? "按日期、班次和去重机台计算告警质量指标" : moduleView ? "从原始数据下钻到TOP问题与责任对象" : qmdpKnowledgeView ? "知识文件、题库与标准问答" : batchSendView ? "按岗位和周期批量发送已保存的角色报告" : qmdpReportView ? "按角色和管理范围生成质量报告" : qualityAgentView ? "独立的质量分析 Agent 工作流，不改变现有统计和报告" : qmdpSystemView ? "组织、人员、评分与发送配置" : active === "AI分析" ? "展示 generate-quality-review-report 正式审核版结论" : active === "AI接口" ? "AI接口配置" : "全局质量运营总览"}</p></div>
         <div className="top-actions"><ServerSyncBadge value={serverSyncStatus}/><Switcher view={view} onChange={onViewChange} canWorkspace={allowWorkspace} />{allowAnnotationEdit && <AnnotationEditButton defaultModule={moduleView || "\u603b\u89c8"} />}{allowAnnotationView && <AnnotationViewButton />}{allowExport && <ExportReportButton />}<button className={`label-controls-toggle ${labelControlsVisible ? "active" : ""}`} onClick={onToggleLabelControls}>{labelControlsVisible ? "隐藏数值设置" : "显示数值设置"}</button>{allowImport && <button className="import-btn" onClick={() => onImport(null)}><UploadSimple size={17} />导入数据</button>}</div>
       </header>
       {!qmdpView && <DateRangeFilter value={dateRange} teamDefaultRange={teamDefaultRange} lastServerSavedAt={lastServerSavedAt} onChange={onDateRange} onRefresh={onRefreshDate} refreshStatus={dateRefreshStatus} refreshProgress={refreshProgress} canRefresh={allowTemporaryRefresh} fontSize={fontSize} onFontSize={onFontSize}/>}

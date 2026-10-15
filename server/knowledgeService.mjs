@@ -3675,7 +3675,110 @@ export const createKnowledgeService = ({ filePath, originalDir = path.join(path.
     }
   };
 
-  return { enqueueBulkReview, bulkReviewKnowledgeCards, bulkUpdateKnowledgeCards, cleanupDataQuality, controlDistillationJob, createDocument, deleteDocument, deleteIssue, deleteJob, enqueueParse, exportKnowledgeData, generateMatches, getConsistencyReport, getDataQualityReport, getKnowledgeImpact, repairDataQuality, mergeKnowledgeCards, listKnowledgeBackups, restoreKnowledgeBackup, getDocument, getJob, getPerformanceMetrics, getSearchMetrics, governDocument, importDistillation, listAuditLogs, listClauses, listConfirmedMatches, listConflicts, listDistilled, listDocuments, listFeedbackRecords, listIssues, listJobs, listMatches, listRecurrences, listReviewPoints, listReviewSessions, recordAudit, resume, reviewDistilledKnowledge, reviewDocument, reviewMatch, runReadBenchmark, saveConflict, saveDistillation, saveFeedbackRecord, saveRecurrenceAction, saveReviewSession, startDistillation, syncIssues, updateDocumentMetadata, updateJob, updateKnowledgeClause, deleteKnowledgeClause, updateKnowledgeCard, deleteKnowledgeCard };
+
+  const standardQuestionTerms = (question) => {
+    const text = cleanText(question).toLowerCase();
+    const stop = new Set(["什么", "怎么", "如何", "是否", "可以", "应该", "需要", "这个", "那个", "一下", "请问", "为什么", "哪些", "哪个", "我们", "公司"]);
+    const terms = new Set();
+    for (const token of text.match(/[a-z0-9][a-z0-9._-]{1,}/g) || []) terms.add(token);
+    const chinese = [...text.replace(/[^\u4e00-\u9fff]/g, "")];
+    for (let size = 2; size <= 4; size += 1) {
+      for (let index = 0; index <= chinese.length - size; index += 1) {
+        const gram = chinese.slice(index, index + size).join("");
+        if (size === 2 && stop.has(gram)) continue;
+        terms.add(gram);
+        if (terms.size >= 32) return [...terms];
+      }
+    }
+    return [...terms].slice(0, 32);
+  };
+  const parseStandardAnswer = (value) => {
+    const raw = cleanText(value);
+    const fenced = raw.match(/```(?:json)?\s*([\s\S]*?)```/i);
+    const body = fenced ? fenced[1] : raw;
+    const start = body.indexOf("{");
+    const end = body.lastIndexOf("}");
+    if (start < 0 || end <= start) return null;
+    try {
+      const parsed = JSON.parse(body.slice(start, end + 1));
+      const matched = Array.isArray(parsed.matched) ? parsed.matched.map((item) => Number(item)).filter((item) => Number.isInteger(item)) : [];
+      return { matched, answer: cleanText(parsed.answer).slice(0, 2000) };
+    } catch {
+      return null;
+    }
+  };
+  const answerStandardQuestion = async ({ question = "", category = "", sourceLevel = "", role = "" } = {}) => {
+    const asked = cleanText(question).slice(0, 500);
+    if (asked.length < 2) throw new Error("请先输入问题");
+    const terms = standardQuestionTerms(asked);
+    if (!terms.length) throw new Error("问题里没有可检索的词，请换一种问法");
+    const documents = await listDocuments();
+    const activeDocuments = documents.filter((document) => !["obsolete", "superseded", "expired", "inactive"].includes(String(document.effectiveStatus || "").toLowerCase()) && document.governanceStatus !== "已废止" && !(Number(document.openConflictCount || 0) > 0) && !(document.reviewDue && dateTimestamp(document.reviewDue) < Date.now()));
+    const documentById = new Map(activeDocuments.map((document) => [document.id, document]));
+    const wantedCategory = cleanText(category);
+    const wantedLevel = cleanText(sourceLevel).toUpperCase();
+    const wantedRole = cleanText(role);
+    const levelWeight = { A: 3, B: 2, C: 1 };
+    const accept = (card) => {
+      if (!card || card.publicationStatus !== "published") return false;
+      if (card.candidateType && card.candidateType !== "knowledge") return false;
+      const document = documentById.get(card.documentId);
+      if (!document) return false;
+      const cardCategory = cleanText(card.category || document.category);
+      const cardLevel = String(card.sourceLevel || document.sourceLevel || "C").toUpperCase();
+      if (wantedCategory && cardCategory !== wantedCategory) return false;
+      if (wantedLevel && cardLevel !== wantedLevel) return false;
+      if (wantedRole && Array.isArray(card.applicableRoles) && card.applicableRoles.length && !card.applicableRoles.some((item) => cleanText(item).includes(wantedRole))) return false;
+      return true;
+    };
+    const postgres = await searchPostgresKnowledgeCandidates({ terms, moduleTerms: [], limit: 80 });
+    const local = await loadCorpus();
+    const merged = new Map();
+    const consider = (card, extra = 0) => {
+      if (!accept(card)) return;
+      const hay = [card.title, card.content, card.quote, card.documentName, ...(card.issueTags || []), ...(card.synonyms || []), ...(card.applicableRoles || [])].map((item) => cleanText(item).toLowerCase()).join(" ");
+      let hits = Number(extra) || 0;
+      terms.forEach((term) => { if (hay.includes(term)) hits += term.length >= 3 ? 2 : 1; });
+      if (!hits) return;
+      const level = String(card.sourceLevel || documentById.get(card.documentId)?.sourceLevel || "C").toUpperCase();
+      const score = hits * 10 + (levelWeight[level] || 1);
+      const key = card.knowledgeId || card.candidateKey;
+      const previous = merged.get(key);
+      if (!previous || previous.score < score) merged.set(key, { card, score, level });
+    };
+    (postgres.candidates || []).forEach((card) => consider(card, card.retrievalRank));
+    local.forEach((card) => consider(card, 0));
+    const ranked = [...merged.values()].sort((left, right) => right.score - left.score || left.level.localeCompare(right.level)).slice(0, 8);
+    const empty = { answer: "知识库没有对应条款", sources: [], model: "", recalled: ranked.length };
+    if (!ranked.length) return { ...empty, recalled: 0 };
+    if (!aiComplete) throw new Error("请先由管理员配置服务器AI接口、模型和密钥");
+    const clauses = ranked.map((item, index) => {
+      const card = item.card;
+      const document = documentById.get(card.documentId) || {};
+      return {
+        index: index + 1,
+        documentName: card.documentName || document.name || "",
+        clauseNumber: card.clauseNumber || card.sourceCitations?.[0]?.clauseNumber || "",
+        sourceLevel: item.level,
+        title: cleanText(card.title).slice(0, 120),
+        quote: cleanText(card.quote || card.sourceCitations?.[0]?.quote || card.content).slice(0, 700),
+        category: document.category || "",
+        roles: (card.applicableRoles || []).map((roleName) => cleanText(roleName)).filter(Boolean).slice(0, 6),
+      };
+    });
+    const completion = await aiComplete({
+      maxTokens: 4000,
+      messages: [
+        { role: "system", content: "你是公司内部标准问答。只能使用给出的已发布条款，不能补充条款里没有的做法，也不能用常识补答案。先判断哪些条款真正回答了这个问题。如果没有一条能回答，answer 必须正好是“知识库没有对应条款”，matched 必须是空数组。如果能回答，用正式、简短的中文写出正确做法，matched 只放被采用的条款序号。只返回 JSON，对象里只有 matched 和 answer 两个字段。不要写分析过程。" },
+        { role: "user", content: `问题：${asked}\n\n条款：\n${clauses.map((item) => `[${item.index}] 文件：${item.documentName}\n条款号：${item.clauseNumber || "未标注"}\n等级：${item.sourceLevel}\n标题：${item.title}\n原文：${item.quote}`).join("\n\n")}` },
+      ],
+    });
+    const parsed = parseStandardAnswer(completion?.content);
+    const matched = new Set((parsed?.matched || []).filter((item) => item >= 1 && item <= clauses.length));
+    if (!parsed?.answer || parsed.answer === "知识库没有对应条款" || !matched.size) return { ...empty, model: completion?.model || "" };
+    return { answer: parsed.answer, sources: clauses.filter((item) => matched.has(item.index)), model: completion?.model || "", recalled: clauses.length };
+  };
+  return { enqueueBulkReview, bulkReviewKnowledgeCards, answerStandardQuestion, bulkUpdateKnowledgeCards, cleanupDataQuality, controlDistillationJob, createDocument, deleteDocument, deleteIssue, deleteJob, enqueueParse, exportKnowledgeData, generateMatches, getConsistencyReport, getDataQualityReport, getKnowledgeImpact, repairDataQuality, mergeKnowledgeCards, listKnowledgeBackups, restoreKnowledgeBackup, getDocument, getJob, getPerformanceMetrics, getSearchMetrics, governDocument, importDistillation, listAuditLogs, listClauses, listConfirmedMatches, listConflicts, listDistilled, listDocuments, listFeedbackRecords, listIssues, listJobs, listMatches, listRecurrences, listReviewPoints, listReviewSessions, recordAudit, resume, reviewDistilledKnowledge, reviewDocument, reviewMatch, runReadBenchmark, saveConflict, saveDistillation, saveFeedbackRecord, saveRecurrenceAction, saveReviewSession, startDistillation, syncIssues, updateDocumentMetadata, updateJob, updateKnowledgeClause, deleteKnowledgeClause, updateKnowledgeCard, deleteKnowledgeCard };
 };
 const documentReviewState = (document = {}, now = Date.now()) => {
   const due = dateTimestamp(document.reviewDue);

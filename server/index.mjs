@@ -185,6 +185,7 @@ const defaultPermissionConfig = {
     "GET /api/me": { public: true, deputy: true, label: "读取当前权限" },
     "GET /api/permissions": { public: true, deputy: true, label: "读取权限配置" },
     "GET /api/knowledge/*": { public: true, deputy: true, label: "读取知识库" },
+    "POST /api/knowledge/qa": { public: true, deputy: true, label: "标准问答" },
     "POST /api/knowledge/*": { public: false, deputy: true, label: "维护知识库" },
     "PUT /api/knowledge/*": { public: false, deputy: true, label: "更新知识任务" },
     "DELETE /api/knowledge/*": { public: false, deputy: true, label: "删除知识文件" },
@@ -532,6 +533,7 @@ const currentUser = async (req) => {
 
 const routeKey = (req) => {
   const pathname = new URL(req.url, "http://local").pathname;
+  if (pathname === "/api/knowledge/qa") return `${req.method} /api/knowledge/qa`;
   if (pathname.startsWith("/api/knowledge")) return `${req.method} /api/knowledge/*`;
   if (pathname === "/api/snapshot-jobs") return `${req.method} /api/snapshot-jobs`;
   if (/^\/api\/snapshot-jobs\/[^/]+$/.test(pathname)) return `${req.method} /api/snapshot-jobs/*`;
@@ -555,12 +557,13 @@ const completeKnowledgeAi = async ({ messages, maxTokens = 5000, signal, config:
   const config = suppliedConfig || await loadAiConfig();
   if (!config.apiKey || !config.model) throw new Error("请先由管理员配置服务器AI接口、模型和密钥");
   assertKnownAiModel(config);
-  const responsesApi = usesArkPlanResponses(config);
+  const responsesApi = usesArkPlanResponses(config) || config.wireApi === "responses";
   const requestBody = responsesApi ? { model: config.model, input: messages, max_output_tokens: maxTokens } : { model: config.model, messages };
   if (!responsesApi) {
     if (/^(gpt-5|o[1-9]|codex)/i.test(config.model)) requestBody.max_completion_tokens = maxTokens;
     else requestBody.max_tokens = maxTokens;
   }
+  if (responsesApi && ["high", "xhigh"].includes(config.reasoningEffort)) requestBody.reasoning = { effort: config.reasoningEffort };
   requestBody.stream = true;
   const result = await requestAi(config, responsesApi ? "/responses" : "/chat/completions", { method: "POST", body: JSON.stringify(requestBody), stream: true, signal });
   return { model: config.model, content: extractAiContent(result), usage: result?.usage || null };
@@ -574,6 +577,10 @@ const handleKnowledge = async (req, res) => {
   const pathname = requestUrl.pathname;
   const jsonBody = async () => JSON.parse(await readBody(req) || "{}");
   try {
+    if (pathname === "/api/knowledge/qa" && req.method === "POST") {
+      const payload = await jsonBody();
+      return sendJson(res, 200, await knowledgeService.answerStandardQuestion(payload));
+    }
     if (pathname === "/api/knowledge/import" && req.method === "POST") {
       const name = String(requestUrl.searchParams.get("name") || "").trim();
       const extension = name.split(".").pop()?.toLowerCase() || "";
