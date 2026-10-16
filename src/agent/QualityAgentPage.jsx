@@ -255,6 +255,22 @@ const printAgentReport = (node) => {
 };
 
 const escapeHtml = (value) => String(value || "").replace(/[&<>\"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#39;" }[char]));
+const categoryText = (value, seen = new Set()) => {
+  if (value == null || value === "") return "";
+  if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") return String(value);
+  if (typeof value !== "object" || seen.has(value)) return "";
+  seen.add(value);
+  return categoryText(value.name ?? value.label ?? value.text ?? "", seen);
+};
+const periodAxisText = (value, withYear = false) => {
+  const text = categoryText(value);
+  const month = text.match(/^((?:19|20)\d{2})[-/.年](0?[1-9]|1[0-2])$/);
+  if (month) return withYear ? `${month[1]}年${Number(month[2])}月` : `${Number(month[2])}月`;
+  const week = text.match(/W(\d{1,2})$/i);
+  if (week) return `W${String(week[1]).padStart(2, "0")}`;
+  return text;
+};
+const periodLabelsNeedYear = (labels) => new Set(labels.map((item) => categoryText(item).match(/^((?:19|20)\d{2})/)?.[1]).filter(Boolean)).size > 1;
 const inlineReportMarkdown = (value) => escapeHtml(value)
   .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noreferrer">$1</a>')
   .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
@@ -752,11 +768,12 @@ const renderVisualSpecFigure = (figure, theme = "default") => {
   const intent = String(figure.intent || figure.preferredChart || "comparison").toLowerCase();
   const title = String(figure.title || "数据图表");
   if (!categories.length && !Array.isArray(figure.data)) return `<figure class="agent-report-auto-chart agent-report-visual-empty"><figcaption><strong>${escapeHtml(title)}</strong></figcaption><p>${escapeHtml(figure.data?.note || figure.accessibilitySummary || "当前缺少完整可视化分母，保留为待补数据，不生成误导性图表。")}</p></figure>`;
-  if (String(figure.preferredChart).toLowerCase() === "line" && series.length === 1) return renderSingleSeriesLineChart({ title, subtitle: figure.accessibilitySummary || "按连续周期展示固定快照数量", rows: categories.map((label, index) => ({ label: String(label), value: Number(series[0]?.values?.[index]) })), seriesLabel: series[0]?.name || figure.unit || "数量", theme });
-  const makeRows = (barIndex = 0, lineIndex = 1) => categories.map((label, index) => ({ label: String(label), bar: Number(series[barIndex]?.values?.[index]), line: Number(series[lineIndex]?.values?.[index]) })).filter((row) => Number.isFinite(row.bar) && Number.isFinite(row.line));
+  if (String(figure.preferredChart).toLowerCase() === "line" && series.length === 1) return renderSingleSeriesLineChart({ title, subtitle: figure.accessibilitySummary || "按连续周期展示固定快照数量", rows: categories.map((label, index) => ({ label: categoryText(label), value: Number(series[0]?.values?.[index]) })), seriesLabel: series[0]?.name || figure.unit || "数量", theme });
+  const makeRows = (barIndex = 0, lineIndex = 1) => categories.map((label, index) => ({ label: categoryText(label), bar: Number(series[barIndex]?.values?.[index]), line: Number(series[lineIndex]?.values?.[index]) })).filter((row) => Number.isFinite(row.bar) && Number.isFinite(row.line));
   if (intent.includes("pareto") || String(figure.preferredChart).includes("pareto")) return renderComboChart({ title, subtitle: `${figure.unit || "数量"}柱形 + 累计占比折线`, rows: makeRows(0, 1), barLabel: series[0]?.name || "数量", lineLabel: series[1]?.name || "累计占比", lineMin: 0, lineMax: 100, lineClass: "pareto", theme });
   if (intent.includes("period-trend") || intent.includes("dual-column-line") || String(figure.preferredChart).includes("dual-column-line")) {
-    const rows = categories.map((label, index) => ({ label: String(label), bad: Number(series[0]?.values?.[index]), total: Number(series[1]?.values?.[index]), rate: Number(series[2]?.values?.[index]) })).filter((row) => [row.bad, row.total, row.rate].every(Number.isFinite));
+    const withYear = periodLabelsNeedYear(categories);
+    const rows = categories.map((label, index) => ({ label: periodAxisText(label, withYear), bad: Number(series[0]?.values?.[index]), total: Number(series[1]?.values?.[index]), rate: Number(series[2]?.values?.[index]) })).filter((row) => [row.bad, row.total, row.rate].every(Number.isFinite));
     const chartRows = isWeekChartContext(figure.id, figure.sectionId, title) ? keepActiveWeekChartRows(rows) : rows;
     return renderDualColumnLineChart({ title, subtitle: "柱形表示不良数量与总数量，折线表示不良率", rows: chartRows, barLabels: [series[0]?.name || "不良数量", series[1]?.name || "总数量"], lineLabel: series[2]?.name || "不良率", theme });
   }
@@ -764,11 +781,11 @@ const renderVisualSpecFigure = (figure, theme = "default") => {
   if (intent.includes("relationship") || intent.includes("heatmap") || String(figure.preferredChart).includes("heatmap")) {
     const rows = Array.isArray(figure.data) ? figure.data : categories.map((label, index) => ({ name: label, value: Number(series[0]?.values?.[index]) || 0 }));
     const max = Math.max(1, ...rows.map((row) => Number(row.value) || 0));
-    return `<figure class="agent-report-auto-chart agent-report-visual-heatmap"><figcaption><strong>${escapeHtml(title)}</strong></figcaption><div class="agent-report-heatmap-grid">${rows.map((row) => `<div class="agent-report-heat-cell" style="--heat:${Math.max(.08, (Number(row.value) || 0) / max)}"><b>${escapeHtml(row.organization || row.name || row.category || "未命名")} × ${escapeHtml(row.mechanism || "")}</b><strong>${(Number(row.value) || 0).toLocaleString("zh-CN")}</strong></div>`).join("")}</div></figure>`;
+    return `<figure class="agent-report-auto-chart agent-report-visual-heatmap"><figcaption><strong>${escapeHtml(title)}</strong></figcaption><div class="agent-report-heatmap-grid">${rows.map((row) => `<div class="agent-report-heat-cell" style="--heat:${Math.max(.08, (Number(row.value) || 0) / max)}"><b>${escapeHtml(categoryText(row.organization || row.name || row.category) || "未命名")} × ${escapeHtml(row.mechanism || "")}</b><strong>${(Number(row.value) || 0).toLocaleString("zh-CN")}</strong></div>`).join("")}</div></figure>`;
   }
   const rows = categories.map((label, index) => {
     const category = label && typeof label === "object" ? label : { name: label };
-    return { label: String(category.name || category.label || "未命名"), focus: Boolean(category.focus), site: String(category.site || ""), values: series.map((item) => Number(item?.values?.[index]) || 0) };
+    return { label: categoryText(category.name || category.label) || "未命名", focus: Boolean(category.focus), site: categoryText(category.site), values: series.map((item) => Number(item?.values?.[index]) || 0) };
   });
   const max = Math.max(1, ...rows.flatMap((row) => row.values));
   const ranking = intent.includes("ranking") || String(figure.preferredChart).includes("horizontal");
@@ -782,8 +799,11 @@ const renderPeriodTrendTable = (figure) => {
   const series = Array.isArray(figure?.series) ? figure.series : [];
   if (!categories.length || series.length < 2) return "";
   const year = figure.year ? String(figure.year) + "年" : "";
-  const header = ["月份", ...series.map((item) => item.name || "数值")];
-  const body = categories.map((label, index) => [String(label), ...series.map((item) => {
+  const labels = categories.map(categoryText);
+  const weekTable = labels.length > 0 && labels.every((item) => /W\d{1,2}$/i.test(item));
+  const header = [weekTable ? "周次" : "月份", ...series.map((item) => item.name || "数值")];
+  const withYear = periodLabelsNeedYear(categories);
+  const body = categories.map((label, index) => [periodAxisText(label, withYear), ...series.map((item) => {
     const value = Number(item.values?.[index]);
     if (!Number.isFinite(value)) return "";
     const text = value.toLocaleString("zh-CN");
