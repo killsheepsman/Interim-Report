@@ -727,11 +727,16 @@
 .qmdp-issue-match-body:has(> .qmdp-review-workbench),
 .qmdp-issue-match-body:has(> .qmdp-governance-workspace),
 .qmdp-issue-match-body:has(> .qmdp-performance-workspace),
-.qmdp-issue-match-body:has(> .qmdp-feedback-workspace) { display:block; }
+.qmdp-issue-match-body:has(> .qmdp-feedback-workspace),
+.qmdp-issue-match-body:has(> .qmdp-recurrence-workspace) { display:block; }
 .qmdp-issue-match-body:has(> .qmdp-review-workbench) > *,
 .qmdp-issue-match-body:has(> .qmdp-governance-workspace) > *,
 .qmdp-issue-match-body:has(> .qmdp-performance-workspace) > *,
-.qmdp-issue-match-body:has(> .qmdp-feedback-workspace) > * { width:100%; box-sizing:border-box; }
+.qmdp-issue-match-body:has(> .qmdp-feedback-workspace) > *,
+.qmdp-issue-match-body:has(> .qmdp-recurrence-workspace) > * { width:100%; box-sizing:border-box; }
+.qmdp-recurrence-workspace{width:100%;box-sizing:border-box}
+.qmdp-recurrence-workspace>.qmdp-recurrence-body{display:grid;grid-template-columns:420px minmax(0,1fr);width:100%}
+.qmdp-recurrence-workspace>.qmdp-recurrence-body>.qmdp-recurrence-detail,.qmdp-recurrence-workspace>.qmdp-recurrence-body>section{min-width:0;width:auto}
 .qmdp-review-layout { grid-template-columns:minmax(0,1.35fr) minmax(360px,.65fr); }
 .qmdp-governance-workspace,.qmdp-performance-workspace,.qmdp-feedback-workspace { width:100%; box-sizing:border-box; }
 /* Project-name mapping uses a dense two-column management surface so long raw names remain scannable. */
