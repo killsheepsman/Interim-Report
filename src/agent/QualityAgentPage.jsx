@@ -255,12 +255,13 @@ const printAgentReport = (node) => {
 };
 
 const escapeHtml = (value) => String(value || "").replace(/[&<>\"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#39;" }[char]));
-const categoryText = (value, seen = new Set()) => {
+const categoryText = (value, seen) => {
+  const guard = seen instanceof Set ? seen : new Set();
   if (value == null || value === "") return "";
   if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") return String(value);
-  if (typeof value !== "object" || seen.has(value)) return "";
-  seen.add(value);
-  return categoryText(value.name ?? value.label ?? value.text ?? "", seen);
+  if (typeof value !== "object" || guard.has(value)) return "";
+  guard.add(value);
+  return categoryText(value.name ?? value.label ?? value.text ?? "", guard);
 };
 const periodAxisText = (value, withYear = false) => {
   const text = categoryText(value);
@@ -799,7 +800,7 @@ const renderPeriodTrendTable = (figure) => {
   const series = Array.isArray(figure?.series) ? figure.series : [];
   if (!categories.length || series.length < 2) return "";
   const year = figure.year ? String(figure.year) + "年" : "";
-  const labels = categories.map(categoryText);
+  const labels = categories.map((label) => categoryText(label));
   const weekTable = labels.length > 0 && labels.every((item) => /W\d{1,2}$/i.test(item));
   const header = [weekTable ? "周次" : "月份", ...series.map((item) => item.name || "数值")];
   const withYear = periodLabelsNeedYear(categories);
