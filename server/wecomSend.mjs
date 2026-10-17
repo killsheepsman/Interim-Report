@@ -3,6 +3,10 @@ import { existsSync } from "node:fs";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { figureMatchesHeading, periodChartTitle, renderLieflatFigure } from "../src/agent/lieflatRoleCharts.js";
+import { getReportPresentationProfile } from "../src/agent/reportPresentationProfiles.js";
+import { sanitizeHumanReportContent } from "../src/reportSanitizer.js";
+import { renderPorcelainSheet } from "../src/agent/porcelainSheet.js";
+import { renderBasicsSheet } from "../src/agent/basicsSheet.js";
 
 const CONFIG_VERSION = "qms-wecom-config-v1";
 
@@ -129,12 +133,12 @@ const wecomError = (payload, fallback) => {
   return map[code] || payload?.errmsg || fallback || "企业微信接口失败";
 };
 
-export const uploadWecomFile = async (token, buffer, fileName) => {
+export const uploadWecomFile = async (token, buffer, fileName, mime = "application/octet-stream") => {
   const form = new FormData();
-  form.append("media", new File([buffer], fileName, { type: "application/pdf" }));
+  form.append("media", new File([buffer], fileName, { type: mime || "application/octet-stream" }));
   const response = await fetch(`https://qyapi.weixin.qq.com/cgi-bin/media/upload?access_token=${encodeURIComponent(token)}&type=file`, { method: "POST", body: form });
   const payload = await response.json().catch(() => ({}));
-  if (!payload.media_id) throw new Error(wecomError(payload, "上传 PDF 到企业微信失败"));
+  if (!payload.media_id) throw new Error(wecomError(payload, "上传文件到企业微信失败"));
   return payload.media_id;
 };
 
@@ -172,7 +176,9 @@ export const sendWecomFile = async (config, { userid, mediaId, text }) => {
 
 const escapeHtml = (value) => String(value || "").replace(/[&<>"]/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;" }[char]));
 
-export const markdownToHtml = (title, markdown, visualSpec = null) => {
+export const markdownToHtml = (title, markdown, visualSpec = null, options = {}) => {
+  const analysis = options.kind === "analysis";
+  const kicker = options.kicker || (analysis ? "QUALITY ANALYSIS AGENT" : "QUALITY INTELLIGENCE · 角色报告");
   const figures = Array.isArray(visualSpec?.figures) ? visualSpec.figures.map((figure, index) => ({ ...figure, __key: String(figure.id || figure.title || index) })) : [];
   const used = new Set();
   const chartsFor = (heading) => figures.filter((figure) => !used.has(figure.__key) && figureMatchesHeading(figure, heading)).map((figure) => {
@@ -239,6 +245,8 @@ export const markdownToHtml = (title, markdown, visualSpec = null) => {
     } else if (/^##\s+/.test(line)) {
       const sectionTitle = line.replace(/^##\s+/, "");
       queueHeading(`<h2>${inline(headingLabel(sectionTitle))}</h2>`, chartsFor(sectionTitle), sectionTitle);
+    } else if (analysis && line.trim().replace(/^\*\*|\*\*$/g, "").trim() === kicker) {
+      continue;
     } else if (/^#\s+/.test(line)) {
       continue;
     } else if (/^[-*]\s+/.test(line)) {
@@ -278,7 +286,7 @@ th,td{border:1px solid #dfe5e8;padding:6px 8px;text-align:left}th{background:#f3
 .lieflat-week-band{display:block!important;width:100%;margin:0 0 16px;break-inside:avoid;page-break-inside:avoid}
 .lieflat-week-band-caption{margin:0 0 6px;color:#5e6f7f;font-size:12px}
 .lieflat-week-bands svg,.lieflat-week-band svg{display:block!important;width:100%!important;height:auto!important;max-width:100%!important;min-width:0!important}
-</style></head><body><div class="pdf-role-sheet"><div class="pdf-role-kicker">QUALITY INTELLIGENCE · 角色报告</div><h1>${escapeHtml(title)}</h1>${html.join("")}</div></body></html>`;
+</style></head><body><div class="pdf-role-sheet"><div class="pdf-role-kicker">${escapeHtml(kicker)}</div><h1>${escapeHtml(title)}</h1>${html.join("")}</div></body></html>`;
 };
 
 
@@ -302,7 +310,7 @@ export const printHtmlToPdf = async (html, pdfPath) => {
   await fs.writeFile(htmlPath, html, "utf8");
   const fileUrl = `file:///${htmlPath.replace(/\\/g, "/")}`;
   await new Promise((resolve, reject) => {
-    const child = spawn(browser, ["--headless=new", "--disable-gpu", "--no-pdf-header-footer", `--print-to-pdf=${pdfPath}`, fileUrl], { windowsHide: true });
+    const child = spawn(browser, ["--headless=new", "--disable-gpu", "--no-pdf-header-footer", "--window-size=1280,1800", "--virtual-time-budget=1200", `--print-to-pdf=${pdfPath}`, fileUrl], { windowsHide: true });
     const timer = setTimeout(() => { child.kill(); reject(new Error("生成 PDF 超时")); }, 60000);
     child.on("error", (error) => { clearTimeout(timer); reject(error); });
     child.on("exit", (code) => {
@@ -324,7 +332,16 @@ export const printHtmlToPdf = async (html, pdfPath) => {
   return buffer;
 };
 
-export const reportPdfTitle = (report = {}) => {
+const ROLE_NAMES = new Set(["组装人员", "机长", "交付经理", "供应链经理", "研发工程师", "PM", "TPM", "产总"]);
+export const isRoleReport = (report = {}) => /^角色报告/.test(String(report.module || "")) || ROLE_NAMES.has(String(report.role || ""));
+const plainMarkdown = (value = "") => String(value || "").replace(/[*_`]/g, "").trim();
+export const markdownHeading = (markdown = "") => plainMarkdown(String(markdown).match(/^#\s+(.+)$/m)?.[1] || "");
+export const markdownKicker = (markdown = "") => {
+  const line = String(markdown).split(/\r?\n/).map((item) => item.trim()).find((item) => /^\*\*.+\*\*$/.test(item));
+  return line ? line.replace(/^\*\*|\*\*$/g, "").trim() : "";
+};
+export const reportPdfTitle = (report = {}, content = "") => {
+  if (!isRoleReport(report)) return markdownHeading(content) || `${report.module || "质量分析"}质量报告`;
   const period = report.period || {};
   const start = String(period.start || period._periodStart || "").slice(0, 7);
   const end = String(period.end || period._periodEnd || "").slice(0, 7);
@@ -350,7 +367,7 @@ const postWebhook = async (key, body) => {
   return payload;
 };
 
-export const sendWebhookReport = async (webhook, { text, fileName, buffer }) => {
+export const sendWebhookReport = async (webhook, { text: notice, fileName, buffer }) => {
   const key = normalizeWebhook(webhook).split("key=")[1] || "";
   if (!key) throw new Error("群机器人 Webhook 不正确，请粘贴完整地址");
   await waitForWebhook(key);
@@ -359,31 +376,73 @@ export const sendWebhookReport = async (webhook, { text, fileName, buffer }) => 
   form.append("media", new File([buffer], fileName, { type: "application/pdf" }));
   const uploadedResponse = await fetch(`https://qyapi.weixin.qq.com/cgi-bin/webhook/upload_media?key=${encodeURIComponent(key)}&type=file`, { method: "POST", body: form });
   const uploaded = await uploadedResponse.json().catch(() => ({}));
-  if (!uploaded.media_id) throw new Error(wecomError(uploaded, "群机器人上传 PDF 失败"));
+  if (!uploaded.media_id) throw new Error(wecomError(uploaded, "群机器人上传文件失败"));
   return postWebhook(key, { msgtype: "file", file: { media_id: uploaded.media_id } });
 };
 
-export const sendOneReport = async ({ config, report, content, pdfDir }) => {
-  const match = matchEmployee(config.employees, report.recipient);
+const printDocument = (title, body) => `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"/><title>${escapeHtml(title)}</title></head><body>${body}<style>
+@page{size:A4;margin:8mm}
+html,body{margin:0;padding:0;background:#fff}
+body{-webkit-print-color-adjust:exact;print-color-adjust:exact}
+svg{max-width:100%;height:auto}
+.basics-wrap svg .fade,.porcelain-wrap .fade{animation:none !important;opacity:1 !important}
+.porcelain-wrap .sheet{width:100% !important;max-width:100% !important;grid-template-columns:92px minmax(0,1fr) !important}
+.porcelain-wrap .spine{display:block !important;overflow:visible !important;position:relative !important}
+.porcelain-wrap .spine .t{position:static !important;display:block !important;writing-mode:vertical-rl;font-size:28px !important;line-height:1.2 !important;white-space:normal !important;word-break:keep-all;overflow:visible !important;left:auto !important;width:auto !important;height:auto !important}
+.porcelain-wrap .spine .b{position:static !important;display:block !important;margin-top:16px;writing-mode:vertical-rl}
+</style></body></html>`;
+const frameReportScreen = (html) => {
+  const css = "<style>html,body{margin:0;background:#e6e1d8 !important} .pdf-role-sheet,.porcelain-wrap,.basics-wrap{width:auto !important;max-width:1080px !important;margin:28px auto !important;box-sizing:border-box !important;overflow:hidden} .pdf-role-sheet{padding:28px 32px 40px !important} .porcelain-wrap .sheet,.basics-wrap .page{width:100% !important;max-width:100% !important;box-sizing:border-box !important} .porcelain-wrap svg,.basics-wrap svg{max-width:100% !important;height:auto !important}</style>";
+  return html.includes("</body>") ? html.replace("</body>", css + "</body>") : html + css;
+};
+const screenDocument = (title, body) => `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/><title>${escapeHtml(title)}</title></head><body>${body}</body></html>`;
+export const buildReportHtml = ({ report = {}, content = "", screen = false } = {}) => {
+  const profile = getReportPresentationProfile(report.layoutProfileId || report.layoutSkillName || "");
+  const visualSpec = visualSpecFromReport(report, content);
+  content = sanitizeHumanReportContent(content);
+  const analysis = !isRoleReport(report);
+  const title = reportPdfTitle(report, content);
+  const view = { module: report.module || "质量分析", snapshot: report.snapshot || null, visualSpec };
+  let html;
+  if (profile.renderer === "porcelainSheet") html = (screen ? screenDocument : printDocument)(title, renderPorcelainSheet(content, view));
+  else if (profile.renderer === "basicsSheet") html = (screen ? screenDocument : printDocument)(title, renderBasicsSheet(content, view));
+  else {
+    const kicker = analysis ? (markdownKicker(content) || `QUALITY ANALYSIS AGENT / ${report.module || "质量分析"}`) : "QUALITY INTELLIGENCE · 角色报告";
+    html = markdownToHtml(title, content, visualSpec, { kind: analysis ? "analysis" : "role", kicker });
+  }
+  const safe = String(title).replace(/[\\/:*?"<>|]/g, "-").slice(0, 80) || "质量报告";
+  if (screen) html = frameReportScreen(html);
+  return { html, title, fileName: `${safe}.html`, analysis };
+};
+export const buildReportPdf = async ({ report = {}, content = "", pdfDir }) => {
+  const built = buildReportHtml({ report, content });
+  const pdfName = built.fileName.replace(/\.html$/i, ".pdf");
+  const pdfPath = path.join(pdfDir, `${pdfName.replace(/\.pdf$/i, "")}-${Date.now()}.pdf`);
+  const buffer = await printHtmlToPdf(built.html, pdfPath);
+  try { await fs.unlink(pdfPath); } catch {}
+  return { buffer, title: built.title, fileName: pdfName, analysis: built.analysis };
+};
+
+export const sendOneReport = async ({ config, report, content, pdfDir, deliverTo = "", format = "pdf" }) => {
+  const targetName = String(deliverTo || report.recipient || "").trim();
+  const match = matchEmployee(config.employees, targetName);
   if (match.status !== "ok") return { ok: false, status: match.status, reason: match.reason, channel: match.channel || "", recipient: report.recipient, fileName: report.fileName };
-  const title = reportPdfTitle(report);
-  const html = markdownToHtml(title, content, visualSpecFromReport(report, content));
-  const safe = String(title).replace(/[\\/:*?"<>|]/g, "-").slice(0, 80);
-  const pdfPath = path.join(pdfDir, `${safe}-${Date.now()}.pdf`);
-  const buffer = await printHtmlToPdf(html, pdfPath);
+  const htmlFile = String(format || "").toLowerCase() === "html";
+  const built = htmlFile ? buildReportHtml({ report, content, screen: true }) : await buildReportPdf({ report, content, pdfDir });
+  const buffer = htmlFile ? Buffer.from(built.html, "utf8") : built.buffer;
+  const { title, fileName: pdfName, analysis } = built;
+  const mime = htmlFile ? "text/html" : "application/pdf";
   const period = report.period || {};
-  const text = ["质量报告已出具，请查收附件 PDF。", `角色：${report.role || ""}`, `人员：${report.recipient || ""}`, period.start && period.end ? `周期：${period.start} 至 ${period.end}` : ""].filter(Boolean).join("\n");
-  try {
-    if (match.channel === "webhook") await sendWebhookReport(match.webhook, { text, fileName: `${safe}.pdf`, buffer });
+  const notice = analysis
+    ? [htmlFile ? "质量报告已出具，请用浏览器打开附件 HTML。页面连续显示，不会分页截断。" : "质量报告已出具，请查收附件 PDF。", `发给：${targetName}`, `报告：${title}`].join("\n")
+    : [htmlFile ? "质量报告已出具，请用浏览器打开附件 HTML。页面连续显示，不会分页截断。" : "质量报告已出具，请查收附件 PDF。", `发给：${targetName}`, report.role ? `角色：${report.role}` : "", report.recipient ? `报告：${report.recipient}` : "", period.start && period.end ? `周期：${period.start} 至 ${period.end}` : ""].filter(Boolean).join("\n");
+  if (match.channel === "webhook") await sendWebhookReport(match.webhook, { text: notice, fileName: pdfName, buffer, mime });
     else {
       if (!config.corpId || !config.secret || !config.agentId) throw new Error("自建应用还没配齐，而且当前出口 IP 需要管理员放行。请改填群机器人 Webhook");
       const token = await getWecomToken(config);
-      const mediaId = await uploadWecomFile(token, buffer, `${safe}.pdf`);
-      await sendWecomFile(config, { userid: match.userid, mediaId, text });
+      const mediaId = await uploadWecomFile(token, buffer, pdfName, mime);
+      await sendWecomFile(config, { userid: match.userid, mediaId, text: notice });
     }
-  } finally {
-    try { await fs.unlink(pdfPath); } catch {}
-  }
   return { ok: true, status: "ok", channel: match.channel, recipient: report.recipient, userid: match.channel === "app" ? match.userid : "", fileName: report.fileName, title };
 };
 
@@ -395,14 +454,17 @@ const visualSpecFromReport = (report = {}, content = "") => {
   if (!match) return report.visualSpec || null;
   try { return JSON.parse(match[1]); } catch { return report.visualSpec || null; }
 };
-export const exportOnePdf = async ({ report, content, batchDir }) => {
-  const title = reportPdfTitle(report);
-  const html = markdownToHtml(title, content, visualSpecFromReport(report, content));
-  const person = safePdfName(report.recipient || "未署名");
+export const exportOnePdf = async ({ report, content, batchDir, format = "pdf" }) => {
+  const htmlFile = String(format || "").toLowerCase() === "html";
+  const built = buildReportHtml({ report, content, screen: htmlFile });
+  const person = safePdfName(built.analysis ? (report.module || "质量分析") : (report.recipient || "未署名"));
   const personDir = path.join(batchDir, person);
   await fs.mkdir(personDir, { recursive: true });
-  let pdfPath = path.join(personDir, `${safePdfName(title)}.pdf`);
-  if (existsSync(pdfPath)) pdfPath = path.join(personDir, `${safePdfName(title)}-${Date.now()}.pdf`);
-  await printHtmlToPdf(html, pdfPath);
-  return { ok: true, fileName: report.fileName, recipient: report.recipient || "", role: report.role || "", pdfPath, pdfName: path.basename(pdfPath) };
+  const ext = htmlFile ? ".html" : ".pdf";
+  const baseName = safePdfName(built.title);
+  let filePath = path.join(personDir, baseName + ext);
+  if (existsSync(filePath)) filePath = path.join(personDir, baseName + "-" + Date.now() + ext);
+  if (htmlFile) await fs.writeFile(filePath, built.html, "utf8");
+  else await printHtmlToPdf(built.html, filePath);
+  return { ok: true, fileName: report.fileName, recipient: report.recipient || "", role: report.role || "", pdfPath: filePath, pdfName: path.basename(filePath), format: htmlFile ? "html" : "pdf" };
 };

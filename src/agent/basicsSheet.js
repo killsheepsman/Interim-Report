@@ -6,33 +6,32 @@ const rateLabel = (value) => num(value) == null ? "" : String(num(value)).replac
 const worseHigh = (title) => !/5分|五分|平均分|达标/.test(String(title || ""));
 
 const css = `
-.basics-wrap{background:#F0EFEB;color:#1C1C1A;font-family:Inter,"Noto Sans SC","Microsoft YaHei",sans-serif;padding:28px 8px 48px}
+.basics-wrap{background:#F0EFEB;color:#1C1C1A;font-family:"Microsoft YaHei","PingFang SC",sans-serif;padding:28px 8px 48px}
 .basics-wrap .page{max-width:1100px;margin:0 auto}
-.basics-wrap h1{font-size:22px;font-weight:800;letter-spacing:-.02em}
-.basics-wrap .sub{margin-top:6px;font-size:13px;line-height:1.7;color:#8F8E88}
-.basics-wrap .judge{margin-top:10px;font-size:16px;font-weight:700;line-height:1.6}
+.basics-wrap h1{font-size:28px;font-weight:700;letter-spacing:0}
+.basics-wrap .sub{margin-top:6px;font-size:18px;line-height:1.7;color:#8F8E88}
+.basics-wrap .judge{margin-top:10px;font-size:18px;font-weight:700;line-height:1.6}
 .basics-wrap .rows{display:flex;flex-direction:column;gap:22px;margin-top:22px}
 .basics-wrap .row{display:grid;gap:22px;align-items:stretch}
 .basics-wrap .row.c1{grid-template-columns:minmax(0,1fr)}
 .basics-wrap .row.c2{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}
 .basics-wrap .row.c3{grid-template-columns:minmax(0,1fr) minmax(0,1fr) minmax(0,1fr)}
 .basics-wrap .card{border-radius:24px;padding:24px 22px 18px;min-width:0}
-.basics-wrap h2{font-size:16.5px;font-weight:700;letter-spacing:-.02em;margin-bottom:14px}
-.basics-wrap svg{width:100%;height:auto;max-width:100%;max-height:300px;display:block;margin:0 auto;cursor:pointer}
-.basics-wrap .row.c1 svg{max-height:360px}
-.basics-wrap .row.c2 svg{max-height:280px}
-.basics-wrap .row.c3 svg{max-height:210px}
-.basics-wrap svg text{font-family:Inter,"Noto Sans SC","Microsoft YaHei",sans-serif}
+.basics-wrap h2{font-size:22px;font-weight:700;letter-spacing:0;margin-bottom:14px}
+.basics-wrap svg{max-width:100%;height:auto;display:block;margin:0 auto;cursor:pointer}
+.basics-wrap svg text{font-family:"Microsoft YaHei","PingFang SC",sans-serif}
+.basics-wrap svg text.txt{font-size:18px !important;font-weight:400 !important}.basics-wrap svg text.tick{font-size:18px !important;font-weight:700 !important}.basics-wrap svg text.num{font-size:22px !important;font-weight:700 !important}.basics-wrap svg text.hero{font-size:36px !important;font-weight:700 !important}
+.basics-wrap .trend-caption{font-size:18px;font-weight:700;margin:16px 0 4px}
 .basics-wrap .kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:18px}
-.basics-wrap .kpis b{display:block;font-size:28px;font-weight:800;letter-spacing:-.03em;line-height:1}
-.basics-wrap .kpis span{display:block;margin-top:8px;font-size:12px;color:#8F8E88}
-.basics-wrap .note{margin-top:12px;font-size:12px;line-height:1.7;color:#8F8E88}
+.basics-wrap .kpis b{display:block;font-size:36px;font-weight:700;letter-spacing:0;line-height:1}
+.basics-wrap .kpis span{display:block;margin-top:8px;font-size:18px;color:#8F8E88}
+.basics-wrap .note{margin-top:12px;font-size:18px;line-height:1.7;color:#8F8E88}
 .basics-wrap table{width:100%;border-collapse:collapse}
-.basics-wrap th,.basics-wrap td{text-align:left;vertical-align:top;font-size:13px;line-height:1.65;padding:10px 14px 10px 0;border-bottom:1px solid #DEDDD6}
-.basics-wrap th{font-size:12px;color:#8F8E88;font-weight:700}
+.basics-wrap th,.basics-wrap td{text-align:left;vertical-align:top;font-size:18px;line-height:1.65;padding:10px 14px 10px 0;border-bottom:1px solid #DEDDD6}
+.basics-wrap th{font-size:18px;color:#8F8E88;font-weight:700}
 .basics-wrap svg .fade{animation:basicsFade .7s ease both}
 @keyframes basicsFade{from{opacity:0}}
-.basics-tip{position:fixed;z-index:8;max-width:280px;padding:6px 8px;background:#F0EFEB;color:#1C1C1A;border:1px solid #1C1C1A;font:700 14px/1.4 Inter,"Noto Sans SC","Microsoft YaHei",sans-serif;pointer-events:none}
+.basics-tip{position:fixed;z-index:8;max-width:320px;padding:6px 8px;background:#F0EFEB;color:#1C1C1A;border:1px solid #1C1C1A;font:700 18px/1.4 "Microsoft YaHei","PingFang SC",sans-serif;pointer-events:none}
 @media(max-width:800px){.basics-wrap .row.c2,.basics-wrap .row.c3,.basics-wrap .kpis{grid-template-columns:1fr}}
 @media(prefers-reduced-motion:reduce){.basics-wrap svg .fade{animation:none}}
 `;
@@ -63,8 +62,36 @@ const packChartRows = (htmlCards) => {
   const kpi = totals.length ? `<div class="row c1 kpi">${totals.join("")}</div>` : "";
   return rows + kpi;
 };
-const svgOpen = (width, height, label) => `<svg viewBox="0 0 ${width} ${height}" role="img" aria-label="${escapeHtml(label)}">`;
-const text = (x, y, value, extra = "") => `<text x="${x}" y="${y}" ${extra}>${escapeHtml(value)}</text>`;
+const svgOpen = (width, height, label) => `<svg width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" role="img" aria-label="${escapeHtml(label)}">`;
+const textRole = (value, extra) => {
+  const raw = String(value ?? "").trim();
+  const weight = Number((String(extra).match(/font-weight="(\d+)"/) || [])[1] || 400);
+  const declared = Number((String(extra).match(/font-size="([\d.]+)"/) || [])[1] || 18);
+  if (declared >= 28) return "hero";
+  const axis = /月$|^W\d/i.test(raw) || /^\d{4}-W\d{1,2}$/i.test(raw) || /^\d+(?:\.\d+)?%?$/.test(raw);
+  const figure = weight >= 800 || /批$|项$|台$/.test(raw);
+  if (figure && !/月$|^W\d/i.test(raw)) return "num";
+  if (axis && raw.length <= 8) return "tick";
+  return "txt";
+};
+const text = (x, y, value, extra = "") => {
+  const role = textRole(value, extra);
+  let attrs = String(extra || "").replace(/font-size="[\d.]+"/, "");
+  attrs = /class="/.test(attrs) ? attrs.replace(/class="/, `class="${role} `) : attrs + ` class="${role}"`;
+  return `<text x="${x}" y="${y}" ${attrs}>${escapeHtml(value)}</text>`;
+};
+const pinSubjectRows = (rows, limit = 8) => {
+  const list = rows || [];
+  if (list.length <= limit) return list;
+  const focusAt = list.findIndex((row) => row?.focus || /第\d+\/\d+名/.test(String(row?.name || "")));
+  if (focusAt < 0 || focusAt < limit) return list.slice(0, limit);
+  return [...list.slice(0, limit - 1), list[focusAt]];
+};
+const showAxisLabel = (index, count, gap) => {
+  if (count <= 2) return true;
+  const step = Math.max(1, Math.ceil(72 / Math.max(Number(gap) || 1, 1)));
+  return step <= 1 || index === 0 || index === count - 1 || index % step === 0;
+};
 const tip = (value) => `<title>${escapeHtml(value)}</title>`;
 
 const axisOf = (values) => {
@@ -80,11 +107,24 @@ const axisOf = (values) => {
   return { min: Number(min.toFixed(2)), max: Number(max.toFixed(2)) };
 };
 const ticksOf = (min, max) => {
-  const span = max - min || 1;
-  const step = span <= 6 ? 1 : span <= 16 ? 2 : span <= 40 ? 5 : 10;
+  const span = Math.abs(max - min) || 1;
+  const rough = span / 5;
+  const pow = Math.pow(10, Math.floor(Math.log10(rough)));
+  const n = rough / pow;
+  const base = n <= 1.5 ? 1 : n <= 3 ? 2 : n <= 7 ? 5 : 10;
+  const step = base * pow;
   const ticks = [];
-  for (let value = Math.ceil(min / step) * step; value <= max + step / 10; value += step) ticks.push(Number(value.toFixed(1)));
-  return ticks.length >= 2 ? ticks : [Number(min.toFixed(1)), Number(max.toFixed(1))];
+  const start = Math.ceil((min - step / 1000) / step) * step;
+  for (let value = start; value <= max + step / 10; value += step) {
+    ticks.push(Number((Math.abs(value) < step / 1000 ? 0 : value).toFixed(2)));
+    if (ticks.length > 7) break;
+  }
+  const kept = [];
+  ticks.forEach((tick, index) => {
+    const previous = kept[kept.length - 1];
+    if (!previous || index === ticks.length - 1 || tick - previous >= step * 0.9) kept.push(tick);
+  });
+  return kept.length >= 2 ? kept : [Number(min.toFixed(1)), Number(max.toFixed(1))];
 };
 
 const dumbbell = (rows, { unit = "%", higherWorse = true } = {}) => {
@@ -150,7 +190,7 @@ const tickRows = (rows) => {
 };
 
 const countBars = (rows, label) => {
-  const ready = rows.filter((row) => row.name && num(row.value) != null).sort((a, b) => num(b.value) - num(a.value)).slice(0, 8);
+  const ready = pinSubjectRows(rows.filter((row) => row.name && num(row.value) != null).sort((a, b) => num(b.value) - num(a.value)), 8);
   if (ready.length < 2) return "";
   const max = Math.max(...ready.map((row) => num(row.value)), 1);
   const x0 = Math.min(300, Math.max(150, ...ready.map((row) => String(row.name).length * 14))) + 16;
@@ -191,6 +231,11 @@ const pairedRungs = (rows) => {
 const hairline = (points, unit = "%") => {
   const ready = points.filter((item) => item.name && num(item.current) != null);
   if (ready.length < 2) return "";
+  if (ready.length > 8) {
+    const bands = [];
+    for (let index = 0; index < ready.length; index += 8) bands.push(ready.slice(index, index + 8));
+    return '<div class="trend-bands">' + bands.map((band) => '<div class="trend-band"><div class="trend-caption">' + escapeHtml(band[0].name + " — " + band[band.length - 1].name) + "</div>" + hairline(band, unit) + "</div>").join("") + "</div>";
+  }
   const axis = axisOf(ready.map((item) => item.current));
   const width = 760;
   const x0 = 48;
@@ -204,7 +249,7 @@ const hairline = (points, unit = "%") => {
   const dots = ready.map((item, index) => {
     const x = mapX(index);
     const y = mapY(item.current);
-    const show = gap >= 46 || index === 0 || index === ready.length - 1 || num(item.current) === Math.max(...ready.map((row) => num(row.current)));
+    const show = showAxisLabel(index, ready.length, gap);
     return `<circle cx="${x}" cy="${y}" r="4.2" fill="#1C1C1A" class="fade">${tip(item.name + " " + (unit === "%" ? rateLabel(item.current) : item.current))}</circle>`
       + (show ? text(x, base + 22, item.name, 'font-size="12" font-weight="700" fill="#6A6963" text-anchor="middle"') : "");
   }).join("");
@@ -244,7 +289,7 @@ const multiLine = (series) => {
     const dots = item.points.map((point, index) => '<circle cx="' + mapX(index) + '" cy="' + mapY(point.current) + '" r="3.6" fill="' + shade + '" class="fade">' + tip(item.name + " " + point.name + " " + point.current + "项") + "</circle>").join("");
     return '<path d="' + path + '" fill="none" stroke="' + shade + '" stroke-width="' + (seriesIndex === 0 ? 2 : 1.4) + '" class="fade"/>' + dots + text(mapX(item.points.length - 1) + 8, mapY(last.current) + 4, item.name, 'font-size="12" font-weight="700" fill="' + shade + '" class="fade"');
   }).join("");
-  const labels = months.map((name, index) => gap >= 42 || index === 0 || index === months.length - 1 ? text(mapX(index), base + 22, name, 'font-size="12" font-weight="700" fill="#6A6963" text-anchor="middle"') : "").join("");
+  const labels = months.map((name, index) => showAxisLabel(index, months.length, gap) ? text(mapX(index), base + 22, name, 'font-size="12" font-weight="700" fill="#6A6963" text-anchor="middle"') : "").join("");
   return svgOpen(width, 210, "研发问题月度") + guides + lines + labels + "</svg>";
 };
 
@@ -294,7 +339,7 @@ const actionHtml = (source) => {
     notes = block.map((line) => line.trim()).filter(Boolean);
   }
   const table = header.length && body.length
-    ? `<table><thead><tr>${header.map((cell) => `<th>${escapeHtml(cell)}</th>`).join("")}</tr></thead><tbody>${body.map((row) => `<tr>${header.map((_, index) => `<td>${escapeHtml(row[index] || "")}</td>`).join("")}</tr>`).join("")}</tbody></table>`
+    ? `<table><thead><tr>${header.map((cell) => `<th>${escapeHtml(cell)}</th>`).join("")}</tr></thead><tbody>${body.map((row) => `<tr>${header.map((_, index) => `<td class="${/^[\d,]+(?:\.\d+)?%?$/.test(String(row[index] || "").trim()) ? "num" : ""}">${escapeHtml(row[index] || "")}</td>`).join("")}</tr>`).join("")}</tbody></table>`
     : "";
   const note = notes.length ? notes.map((line) => `<p class="note">${escapeHtml(line)}</p>`).join("") : "";
   if (!table && !note) return "";
@@ -553,17 +598,19 @@ const figureCards = (visualSpec) => {
   const figures = visualSpec?.figures || [];
   const cards = [];
   figures.forEach((figure) => {
-    const names = (figure.categories || []).map((item) => typeof item === "string" ? item : item?.label || item?.name || "").filter(Boolean);
+    const sourceNames = (figure.categories || []).map((item) => ({ name: typeof item === "string" ? item : item?.label || item?.name || "", focus: Boolean(item && typeof item === "object" && (item.focus || item.selected || /第\d+\/\d+名/.test(String(item.name || item.label || "")))) })).filter((item) => item.name);
     const series = Array.isArray(figure.series) ? figure.series : [];
     const rate = series.find((item) => item?.unit === "%" || /率|比例|密度/.test(item?.name || ""));
     const chosen = rate || series[0];
-    if (!chosen || names.length < 2) return;
+    if (!chosen || sourceNames.length < 2) return;
     const values = (chosen.values || []).map(num);
+    const names = sourceNames.map((item) => item.name);
+    const marked = sourceNames.map((item, index) => ({ name: item.name, value: values[index], after: values[index], focus: item.focus || /第\d+\/\d+名/.test(item.name) }));
     const title = String(figure.title || chosen.name || "对照");
     const monthly = names.every((name) => /月|W\d|周/.test(name));
     const chart = monthly
       ? hairline(names.map((name, index) => ({ name, current: values[index] })), rate ? "%" : "")
-      : (rate ? dumbbell(names.map((name, index) => ({ name, after: values[index] })), { higherWorse: worseHigh(title) }) : (Math.max(...values.filter((value) => value != null), 0) <= 80 ? tickRows(names.map((name, index) => ({ name, value: values[index] }))) : countBars(names.map((name, index) => ({ name, value: values[index] })))));
+      : (rate ? dumbbell(marked, { higherWorse: worseHigh(title) }) : (Math.max(...values.filter((value) => value != null), 0) <= 80 ? tickRows(marked) : countBars(marked, "")));
     if (chart) cards.push(card(title, chart, 0, { count: names.length, nameLen: names.reduce((max, name) => Math.max(max, String(name).length), 0) }));
   });
   return cards;

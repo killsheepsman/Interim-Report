@@ -745,8 +745,46 @@ export const loadWecomConfig = async () => await aiApiJson("/ai/wecom-config", {
 export const saveWecomConfig = async (config) => await aiApiJson("/ai/wecom-config", { method: "PUT", body: JSON.stringify(config) });
 export const testWecomSend = async (userid) => await aiApiJson("/ai/wecom-test", { method: "POST", body: JSON.stringify({ userid, feature: "qualityAgent" }) });
 export const previewWecomSend = async (items) => await aiApiJson("/ai/wecom-preview", { method: "POST", body: JSON.stringify({ items, feature: "qualityAgent" }) });
-export const sendWecomReports = async (fileNames) => await aiApiJson("/ai/wecom-send", { method: "POST", body: JSON.stringify({ fileNames, feature: "qualityAgent" }) });
-export const exportWecomPdfs = async (fileNames) => await aiApiJson("/ai/wecom-export-pdf", { method: "POST", body: JSON.stringify({ fileNames, feature: "qualityAgent" }) });
+export const fetchReportFile = async (report = {}) => {
+  const base = sharedApiBase();
+  if (!base) throw new Error("当前页面未连接QMS后端，请通过项目服务地址打开");
+  const format = String(report.format || "pdf").toLowerCase() === "html" ? "html" : "pdf";
+  let response;
+  try {
+    response = await fetch(`${base}/ai/report-pdf`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...report, format, feature: "qualityAgent" }) });
+  } catch {
+    throw new Error("无法连接本机QMS后端，请先启动或重启项目服务");
+  }
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({}));
+    throw new Error(payload.error || payload.message || (format === "html" ? "HTML 生成失败" : "PDF 生成失败"));
+  }
+  const blob = await response.blob();
+  if (!blob.size) throw new Error(format === "html" ? "HTML 文件为空" : "PDF 文件为空");
+  let fileName = format === "html" ? "质量报告.html" : "质量报告.pdf";
+  try {
+    const encoded = response.headers.get("x-report-filename") || "";
+    if (encoded) fileName = decodeURIComponent(encoded);
+  } catch {}
+  return { blob, fileName };
+};
+export const fetchReportPdf = (report = {}) => fetchReportFile({ ...report, format: "pdf" });
+export const sendWecomReports = async (fileNames, recipient = "", extra = {}) => await aiApiJson("/ai/wecom-send", { method: "POST", body: JSON.stringify({ fileNames, recipient: String(recipient || "").trim(), layoutProfileId: String(extra.layoutProfileId || "").trim(), format: String(extra.format || "pdf").toLowerCase() === "html" ? "html" : "pdf", snapshot: extra.snapshot || null, visualSpec: extra.visualSpec || null, feature: "qualityAgent" }) });
+export const employeeChoices = (employees = []) => {
+  const grouped = new Map();
+  (Array.isArray(employees) ? employees : []).forEach((row) => {
+    const name = String(row?.name || "").trim();
+    if (!name) return;
+    const current = grouped.get(name) || { name, depts: new Set() };
+    const dept = String(row?.dept || "").trim();
+    if (dept) current.depts.add(dept);
+    grouped.set(name, current);
+  });
+  return [...grouped.values()]
+    .sort((left, right) => left.name.localeCompare(right.name, "zh-CN"))
+    .map((row) => ({ name: row.name, label: row.depts.size ? `${row.name} · ${[...row.depts].join(" / ")}` : row.name }));
+};
+export const exportWecomPdfs = async (fileNames, extra = {}) => await aiApiJson("/ai/wecom-export-pdf", { method: "POST", body: JSON.stringify({ fileNames, format: String(extra.format || "pdf").toLowerCase() === "html" ? "html" : "pdf", feature: "qualityAgent" }) });
 export const openWecomPdfFolder = async (folder) => await aiApiJson("/ai/wecom-open-folder", { method: "POST", body: JSON.stringify({ folder, feature: "qualityAgent" }) });
 export const loadAgentDispatches = async () => await aiApiJson("/ai/agent-dispatch", { method: "GET", cache: "no-store" });
 export const saveRoleSkillLessons = async (skillId, lessons = []) => aiApiJson(`/ai/skills/${encodeURIComponent(skillId)}/lessons`, { method: "POST", body: JSON.stringify({ lessons }) });

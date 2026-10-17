@@ -9,7 +9,35 @@ const HERO = "rgb(8,31,92)";
 const LAB = "rgba(8,31,92,.72)";
 const HEAT = ["rgb(51,78,172)", "rgb(112,150,209)", "rgb(186,214,235)"];
 const CAT4 = ["rgb(8,31,92)", "rgb(51,78,172)", "rgb(112,150,209)"];
-const text = (x, y, value, extra = "") => `<text x="${x}" y="${y}" ${extra}>${escapeHtml(value)}</text>`;
+const textRole = (value, extra) => {
+  const raw = String(value ?? "").trim();
+  const weight = Number((String(extra).match(/font-weight="(\d+)"/) || [])[1] || 400);
+  const declared = Number((String(extra).match(/font-size="([\d.]+)"/) || [])[1] || 18);
+  if (declared >= 28) return "hero";
+  const axis = /月$|^W\d/i.test(raw) || /^\d{4}-W\d{1,2}$/i.test(raw) || /^\d+(?:\.\d+)?%?$/.test(raw);
+  const figure = weight >= 800 || /批$|项$|台$/.test(raw);
+  if (figure && !/月$|^W\d/i.test(raw)) return "num";
+  if (axis && raw.length <= 8) return "tick";
+  return "txt";
+};
+const text = (x, y, value, extra = "") => {
+  const role = textRole(value, extra);
+  let attrs = String(extra || "").replace(/font-size="[\d.]+"/, "");
+  attrs = /class="/.test(attrs) ? attrs.replace(/class="/, `class="${role} `) : attrs + ` class="${role}"`;
+  return `<text x="${x}" y="${y}" ${attrs}>${escapeHtml(value)}</text>`;
+};
+const pinSubjectRows = (rows, limit = 8) => {
+  const list = rows || [];
+  if (list.length <= limit) return list;
+  const focusAt = list.findIndex((row) => row?.focus || /第\d+\/\d+名/.test(String(row?.name || "")));
+  if (focusAt < 0 || focusAt < limit) return list.slice(0, limit);
+  return [...list.slice(0, limit - 1), list[focusAt]];
+};
+const showAxisLabel = (index, count, gap) => {
+  if (count <= 2) return true;
+  const step = Math.max(1, Math.ceil(72 / Math.max(Number(gap) || 1, 1)));
+  return step <= 1 || index === 0 || index === count - 1 || index % step === 0;
+};
 const formatNum = (value) => {
   const number = Number(value);
   if (!Number.isFinite(number)) return "";
@@ -70,7 +98,12 @@ const mapY = (value, scale, top, bottom) => bottom - ((Number(value) - scale.min
 export const lineChart = (divisions, { unit = "%", label = "升降对照" } = {}) => {
   const items = (divisions || []).filter((item) => item && item.current != null && Number.isFinite(Number(item.current)));
   if (items.length < 2) return "";
-  const slot = items.length > 8 ? 78 : 118;
+  if (items.length > 8) {
+    const bands = [];
+    for (let index = 0; index < items.length; index += 8) bands.push(items.slice(index, index + 8));
+    return '<div class="trend-bands">' + bands.map((band) => '<div class="trend-band"><div class="trend-caption">' + escapeHtml(band[0].name + " — " + band[band.length - 1].name) + "</div>" + lineChart(band, { unit, label }) + "</div>").join("") + "</div>";
+  }
+  const slot = 108;
   const width = Math.max(460, 78 + items.length * slot + 36);
   const height = 300;
   const plotTop = 36;
@@ -85,10 +118,10 @@ export const lineChart = (divisions, { unit = "%", label = "升降对照" } = {}
     const y = mapY(item.current, scale, plotTop, plotBottom);
     const labelY = y < plotTop + 22 ? y + 20 : y - 12;
     const previous = item.previous == null ? "" : `<circle cx="${x(index)}" cy="${mapY(item.previous, scale, plotTop, plotBottom)}" r="4.2" class="dot" fill="${BG}" stroke="${FAINT}" stroke-width="1.6"><title>${escapeHtml(item.name)} 上期 ${formatNum(item.previous)}${unit}</title></circle>`;
-    const name = wrapLabel(item.name, 6).map((line, lineIndex) => text(x(index), 246 + lineIndex * 15, line, 'font-size="13" font-weight="700" fill="' + LAB + '" text-anchor="middle"')).join("");
+    const name = showAxisLabel(index, items.length, slot) ? wrapLabel(item.name, 6).map((line, lineIndex) => text(x(index), 246 + lineIndex * 15, line, 'font-size="13" font-weight="700" fill="' + LAB + '" text-anchor="middle"')).join("") : "";
     return `${previous}<circle cx="${x(index)}" cy="${y}" r="5.2" class="dot" fill="${HERO}"><title>${escapeHtml(item.name)} 本期 ${formatNum(item.current)}${unit}</title></circle>${text(x(index), labelY, formatNum(item.current) + unit, 'font-size="15" font-weight="800" fill="' + TXT + '" text-anchor="middle"')}${name}`;
   }).join("");
-  return `<svg viewBox="0 0 ${width} ${height}" role="img" aria-label="${escapeHtml(label)}" data-ymax="${scale.max}"><line x1="46" y1="${plotBottom}" x2="${width - 24}" y2="${plotBottom}" stroke="${GRID}" stroke-width=".8"/>${guides}${previousPath}${currentPath}${dots}</svg>`;
+  return `<svg width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" role="img" aria-label="${escapeHtml(label)}" data-ymax="${scale.max}"><line x1="46" y1="${plotBottom}" x2="${width - 24}" y2="${plotBottom}" stroke="${GRID}" stroke-width=".8"/>${guides}${previousPath}${currentPath}${dots}</svg>`;
 };
 
 export const heatChart = (divisions, options = {}) => {
@@ -138,7 +171,7 @@ export const heatChart = (divisions, options = {}) => {
   }).join("");
   const currentColumn = cols.findIndex((col) => col.key === "current");
   const ring = worst.index >= 0 && currentColumn >= 0 ? `<circle cx="${x(currentColumn)}" cy="${y(worst.index)}" r="18" fill="none" stroke="${TXT}" stroke-width="1.2" stroke-dasharray="2 3"/>` : "";
-  return `<svg viewBox="0 0 ${width} ${height}" role="img" aria-label="比率对照">${headers}${body}${ring}</svg>`;
+  return `<svg width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" role="img" aria-label="比率对照">${headers}${body}${ring}</svg>`;
 };
 
 export const donutChart = (divisions, shipped) => {
@@ -174,7 +207,7 @@ export const donutChart = (divisions, shipped) => {
     return `<rect x="210" y="${y - 12}" width="14" height="14" fill="${CAT4[index % 3]}"/>${text(232, y, item.name + "  " + formatNum(item.count), 'font-size="16" font-weight="800" fill="' + TXT + '"')}`;
   }).join("");
   const height = Math.max(190, 28 + items.length * 28);
-  return `<svg viewBox="0 0 460 ${height}" role="img" aria-label="构成">${marks}${text(cx, cy + 8, shipped || total, 'font-size="28" font-weight="800" fill="' + TXT + '" text-anchor="middle"')}${legend}</svg>`;
+  return `<svg width="460" height="${height}" viewBox="0 0 460 ${height}" role="img" aria-label="构成">${marks}${text(cx, cy + 8, shipped || total, 'font-size="28" font-weight="800" fill="' + TXT + '" text-anchor="middle"')}${legend}</svg>`;
 };
 
 export const barChart = (rows, { unit = "", label = "对比" } = {}) => {
@@ -196,7 +229,7 @@ export const barChart = (rows, { unit = "", label = "对比" } = {}) => {
     const note = row.note ? "  " + row.note : "";
     return `<g><title>${escapeHtml(row.name)} ${formatNum(value)}${unit}${note}</title>${name}<line x1="${labelW}" y1="${y + 14}" x2="${(labelW + bar).toFixed(1)}" y2="${y + 14}" stroke="${color}" stroke-width="11" stroke-linecap="butt"/>${text(labelW + bar + 8, y + 18, formatNum(value) + unit + note, 'font-size="14" font-weight="800" fill="' + TXT + '"')}</g>`;
   }).join("");
-  return `<svg viewBox="0 0 ${width} ${height}" role="img" aria-label="${escapeHtml(label)}">${body}</svg>`;
+  return `<svg width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" role="img" aria-label="${escapeHtml(label)}">${body}</svg>`;
 };
 
 export const comboChart = (chart) => {
@@ -204,6 +237,14 @@ export const comboChart = (chart) => {
   const bars = chart.bars || [];
   if (names.length < 2 || bars.length < 2) return "";
   const line = Array.isArray(chart.line) ? chart.line : null;
+  if (names.length > 8) {
+    const bands = [];
+    for (let index = 0; index < names.length; index += 8) {
+      const end = index + 8;
+      bands.push(comboChart({ ...chart, categories: names.slice(index, end), bars: bars.slice(index, end), line: line ? line.slice(index, end) : null, totals: chart.totals ? chart.totals.slice(index, end) : null, selected: chart.selected ? chart.selected.slice(index, end) : null }));
+    }
+    return '<div class="trend-bands">' + bands.map((svg, index) => '<div class="trend-band"><div class="trend-caption">' + escapeHtml(String(names[index * 8] || "") + " — " + String(names[Math.min(names.length, index * 8 + 8) - 1] || "")) + "</div>" + svg + "</div>").join("") + "</div>";
+  }
   const slot = names.length > 10 ? 62 : 78;
   const left = 54;
   const right = line ? 58 : 28;
@@ -234,9 +275,10 @@ export const comboChart = (chart) => {
     const total = chart.totals ? chart.totals[index] : null;
     const rate = line ? text(x(index), 232, formatNum(line[index]) + "%", 'font-size="13" font-weight="800" fill="' + HERO + '" text-anchor="middle"') : "";
     const nameY = line ? 250 : 236;
-    return rate + lines.map((lineText, lineIndex) => text(x(index), nameY + lineIndex * 14, lineText, 'font-size="12" font-weight="700" fill="' + LAB + '" text-anchor="middle"')).join("") + (total != null ? text(x(index), nameY + lines.length * 14 + 2, "检" + formatNum(total), 'font-size="11" font-weight="700" fill="' + FAINT + '" text-anchor="middle"') : "");
+    const showName = showAxisLabel(index, names.length, slot);
+    return rate + (showName ? lines.map((lineText, lineIndex) => text(x(index), nameY + lineIndex * 14, lineText, 'font-size="12" font-weight="700" fill="' + LAB + '" text-anchor="middle"')).join("") : "") + (total != null && showName ? text(x(index), nameY + lines.length * 14 + 2, "检" + formatNum(total), 'font-size="11" font-weight="700" fill="' + FAINT + '" text-anchor="middle"') : "");
   }).join("");
-  return `<svg viewBox="0 0 ${width} ${height}" role="img" aria-label="${escapeHtml(chart.title || "趋势")}" data-ymax="${rateAxis ? rateAxis.max : barAxis.max}">${guides}${rateGuides}<line x1="${left - 8}" y1="${plotBottom}" x2="${width - right}" y2="${plotBottom}" stroke="${GRID}"/>${columns}${linePath}${lineDots}${labels}</svg>`;
+  return `<svg width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" role="img" aria-label="${escapeHtml(chart.title || "趋势")}" data-ymax="${rateAxis ? rateAxis.max : barAxis.max}">${guides}${rateGuides}<line x1="${left - 8}" y1="${plotBottom}" x2="${width - right}" y2="${plotBottom}" stroke="${GRID}"/>${columns}${linePath}${lineDots}${labels}</svg>`;
 };
 
 const figureUnit = (figure, series) => {
@@ -511,7 +553,7 @@ const proseChunks = (lines) => {
 const watchTable = (header, body) => {
   if (!header.length || !body.length) return "";
   const head = "<thead><tr>" + header.map((cell) => "<th>" + escapeHtml(cell) + "</th>").join("") + "</tr></thead>";
-  const rows = "<tbody>" + body.map((row) => "<tr>" + header.map((_, index) => "<td>" + escapeHtml(Array.isArray(row) ? (row[index] || "") : (row[header[index]] || "")) + "</td>").join("") + "</tr>").join("") + "</tbody>";
+  const rows = "<tbody>" + body.map((row) => "<tr>" + header.map((_, index) => (() => { const cell = Array.isArray(row) ? (row[index] || "") : (row[header[index]] || ""); const num = /^[\d,]+(?:\.\d+)?%?$/.test(String(cell).trim()); return "<td" + (num ? " class=\"num\"" : "") + ">" + escapeHtml(cell) + "</td>"; })()).join("") + "</tr>").join("") + "</tbody>";
   return '<table class="watch">' + head + rows + "</table>";
 };
 const actionHtml = (source) => {
@@ -574,22 +616,21 @@ const sectionHtml = (chart, first) => {
 
 
 const kpiHtml = (value, note, label) => '<div class="kpi"><div class="v">' + escapeHtml(value) + '</div><div class="r">' + escapeHtml(note || "") + '</div><div class="l">' + escapeHtml(label || "") + "</div></div>";
+const labelParts = (name) => String(name || "").split(/\s*·\s*/).map((part) => part.trim()).filter(Boolean);
 const tickRows = (items, unit = "", span = 1) => {
-  const rows = (items || []).filter((item) => item && item.name && Number.isFinite(Number(item.value))).slice(0, 8);
+  const rows = pinSubjectRows((items || []).filter((item) => item && item.name && Number.isFinite(Number(item.value))), 8);
   if (rows.length < 2) return "";
   const max = Math.max(...rows.map((item) => Number(item.value)), 0.0001);
-  const wide = span <= 1;
-  const mid = span === 2;
-  const width = wide ? 860 : mid ? 460 : 320;
-  const rowH = wide ? 48 : 40;
+  const twoLine = rows.some((item) => labelParts(item.name).length > 1);
+  const nameX = Math.max(168, ...rows.map((item) => Math.max(...labelParts(item.name).map((part) => part.length), 1) * 18 + 8));
+  const plot = span <= 1 ? 460 : 300;
+  const width = nameX + 20 + plot + 84;
+  const rowH = twoLine ? 58 : 48;
   const height = 24 + rows.length * rowH;
-  const font = wide ? 16 : 14;
-  const valueFont = wide ? 18 : 15;
-  const nameX = wide ? 176 : mid ? 112 : 86;
   const axis0 = nameX + 16;
   const valueX = width - 14;
-  const axis1 = valueX - (wide ? 72 : 52);
-  const tickCount = wide ? 32 : mid ? 16 : 10;
+  const axis1 = valueX - 72;
+  const tickCount = 24;
   const body = rows.map((item, index) => {
     const y = 28 + index * rowH;
     const ticks = Math.max(1, Math.round((Number(item.value) / max) * tickCount));
@@ -597,13 +638,14 @@ const tickRows = (items, unit = "", span = 1) => {
     let marks = "";
     for (let step = 0; step < ticks; step += 1) {
       const x = axis0 + step * stepX;
-      const h = (wide ? 12 : 8) + (step % 4) * (wide ? 3 : 2);
-      marks += '<line x1="' + x.toFixed(1) + '" y1="' + (y + 6) + '" x2="' + x.toFixed(1) + '" y2="' + (y + 6 - h) + '" stroke="' + (index === 0 ? HERO : DATA) + '" stroke-width="' + (wide ? 2.4 : 1.8) + '"/>';
+      const h = 10 + (step % 4) * 3;
+      marks += '<line x1="' + x.toFixed(1) + '" y1="' + (y + 8) + '" x2="' + x.toFixed(1) + '" y2="' + (y + 8 - h) + '" stroke="' + (index === 0 ? HERO : DATA) + '" stroke-width="2.2"/>';
     }
-    const name = wrapLabel(item.name, wide ? 10 : 6)[0];
-    return text(nameX, y + 4, name, 'font-size="' + font + '" font-weight="700" fill="' + LAB + '" text-anchor="end"') + '<line x1="' + axis0 + '" y1="' + (y + 6) + '" x2="' + axis1 + '" y2="' + (y + 6) + '" stroke="' + GRID + '" stroke-width=".7"/>' + marks + text(valueX, y + 4, formatNum(item.value) + unit, 'font-size="' + valueFont + '" font-weight="800" fill="' + TXT + '" text-anchor="end"');
+    const parts = labelParts(item.name);
+    const name = parts.map((line, lineIndex) => text(nameX, y + lineIndex * 22 - (parts.length > 1 ? 6 : 0), line, 'font-size="18" font-weight="700" fill="' + LAB + '" text-anchor="end"')).join("");
+    return name + '<line x1="' + axis0 + '" y1="' + (y + 8) + '" x2="' + axis1 + '" y2="' + (y + 8) + '" stroke="' + GRID + '" stroke-width=".7"/>' + marks + text(valueX, y + 4, formatNum(item.value) + unit, 'font-size="18" font-weight="800" fill="' + TXT + '" text-anchor="end"');
   }).join("");
-  return '<svg viewBox="0 0 ' + width + " " + height + '" role="img" aria-label="对照">' + body + "</svg>";
+  return '<svg width="' + width + '" height="' + height + '" viewBox="0 0 ' + width + ' ' + height + '" role="img" aria-label="对照">' + body + "</svg>";
 };
 const headSlices = (rows, limit = 4) => {
   const sorted = (rows || []).filter((item) => Number(item.value || item.count) > 0).sort((a, b) => Number(b.value || b.count) - Number(a.value || a.count));
@@ -619,7 +661,13 @@ const seriesLine = (title, claim, names, values) => {
 };
 const pairLine = (title, claim, points) => (points || []).length >= 2 ? { title, claim, points } : null;
 const heatOf = (points, worst) => (points || []).some((item) => finite(item.previous)) ? { worst, claim: "点下是比率。虚线圈圈出本期最差的一项。", items: points.map((item) => ({ name: item.name, previous: item.previous, current: item.current, ytd: item.ytd ?? null })) } : null;
-const rankedOf = (items, unit, worstHigh) => [...(items || [])].filter((item) => item && item.name && Number.isFinite(Number(item.value ?? item.current))).sort((a, b) => worstHigh ? Number(b.value ?? b.current) - Number(a.value ?? a.current) : Number(a.value ?? a.current) - Number(b.value ?? b.current)).slice(0, 3).map((item) => ({ badge: formatNum(item.value ?? item.current) + unit, name: item.name, detail: item.detail || (finite(item.previous) ? "上期 " + formatNum(item.previous) + unit : "") }));
+const rankedOf = (items, unit, worstHigh) => {
+  const sorted = [...(items || [])].filter((item) => item && item.name && Number.isFinite(Number(item.value ?? item.current))).sort((a, b) => worstHigh ? Number(b.value ?? b.current) - Number(a.value ?? a.current) : Number(a.value ?? a.current) - Number(b.value ?? b.current));
+  const top = sorted.slice(0, 3);
+  const focus = sorted.find((item) => item.focus || /第\d+\/\d+名/.test(String(item.name || "")));
+  const picked = focus && !top.includes(focus) ? [...top, focus] : top;
+  return picked.map((item) => ({ badge: formatNum(item.value ?? item.current) + unit, name: item.name, detail: item.detail || (finite(item.previous) ? "上期 " + formatNum(item.previous) + unit : "") }));
+};
 const kpisFrom = (list) => list.filter((item) => item && item.value != null && item.value !== "");
 const firstTrend = (figures) => {
   const trends = figures.filter((chart) => /月度|周度|趋势/.test(chart.title));
@@ -647,7 +695,7 @@ const slotsFromFigures = (source, visualSpec) => {
     const rows = headSlices(items);
     return rows.length >= 2 ? { title: chart.title, claim: "同一类构成排在一起，只留最大的几块。", rows } : null;
   }).filter(Boolean);
-  const rowSets = ranks.map((chart) => ({ title: chart.title, unit: chart.unit || "", items: (chart.rows || []).slice(0, 8) })).filter((chart) => chart.items.length >= 2);
+  const rowSets = ranks.map((chart) => ({ title: chart.title, unit: chart.unit || "", items: pinSubjectRows(chart.rows || [], 8) })).filter((chart) => chart.items.length >= 2);
   const rate = grabNumber(source, /([\d.]+)%/);
   const rankItems = rowSets[0]?.items || [];
   return {
@@ -940,10 +988,15 @@ const composePorcelain = (items) => {
   const rows = [{ size: 1, items: [ready[0]], hero: true }];
   const rest = ready.slice(1);
   let folded = null;
-  if (rest.length && !wideTrend(rest[rest.length - 1])) folded = rest.pop();
+  if (rest.length && !wideTrend(rest[rest.length - 1]) && rest[rest.length - 1].title !== "点名缺陷") folded = rest.pop();
   const groups = [];
-  for (let index = 0; index < rest.length; index += 2) groups.push(rest[index + 1] ? [rest[index], rest[index + 1]] : [rest[index]]);
-  if (groups.length && groups[groups.length - 1].length === 1 && groups.length >= 2 && groups[groups.length - 2].length < 3) {
+  const fullRow = (item) => item?.title === "点名缺陷" || (item?.nameLen || 0) > 10;
+for (let index = 0; index < rest.length; index += 1) {
+  if (fullRow(rest[index]) || !rest[index + 1] || fullRow(rest[index + 1])) { groups.push([rest[index]]); continue; }
+  groups.push([rest[index], rest[index + 1]]);
+  index += 1;
+}
+  if (groups.length && groups[groups.length - 1].length === 1 && groups[groups.length - 1][0].title !== "点名缺陷" && groups.length >= 2 && groups[groups.length - 2].length < 3) {
     groups[groups.length - 2].push(groups.pop()[0]);
   }
   groups.forEach((group) => rows.push({ size: group.length, items: group }));
@@ -967,10 +1020,10 @@ const renderPoster = (source, options) => {
   const actions = actionHtml(source);
   const personal = String(options.module || "").startsWith("角色报告");
   const spine = personal ? title : spineTitle(title, options.module);
-  const spineSize = personal ? (spine.length > 16 ? 16 : spine.length > 12 ? 18 : 22) : 46;
+  const spineSize = personal ? 18 : 28;
   const head = personal
     ? '<div class="tophead personal-title"><span class="site">' + escapeHtml(title) + "</span></div>"
     : '<div class="tophead"><span class="site">QMS</span><span class="sep">|</span><span class="tag">' + escapeHtml(period || options.module || "") + "</span></div>";
-  return '<div class="porcelain-wrap report-publisher"><div class="sheet"><div class="spine"><div class="t' + (personal ? " is-personal" : "") + '" style="font-size:' + spineSize + 'px">' + escapeHtml(spine) + '</div><div class="b">QMS</div></div><div class="content">' + head + charts + stats + (actions ? '<div class="sheet-action">' + actions + "</div>" : "") + '<div class="foot"><span>' + escapeHtml(title) + "</span><span>青瓷经营网页风格</span></div></div></div></div>";
+  return '<div class="porcelain-wrap report-publisher"><div class="sheet"><div class="spine"><div class="t' + (personal ? " is-personal" : "") + '" style="font-size:' + spineSize + 'px">' + escapeHtml(spine) + '</div><div class="b">QMS</div></div><div class="content">' + head + charts + stats + (actions ? '<div class="sheet-action">' + actions + "</div>" : "") + '<div class="foot"><span>' + escapeHtml(title) + "</span></div></div></div></div>";
 };
 export const renderDataSheet = (content, options = {}) => renderPoster(String(content || ""), options);

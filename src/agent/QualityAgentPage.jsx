@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ArrowsClockwise, Brain, CaretDown, CaretRight, CheckCircle, DownloadSimple, Eye, EyeSlash, FileArrowUp, FilePdf, FloppyDisk, Printer, ShareNetwork, Trash, WarningCircle } from "@phosphor-icons/react";
-import { createSourcesSignature, deleteAgentReport, deleteLocalAgentReport, loadAgentReport, loadAgentReports, loadCurrentUser, loadLocalAgentReport, loadLocalAgentReports, loadAgentSkills, loadDqaAgentRaw, loadQualityAgentSnapshotRegistry, loadQualityAgentRunsFromServer, requestAiChat, saveAgentReportFile, saveLocalAgentReport, saveQualityAgentRunsToServer } from "../dataStore.js";
+import { ArrowsClockwise, Brain, CaretDown, CaretRight, CheckCircle, DownloadSimple, Eye, EyeSlash, FileArrowUp, FileHtml, FilePdf, FloppyDisk, PaperPlaneTilt, Printer, ShareNetwork, Trash, WarningCircle } from "@phosphor-icons/react";
+import { createSourcesSignature, deleteAgentReport, deleteLocalAgentReport, loadAgentReport, loadAgentReports, loadCurrentUser, loadLocalAgentReport, loadLocalAgentReports, loadAgentSkills, loadDqaAgentRaw, loadQualityAgentSnapshotRegistry, loadQualityAgentRunsFromServer, previewWecomSend, requestAiChat, saveAgentReportFile, saveLocalAgentReport, saveQualityAgentRunsToServer, fetchReportFile, fetchReportPdf, sendWecomReports } from "../dataStore.js";
 import { alignIqcYieldMetrics, applyQualitySnapshotWindow, buildQualityAgentSnapshot, ipqcSnapshotReady, oqcSnapshotReady, pickIqcAnalysisSnapshot, pickIpqcAnalysisSnapshot, pickOqcAnalysisSnapshot, sliceIqcSnapshotToWindow, refillIqcSnapshotDetails, iqcSplitDetailsMissing, sliceIpqcSnapshotToWindow, sliceOqcSnapshotToWindow, sliceDqaRdSnapshotToWindow } from "./qualitySnapshot.js";
 import { loadDoamPack } from "../doamStore.js";
 import { hydrateDoamDefault, mergeDoamDatasets } from "../doamEngine.js";
@@ -18,6 +18,7 @@ import { applyDqaPmMachined, dqaRdSnapshotReady, shapeDqaRdSplit } from "./dqaRd
 import { buildQmsCustomerSplit } from "./qmsCustomerSplit.js";
 import { buildDoamStabilitySplit } from "./doamStabilitySplit.js";
 import { writeReportDuration } from "./reportDuration.js";
+import { EmployeeSearchSelect } from "./EmployeeSearchSelect.jsx";
 import { periodChartTitle, renderLieflatFigure, renderLieflatMultiLine, renderLieflatPairedTrend, renderLieflatRungBars, renderOqcTargetMatrix } from "./lieflatRoleCharts.js";
 
 const formatBackendLogTime = (value) => {
@@ -1236,7 +1237,7 @@ export const renderAgentMarkdown = (content, { chartFirst = false, snapshot = nu
   return publisher ? reportPublisherChrome(reportText, fragment, profileId, module, lede, { snapshot, visualSpec }) : fragment;
 };
 
-export function QualityAgentPage({ data, files = [], dateRange, module = "DQA", onEnsureAgentSources, canStart = false, canSaveToServer = false, creatorIp = "", orgMappings = [] }) {
+export function QualityAgentPage({ data, files = [], dateRange, module = "DQA", onEnsureAgentSources, canStart = false, canSaveToServer = false, creatorIp = "", orgMappings = [], employees = [] }) {
   const [doamDataset, setDoamDataset] = useState(null);
   const [dqaAgentRaw, setDqaAgentRaw] = useState(null);
   const initialSkill = MODULE_DEFAULT_SKILLS[module] || MODULE_DEFAULT_SKILLS.DQA;
@@ -1264,7 +1265,9 @@ export function QualityAgentPage({ data, files = [], dateRange, module = "DQA", 
   const [reportsLoaded, setReportsLoaded] = useState(false);
   const [selectedReportContent, setSelectedReportContent] = useState("");
   const [selectedReportState, setSelectedReportState] = useState({ status: "idle", message: "" });
-  const [showReportComparison, setShowReportComparison] = useState(false);
+  const [sendTarget, setSendTarget] = useState("");
+  const [sendFormat, setSendFormat] = useState("pdf");
+  const [sendNotice, setSendNotice] = useState({ status: "", message: "" });
   const [importedReports, setImportedReports] = useState(() => readImportedReports()[module] || []);
   const [selectedImportedId, setSelectedImportedId] = useState(() => readModuleChoice(module).importedId || "");
   const [showImportedReport, setShowImportedReport] = useState(false);
@@ -1488,15 +1491,6 @@ export function QualityAgentPage({ data, files = [], dateRange, module = "DQA", 
   const selectedReport = moduleReports.find((item) => item.fileName === selectedReportName) || null;
   const selectedReportSnapshot = selectedReportName && pinnedReport.fileName === selectedReportName && pinnedReport.snapshot ? pinnedReport.snapshot : (selectedReport?.period?.start2026 && selectedReport.period.start2026 === period.start2026 && selectedReport.period.end2026 === period.end2026 ? displaySnapshot : null);
   const selectedImportedReport = importedReports.find((item) => item.id === selectedImportedId) || null;
-  const currentVsSaved = useMemo(() => {
-    if (!selectedReportContent || !record.content) return null;
-    const currentLines = record.content.split(/\r?\n/).filter((line) => line.trim());
-    const savedLines = selectedReportContent.split(/\r?\n/).filter((line) => line.trim());
-    const savedSet = new Set(savedLines);
-    const currentSet = new Set(currentLines);
-    return { added: currentLines.filter((line) => !savedSet.has(line)).length, removed: savedLines.filter((line) => !currentSet.has(line)).length, currentLines: currentLines.length, savedLines: savedLines.length };
-  }, [record.content, selectedReportContent]);
-
   useEffect(() => {
     const reports = readImportedReports()[module] || [];
     const list = Array.isArray(reports) ? reports : [];
@@ -1808,6 +1802,30 @@ export function QualityAgentPage({ data, files = [], dateRange, module = "DQA", 
     }
   };
 
+  const sendSavedToSelected = async () => {
+    const person = String(sendTarget || "").trim();
+    if (!canSaveToServer) { setSendNotice({ status: "error", message: "只有主管理员可以从这里发送企业微信" }); return; }
+    if (!selectedReportContent) { setSendNotice({ status: "error", message: "请先在项目报告中选择要发送的报告" }); return; }
+    if (!person) { setSendNotice({ status: "error", message: "请先选择收件人" }); return; }
+    const formatLabel = sendFormat === "html" ? "HTML 网页" : "PDF";
+    setSendNotice({ status: "running", message: `正在把这份${formatLabel}发给 ${person}…` });
+    try {
+      let fileName = selectedReport?.localOnly ? "" : String(selectedReportName || "");
+      if (!/^QMS-Agent报告-.+\.md$/i.test(fileName)) {
+        const saved = await saveAgentReportFile({ module: selectedReport?.module || module, skillName: selectedReport?.skillName || skillName, layoutProfileId: selectedReport?.layoutProfileId || layoutSkillName, period: selectedReport?.period || snapshot.period || period, model: selectedReport?.model || "", creatorIp: selectedReport?.creatorIp || creatorIp || resolvedCreatorIp, content: selectedReportContent, visualSpec: selectedReport?.visualSpec || extractReportVisualSpec(selectedReportContent) });
+        fileName = saved.fileName;
+      }
+      const preview = await previewWecomSend([{ fileName, recipient: person, role: "" }]);
+      const matched = (preview.rows || [])[0];
+      if (!matched || matched.status !== "ok") {
+        setSendNotice({ status: "error", message: matched?.reason || `${person} 还不能发送。请先在员工信息填写发送地址，并同步到发送服务` });
+        return;
+      }
+      const payload = await sendWecomReports([fileName], person, { layoutProfileId: layoutSkillName, format: sendFormat, snapshot: pageExportSnapshot(), visualSpec: pageExportVisualSpec(selectedReportContent, selectedReport || {}) });
+      const failed = (payload.results || []).find((item) => !item.ok);
+      setSendNotice({ status: failed ? "error" : "done", message: failed ? `发送失败：${failed.reason || "未知原因"}` : `发送成功：已把${formatLabel}发给 ${person}` });
+    } catch (error) { setSendNotice({ status: "error", message: `发送失败：${error.message}` }); }
+  };
   const saveReportContent = async (content, source = {}) => {
     if (!content) return;
     setSaveState({ status: "saving", message: "正在保存导出内容到项目报告库…" });
@@ -1831,102 +1849,57 @@ export function QualityAgentPage({ data, files = [], dateRange, module = "DQA", 
     }
   };
 
-  const printReport = (reportRef) => {
+  const slimExportSnapshot = (snapshot) => {
+    const data = snapshot?.data;
+    if (!data || typeof data !== "object") return null;
+    const picked = {};
+    ["iqcSplit", "ipqcSplit", "oqcSplit", "dqaSplit", "qmsSplit", "doamSplit"].forEach((key) => { if (data[key]) picked[key] = data[key]; });
+    return Object.keys(picked).length ? { data: picked } : null;
+  };
+  const pageExportSnapshot = () => slimExportSnapshot(module === "QMS" || module === "DOAM" ? displaySnapshot : selectedReportSnapshot);
+  const pageExportVisualSpec = (content, source = {}) => mergeModuleVisualSpec(source.visualSpec || extractReportVisualSpec(content || ""), module === "QMS" || module === "DOAM" ? displaySnapshot : (source.snapshot || selectedReportSnapshot), source.module || module, { ipqcAssembly: formalIpqcLayout, oqcShipment: formalOqcLayout, dqaRd: formalDqaLayout });
+  const reportPdfPayload = (content, source = {}) => ({
+    content,
+    module: source.module || module,
+    role: source.role || "",
+    recipient: source.recipient || "",
+    period: source.period && typeof source.period === "object" ? source.period : null,
+    visualSpec: pageExportVisualSpec(content, source),
+    snapshot: pageExportSnapshot(),
+    fileName: source.fileName && !source.localOnly && !source.importedAt ? source.fileName : "",
+    layoutProfileId: layoutSkillName,
+  });
+  const openPdfForPrint = (blob) => {
+    const url = URL.createObjectURL(blob);
+    const win = window.open(url, "_blank", "noopener");
+    if (!win) {
+      URL.revokeObjectURL(url);
+      throw new Error("浏览器拦截了打印窗口，请允许弹出窗口后重试");
+    }
+    window.setTimeout(() => { try { win.focus(); win.print(); } catch {} }, 800);
+    window.setTimeout(() => URL.revokeObjectURL(url), 120000);
+  };
+  const printReport = async (content, source = {}) => {
+    if (!content) { setSaveState({ status: "error", message: "当前没有可打印的报告内容" }); return; }
+    setSaveState({ status: "saving", message: "正在按发送版式生成打印文件…" });
     try {
-      const root = reportRef?.current;
-      printAgentReport(root?.querySelector(".report-publisher") || root);
+      const { blob } = await fetchReportPdf(reportPdfPayload(content, source));
+      openPdfForPrint(blob);
+      setSaveState({ status: "saved", message: "已打开与发送相同的 PDF，请在新窗口打印" });
     } catch (printError) {
-      setSaveState({ status: "error", message: `打印失败：${printError.message}` });
+      setSaveState({ status: "error", message: `打印失败：${printError.message || printError}` });
     }
   };
 
-  const prepareReportPdf = async (reportRef, source = {}, signature = "") => {
-    if (!reportRef?.current) { setPdfDownload({ signature, status: "error", blob: null, fileName: "", message: "当前没有可下载的报告内容" }); return; }
-    const pdfFileName = reportFileName({ ...source, module: source.module || module }, "pdf");
-    setPdfDownload({ signature, status: "preparing", blob: null, fileName: pdfFileName, message: "正在生成 PDF…" });
+  const prepareReportPdf = async (content, source = {}, signature = "") => {
+    if (!content) { setPdfDownload({ signature, status: "error", blob: null, fileName: "", message: "当前没有可下载的报告内容" }); return; }
+    const fallbackName = reportFileName({ ...source, module: source.module || module }, "pdf");
+    setPdfDownload({ signature, status: "preparing", blob: null, fileName: fallbackName, message: "正在按发送版式生成 PDF…" });
     try {
-      const [{ jsPDF }, { default: html2canvas }] = await Promise.all([import("jspdf"), import("html2canvas")]);
-      if (document.fonts?.ready) await document.fonts.ready;
-      // The preparing state can redraw dangerouslySetInnerHTML and replace the
-      // publisher node. Reacquire it after React has committed that redraw.
-      await new Promise((resolve) => window.requestAnimationFrame(() => window.requestAnimationFrame(resolve)));
-      const reportNode = reportRef.current?.querySelector(".report-publisher") || reportRef.current;
-      if (!reportNode?.isConnected) throw new Error("报告页面尚未稳定，请重新生成 PDF");
-      const canvas = await html2canvas(reportNode, { scale: 1.5, useCORS: true, backgroundColor: "#ffffff", logging: false, windowWidth: Math.max(1000, reportNode.scrollWidth) });
-      const pdf = new jsPDF({ orientation: "p", unit: "mm", format: "a4", compress: true });
-      const pageWidth = pdf.internal.pageSize.getWidth();
-      const pageHeight = pdf.internal.pageSize.getHeight();
-      const pageHeightPx = Math.max(1, Math.floor(canvas.width * pageHeight / pageWidth));
-      const reportRect = reportNode.getBoundingClientRect();
-      const canvasScaleY = canvas.height / Math.max(1, reportNode.scrollHeight);
-      const breakSelectors = [
-        ".report-publisher-masthead",
-        ".report-publisher-header",
-        ".report-publisher-hero",
-        ".report-publisher-quick",
-        ".report-publisher-layout",
-        ".report-publisher-article > *",
-        ".agent-report-section > *",
-        ".agent-report-section-heading",
-        "h1", "h2", "h3", "h4", "h5",
-        "p",
-        ".agent-report-bullet",
-        ".agent-report-numbered",
-        ".agent-report-callout",
-        ".agent-report-auto-chart",
-        ".agent-report-table-wrap",
-        "figure",
-      ].join(",");
-      const breakBlocks = Array.from(reportNode.querySelectorAll(breakSelectors))
-        .map((element) => {
-          const rect = element.getBoundingClientRect();
-          const top = Math.round((rect.top - reportRect.top) * canvasScaleY);
-          const bottom = Math.round((rect.bottom - reportRect.top) * canvasScaleY);
-          return { top, bottom };
-        })
-        .filter(({ top, bottom }) => Number.isFinite(top) && Number.isFinite(bottom) && top > 0 && top < canvas.height)
-        .sort((a, b) => a.top - b.top || a.bottom - b.bottom);
-      const candidateBreaks = breakBlocks
-        .flatMap(({ top, bottom }) => {
-          // A block taller than one page must be allowed to split internally.
-          // Its bottom remains useful as a clean boundary for the next page.
-          return bottom - top > pageHeightPx ? [top, bottom] : [top];
-        })
-        .filter((value) => value > 0 && value < canvas.height)
-        .sort((a, b) => a - b)
-        .filter((value, index, values) => index === 0 || value - values[index - 1] > 3);
-      let offset = 0;
-      let page = 0;
-      while (offset < canvas.height) {
-        const target = Math.min(canvas.height, offset + pageHeightPx);
-        // Keep enough content on each page, but prefer a clean block boundary
-        // over a fuller page when a heading or paragraph is about to be cut.
-        const minimumUsefulPage = offset + Math.round(pageHeightPx * 0.35);
-        const containingBlock = breakBlocks
-          .filter(({ top, bottom }) => top > offset + 40 && top < target - 2 && bottom > target && bottom - top <= pageHeightPx * 1.1)
-          .sort((a, b) => a.top - b.top)[0];
-        const latestBoundary = candidateBreaks.findLast((value) => value >= minimumUsefulPage && value <= target - 8);
-        const nextOffset = target >= canvas.height
-          ? canvas.height
-          : Math.max(offset + 1, containingBlock?.top || latestBoundary || target);
-        const sliceHeight = nextOffset - offset;
-        const slice = document.createElement("canvas");
-        slice.width = canvas.width;
-        slice.height = sliceHeight;
-        slice.getContext("2d")?.drawImage(canvas, 0, offset, canvas.width, sliceHeight, 0, 0, canvas.width, sliceHeight);
-        if (page > 0) pdf.addPage();
-        pdf.addImage(slice.toDataURL("image/jpeg", 0.92), "JPEG", 0, 0, pageWidth, sliceHeight * pageWidth / canvas.width, undefined, "FAST");
-        offset = nextOffset;
-        page += 1;
-      }
-      const pdfBuffer = pdf.output("arraybuffer");
-      const pdfBytes = new Uint8Array(pdfBuffer);
-      if (!pdfBytes.byteLength) throw new Error("PDF 字节流为空");
-      const pdfBlob = new Blob([pdfBytes], { type: "application/pdf" });
-      if (!pdfBlob.size) throw new Error("PDF 文件为空");
-      setPdfDownload({ signature, status: "ready", blob: pdfBlob, fileName: pdfFileName, message: `PDF 已生成（${Math.max(1, Math.round(pdfBlob.size / 1024)).toLocaleString("zh-CN")} KB），点击保存` });
+      const { blob, fileName } = await fetchReportPdf(reportPdfPayload(content, source));
+      setPdfDownload({ signature, status: "ready", blob, fileName: fileName || fallbackName, message: `PDF 已生成（${Math.max(1, Math.round(blob.size / 1024)).toLocaleString("zh-CN")} KB），点击保存` });
     } catch (pdfError) {
-      setPdfDownload({ signature, status: "error", blob: null, fileName: pdfFileName, message: `PDF 生成失败：${pdfError.message || pdfError}` });
+      setPdfDownload({ signature, status: "error", blob: null, fileName: fallbackName, message: `PDF 生成失败：${pdfError.message || pdfError}` });
     }
   };
 
@@ -1962,6 +1935,18 @@ export function QualityAgentPage({ data, files = [], dateRange, module = "DQA", 
     if (!content) return;
     downloadAgentReport({ ...source, module: source.module || module, content });
   };
+  const downloadReportHtml = async (content, source = {}) => {
+    if (!content) return;
+    setDownloadTarget("");
+    setSaveState({ status: "saving", message: "正在生成 HTML 网页…" });
+    try {
+      const { blob, fileName } = await fetchReportFile({ ...reportPdfPayload(content, source), format: "html" });
+      downloadBlob(blob, fileName);
+      setSaveState({ status: "saved", message: "HTML 已下载：" + fileName + "。用浏览器打开，页面连续显示，不会分页截断。" });
+    } catch (htmlError) {
+      setSaveState({ status: "error", message: "HTML 下载失败：" + (htmlError.message || htmlError) });
+    }
+  };
 
   const renderReportActions = ({ id, content, source = {}, reportRef }) => {
     if (!content) return null;
@@ -1971,16 +1956,16 @@ export function QualityAgentPage({ data, files = [], dateRange, module = "DQA", 
     const toggleDownload = () => {
       if (open) { setDownloadTarget(""); return; }
       setDownloadTarget(id);
-      if (activePdf.status !== "ready" && activePdf.status !== "preparing") prepareReportPdf(reportRef, source, pdfSignature);
+      if (activePdf.status !== "ready" && activePdf.status !== "preparing") prepareReportPdf(content, source, pdfSignature);
     };
     const handlePdfAction = () => {
       if (activePdf.status === "ready") savePreparedPdf();
-      else if (activePdf.status !== "preparing") prepareReportPdf(reportRef, source, pdfSignature);
+      else if (activePdf.status !== "preparing") prepareReportPdf(content, source, pdfSignature);
     };
     return <div className="report-action-toolbar" aria-label="报告操作">
       <button type="button" className="report-action-button" title="调用系统分享，可选择企业微信、微信或钉钉" onClick={() => shareReport(content, source)}><ShareNetwork size={18}/><span>Share</span></button>
-      <button type="button" className="report-action-button" title="打印当前网页报告" onClick={() => printReport(reportRef)}><Printer size={18}/><span>Print</span></button>
-      <div className="report-action-download"><button type="button" className="report-action-button" title="下载报告" aria-expanded={open} onClick={toggleDownload}><DownloadSimple size={18}/><span>Download</span></button>{open && <div className="report-action-menu" role="menu"><button type="button" role="menuitem" disabled={activePdf.status === "preparing"} onClick={handlePdfAction}><FilePdf size={16}/><span>{activePdf.status === "preparing" ? "正在生成 PDF…" : activePdf.status === "ready" ? "保存 PDF" : activePdf.status === "error" ? "重新生成 PDF" : "生成 PDF"}</span><small>{activePdf.message || "生成完成后弹出系统保存窗口"}</small></button><button type="button" role="menuitem" onClick={() => { setDownloadTarget(""); downloadReportMarkdown(content, source); }}><DownloadSimple size={16}/><span>MD 文档</span></button></div>}</div>
+      <button type="button" className="report-action-button" title="打印当前网页报告" onClick={() => printReport(content, source)}><Printer size={18}/><span>Print</span></button>
+      <div className="report-action-download"><button type="button" className="report-action-button" title="下载报告" aria-expanded={open} onClick={toggleDownload}><DownloadSimple size={18}/><span>Download</span></button>{open && <div className="report-action-menu" role="menu"><button type="button" role="menuitem" disabled={activePdf.status === "preparing"} onClick={handlePdfAction}><FilePdf size={16}/><span>{activePdf.status === "preparing" ? "正在生成 PDF…" : activePdf.status === "ready" ? "保存 PDF" : activePdf.status === "error" ? "重新生成 PDF" : "生成 PDF"}</span><small>{activePdf.message || "生成完成后弹出系统保存窗口"}</small></button><button type="button" role="menuitem" onClick={() => downloadReportHtml(content, source)}><FileHtml size={16}/><span>HTML 网页</span><small>连续页面，不会分页截断</small></button><button type="button" role="menuitem" onClick={() => { setDownloadTarget(""); downloadReportMarkdown(content, source); }}><DownloadSimple size={16}/><span>MD 文档</span></button></div>}</div>
       <button type="button" className="report-action-button is-save" title="保存当前报告到项目报告库" onClick={() => saveReportContent(content, source)} disabled={saveState.status === "saving"}><FloppyDisk size={18}/><span>{saveState.status === "saving" ? "Saving…" : "Save"}</span></button>
     </div>;
   };
@@ -2062,7 +2047,7 @@ export function QualityAgentPage({ data, files = [], dateRange, module = "DQA", 
     {backendOpen && <section className="quality-agent-backend" aria-live="polite"><header><strong>后台过程</strong><small>{record.status === "running" ? "进行中" : record.status === "error" ? "已停止或失败" : record.status === "done" ? "已完成" : "尚未启动"}</small></header><pre ref={backendLogRef}>{(record.activityLog || []).length ? (record.activityLog || []).map((item) => formatBackendLogTime(item.at) + "  " + item.message).join("\n") : "还没有后台记录。启动分析后，这里会按时间写出每一步。"}{record.status === "running" && record.activityLog?.length ? "\n" + formatBackendLogTime(backendNow) + "  仍在等待上一步返回，已过去 " + backendWaitSeconds(record.activityLog, backendNow) + " 秒。这一步结束前不会有新的模型正文。" : ""}</pre></section>}
     {!formalReportLayout && record.actionLedger && <section className={`qmdp-card quality-agent-action-ledger ${record.actionLedger.status || "warning"}`}><header><button type="button" className="quality-agent-stage-toggle" onClick={() => setLedgerOpen((current) => !current)}><span>{record.actionLedger.status === "ready" ? <CheckCircle size={18} weight="fill"/> : <WarningCircle size={18} weight="fill"/>}</span><strong>改善行动台账</strong>{ledgerOpen ? <CaretDown size={16}/> : <CaretRight size={16}/>}</button><small>{record.actionLedger.message}</small></header>{ledgerOpen && <div className="quality-agent-ledger-body">{record.actionLedger.actions?.length ? <div className="agent-report-table-wrap"><table className="agent-report-table quality-agent-ledger-table"><thead><tr><th>行动</th><th>责任与期限</th><th>验收复查</th><th>状态</th></tr></thead><tbody>{record.actionLedger.actions.map((item) => <tr key={item.id}><td><b>{item.id} · {item.phase}</b><span>{item.action}</span><small>{item.conclusionId} · {item.evidenceIds?.join("、") || "证据待补"}</small></td><td><b>{item.owner}</b><span>{item.dueDate || "期限待定"}</span><small>{item.deliverable || "交付物待补"}</small></td><td><b>{actionMetricLabel(item)}</b><span>复查：{item.reviewDate || "待定"}</span><small>{item.statusReason}</small></td><td><em className={`quality-agent-action-status status-${item.status}`}>{ACTION_STATUS_LABELS[item.status] || item.status}</em>{item.status === "verification-ready" && <div className="quality-agent-close-action"><input value={closureEvidence[item.id] || ""} onChange={(event) => setClosureEvidence((current) => ({ ...current, [item.id]: event.target.value }))} placeholder="关闭证据位置/编号"/><button type="button" className="qmdp-primary-btn" onClick={() => closeAction(item.id)}>核验关闭</button></div>}{item.closureEvidence && <small>关闭证据：{item.closureEvidence}</small>}</td></tr>)}</tbody></table></div> : <p className="quality-agent-save-state error">{record.actionLedger.message}</p>}</div>}</section>}
     {saveState.message && !selectedReportName && <p className={`quality-agent-save-state ${saveState.status}`}>{saveState.message}</p>}
-    {selectedReportName && <section ref={savedReportRef} className={`qmdp-card quality-agent-saved-report ${activeReportLayoutClass}`}><header><div><strong>已保存报告 · {module}</strong><span>{selectedReport?.updatedAt ? new Date(selectedReport.updatedAt).toLocaleString("zh-CN") : ""}</span></div>{renderReportActions({ id: "saved", content: selectedReportContent, source: { ...(selectedReport || {}), module: selectedReport?.module || module }, reportRef: savedReportRef })}{currentVsSaved && <button className="qmdp-secondary-btn" onClick={() => setShowReportComparison((value) => !value)}>{showReportComparison ? "隐藏历史对比" : "对比当前版本"}</button>}{selectedReportState.status === "loading" && <small>读取中…</small>}</header>{selectedReportState.message && <p className={`quality-agent-save-state ${selectedReportState.status === "error" ? "error" : ""}`}>{selectedReportState.message}</p>}{showReportComparison && currentVsSaved && <div className="quality-agent-history-compare"><span>当前 {currentVsSaved.currentLines} 行</span><span>历史 {currentVsSaved.savedLines} 行</span><span className="added">新增 {currentVsSaved.added} 行</span><span className="removed">减少 {currentVsSaved.removed} 行</span></div>}{selectedReportContent && <div className={`quality-agent-report-content ${activeReportLayoutClass}`} dangerouslySetInnerHTML={{ __html: renderAgentMarkdown(selectedReportContent, { chartFirst: true, snapshot: module === "QMS" || module === "DOAM" ? displaySnapshot : selectedReportSnapshot, publisher: true, profileId: layoutSkillName, module, visualSpec: mergeModuleVisualSpec(selectedReport?.visualSpec || extractReportVisualSpec(selectedReportContent), module === "QMS" || module === "DOAM" ? displaySnapshot : selectedReportSnapshot, module, { ipqcAssembly: formalIpqcLayout, oqcShipment: formalOqcLayout, dqaRd: formalDqaLayout }), chartTheme, orgMappings }) }}/>}</section>}
+    {selectedReportName && <section ref={savedReportRef} className={`qmdp-card quality-agent-saved-report ${activeReportLayoutClass}`}><header><div><strong>已保存报告 · {module}</strong><span>{selectedReport?.updatedAt ? new Date(selectedReport.updatedAt).toLocaleString("zh-CN") : ""}</span></div>{renderReportActions({ id: "saved", content: selectedReportContent, source: { ...(selectedReport || {}), module: selectedReport?.module || module }, reportRef: savedReportRef })}{canSaveToServer && <label className="report-direct-send"><EmployeeSearchSelect employees={employees} value={sendTarget} onChange={setSendTarget} disabled={sendNotice.status === "running"} /><select className="report-format-select" aria-label="发送格式" value={sendFormat} onChange={(event) => setSendFormat(event.target.value)} disabled={sendNotice.status === "running"}><option value="pdf">PDF</option><option value="html">HTML 网页</option></select><button type="button" className="qmdp-primary-btn" onClick={sendSavedToSelected} disabled={sendNotice.status === "running" || !sendTarget || !selectedReportContent}><PaperPlaneTilt size={15}/>指定发送</button>{sendNotice.message && <strong className={`report-send-status ${sendNotice.status}`}>{sendNotice.message}</strong>}</label>}{selectedReportState.status === "loading" && <small>读取中…</small>}</header>{selectedReportState.message && <p className={`quality-agent-save-state ${selectedReportState.status === "error" ? "error" : ""}`}>{selectedReportState.message}</p>}{selectedReportContent && <div className={`quality-agent-report-content ${activeReportLayoutClass}`} dangerouslySetInnerHTML={{ __html: renderAgentMarkdown(selectedReportContent, { chartFirst: true, snapshot: module === "QMS" || module === "DOAM" ? displaySnapshot : selectedReportSnapshot, publisher: true, profileId: layoutSkillName, module, visualSpec: mergeModuleVisualSpec(selectedReport?.visualSpec || extractReportVisualSpec(selectedReportContent), module === "QMS" || module === "DOAM" ? displaySnapshot : selectedReportSnapshot, module, { ipqcAssembly: formalIpqcLayout, oqcShipment: formalOqcLayout, dqaRd: formalDqaLayout }), chartTheme, orgMappings }) }}/>}</section>}
     {showImportedReport && selectedImportedReport && <section ref={importedReportRef} className={`qmdp-card quality-agent-imported-report ${activeReportLayoutClass}`}><header><div><strong>外部导入报告 · {module}</strong><small>导入的报告独立保存，不覆盖在线分析和项目报告库</small></div>{renderReportActions({ id: "imported", content: selectedImportedReport.content, source: { ...selectedImportedReport, module }, reportRef: importedReportRef })}</header><div className="quality-agent-imported-report-toolbar"><span>{selectedImportedReport.fileName} · {new Date(selectedImportedReport.importedAt).toLocaleString("zh-CN")}</span><div><button className="qmdp-secondary-btn" onClick={() => setShowImportedReport(false)}><EyeSlash size={14}/>取消显示</button><button className="qmdp-danger-btn" onClick={() => removeImportedReport(selectedImportedReport.id)}><Trash size={14}/>删除导入报告</button></div></div><div className={`quality-agent-report-content ${activeReportLayoutClass}`} dangerouslySetInnerHTML={{ __html: renderAgentMarkdown(selectedImportedReport.content, { chartFirst: true, publisher: true, profileId: layoutSkillName, module, chartTheme, orgMappings }) }}/></section>}
     {error && <div className="quality-agent-error-banner"><WarningCircle size={18}/>{error}</div>}
   </div>;

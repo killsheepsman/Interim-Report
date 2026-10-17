@@ -53,6 +53,8 @@ export const sanitizeHumanReportContent = (content = "") => stripTrailingMachine
   .replace(MACHINE_BLOCKS, "")
   .replace(EVIDENCE_LINE, "")
   .replace(INLINE_EVIDENCE, "")
+  .replace(/<!--[\s\S]*?-->/g, "")
+  .replace(/&lt;!--[\s\S]*?--&gt;/g, "")
   .replace(/[ \t]+$/gm, "")
   .replace(/\n{3,}/g, "\n\n")
   .trim()

@@ -1,7 +1,8 @@
 import { memo, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
-import { ArrowsClockwise, Brain, DownloadSimple, FloppyDisk, PaperPlaneTilt, WarningCircle } from "@phosphor-icons/react";
-import { createExamSession, loadAgentReport, loadAgentReports, loadAgentSkills, saveRoleSkillLessons, loadConfirmedKnowledgeMatches, loadCurrentUser, loadDqaAgentRaw, loadExamResults, loadKnowledgeRecurrences, loadLocalAgentReport, loadLocalAgentReports, requestAiChat, previewWecomSend, saveAgentReportFile, saveLocalAgentReport, sendWecomReports } from "../dataStore.js";
+import { ArrowsClockwise, Brain, DownloadSimple, FilePdf, FloppyDisk, PaperPlaneTilt, WarningCircle } from "@phosphor-icons/react";
+import { createExamSession, loadAgentReport, loadAgentReports, loadAgentSkills, saveRoleSkillLessons, loadConfirmedKnowledgeMatches, loadCurrentUser, loadDqaAgentRaw, loadExamResults, loadKnowledgeRecurrences, loadLocalAgentReport, loadLocalAgentReports, requestAiChat, fetchReportFile, previewWecomSend, saveAgentReportFile, saveLocalAgentReport, sendWecomReports } from "../dataStore.js";
 import { buildDqaAgentRawMetrics, isIpqcExcludedBadType } from "../dataEngine.js";
+import { EmployeeSearchSelect } from "./EmployeeSearchSelect.jsx";
 import { canonicalProductDept } from "../orgMappingParse.js";
 import { loadQualityAgentRuns } from "./qualityAgent.js";
 import { renderAgentMarkdown, reportFileName } from "./QualityAgentPage.jsx";
@@ -1214,7 +1215,7 @@ const buildRoleRowIndex = (rows, fields) => {
 };
 const roleSourceSignature = (role, spec, baselineFiles, recipients, dateRange, sourceRevision = "", skillName = "", skillContent = "") => JSON.stringify({ version: REPORT_PROMPT_VERSION, role, modules: spec.modules, baseline: baselineFiles.map((item) => ({ fileName: item.fileName, updatedAt: item.updatedAt || item.updated_at || "", imported: Boolean(item.imported) })), recipients, period: dateRange, sourceRevision, skillName, skillContent });
 
-export function AgentRoleReportPage({ initialRole = "组装人员", data = {}, files = [], dateRange = {}, onEnsureAgentSources, canGenerate = false, canSaveToServer = false, creatorIp = "" }) {
+export function AgentRoleReportPage({ initialRole = "组装人员", data = {}, files = [], dateRange = {}, onEnsureAgentSources, canGenerate = false, canSaveToServer = false, creatorIp = "", employees = [] }) {
   const role = initialRole;
   const spec = roleSpecs[role] || roleSpecs.组装人员;
   const roleSkillId = roleSkillIds[role] || "quality-role-assembly-person";
@@ -1249,6 +1250,10 @@ export function AgentRoleReportPage({ initialRole = "组装人员", data = {}, f
   const [lastGeneratedModel, setLastGeneratedModel] = useState("");
   const [resolvedCreatorIp, setResolvedCreatorIp] = useState("");
   const [state, setState] = useState(() => getRoleReportJob(role)?.state || { status: "idle", message: "" });
+  const [sendTarget, setSendTarget] = useState("");
+  const [sendFormat, setSendFormat] = useState("pdf");
+  const [exporting, setExporting] = useState("");
+  const [sendNotice, setSendNotice] = useState({ status: "", message: "" });
   const [sourceState, setSourceState] = useState(() => getRoleReportJob(role)?.sourceState || { status: "idle", message: "" });
   const [roleSnapshotRegistry, setRoleSnapshotRegistry] = useState(null);
   const [dqaAgentRaw, setDqaAgentRaw] = useState(null);
@@ -2331,27 +2336,63 @@ export function AgentRoleReportPage({ initialRole = "组装人员", data = {}, f
       await refresh();
     } catch (error) { setState({ status: "error", message: `保存失败：${error.message}` }); }
   };
-  const dispatch = async () => {
-    if (!canSaveToServer) { setState({ status: "error", message: "只有主管理员可以从这里发送企业微信" }); return; }
-    if (!selectedContent || !recipient) { setState({ status: "error", message: "请先打开要发送的这一份报告" }); return; }
-    setState({ status: "running", message: `正在把这一份报告发给 ${recipient}…` });
+  const deliverReport = async (targetName) => {
+    const person = String(targetName || "").trim();
+    if (!canSaveToServer) { setSendNotice({ status: "error", message: "只有主管理员可以从这里发送企业微信" }); return; }
+    if (!selectedContent || !recipient) { setSendNotice({ status: "error", message: "请先打开要发送的这一份报告" }); return; }
+    if (!person) { setSendNotice({ status: "error", message: "请先选择收件人" }); return; }
+    const formatLabel = sendFormat === "html" ? "HTML 网页" : "PDF";
+    setSendNotice({ status: "running", message: `正在把这一份${formatLabel}发给 ${person}…` });
     try {
       const report = await saveAgentReportFile({ module: `角色报告-${role}`, role, recipient, skillName: roleSkill.name, layoutProfileId: layoutSkillName, period: displayedPeriod, model: selectedHistoryReport?.model || lastGeneratedModel, creatorIp: creatorIp || resolvedCreatorIp, content: selectedContent, visualSpec: selectedVisualSpec });
-      const preview = await previewWecomSend([{ fileName: report.fileName, recipient, role }]);
+      const preview = await previewWecomSend([{ fileName: report.fileName, recipient: person, role }]);
       const matched = (preview.rows || [])[0];
       if (!matched || matched.status !== "ok") {
-        setState({ status: "error", message: matched?.reason || `${recipient} 还不能发送。请先在员工信息填写群机器人 Webhook，并同步到发送服务` });
+        setSendNotice({ status: "error", message: matched?.reason || `${person} 还不能发送。请先在员工信息填写发送地址，并同步到发送服务` });
         return;
       }
-      const payload = await sendWecomReports([report.fileName]);
+      const payload = await sendWecomReports([report.fileName], person, { layoutProfileId: layoutSkillName, format: sendFormat });
       const failed = (payload.results || []).find((item) => !item.ok);
       setHistoryRevision((current) => current + 1);
       await refresh();
-      setState({ status: failed ? "error" : "done", message: failed ? `发送失败：${failed.reason || "未知原因"}` : `已把这一份报告发给 ${recipient}` });
-    } catch (error) { setState({ status: "error", message: `发送失败：${error.message}` }); }
+      setSendNotice({ status: failed ? "error" : "done", message: failed ? `发送失败：${failed.reason || "未知原因"}` : `发送成功：已把${formatLabel}发给 ${person}` });
+    } catch (error) { setSendNotice({ status: "error", message: `发送失败：${error.message}` }); }
   };
+  const dispatch = () => deliverReport(recipient);
+  const sendToSelected = () => deliverReport(sendTarget);
   const isBulkGenerating = state.status === "running" && Boolean(abortRef.current);
   const displayedPeriod = useMemo(() => selectedHistoryKey === "current" || !selectedHistoryReport?.period ? roleDateRange : { ...roleDateRange, ...selectedHistoryReport.period }, [selectedHistoryKey, selectedHistoryReport?.period, roleDateRange]);
+  const downloadFile = async (format) => {
+    if (!selectedContent || !recipient || exporting) return;
+    const htmlFile = format === "html";
+    setExporting(format);
+    setState({ status: "done", message: htmlFile ? "正在生成 HTML 网页…" : "正在生成 PDF…" });
+    try {
+      const savedName = String(selectedHistoryReport?.fileName || "");
+      const { blob, fileName } = await fetchReportFile({
+        content: selectedContent,
+        module: `角色报告-${role}`,
+        role,
+        recipient,
+        period: displayedPeriod,
+        visualSpec: selectedVisualSpec,
+        fileName: /^QMS-Agent报告-.+\.md$/i.test(savedName) ? savedName : "",
+        layoutProfileId: layoutSkillName,
+        format: htmlFile ? "html" : "pdf",
+      });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = fileName;
+      link.click();
+      window.setTimeout(() => URL.revokeObjectURL(url), 1200);
+      setState({ status: "done", message: (htmlFile ? "HTML 已下载：" : "PDF 已下载：") + fileName + (htmlFile ? "。用浏览器打开，页面固定宽度，连续显示。" : "。") });
+    } catch (error) {
+      setState({ status: "error", message: (htmlFile ? "HTML 下载失败：" : "PDF 下载失败：") + (error.message || error) });
+    } finally {
+      setExporting("");
+    }
+  };
   const renderedReportContent = isBulkGenerating ? "" : selectedContent;
   const rankingTitle = individualRoles.has(role) ? "个人问题排名" : "管理范围排名";
   const rankingMetric = individualRoles.has(role) ? "本人质量记录" : "管理范围异常";
@@ -2479,9 +2520,12 @@ export function AgentRoleReportPage({ initialRole = "组装人员", data = {}, f
       <div className="quality-agent-role-toolbar-actions">
         <div className="font-size-control" title="只放大报告里的图表文字"><span>图表字号</span>{ROLE_CHART_FONT_STEPS.map(([key, label]) => <button type="button" key={key} className={chartFontSize === key ? "active" : ""} onClick={() => setChartFontSize(key)}>{label}</button>)}</div>
         <div className="quality-agent-role-toolbar-buttons">
-          <button className="qmdp-secondary-btn" onClick={download}><DownloadSimple size={15}/>导出报告</button>
+          <button className="qmdp-secondary-btn" onClick={download}><DownloadSimple size={15}/>导出 MD</button>
+          <button className="qmdp-secondary-btn" onClick={() => downloadFile("html")} disabled={Boolean(exporting)}><DownloadSimple size={15}/>{exporting === "html" ? "正在生成网页…" : "导出 HTML"}</button>
+          <button className="qmdp-secondary-btn" onClick={() => downloadFile("pdf")} disabled={Boolean(exporting)}><FilePdf size={15}/>{exporting === "pdf" ? "正在生成 PDF…" : "导出 PDF"}</button>
           <button className="qmdp-primary-btn" onClick={save}><FloppyDisk size={15}/>保存报告</button>
-          {canSaveToServer && <button className="qmdp-primary-btn" onClick={dispatch}><PaperPlaneTilt size={15}/>发送给本人</button>}
+          {canSaveToServer && <label className="report-send-format">发送<select className="report-format-select" aria-label="发送格式" value={sendFormat} onChange={(event) => setSendFormat(event.target.value)} disabled={sendNotice.status === "running"}><option value="pdf">PDF</option><option value="html">HTML 网页</option></select></label>}
+          {canSaveToServer && <button className="qmdp-primary-btn" onClick={dispatch} disabled={sendNotice.status === "running"}><PaperPlaneTilt size={15}/>发送给本人</button>}{canSaveToServer && <label className="report-direct-send"><EmployeeSearchSelect employees={employees} value={sendTarget} onChange={setSendTarget} disabled={sendNotice.status === "running"} /><button type="button" className="qmdp-primary-btn" onClick={sendToSelected} disabled={sendNotice.status === "running" || !sendTarget}><PaperPlaneTilt size={15}/>指定发送</button>{sendNotice.message && <strong className={`report-send-status ${sendNotice.status}`}>{sendNotice.message}</strong>}</label>}
         </div>
       </div>
     </section>}

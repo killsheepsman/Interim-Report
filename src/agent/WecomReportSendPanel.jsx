@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { PaperPlaneTilt, ArrowsClockwise, FilePdf, FolderOpen } from "@phosphor-icons/react";
+import { PaperPlaneTilt, ArrowsClockwise, FileHtml, FilePdf, FolderOpen } from "@phosphor-icons/react";
 import { exportWecomPdfs, loadAgentReports, openWecomPdfFolder, previewWecomSend, sendWecomReports } from "../dataStore.js";
 
 const reportDisplayName = (fileName = "") => String(fileName || "").replace(/\.md$/i, "");
@@ -34,6 +34,7 @@ export function WecomReportSendPanel({ role = "", recipient = "", currentFileNam
   const [loading, setLoading] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [exportFolder, setExportFolder] = useState("");
+  const [fileFormat, setFileFormat] = useState("pdf");
   const [latestOnly, setLatestOnly] = useState(false);
 
   const refresh = async () => {
@@ -98,9 +99,10 @@ export function WecomReportSendPanel({ role = "", recipient = "", currentFileNam
     const names = ready.length ? ready : selected;
     if (!names.length) { setStatus({ type: "error", message: "没有可发送的报告" }); return; }
     setSending(true);
-    setStatus({ type: "", message: `正在发送 ${names.length} 份 PDF…` });
+    const formatLabel = fileFormat === "html" ? "HTML 网页" : "PDF";
+    setStatus({ type: "", message: `正在发送 ${names.length} 份${formatLabel}…` });
     try {
-      const payload = await sendWecomReports(names);
+      const payload = await sendWecomReports(names, "", { format: fileFormat });
       const failed = (payload.results || []).filter((row) => !row.ok);
       setStatus({ type: failed.length ? "warn" : "ok", message: `已发送 ${payload.sent || 0} 份，失败 ${payload.failed || 0} 份${failed[0]?.reason ? `。例如：${failed[0].reason}` : ""}` });
       setPreview({ configured: true, rows: payload.results || [] });
@@ -114,14 +116,15 @@ export function WecomReportSendPanel({ role = "", recipient = "", currentFileNam
   const exportPdfs = async () => {
     if (!selected.length) { setStatus({ type: "error", message: "请先勾选要导出的报告" }); return; }
     setExporting(true);
-    setStatus({ type: "", message: `正在生成 ${selected.length} 份 PDF，请稍候…` });
+    const formatLabel = fileFormat === "html" ? "HTML 网页" : "PDF";
+    setStatus({ type: "", message: `正在生成 ${selected.length} 份${formatLabel}，请稍候…` });
     try {
-      const payload = await exportWecomPdfs(selected);
+      const payload = await exportWecomPdfs(selected, { format: fileFormat });
       setExportFolder(payload.folder || "");
       const failed = (payload.results || []).filter((row) => !row.ok);
       setStatus({ type: failed.length ? "warn" : "ok", message: `已导出 ${payload.exported || 0} 份到文件夹${payload.folder ? `：${payload.folder}` : ""}${failed[0]?.reason ? `。失败例：${failed[0].reason}` : ""}。按人员分了子文件夹，可直接发给对应的人。` });
     } catch (error) {
-      setStatus({ type: "error", message: error.message || "导出 PDF 失败" });
+      setStatus({ type: "error", message: error.message || "导出失败" });
     } finally {
       setExporting(false);
     }
@@ -137,7 +140,8 @@ export function WecomReportSendPanel({ role = "", recipient = "", currentFileNam
       <div><strong>批量发送角色报告</strong><span>按姓名对上群机器人 Webhook 后发送，不需要企业微信管理员。报告发到该机器人所在的群，群里的人都能看见。</span></div>
       <div>
         <button className="qmdp-secondary-btn" onClick={refresh} disabled={loading}><ArrowsClockwise size={14}/>刷新报告</button>
-        <button className="qmdp-secondary-btn" onClick={exportPdfs} disabled={!selected.length || sending || exporting}><FilePdf size={14}/>{exporting ? "正在导出…" : `导出已选 PDF ${selected.length}`}</button>
+        <select className="report-format-select" aria-label="文件格式" value={fileFormat} onChange={(event) => setFileFormat(event.target.value)} disabled={sending || exporting}><option value="pdf">PDF</option><option value="html">HTML 网页</option></select>
+        <button className="qmdp-secondary-btn" onClick={exportPdfs} disabled={!selected.length || sending || exporting}>{fileFormat === "html" ? <FileHtml size={14}/> : <FilePdf size={14}/>}{exporting ? "正在导出…" : `导出已选${fileFormat === "html" ? "网页" : " PDF"} ${selected.length}`}</button>
         {exportFolder && <button className="qmdp-secondary-btn" onClick={openFolder}><FolderOpen size={14}/>打开导出文件夹</button>}
         <button className="qmdp-secondary-btn" onClick={runPreview} disabled={!selected.length || sending || exporting}>核对已选 {selected.length}</button>
         <button className="qmdp-primary-btn" onClick={send} disabled={!canSend || sending || !selected.length}><PaperPlaneTilt size={15}/>{sending ? "发送中…" : `发送已选 ${selected.length} 份`}</button>

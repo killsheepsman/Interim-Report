@@ -17,7 +17,7 @@ import { gzip } from "node:zlib";
 import { promisify } from "node:util";
 import { deletePostgresAgentReport, initPostgres, listPostgresAgentReports, readPostgresAgentReport, readPostgresState, writePostgresAgentReport, writePostgresState } from "./postgresStore.mjs";
 import { createKnowledgeService } from "./knowledgeService.mjs";
-import { exportOnePdf, loadWecomConfig, matchEmployee, publicEmployeeMatch, publicWecomConfig, saveWecomConfig, sendOneReport, sendWecomText } from "./wecomSend.mjs";
+import { buildReportHtml, buildReportPdf, exportOnePdf, loadWecomConfig, matchEmployee, publicEmployeeMatch, publicWecomConfig, saveWecomConfig, sendOneReport, sendWecomText } from "./wecomSend.mjs";
 import { orgMappingFilePath, readLinkedOrgMapping } from "./orgMappingSource.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -2077,7 +2077,7 @@ const handleAi = async (req, res) => {
     if (requestPayload === null) requestPayload = JSON.parse(await readBody(req) || "{}");
     return requestPayload;
   };
-  const preliminaryPayload = ["/api/ai/chat", "/api/ai/reports", "/api/ai/agent-dispatch", "/api/ai/agent-reports", "/api/ai/models", "/api/ai/test", "/api/ai/config", "/api/ai/wecom-config", "/api/ai/wecom-test", "/api/ai/wecom-preview", "/api/ai/wecom-send", "/api/ai/wecom-export-pdf", "/api/ai/wecom-open-folder"].includes(pathname)
+  const preliminaryPayload = ["/api/ai/chat", "/api/ai/reports", "/api/ai/agent-dispatch", "/api/ai/agent-reports", "/api/ai/models", "/api/ai/test", "/api/ai/config", "/api/ai/wecom-config", "/api/ai/wecom-test", "/api/ai/wecom-preview", "/api/ai/wecom-send", "/api/ai/wecom-export-pdf", "/api/ai/wecom-open-folder", "/api/ai/report-pdf"].includes(pathname)
     ? (req.method === "POST" ? await getPayload() : {}) : {};
   const isQualityAgentRequest = preliminaryPayload?.feature === "qualityAgent" || preliminaryPayload?.agentTitle === "质量分析 Agent" || preliminaryPayload?.agent === true;
   const operationFeatureKey = preliminaryPayload?.operation === "quality-agent-start"
@@ -2085,7 +2085,7 @@ const handleAi = async (req, res) => {
     : preliminaryPayload?.operation === "agent-role-report-generate"
       ? "agentRoleReportGenerate"
       : "";
-  const featureKey = operationFeatureKey || (legacyChatAlias ? "aiInterface" : (isQualityAgentRequest || pathname === "/api/ai/skills" || pathname === "/api/ai/agent-dispatch" || pathname.startsWith("/api/ai/agent-reports") || pathname.startsWith("/api/ai/wecom") ? "qualityAgent" : (["/api/ai/config", "/api/ai/models", "/api/ai/test"].includes(pathname) ? "aiInterface" : "aiAnalysis")));
+  const featureKey = operationFeatureKey || (legacyChatAlias ? "aiInterface" : (isQualityAgentRequest || pathname === "/api/ai/skills" || pathname === "/api/ai/agent-dispatch" || pathname.startsWith("/api/ai/agent-reports") || pathname === "/api/ai/report-pdf" || pathname.startsWith("/api/ai/wecom") ? "qualityAgent" : (["/api/ai/config", "/api/ai/models", "/api/ai/test"].includes(pathname) ? "aiInterface" : "aiAnalysis")));
   const featureRule = user.permissions?.features?.[featureKey] || {};
   const featureAllowed = user.isAdmin || (user.isDeputy ? featureRule.deputy !== false : featureRule.public === true);
   if (!featureAllowed) {
@@ -2182,6 +2182,38 @@ const handleAi = async (req, res) => {
     const hasWebhook = (config.employees || []).some((row) => String(row.webhook || "").includes("key="));
     return sendJson(res, 200, { configured: hasApp || hasWebhook, rows });
   }
+  if (pathname === "/api/ai/report-pdf" && req.method === "POST") {
+    const payload = await getPayload();
+    let content = String(payload.content || "");
+    const requestedLayout = String(payload.layoutProfileId || payload.layoutSkillName || "").trim();
+    let report = { module: String(payload.module || "质量分析"), role: String(payload.role || ""), recipient: String(payload.recipient || ""), period: payload.period && typeof payload.period === "object" ? payload.period : {}, visualSpec: payload.visualSpec && typeof payload.visualSpec === "object" ? payload.visualSpec : null, snapshot: payload.snapshot && typeof payload.snapshot === "object" ? payload.snapshot : null, fileName: String(payload.fileName || ""), layoutProfileId: requestedLayout, layoutSkillName: requestedLayout };
+    const savedName = report.fileName;
+    if (/^QMS-Agent报告-.+\.md$/i.test(savedName) && !savedName.includes("..")) {
+      try {
+        const savedContent = await fs.readFile(path.join(aiReportDir, savedName), "utf8");
+        const savedMeta = JSON.parse(await fs.readFile(path.join(aiReportDir, savedName + ".json"), "utf8"));
+        content = savedContent || content;
+        report = { ...report, ...savedMeta, fileName: savedName, visualSpec: report.visualSpec || savedMeta.visualSpec, snapshot: report.snapshot || savedMeta.snapshot || null, layoutProfileId: requestedLayout || savedMeta.layoutProfileId || savedMeta.layoutSkillName || "", layoutSkillName: requestedLayout || savedMeta.layoutSkillName || savedMeta.layoutProfileId || "" };
+      } catch {}
+    }
+    if (!String(content || "").trim()) return sendJson(res, 400, { error: "报告内容为空，无法生成文件" });
+    const format = String(payload.format || "pdf").toLowerCase() === "html" ? "html" : "pdf";
+    if (format === "html") {
+      const built = buildReportHtml({ report, content, screen: true });
+      const body = Buffer.from(built.html, "utf8");
+      res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "Content-Disposition": "attachment; filename*=UTF-8''" + encodeURIComponent(built.fileName), "X-Report-Filename": encodeURIComponent(built.fileName), "Cache-Control": "no-store", "Content-Length": body.length });
+      res.end(body);
+      return;
+    }
+    try {
+      const built = await buildReportPdf({ report, content, pdfDir: wecomPdfDir });
+      res.writeHead(200, { "Content-Type": "application/pdf", "Content-Disposition": "inline; filename*=UTF-8''" + encodeURIComponent(built.fileName), "X-Report-Filename": encodeURIComponent(built.fileName), "Cache-Control": "no-store", "Content-Length": built.buffer.length });
+      res.end(built.buffer);
+    } catch (error) {
+      return sendJson(res, 400, { error: error.message || "PDF 生成失败" });
+    }
+    return;
+  }
   if (pathname === "/api/ai/wecom-send" && req.method === "POST") {
     if (!user.isAdmin) return sendJson(res, 403, { error: "只有主管理员可以从服务器发送企业微信" });
     const payload = await getPayload();
@@ -2195,7 +2227,10 @@ const handleAi = async (req, res) => {
         const content = await fs.readFile(filePath, "utf8");
         let metadata = { fileName };
         try { metadata = { ...JSON.parse(await fs.readFile(filePath + ".json", "utf8")), fileName }; } catch {}
-        const result = await sendOneReport({ config, report: metadata, content, pdfDir: wecomPdfDir });
+        const requestedLayout = String(payload.layoutProfileId || payload.layoutSkillName || "").trim();
+        const pageSnapshot = payload.snapshot && typeof payload.snapshot === "object" ? payload.snapshot : null;
+        const styled = { ...(requestedLayout ? { ...metadata, layoutProfileId: requestedLayout, layoutSkillName: requestedLayout } : metadata), ...(pageSnapshot && fileNames.length === 1 ? { snapshot: pageSnapshot } : {}), ...(payload.visualSpec && typeof payload.visualSpec === "object" && fileNames.length === 1 ? { visualSpec: payload.visualSpec } : {}) };
+        const result = await sendOneReport({ config, report: styled, content, pdfDir: wecomPdfDir, deliverTo: String(payload.recipient || "").trim(), format: String(payload.format || "pdf").toLowerCase() === "html" ? "html" : "pdf" });
         results.push(result);
       } catch (error) {
         results.push({ ok: false, fileName, status: "error", reason: error.message || String(error) });
@@ -2209,6 +2244,7 @@ const handleAi = async (req, res) => {
     const payload = await getPayload();
     const fileNames = [...new Set((Array.isArray(payload.fileNames) ? payload.fileNames : []).map((item) => String(item || "")).filter((name) => /^QMS-Agent报告-.+\.md$/i.test(name) && !name.includes("..")))];
     if (!fileNames.length) return sendJson(res, 400, { error: "请先勾选要导出的报告" });
+    const format = String(payload.format || "pdf").toLowerCase() === "html" ? "html" : "pdf";
     const stamp = new Date().toISOString().replace(/[-:]/g, "").replace("T", "-").slice(0, 15);
     const batchDir = path.join(roleReportPdfDir, stamp);
     await fs.mkdir(batchDir, { recursive: true });
@@ -2219,7 +2255,7 @@ const handleAi = async (req, res) => {
         const content = await fs.readFile(filePath, "utf8");
         let metadata = { fileName };
         try { metadata = { ...JSON.parse(await fs.readFile(filePath + ".json", "utf8")), fileName }; } catch {}
-        results.push(await exportOnePdf({ report: metadata, content, batchDir }));
+        results.push(await exportOnePdf({ report: metadata, content, batchDir, format }));
       } catch (error) {
         results.push({ ok: false, fileName, reason: error.message || String(error) });
       }

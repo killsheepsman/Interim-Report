@@ -99,60 +99,56 @@ const HERO = "rgb(8,31,92)";
 const LAB = "rgba(8,31,92,.72)";
 const HEAT = ["rgb(51,78,172)", "rgb(112,150,209)", "rgb(186,214,235)"];
 const CAT4 = ["rgb(8,31,92)", "rgb(51,78,172)", "rgb(112,150,209)"];
-const text = (x, y, value, extra = "") => `<text x="${x}" y="${y}" ${extra}>${escapeHtml(value)}</text>`;
 const rowChart = (data) => {
-  const items = [{ name: "公司", value: data.lowRate }, ...data.divisions.map((item) => ({ name: item.name.replace("事业部", "").replace("&北美", ""), value: item.low }))].filter((item) => item.value != null);
-  const marks = items.map((item, index) => {
-    const y = 24 + index * 38;
-    const ticks = Math.max(1, Math.round(item.value / 5));
-    let bars = "";
-    for (let step = 0; step < ticks; step += 1) {
-      const x = 78 + step * 8 + 4;
-      bars += `<line x1="${x}" y1="${y + 8}" x2="${x}" y2="${y + 8 - (8 + (step % 3) * 2)}" stroke="${index === 1 ? HERO : DATA}" stroke-width="1.8"/>`;
-    }
-    return `${text(70, y + 3, item.name, 'font-size="7.5" font-weight="700" fill="' + LAB + '" text-anchor="end"')}<line x1="78" y1="${y + 8}" x2="174" y2="${y + 8}" stroke="${GRID}" stroke-width=".6"/>${bars}${text(78 + ticks * 8 + 8, y + 3, item.value + "%", 'font-size="9" font-weight="800" fill="' + TXT + '"')}`;
+  const items = [{ name: "公司", value: data.lowRate }, ...data.divisions.map((item) => ({ name: String(item.name || "").replace("事业部", "").replace("&北美", ""), value: item.low }))].filter((item) => item.value != null && item.value !== "");
+  const max = Math.max(1, ...items.map((item) => Number(item.value) || 0));
+  const rows = items.map((item, index) => {
+    const width = Math.max(6, Math.round((Number(item.value) / max) * 100));
+    return '<div class="ratebar"><span class="nm">' + escapeHtml(item.name) + '</span><span class="trk"><i class="' + (index === 0 ? "lead" : "") + '" style="width:' + width + '%"></i></span><b>' + escapeHtml(item.value) + '%</b></div>';
   }).join("");
-  return `<svg viewBox="0 0 260 190" role="img" aria-label="低分率">${marks}</svg>`;
+  return '<div class="ratebars" role="img" aria-label="低分率">' + rows + "</div>";
 };
 
 const sheetCss = `
-@import url("https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Oswald:wght@500;600;700&family=Noto+Sans+SC:wght@400;500;700;900&display=swap");
-.porcelain-wrap{background:rgb(247,242,235);color:rgb(8,31,92);font-family:Inter,"Noto Sans SC","Microsoft YaHei",sans-serif;padding:28px 12px 40px}
+
+.porcelain-wrap{background:rgb(247,242,235);color:rgb(8,31,92);font-family:"Microsoft YaHei","PingFang SC",sans-serif;padding:28px 12px 40px}
 .porcelain-wrap .sheet{width:1080px;max-width:100%;margin:0 auto;display:grid;grid-template-columns:110px minmax(0,1fr)}
 .porcelain-wrap .spine{position:relative;border-right:1px solid rgb(8,31,92);min-height:100%}
-.porcelain-wrap{overflow:visible}.porcelain-wrap .sheet{overflow:visible}.porcelain-wrap .spine{overflow:visible}.porcelain-wrap .spine .t{position:absolute;top:0;left:14px;writing-mode:vertical-rl;font-family:"Noto Sans SC","Microsoft YaHei",sans-serif;font-weight:900;font-size:46px;line-height:1.1;letter-spacing:.06em;white-space:nowrap}.porcelain-wrap .spine .t.is-personal{left:2px;width:96px;height:auto;white-space:normal;word-break:keep-all;line-height:1.15;letter-spacing:0;overflow:visible}.porcelain-wrap .tophead.personal-title{display:block}.porcelain-wrap .tophead.personal-title .site{font-family:"Noto Sans SC","Microsoft YaHei",sans-serif;font-size:22px;font-weight:800;letter-spacing:0;line-height:1.4;white-space:normal}
-.porcelain-wrap .spine .b{position:absolute;bottom:0;left:48px;writing-mode:vertical-rl;font-size:9px;font-weight:700;letter-spacing:.26em;color:rgba(8,31,92,.6)}
+.porcelain-wrap{overflow:visible}.porcelain-wrap .sheet{overflow:visible}.porcelain-wrap .spine{overflow:visible}.porcelain-wrap .spine .t{position:absolute;top:0;left:14px;writing-mode:vertical-rl;font-family:"Microsoft YaHei","PingFang SC",sans-serif;font-weight:700;font-size:28px;line-height:1.1;letter-spacing:.06em;white-space:nowrap}.porcelain-wrap .spine .t.is-personal{left:2px;width:96px;height:auto;white-space:normal;word-break:keep-all;line-height:1.15;letter-spacing:0;overflow:visible}.porcelain-wrap .tophead.personal-title{display:block}.porcelain-wrap .tophead.personal-title .site{font-family:"Microsoft YaHei","PingFang SC",sans-serif;font-size:28px;font-weight:700;letter-spacing:0;line-height:1.4;white-space:normal}
+.porcelain-wrap .spine .b{position:absolute;bottom:0;left:48px;writing-mode:vertical-rl;font-size:18px;font-weight:700;letter-spacing:.26em;color:rgba(8,31,92,.6)}
 .porcelain-wrap .content{padding-left:40px;min-width:0}
 .porcelain-wrap .tophead{display:flex;gap:18px;align-items:baseline;border-bottom:1px solid rgb(8,31,92);padding-bottom:10px;margin-bottom:40px}
-.porcelain-wrap .tophead .site{font-family:Oswald,"Noto Sans SC",sans-serif;font-weight:600;font-size:13px;letter-spacing:.08em}
-.porcelain-wrap .tophead .tag,.porcelain-wrap .srcline,.porcelain-wrap .foot{color:rgba(8,31,92,.45);font-size:9px;font-weight:600;letter-spacing:.1em}
+.porcelain-wrap .tophead .site{font-family:"Microsoft YaHei","PingFang SC",sans-serif;font-weight:600;font-size:18px;letter-spacing:.08em}
+.porcelain-wrap .tophead .tag,.porcelain-wrap .srcline,.porcelain-wrap .foot{color:rgba(8,31,92,.45);font-size:18px;font-weight:600;letter-spacing:.1em}
 .porcelain-wrap .secthead{display:flex;align-items:baseline;gap:14px;margin:44px 0 8px}
 .porcelain-wrap .secthead.first{margin-top:0}
 .porcelain-wrap .secthead .line{flex:1;border-top:1px solid rgb(8,31,92)}
-.porcelain-wrap .secthead .t{font-weight:700;font-size:15px;letter-spacing:.2em}
-.porcelain-wrap .claim{font-size:13px;font-weight:700;margin:4px 0 2px}
-.porcelain-wrap svg{width:auto;max-width:100%;height:auto;max-height:220px;display:block;margin:0 auto;overflow:visible}
-.porcelain-wrap .stats svg{max-height:none;width:100%}
-.porcelain-wrap svg text{font-family:Inter,"Noto Sans SC","Microsoft YaHei",sans-serif}
+.porcelain-wrap .secthead .t{font-weight:700;font-size:22px;letter-spacing:.08em}
+.porcelain-wrap .claim{font-size:18px;font-weight:700;margin:4px 0 2px}
+.porcelain-wrap svg{max-width:100%;height:auto;display:block;margin:0 auto;overflow:visible}
+.porcelain-wrap svg text.txt{font-size:18px !important;font-weight:400 !important}.porcelain-wrap svg text.tick{font-size:18px !important;font-weight:700 !important}.porcelain-wrap svg text.num{font-size:22px !important;font-weight:700 !important}.porcelain-wrap svg text.hero{font-size:36px !important;font-weight:700 !important}
+.porcelain-wrap .trend-caption{font-size:18px;font-weight:700;margin:16px 0 4px}
+.porcelain-wrap .stats svg{max-width:100%;height:auto}
+.porcelain-wrap svg text{font-family:"Microsoft YaHei","PingFang SC",sans-serif}
 .porcelain-wrap svg{cursor:pointer}
 @keyframes porcelain-draw{to{stroke-dashoffset:0}}
 @keyframes porcelain-pop{from{opacity:0}to{opacity:1}}
 .porcelain-wrap svg.is-play path.draw{stroke-dasharray:1;stroke-dashoffset:1;animation:porcelain-draw .9s ease forwards}
 .porcelain-wrap svg.is-play .dot{animation:porcelain-pop .4s ease both}
-.porcelain-tip{position:fixed;z-index:40;max-width:280px;padding:6px 8px;background:rgb(247,242,235);color:rgb(8,31,92);border:1px solid rgb(8,31,92);font:700 14px/1.4 Inter,"Noto Sans SC","Microsoft YaHei",sans-serif;pointer-events:none}
+.porcelain-tip{position:fixed;z-index:40;max-width:280px;padding:6px 8px;background:rgb(247,242,235);color:rgb(8,31,92);border:1px solid rgb(8,31,92);font:700 18px/1.4 "Microsoft YaHei","PingFang SC",sans-serif;pointer-events:none}
 .porcelain-wrap .duo{display:grid;grid-template-columns:1.25fr 1fr;gap:44px}
 .porcelain-wrap .chart-grid{display:grid;grid-template-columns:1fr 1fr;gap:22px 36px;align-items:start}
 .porcelain-wrap .chart-row{display:grid;gap:28px 32px;align-items:start;margin-top:36px}
 .porcelain-wrap .chart-row.c2{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}
 .porcelain-wrap .chart-row.c3{grid-template-columns:minmax(0,1fr) minmax(0,1fr) minmax(0,1fr)}
-.porcelain-wrap .chart-row .claim{font-size:15px;font-weight:700}
+.porcelain-wrap .chart-row .claim{font-size:22px;font-weight:700}
 .porcelain-wrap .sheet-action{margin-top:8px}
 .porcelain-wrap .chart-grid .claim{min-height:1.4em}
-.porcelain-wrap .fig.solo svg{width:100%;max-width:100%;height:auto;max-height:240px;margin:0}
-.porcelain-wrap .fig.hero svg{width:100%;max-width:100%;height:auto;max-height:520px;margin:0}
-.porcelain-wrap .stats{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));margin-top:14px;border-top:1px solid rgb(8,31,92);align-items:start}
-.porcelain-wrap .band-chart h4{font-size:12px;letter-spacing:.12em;margin-bottom:8px}
-.porcelain-wrap .band-chart svg{max-height:168px;width:100%}
+.porcelain-wrap .fig.solo svg,.porcelain-wrap .fig.hero svg{max-width:100%;height:auto;margin:0 auto}
+.porcelain-wrap .stats{display:grid;grid-template-columns:minmax(0,.85fr) minmax(0,.9fr) minmax(220px,1.15fr) minmax(280px,1.35fr);margin-top:14px;border-top:1px solid rgb(8,31,92);align-items:start}
+ .porcelain-wrap .band-chart{grid-column:1 / -1}
+.porcelain-wrap .band-chart h4{font-size:18px;letter-spacing:.12em;margin-bottom:8px}
+.porcelain-wrap .band-chart svg{max-width:100%;height:auto}
 .porcelain-wrap .stats.c1{grid-template-columns:minmax(0,1fr)}
 .porcelain-wrap .stats.c2{grid-template-columns:minmax(0,1.1fr) minmax(0,1fr)}
 .porcelain-wrap .stats.c3{grid-template-columns:minmax(0,1fr) minmax(0,1fr) minmax(220px,0.9fr)}
@@ -160,18 +156,19 @@ const sheetCss = `
 .porcelain-wrap .stats>div:first-child{padding-left:0}
 .porcelain-wrap .stats>div:last-child{border-right:0;padding-right:0}
 .porcelain-wrap .kpi{margin-bottom:18px}
-.porcelain-wrap .kpi .v{font-family:Oswald,"Noto Sans SC",sans-serif;font-weight:700;font-size:38px;line-height:1}
-.porcelain-wrap .kpi .r{font-size:10px;font-weight:700;color:rgba(8,31,92,.6);margin-top:4px}
-.porcelain-wrap .kpi .l{font-size:9.5px;font-weight:600;letter-spacing:.12em;color:rgba(8,31,92,.45);margin-top:3px}
-.porcelain-wrap h4{font-size:12.5px;letter-spacing:.14em;margin-bottom:10px}
+.porcelain-wrap .kpi .v{font-family:"Microsoft YaHei","PingFang SC",sans-serif;font-weight:700;font-size:22px;line-height:1}.porcelain-wrap .stats.c1 .kpi .v{font-size:36px}
+.porcelain-wrap .kpi .r{font-size:18px;font-weight:700;color:rgba(8,31,92,.6);margin-top:4px}
+.porcelain-wrap .kpi .l{font-size:18px;font-weight:600;letter-spacing:.12em;color:rgba(8,31,92,.45);margin-top:3px}
+.porcelain-wrap h4{font-size:18px;letter-spacing:.14em;margin-bottom:10px}
+.porcelain-wrap .ratebars{display:grid;gap:14px}.porcelain-wrap .ratebar{display:grid;grid-template-columns:4.6em minmax(64px,1fr) auto;gap:10px;align-items:center}.porcelain-wrap .ratebar .nm{font-size:18px;font-weight:700;line-height:1.2;white-space:nowrap}.porcelain-wrap .ratebar b{font-size:22px;font-weight:700;line-height:1}.porcelain-wrap .ratebar .trk{display:block;height:12px;background:rgba(8,31,92,.08)}.porcelain-wrap .ratebar .trk i{display:block;height:12px;background:rgb(51,78,172)}.porcelain-wrap .ratebar .trk i.lead{background:rgb(8,31,92)}
 .porcelain-wrap .ranked .row{display:flex;gap:12px;align-items:baseline;padding:8px 0;border-bottom:1px dotted rgba(8,31,92,.32)}
-.porcelain-wrap .ranked .n{font-family:Oswald,"Noto Sans SC",sans-serif;font-weight:700;font-size:24px;min-width:62px}
-.porcelain-wrap .ranked .d{font-size:10px;line-height:1.7;color:rgba(8,31,92,.6)}
+.porcelain-wrap .ranked .n{font-family:"Microsoft YaHei","PingFang SC",sans-serif;font-weight:700;font-size:18px;min-width:0;flex:none}.porcelain-wrap .ranked .n.num{font-size:22px}
+.porcelain-wrap .ranked .d{font-size:18px;line-height:1.45;color:rgba(8,31,92,.6);word-break:keep-all}
 .porcelain-wrap .ranked .d b{color:rgb(8,31,92)}
 .porcelain-wrap .watch{width:100%;border-collapse:collapse;margin-top:8px}
-.porcelain-wrap .watch th,.porcelain-wrap .watch td{text-align:left;vertical-align:top;font-size:11px;line-height:1.65;padding:10px 12px 10px 0;border-bottom:1px dotted rgba(8,31,92,.32)}
-.porcelain-wrap .watch th{font-size:9px;letter-spacing:.14em;color:rgba(8,31,92,.45);border-bottom:1px solid rgb(8,31,92)}
-.porcelain-wrap .prose p,.porcelain-wrap .prose li{font-size:13px;line-height:1.75;margin:6px 0}
+.porcelain-wrap .watch th,.porcelain-wrap .watch td{text-align:left;vertical-align:top;font-size:18px;font-weight:400;line-height:1.65;padding:10px 12px 10px 0;border-bottom:1px dotted rgba(8,31,92,.32)}.porcelain-wrap .watch td.num{font-weight:700;text-align:right}
+.porcelain-wrap .watch th{font-size:18px;letter-spacing:.14em;color:rgba(8,31,92,.45);border-bottom:1px solid rgb(8,31,92)}
+.porcelain-wrap .prose p,.porcelain-wrap .prose li{font-size:18px;line-height:1.75;margin:6px 0}
 .porcelain-wrap .foot{margin-top:48px;border-top:1px solid rgb(8,31,92);padding-top:12px;display:flex;justify-content:space-between;gap:16px;color:rgba(8,31,92,.6)}
 @media(max-width:900px){.porcelain-wrap .sheet{grid-template-columns:1fr}.porcelain-wrap .spine{display:none}.porcelain-wrap .content{padding-left:0}.porcelain-wrap .duo,.porcelain-wrap .stats,.porcelain-wrap .chart-row.c2,.porcelain-wrap .chart-row.c3{grid-template-columns:1fr}}
 `;
@@ -181,8 +178,8 @@ const oqcPoster = (data, module) => {
   const worst = [...data.divisions].sort((a, b) => a.current - b.current)[0];
   const claim = worst?.previous != null ? `落差在${worst.name}：5分率由上月${worst.previous}%降到本月${worst.current}%` : `本月5分率${data.fiveRate}%`;
   const watch = data.actions.length ? `<table class="watch"><thead><tr><th>对象</th><th>指标</th><th>完成时间</th><th>关闭条件</th></tr></thead><tbody>${data.actions.map((row) => `<tr>${row.map((cell) => `<td>${escapeHtml(cell)}</td>`).join("")}</tr>`).join("")}</tbody></table>` : "";
-  const concerns = data.actions.slice(0, 3).map((row) => `<div class="row"><div class="n">${escapeHtml((row[1] || "").match(/[\d.]+%/)?.[0] || "关注")}</div><div class="d"><b>${escapeHtml(row[0])}</b> —— ${escapeHtml(row[1] || "")}</div></div>`).join("");
-  return `<div class="porcelain-wrap report-publisher"><style>${sheetCss}</style><div class="sheet"><div class="spine"><div class="t">出货评分</div><div class="b">OQC · 2026</div></div><div class="content"><div class="tophead"><span class="site">QMS</span><span class="sep">|</span><span class="tag">${escapeHtml(data.period)} · 累计从当年1月起到截止日期 · 没有上月数就不写升降</span></div><div class="secthead first"><span class="line"></span><span class="t">产品部五分率</span></div><div class="claim">${escapeHtml(claim)}</div><div class="fig">${lineChart(data.divisions)}</div><div class="secthead"><span class="line"></span><span class="t">出货与低分</span></div><div class="duo"><div>${heatChart(data.divisions)}</div><div>${donutChart(data.divisions, data.shipped)}</div></div><div class="secthead"><span class="line"></span><span class="t">值得记住的数字</span></div><div class="stats c4"><div>${kpi(String(data.shipped), "5分 " + (data.fiveCount ?? "—") + "台", "本月出货")}${kpi((data.fiveRate ?? "—") + "%", "累计 " + (data.ytdFive ?? "—") + "%", "本月五分率")}${kpi(data.average ?? "—", "累计 " + (data.ytdAverage ?? "—"), "本月平均分")}</div><div>${kpi((data.lowRate ?? "—") + "%", "低分 " + (data.lowCount ?? "—") + "台 · 累计 " + (data.ytdLow ?? "—") + "%", "本月低分率")}${kpi(String(data.ytdShipped ?? "—"), "1月至截止日期", "累计出货")}</div><div><h4>低分率</h4>${rowChart(data)}</div><div class="ranked"><h4>本月要盯住</h4>${concerns || "<div class='row'><div class='d'>本月没有需要点名的对象</div></div>"}</div></div>${watch ? `<div class="secthead"><span class="line"></span><span class="t">本月要关注的事</span></div>${watch}` : ""}<div class="foot"><span>${escapeHtml(module)} · 青瓷经营网页风格</span><span>${escapeHtml([data.fixture ? "治具" + data.fixture : "", data.auto ? "自动化" + data.auto : ""].filter(Boolean).join(" · "))}</span></div></div></div></div>`;
+  const concerns = data.actions.slice(0, 3).map((row) => { const badge = (row[1] || "").match(/[\d.]+%/)?.[0] || "关注"; const badgeClass = /%$/.test(badge) ? "n num" : "n"; return '<div class="row"><div class="' + badgeClass + '">' + escapeHtml(badge) + '</div><div class="d"><b>' + escapeHtml(row[0]) + '</b> —— ' + escapeHtml(row[1] || "") + "</div></div>"; }).join("");
+  return `<div class="porcelain-wrap report-publisher"><style>${sheetCss}</style><div class="sheet"><div class="spine"><div class="t">出货评分</div><div class="b">OQC · 2026</div></div><div class="content"><div class="tophead"><span class="site">QMS</span><span class="sep">|</span><span class="tag">${escapeHtml(data.period)} · 累计从当年1月起到截止日期 · 没有上月数就不写升降</span></div><div class="secthead first"><span class="line"></span><span class="t">产品部五分率</span></div><div class="claim">${escapeHtml(claim)}</div><div class="fig">${lineChart(data.divisions)}</div><div class="secthead"><span class="line"></span><span class="t">出货与低分</span></div><div class="duo"><div>${heatChart(data.divisions)}</div><div>${donutChart(data.divisions, data.shipped)}</div></div><div class="secthead"><span class="line"></span><span class="t">值得记住的数字</span></div><div class="stats c4"><div>${kpi(String(data.shipped), "5分 " + (data.fiveCount ?? "—") + "台", "本月出货")}${kpi((data.fiveRate ?? "—") + "%", "累计 " + (data.ytdFive ?? "—") + "%", "本月五分率")}${kpi(data.average ?? "—", "累计 " + (data.ytdAverage ?? "—"), "本月平均分")}</div><div>${kpi((data.lowRate ?? "—") + "%", "低分 " + (data.lowCount ?? "—") + "台 · 累计 " + (data.ytdLow ?? "—") + "%", "本月低分率")}${kpi(String(data.ytdShipped ?? "—"), "1月至截止日期", "累计出货")}</div><div><h4>低分率</h4>${rowChart(data)}</div><div class="ranked"><h4>本月要盯住</h4>${concerns || "<div class='row'><div class='d'>本月没有需要点名的对象</div></div>"}</div></div>${watch ? `<div class="secthead"><span class="line"></span><span class="t">本月要关注的事</span></div>${watch}` : ""}<div class="foot"><span>${escapeHtml(module)}</span><span>${escapeHtml([data.fixture ? "治具" + data.fixture : "", data.auto ? "自动化" + data.auto : ""].filter(Boolean).join(" · "))}</span></div></div></div></div>`;
 };
 
 export const renderPorcelainSheet = (content, { module = "质量分析", snapshot = null, visualSpec = null } = {}) => {
