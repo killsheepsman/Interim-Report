@@ -11,13 +11,11 @@ import { calloutToneClass, headingClass, isLayoutMarker, isMachineMetadataLine, 
 import { DEFAULT_REPORT_PRESENTATION_PROFILE, getReportPresentationProfile, normalizeReportPresentationProfile, presentationOwnsCharts, REPORT_PRESENTATION_PROFILES, reportPresentationClass } from "./reportPresentationProfiles.js";
 import { extractReportVisualSpec, sanitizeHumanReportContent } from "../reportSanitizer.js";
 import { loadQualityAgentRoleSnapshotRegistry } from "../dataStore.js";
-import { issueCategoriesFromRoleSnapshot, keepActiveWeekChartRows, normalizeRoleSnapshotRegistry, periodTrendFromRoleSnapshot, pickRoleSnapshot, pickRoleSnapshotEntry, roleSkillMatchesRole, isRoleChartSkill, chartThemeFromSkill, DEFAULT_ROLE_CHART_SKILL_ID, DEFAULT_ACCEPTANCE_SKILL_ID, isAcceptanceSkill, teamMemberSpecForRole, teamMemberStats, filterTeamMembersByMapping, pickNonEmptyTrend, resolveSupplyMappings, applyMappedTeamMembersToVisualSpec, filterTeamTableInMarkdown, applySelectedWindowToTrend, overlaySelectedWindowOnSnapshot, fillSnapshotWindowDetails, overlayWindowDetailsOntoEvidence, periodTrendFromRows, snapshotMatchesPeriod, yearToEndPeriodOf, rankPeopleInSelectedWindow, siteStatsFromRows, captainTopFromRows, supplyChainTeamFromRows } from "./roleSnapshotRegistry.js";
+import { issueCategoriesFromRoleSnapshot, keepActiveWeekChartRows, normalizeRoleSnapshotRegistry, periodTrendFromRoleSnapshot, pickRoleSnapshot, pickRoleSnapshotEntry, roleSkillMatchesRole, isRoleChartSkill, chartThemeFromSkill, DEFAULT_ROLE_CHART_SKILL_ID, teamMemberSpecForRole, teamMemberStats, filterTeamMembersByMapping, pickNonEmptyTrend, resolveSupplyMappings, applyMappedTeamMembersToVisualSpec, filterTeamTableInMarkdown, applySelectedWindowToTrend, overlaySelectedWindowOnSnapshot, fillSnapshotWindowDetails, overlayWindowDetailsOntoEvidence, periodTrendFromRows, snapshotMatchesPeriod, yearToEndPeriodOf, rankPeopleInSelectedWindow, siteStatsFromRows, captainTopFromRows, supplyChainTeamFromRows } from "./roleSnapshotRegistry.js";
 import { addIsoDays, enforceRdEngineerReportFacts, normalizeMonthlyActionHeadings } from "./rdEngineerReportContract.js";
 import { groupConfirmedKnowledgeByRecipient, knowledgePersonKey } from "./roleKnowledgeEvidence.js";
-import elonMuskPerspectiveSkill from "./standards/elon-musk-perspective.md?raw";
-import qualityConsultantSkill from "./standards/quality-consultant.md?raw";
-import zengShiqiangPerspectiveSkill from "./standards/zeng-shiqiang-perspective.md?raw";
-import { TIMEOUT_FALLBACK_NOTE, actionTableRowCount, aiParticipationModel, buildDeterministicAnalysisMarkdown, buildFixedDataRoleReport, buildPmAiMessages, buildRoleAnalysisBrief, defaultAnalysisMarkdown, directorDeptLabel, extractAnalysisMarkdown, hasTimeoutFallbackMarker, needsRoleModelAnalysis, buildElonAcceptanceMessages, parseElonAcceptance, pmAcceptanceGaps, pmLessonsFromGaps, repairPmAiAnalysis, selectPreviousRoleReport, pmParetoReasons, previousReportExcerpt, repairRoleAnalysis, stitchRoleReportParts } from "./roleFixedEvidenceReport.js";
+import roleReportBodySkill from "../../skills/quality-role-report-body/SKILL.md?raw";
+import { TIMEOUT_FALLBACK_NOTE, actionTableRowCount, aiParticipationModel, buildDeterministicAnalysisMarkdown, buildFixedDataRoleReport, buildPmAiMessages, buildRoleAnalysisBrief, defaultAnalysisMarkdown, directorDeptLabel, extractAnalysisMarkdown, hasTimeoutFallbackMarker, needsRoleModelAnalysis, pmAcceptanceGaps, pmLessonsFromGaps, repairPmAiAnalysis, selectPreviousRoleReport, pmParetoReasons, previousReportExcerpt, repairRoleAnalysis, stitchRoleReportParts } from "./roleFixedEvidenceReport.js";
 import { emptyRoleReportProgress, getRoleReportJob, isRoleReportJobRunning, patchRoleReportJob, readRoleReportPeriod, subscribeRoleReportJob, writeRoleReportPeriod } from "./roleReportJobRuntime.js";
 import { describeAiError } from "./aiErrorMessage.js";
 import { referenceSecondsFor, writeReportDuration } from "./reportDuration.js";
@@ -27,7 +25,6 @@ const ROLE_CACHE_KEY = "qms-agent-role-report-cache-v2";
 const ROLE_LAYOUT_STORAGE_KEY = "qms-agent-role-report-layout-v1";
 const ROLE_SKILL_STORAGE_KEY = "qms-agent-role-skill-v1";
 const ROLE_CHART_SKILL_STORAGE_KEY = "qms-agent-role-chart-skill-v1";
-const ROLE_ACCEPTANCE_SKILL_STORAGE_KEY = "qms-agent-acceptance-skill-v1";
 const ROLE_CHART_FONT_KEY = "qms-role-chart-font-size-v1";
 const ROLE_RECIPIENT_STORAGE_KEY = "qms-role-report-display-recipient-v1";
 const ROLE_HISTORY_CHOICE_KEY = "qms-role-report-history-choice-v1";
@@ -180,12 +177,9 @@ const writeRoleChartSkillPreference = (roleName, skillName) => {
   if (!roleName || !skillName) return;
   localStorage.setItem(ROLE_CHART_SKILL_STORAGE_KEY, JSON.stringify({ ...readRoleChartSkillPreference(), [roleName]: skillName }));
 };
-const readAcceptanceSkillPreference = () => {
-  try { return String(localStorage.getItem(ROLE_ACCEPTANCE_SKILL_STORAGE_KEY) || ""); } catch { return ""; }
-};
-const writeAcceptanceSkillPreference = (skillName) => {
-  if (!skillName) return;
-  localStorage.setItem(ROLE_ACCEPTANCE_SKILL_STORAGE_KEY, skillName);
+const roleReportBodyPrefix = () => {
+  const body = String(roleReportBodySkill || "").replace(/^---[\s\S]*?---\s*/, "").trim();
+  return body ? body + "\n\n" : "";
 };
 const fallbackRoleSkill = (role) => `角色：${role}\n本报告由质量部出具。严格区分本人问题与管理范围汇总。所有数字必须来自固定统计或明细证据；证据不足写“待核实”。用认定和要求的口吻写结果、过程、根因、责任、行动、验证和关闭条件。`;
 const retryableRoleAgentError = (error) => /(?:429|502|503|504|520|521|522|523|524)|too many requests|rate limit|网关超时|gateway timeout|web server is returning an unknown error|timed? ?out|service unavailable|bad gateway|network|failed to fetch/i.test(`${error?.message || ""} ${error || ""}`);
@@ -1235,8 +1229,6 @@ export function AgentRoleReportPage({ initialRole = "组装人员", data = {}, f
   const [roleSkills, setRoleSkills] = useState([]);
   const [chartSkills, setChartSkills] = useState([]);
   const [chartSkill, setChartSkill] = useState(() => ({ id: DEFAULT_ROLE_CHART_SKILL_ID, name: DEFAULT_ROLE_CHART_SKILL_ID }));
-  const [acceptanceSkills, setAcceptanceSkills] = useState(() => [{ id: DEFAULT_ACCEPTANCE_SKILL_ID, name: DEFAULT_ACCEPTANCE_SKILL_ID, content: elonMuskPerspectiveSkill }]);
-  const [acceptanceSkill, setAcceptanceSkill] = useState(() => ({ id: DEFAULT_ACCEPTANCE_SKILL_ID, name: DEFAULT_ACCEPTANCE_SKILL_ID, content: elonMuskPerspectiveSkill }));
   const [layoutSkills] = useState(REPORT_PRESENTATION_PROFILES);
   const [layoutSkillName, setLayoutSkillName] = useState(() => normalizeReportPresentationProfile(readRoleLayoutChoice(role) || initialRoleLayout()));
   const [recipient, setRecipient] = useState(() => readRoleRecipient(role));
@@ -1522,23 +1514,7 @@ export function AgentRoleReportPage({ initialRole = "组装人员", data = {}, f
         || roleOnly.find((item) => item.id === roleSkillId || item.name === roleSkillId)
         || roleOnly[0];
       if (selected) setRoleSkill({ name: selected.name || selected.id || roleSkillId, content: selected.content || fallbackRoleSkill(role) });
-      const bundledAcceptance = [
-        { id: "elon-musk-perspective", name: "elon-musk-perspective", content: elonMuskPerspectiveSkill },
-        { id: "quality-consultant", name: "quality-consultant", content: qualityConsultantSkill },
-        { id: "zeng-shiqiang-perspective", name: "zeng-shiqiang-perspective", content: zengShiqiangPerspectiveSkill },
-      ];
-      const acceptance = skills.filter((item) => isAcceptanceSkill(item));
-      const acceptanceList = [
-        ...bundledAcceptance.map((item) => acceptance.find((skill) => (skill.id || skill.name) === item.id) || item),
-        ...acceptance.filter((skill) => !bundledAcceptance.some((item) => item.id === (skill.id || skill.name))),
-      ];
-      setAcceptanceSkills(acceptanceList);
-      const preferredAcceptance = readAcceptanceSkillPreference();
-      const selectedAcceptance = acceptanceList.find((item) => (item.id || item.name) === preferredAcceptance || (item.name || item.id) === preferredAcceptance)
-        || acceptanceList.find((item) => item.id === DEFAULT_ACCEPTANCE_SKILL_ID || item.name === DEFAULT_ACCEPTANCE_SKILL_ID)
-        || acceptanceList[0];
-      if (selectedAcceptance) setAcceptanceSkill({ id: selectedAcceptance.id || selectedAcceptance.name, name: selectedAcceptance.name || selectedAcceptance.id, content: selectedAcceptance.content || elonMuskPerspectiveSkill });
-      const charts = skills.filter((item) => isRoleChartSkill(item) && !isAcceptanceSkill(item));
+const charts = skills.filter((item) => isRoleChartSkill(item));
       const chartList = charts.length ? charts : [{ id: DEFAULT_ROLE_CHART_SKILL_ID, name: DEFAULT_ROLE_CHART_SKILL_ID }, { id: "quality-role-charts-default", name: "quality-role-charts-default" }];
       setChartSkills(chartList);
       const preferredChart = readRoleChartSkillPreference()[role];
@@ -1928,38 +1904,21 @@ export function AgentRoleReportPage({ initialRole = "组装人员", data = {}, f
           confirmedKnowledgeByRecipient = null;
         }
       }
-      const acceptDraftWithElon = async ({ personName, draft, locked, hasPrevious, rewrite, onReject }) => {
-        const judge = async (text) => {
-          const gaps = role === "PM" ? pmAcceptanceGaps(text, locked) : [];
-          if (gaps.length) return { pass: false, failures: gaps, lessons: pmLessonsFromGaps(gaps) };
-          setGenerationProgress((current) => ({ ...current, visible: true, currentName: personName, phase: "马斯克验收", detail: `${personName} 正在用 ${acceptanceSkill.name || DEFAULT_ACCEPTANCE_SKILL_ID} 验收分析结论和${role === "产总" ? "重点关注事项" : "本月措施"}` }));
-          const response = await requestAiChat(buildElonAcceptanceMessages({ skill: acceptanceSkill.content || elonMuskPerspectiveSkill, skillName: acceptanceSkill.name || acceptanceSkill.id, role, recipient: personName, period: roleDateRange, locked, draft: text, hasPrevious }), { max_tokens: 300, timeoutMs: 90000, agent: true, operation: "agent-role-report-generate", signal: controller.signal });
-          const verdict = parseElonAcceptance(response.content);
-          return verdict.pass ? verdict : { pass: false, failures: verdict.failures };
-        };
-        let verdict;
+      const reviewDraftLocally = async ({ draft, locked, rewrite, onReject }) => {
+        if (role !== "PM") return { draft, note: "" };
+        const gaps = pmAcceptanceGaps(draft, locked);
+        if (!gaps.length) return { draft, note: "" };
+        if (onReject) await onReject(pmLessonsFromGaps(gaps));
         try {
-          verdict = await judge(draft);
+          const rewritten = await rewrite(gaps);
+          return { draft: rewritten || draft, note: "" };
         } catch (error) {
           const stopped = controller.signal.aborted && (error?.name === "AbortError" || /已停止/.test(String(error?.message || "")));
           if (stopped) throw error;
-          return { draft, note: "验收请求没有返回，已保留模型正文" };
-        }
-        if (verdict.pass) return { draft, note: "验收通过" };
-        if (onReject) await onReject(verdict.lessons?.length ? verdict.lessons : verdict.failures);
-        setGenerationProgress((current) => ({ ...current, visible: true, currentName: personName, phase: "按验收重写", detail: `${personName} 验收未通过：${verdict.failures.join("；")}。要求不改，正在按同一标准重写` }));
-        try {
-          const rewritten = await rewrite(verdict.failures);
-          if (!rewritten) return { draft, note: `验收未通过：${verdict.failures.join("；")}。已保留模型正文` };
-          const second = await judge(rewritten);
-          return { draft: rewritten, note: second.pass ? "验收通过" : `验收未通过：${second.failures.join("；")}。已保留重写后的正文` };
-        } catch (error) {
-          const stopped = controller.signal.aborted && (error?.name === "AbortError" || /已停止/.test(String(error?.message || "")));
-          if (stopped) throw error;
-          return { draft, note: `验收未通过：${verdict.failures.join("；")}。重写没有返回` };
+          return { draft, note: "" };
         }
       };
-      setGenerationProgress((current) => ({ ...current, phase: "准备生成", detail: "固定数据由快照组装，模型只生成分析" }));
+setGenerationProgress((current) => ({ ...current, phase: "准备生成", detail: "固定数据由快照组装，模型只生成分析" }));
       for (let index = 0; index < targetRecipients.length; index += 1) {
         if (controller.signal.aborted) throw new DOMException("aborted", "AbortError");
         const name = targetRecipients[index];
@@ -2107,14 +2066,14 @@ export function AgentRoleReportPage({ initialRole = "组装人员", data = {}, f
         const nextReviewDate = addIsoDays(reportDate, 30);
         const analysisBrief = buildRoleAnalysisBrief(role, evidence, personRankingRows, roleDateRange);
         const requestAnalysis = (acceptanceFailures = []) => requestAiChat([
-          { role: "system", content: role === "产总" ? directorAnalysisSystem(roleSkill.content || "") : `你代表质量部出具本期角色质量报告，发给当事人或管理者本人，不是第三方旁观者，也不是咨询顾问。固定数字已经在报告里，禁止重复输出固定结果、趋势表、排名表、ECN表、非BOM表、评审表和知识条款原文，也不得改写输入数字。正文用质量部对当事人的口吻：本期认定、要求于下次报告前完成。禁止“建议关注”“可以看出”“值得重视”“该人员存在”“反映出”“赋能”“抓手”“颗粒度”“痛点”“深度洞察”“闭环机制”“第一性原理”这类旁观或空话。措施用核对、补全、验证、当场确认，不用希望、建议考虑。
+          { role: "system", content: roleReportBodyPrefix() + (role === "产总" ? directorAnalysisSystem(roleSkill.content || "") : `你代表质量部出具本期角色质量报告，发给当事人或管理者本人，不是第三方旁观者，也不是咨询顾问。固定数字已经在报告里，禁止重复输出固定结果、趋势表、排名表、ECN表、非BOM表、评审表和知识条款原文，也不得改写输入数字。正文用质量部对当事人的口吻：本期认定、要求于下次报告前完成。禁止“建议关注”“可以看出”“值得重视”“该人员存在”“反映出”“赋能”“抓手”“颗粒度”“痛点”“深度洞察”“闭环机制”“第一性原理”这类旁观或空话。措施用核对、补全、验证、当场确认，不用希望、建议考虑。
 必须输出且仅输出两个二级标题：
 ## 分析结论
 写质量部对本期问题的认定，发给本人看。必须分成2到3个短段，段与段空行，不要写成一长句，不要审讯口吻。对「你」说话，禁止「姓名+本期」「该人员」。禁止解释质量部分类，禁止写「根因不是XX这个分类名」「不是用四个字可以代替」；「装配问题」「设计问题」等分类名只留在问题分类图，结论里写对象和现象。第1段写本期结果。第2段有日期+对象+现象才写「代表：」；没有明细就不要写代表句，禁止写「待核实」「不得编造」「明细不足」「不许编」这类系统话。第3段写下次必须核对什么。个人角色只写本人，管理角色只写管辖范围和下属。
 ## 本月措施
 必须是完整 Markdown 表格，包含表头、对齐分隔行和数据行，禁止空表、禁止只写表头。研发工程师按分类 Top3 各一行，可避免ECN和非BOM加工件有则各加一行，最多5行；其他角色 1 到 3 行。列：措施 | 针对的本人/下属问题（必须来自本期固定证据） | Owner | 完成日(YYYY-MM-DD) | 下次报告如何验收。Owner只有一个，完成日不晚于${nextReviewDate}。措施必须是当事人下次能执行的检查/补全/验证，禁止开会、培训、提醒作为关闭证据，禁止把公司级门禁写成个人待办。不要输出“下次报告复核点”章节。
 禁止30/60/90天分期待办。没有日期+对象+现象的明细时，不要写代表句，不要写待核实、不得编造、明细不足。措施表没有数据行视为失败。${roleAnalysisExtra(role)}
-角色Skill要点：${String(roleSkill.content || "").slice(0, 1400)}` },
+角色Skill要点：${String(roleSkill.content || "").slice(0, 1400)}`) },
           { role: "user", content: `角色：${role}\n人员：${name}\n周期：${roleDateRange._periodStart}—${roleDateRange._periodEnd}\n下次报告复核日：${nextReviewDate}\n固定摘要：${JSON.stringify(analysisBrief)}\n请按分析结论、${role === "产总" ? "重点关注事项" : "本月措施"}两个标题出具，不要输出下次报告复核点，不要重复固定数据，不要旁观点评。${role === "产总" ? "产品部名称用固定摘要 productDept。不要输出本月措施，不要给产总安排待办，不要写你辖区。" : ""}${Array.isArray(acceptanceFailures) && acceptanceFailures.length ? `\n验收未通过：\n${acceptanceFailures.map((item) => `- ${item}`).join("\n")}\n按这些意见重写。` : ""}` },
         ], { max_tokens: 2000, agent: true, operation: "agent-role-report-generate", signal: controller.signal });
         const fixed = buildFixedDataRoleReport({ role, recipient: name, period: roleDateRange, evidence, rankingRows: personRankingRows });
@@ -2175,7 +2134,7 @@ export function AgentRoleReportPage({ initialRole = "组装人员", data = {}, f
             }
           }
           if (String(result.model || "").startsWith("ai-") && analysis) {
-            const judged = await acceptDraftWithElon({
+            const judged = await reviewDraftLocally({
               personName: name,
               draft: analysis,
               locked: lockedAnalysis,
@@ -2228,7 +2187,7 @@ export function AgentRoleReportPage({ initialRole = "组装人员", data = {}, f
             result = { ...result, model: result.model || "fixed-evidence-actions" };
           }
           if (!usedTimeoutFallback && analysis && result.model && !/^fixed/.test(String(result.model))) {
-            const judged = await acceptDraftWithElon({
+            const judged = await reviewDraftLocally({
               personName: name,
               draft: analysis,
               locked: fallbackAnalysis,
@@ -2445,14 +2404,7 @@ export function AgentRoleReportPage({ initialRole = "组装人员", data = {}, f
     setRoleSkill({ name: skillName, content: selected.content || fallbackRoleSkill(role) });
     writeRoleSkillPreference(role, skillName);
   };
-  const selectAcceptanceSkill = (name) => {
-    const selected = acceptanceSkills.find((item) => (item.name || item.id) === name);
-    if (!selected) return;
-    const skillName = selected.name || selected.id;
-    setAcceptanceSkill({ id: selected.id || skillName, name: skillName, content: selected.content || elonMuskPerspectiveSkill });
-    writeAcceptanceSkillPreference(skillName);
-  };
-  const selectChartSkill = (name) => {
+const selectChartSkill = (name) => {
     const selected = chartSkills.find((item) => (item.name || item.id) === name);
     if (!selected) return;
     setChartSkill({ id: selected.id || selected.name, name: selected.name || selected.id, content: selected.content || "" });
@@ -2473,7 +2425,7 @@ export function AgentRoleReportPage({ initialRole = "组装人员", data = {}, f
   return <div className="qmdp-page quality-agent-page">
     <div className="quality-agent-hero"><div><span className="qmdp-eyebrow">QUALITY ANALYSIS AGENT / ROLE REPORT</span><h2>Agent角色报告 · {role}</h2><p>按责任链批量生成并缓存人员报告，选择人员查看本人问题、上级汇报、改善行动和闭环待办。</p></div><Brain size={42} weight="duotone" /></div>
     <section className="qmdp-card quality-agent-controls quality-agent-role-controls">
-      <label className="role-field chain">角色链路<span className="quality-agent-inline-value">{spec.chain}</span></label><label className="role-field skill">角色 Skill<select value={roleSkill.name} onChange={(event) => selectRoleSkill(event.target.value)} disabled={!roleSkills.length}>{roleSkills.map((item) => <option key={item.id || item.name} value={item.name || item.id}>{item.name || item.id}</option>)}</select></label><label className="role-field accept">验收 Skill<select value={acceptanceSkill.name} onChange={(event) => selectAcceptanceSkill(event.target.value)} disabled={!acceptanceSkills.length}>{acceptanceSkills.map((item) => <option key={item.id || item.name} value={item.name || item.id}>{item.name || item.id}</option>)}</select><small>生成时用这个技能验收分析结论和本月措施</small></label><label className="role-field chart">图表 Skill<select value={chartSkill.name} onChange={(event) => selectChartSkill(event.target.value)} disabled={!chartSkills.length || styleOwnsCharts}>{chartSkills.map((item) => <option key={item.id || item.name} value={item.name || item.id}>{item.name || item.id}</option>)}</select><small>{styleOwnsCharts ? "图型由当前网页风格规定，这里不生效" : "切换后立即重绘当前、历史报告里的图表，不重新调用大模型"}</small></label><label className="role-field layout">网页呈现风格<select value={layoutSkillName} onChange={(event) => selectLayoutSkill(event.target.value)}>{layoutSkills.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}</select><small>{reportLayoutLabel(layoutSkillName)} · 只改排版，不调用模型</small></label>
+      <label className="role-field chain">角色链路<span className="quality-agent-inline-value">{spec.chain}</span></label><label className="role-field skill">角色 Skill<select value={roleSkill.name} onChange={(event) => selectRoleSkill(event.target.value)} disabled={!roleSkills.length}>{roleSkills.map((item) => <option key={item.id || item.name} value={item.name || item.id}>{item.name || item.id}</option>)}</select><small>自动叠加 quality-role-report-body</small></label><label className="role-field chart">图表 Skill<select value={chartSkill.name} onChange={(event) => selectChartSkill(event.target.value)} disabled={!chartSkills.length || styleOwnsCharts}>{chartSkills.map((item) => <option key={item.id || item.name} value={item.name || item.id}>{item.name || item.id}</option>)}</select><small>{styleOwnsCharts ? "图型由当前网页风格规定，这里不生效" : "切换后立即重绘当前、历史报告里的图表，不重新调用大模型"}</small></label><label className="role-field layout">网页呈现风格<select value={layoutSkillName} onChange={(event) => selectLayoutSkill(event.target.value)}>{layoutSkills.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}</select><small>{reportLayoutLabel(layoutSkillName)} · 只改排版，不调用模型</small></label>
       <label className="quality-agent-period-year role-field year">统计年份<select value={period.year} onChange={(event) => setPeriod(rolePeriodDefaults(dateRange, event.target.value))}><option value="2026">2026</option><option value="2025">2025</option></select></label><label className="role-field start">开始日期<input type="date" value={period.start} onChange={(event) => setPeriod((current) => ({ ...current, start: event.target.value }))}/></label><label className="role-field end">结束日期<input type="date" value={period.end} onChange={(event) => setPeriod((current) => ({ ...current, end: event.target.value }))}/></label>
       <label className="role-field person">人员{individualRoles.has(role) ? <><div className="quality-agent-recipient-combobox" onBlur={(event) => { if (event.currentTarget.contains(event.relatedTarget)) return; setRecipientPickerOpen(false); setRecipientPickerQuery(recipient || ""); }}><input className="quality-agent-recipient-input" value={recipientPickerQuery} onFocus={() => setRecipientPickerOpen(true)} onChange={(event) => { setRecipientPickerQuery(event.target.value); setRecipientPickerOpen(true); }} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); if (!String(recipientPickerQuery || "").trim()) { recipientManualClearRef.current = true; selectRecipient(""); setRecipientPickerQuery(""); setRecipientPickerOpen(false); return; } if (recipientPickerOptions[0]) { recipientManualClearRef.current = false; selectRecipient(recipientPickerOptions[0]); setRecipientPickerQuery(recipientPickerOptions[0]); setRecipientPickerOpen(false); } } if (event.key === "Escape") { setRecipientPickerOpen(false); setRecipientPickerQuery(recipient || ""); } }} placeholder="输入姓名或关键字" autoComplete="off"/><button type="button" className="quality-agent-recipient-clear" aria-label="清除人员" onMouseDown={(event) => event.preventDefault()} onClick={() => { recipientManualClearRef.current = true; selectRecipient(""); setRecipientPickerQuery(""); setRecipientPickerOpen(false); }}>×</button>{recipientPickerOpen && <div className="quality-agent-recipient-options" role="listbox"><button type="button" role="option" aria-selected={!recipient} className={!recipient ? "is-empty" : ""} onMouseDown={(event) => event.preventDefault()} onClick={() => { recipientManualClearRef.current = true; selectRecipient(""); setRecipientPickerQuery(""); setRecipientPickerOpen(false); }}>不选择</button>{recipientPickerOptions.map((name) => <button type="button" role="option" aria-selected={name === recipient} key={name} onMouseDown={(event) => event.preventDefault()} onClick={() => { recipientManualClearRef.current = false; selectRecipient(name); setRecipientPickerQuery(name); setRecipientPickerOpen(false); }}>{name}</button>)}{!recipientPickerOptions.length && <span>没有匹配的人员</span>}{recipientSelectNames.length > recipientPickerOptions.length && <small>已显示 {recipientPickerOptions.length} 人，请继续输入姓名缩小范围</small>}</div>}</div><small>共 {recipientSelectNames.length} 人，可输入姓名筛选</small></> : <select value={recipient} onChange={(event) => selectRecipient(event.target.value)}><option value="">请选择人员</option>{recipientSelectNames.map((name) => <option key={name}>{name}</option>)}</select>}</label><label className="role-field history">历史报告<select value={selectedHistoryKey} onChange={(event) => openHistoryReport(event.target.value)} disabled={!recipient}><option value="current" disabled={!currentCacheContent}>当前缓存{currentCacheContent ? ` · ${roleReportTimeLabel(cacheEntry?.generatedAt)}` : "（暂无）"}</option>{savedRoleReports.map((item) => <option key={item.historyKey} value={item.historyKey}>{roleHistoryLabel(item)}</option>)}</select><small>{historyState.message || "选择人员后读取历史版本"}</small></label>
       {period.start > period.end && <span className="quality-agent-period-invalid">日期范围无效</span>}

@@ -870,7 +870,15 @@ const mergeFigures = (picked, figures) => {
   if (!picked) return figures;
   const titled = new Set([picked.line?.title, ...(picked.lines || []).map((item) => item.title), ...(picked.donuts || []).map((item) => item.title), picked.donut?.title, ...(picked.rowSets || []).map((item) => item.title), picked.rows?.title].filter(Boolean));
   const lines = [...(picked.lines || [])];
-  (figures.lines || []).forEach((item) => { if (item?.title && !titled.has(item.title)) { lines.push(item); titled.add(item.title); } });
+  const trendIdentity = (title) => String(title || "").replace(/\d{4}年/g, "").replace(/月度趋势|周度趋势/g, "").replace(/\s/g, "");
+  const trendKeys = new Set(lines.map((item) => trendIdentity(item.title)).filter(Boolean));
+  (figures.lines || []).forEach((item) => {
+    const key = trendIdentity(item.title);
+    if (!item?.title || titled.has(item.title) || (key && trendKeys.has(key))) return;
+    lines.push(item);
+    titled.add(item.title);
+    if (key) trendKeys.add(key);
+  });
   const donuts = [...(picked.donuts || []), ...(picked.donut && !picked.donuts ? [picked.donut] : [])];
   (figures.donuts || []).forEach((item) => { if (item?.title && !titled.has(item.title)) { donuts.push(item); titled.add(item.title); } });
   const rowSets = [...(picked.rowSets || []), ...(picked.rows && !(picked.rowSets || []).some((item) => item.title === picked.rows.title) ? [picked.rows] : [])];
