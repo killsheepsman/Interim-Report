@@ -28,3 +28,7 @@ Thumbs.db
 .tmp-chrome-snapshot-debug/
 .tmp-chrome-snapshot-debug-9333/
 
+
+# 周报只留在本机，不上传
+周报-*.md
+
