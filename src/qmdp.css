@@ -1426,3 +1426,25 @@
 .report-direct-send .report-employee-search .quality-agent-recipient-input{height:34px;width:100%;min-width:0;box-sizing:border-box;border:1px solid #c5d4e4;border-radius:8px;padding:0 28px 0 10px;background:#fff;color:#17324d}
 .report-employee-search .quality-agent-recipient-options{z-index:40;min-width:240px}
 .quality-agent-saved-report>header,.quality-agent-role-toolbar{overflow:visible}
+
+.wecom-send-page{gap:0}
+.wecom-send-panel{padding:16px 18px 8px}
+.wecom-send-head{display:flex;align-items:center;justify-content:space-between;gap:16px;padding-bottom:12px;border-bottom:1px solid #edf2f7}
+.wecom-send-head h2{margin:0;color:#102a43;font-size:20px;line-height:1.2}
+.wecom-send-head p{margin:4px 0 0;max-width:640px;color:#60758a;font-size:12px;line-height:1.5}
+.wecom-send-actions{display:flex;flex-wrap:wrap;justify-content:flex-end;align-items:center;gap:8px}
+.wecom-send-actions select{height:34px;padding:0 10px;border:1px solid #d1dce9;border-radius:8px;background:#fff;font:inherit;font-size:12px}
+.wecom-send-filters{display:grid;grid-template-columns:160px 160px minmax(180px,1fr) minmax(240px,1.2fr);gap:12px 16px;align-items:end;margin:14px 0}
+.wecom-send-filters label:not(.wecom-send-check){display:grid;gap:4px;color:#64748b;font-size:12px;font-weight:700}
+.wecom-send-filters select,.wecom-send-filters input{width:100%;min-width:0;height:34px;box-sizing:border-box}
+.wecom-send-tools{grid-column:1 / -1;display:flex;flex-wrap:wrap;align-items:center;gap:8px 18px}
+.wecom-send-tools .wecom-send-check{display:inline-flex;align-items:center;gap:6px;margin:0;padding:0;color:#526174;font-size:12px;font-weight:650}
+.wecom-send-tools span{color:#7b8899;font-size:12px}
+.wecom-send-filters .receiver-filter small{color:#7b8899;font-size:11px;font-weight:500}
+.wecom-report-name{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+.wecom-send-actions{grid-column:1 / -1;display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-top:4px}
+.wecom-send-tools{display:flex;flex-wrap:wrap;align-items:center;gap:8px 16px;margin-right:auto}
+.wecom-send-tools .wecom-send-check{display:inline-flex;align-items:center;gap:6px;margin:0;color:#526174;font-size:12px;font-weight:650;white-space:nowrap}
+.wecom-send-tools span{color:#71859a;font-size:12px;font-weight:500}
+.quality-agent-role-controls .role-field.person .quality-agent-recipient-combobox,.quality-agent-role-controls .role-field.layout .quality-agent-recipient-combobox{min-width:0;width:100%}

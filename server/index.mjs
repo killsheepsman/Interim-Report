@@ -166,6 +166,7 @@ const defaultPermissionConfig = {
     qualityAgent: { public: true, deputy: true, label: "质量分析 Agent" },
     qualityAgentStart: { public: false, deputy: false, label: "启动 Agent 分析" },
     agentRoleReportGenerate: { public: false, deputy: false, label: "生成全部角色报告" },
+    aiEmployee: { public: false, deputy: false, label: "AI员工" },
   },
   apis: {
     "POST /api/uploads": { public: false, deputy: true, label: "上传原始Excel" },
@@ -2163,7 +2164,8 @@ const handleAi = async (req, res) => {
     const userid = String(payload.userid || "").trim();
     if (!userid) return sendJson(res, 400, { error: "请填写要测试的企业微信 userid" });
     try {
-      await sendWecomText(config, { userid, text: "这是QMS质量报告发送测试。如果您收到这条消息，说明企业微信应用已经连通。" });
+      const notice = String(payload.text || "").trim().slice(0, 1500) || "这是QMS质量报告发送测试。如果您收到这条消息，说明企业微信应用已经连通。";
+      await sendWecomText(config, { userid, text: notice });
     } catch (error) {
       return sendJson(res, 400, { error: error.message || "测试发送失败" });
     }
@@ -2255,7 +2257,9 @@ const handleAi = async (req, res) => {
         const content = await fs.readFile(filePath, "utf8");
         let metadata = { fileName };
         try { metadata = { ...JSON.parse(await fs.readFile(filePath + ".json", "utf8")), fileName }; } catch {}
-        results.push(await exportOnePdf({ report: metadata, content, batchDir, format }));
+        const requestedLayout = String(payload.layoutProfileId || payload.layoutSkillName || "").trim();
+        const styled = requestedLayout ? { ...metadata, layoutProfileId: requestedLayout, layoutSkillName: requestedLayout } : metadata;
+        results.push(await exportOnePdf({ report: styled, content, batchDir, format }));
       } catch (error) {
         results.push({ ok: false, fileName, reason: error.message || String(error) });
       }

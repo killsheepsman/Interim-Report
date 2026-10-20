@@ -32,6 +32,7 @@ export const publicWecomConfig = (config = {}) => ({
     role: String(row.role || ""),
     wecom: String(row.wecom || ""),
     webhook: String(row.webhook || ""),
+    post: String(row.post || "").trim(),
   })) : [],
   updatedAt: config.updatedAt || "",
 });
@@ -59,6 +60,7 @@ export const saveWecomConfig = async (filePath, next = {}, current = {}) => {
       role: String(row.role || "").trim(),
       wecom: String(row.wecom || "").trim(),
       webhook: normalizeWebhook(row.webhook) || String(row.webhook || "").trim(),
+      post: String(row.post || "").trim(),
     })),
     updatedAt: new Date().toISOString(),
   };

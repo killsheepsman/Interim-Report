@@ -744,6 +744,7 @@ export const saveAgentDispatch = async (dispatch) => await aiApiJson("/ai/agent-
 export const loadWecomConfig = async () => await aiApiJson("/ai/wecom-config", { method: "GET", cache: "no-store" });
 export const saveWecomConfig = async (config) => await aiApiJson("/ai/wecom-config", { method: "PUT", body: JSON.stringify(config) });
 export const testWecomSend = async (userid) => await aiApiJson("/ai/wecom-test", { method: "POST", body: JSON.stringify({ userid, feature: "qualityAgent" }) });
+export const notifyWecomText = async (userid, text) => await aiApiJson("/ai/wecom-test", { method: "POST", body: JSON.stringify({ userid, text: String(text || "").slice(0, 1500), feature: "qualityAgent" }) });
 export const previewWecomSend = async (items) => await aiApiJson("/ai/wecom-preview", { method: "POST", body: JSON.stringify({ items, feature: "qualityAgent" }) });
 export const fetchReportFile = async (report = {}) => {
   const base = sharedApiBase();
@@ -784,7 +785,7 @@ export const employeeChoices = (employees = []) => {
     .sort((left, right) => left.name.localeCompare(right.name, "zh-CN"))
     .map((row) => ({ name: row.name, label: row.depts.size ? `${row.name} · ${[...row.depts].join(" / ")}` : row.name }));
 };
-export const exportWecomPdfs = async (fileNames, extra = {}) => await aiApiJson("/ai/wecom-export-pdf", { method: "POST", body: JSON.stringify({ fileNames, format: String(extra.format || "pdf").toLowerCase() === "html" ? "html" : "pdf", feature: "qualityAgent" }) });
+export const exportWecomPdfs = async (fileNames, extra = {}) => await aiApiJson("/ai/wecom-export-pdf", { method: "POST", body: JSON.stringify({ fileNames, format: String(extra.format || "pdf").toLowerCase() === "html" ? "html" : "pdf", layoutProfileId: String(extra.layoutProfileId || "").trim(), feature: "qualityAgent" }) });
 export const openWecomPdfFolder = async (folder) => await aiApiJson("/ai/wecom-open-folder", { method: "POST", body: JSON.stringify({ folder, feature: "qualityAgent" }) });
 export const loadAgentDispatches = async () => await aiApiJson("/ai/agent-dispatch", { method: "GET", cache: "no-store" });
 export const saveRoleSkillLessons = async (skillId, lessons = []) => aiApiJson(`/ai/skills/${encodeURIComponent(skillId)}/lessons`, { method: "POST", body: JSON.stringify({ lessons }) });

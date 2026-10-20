@@ -519,7 +519,7 @@ body{margin:0;background:#f5f5f7;font-family:"PingFang SC","Microsoft YaHei",sys
 
 .doam-category-table>div{cursor:pointer}.doam-category-table .head{cursor:default}.doam-category-table>div.active{background:#fff4ea;color:#a45a14}.doam-category-table>div.active strong{color:#a45a14}
 .qmdp-admin-table-deletable .qmdp-admin-row{grid-template-columns:repeat(5,minmax(110px,1fr)) 76px}
-.qmdp-admin-table-employees .qmdp-admin-row{grid-template-columns:90px 100px 120px 120px minmax(150px,1fr) minmax(240px,1.7fr) 76px;min-width:1100px}
+.qmdp-admin-table-employees .qmdp-admin-row{grid-template-columns:90px 100px 140px 180px minmax(160px,1fr) 150px 76px;min-width:980px}
 .qmdp-row-actions{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
 .qmdp-row-delete{height:34px;padding:0 8px;white-space:nowrap}
 
