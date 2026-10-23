@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { matchEmployee, normalizeWebhook, publicEmployeeMatch, markdownToHtml, publicWecomConfig, reportPdfTitle, safePdfName } from "../server/wecomSend.mjs";
+import { matchEmployee, normalizeWebhook, preferAddressBook, publicEmployeeMatch, markdownToHtml, publicWecomConfig, reportPdfTitle, safePdfName } from "../server/wecomSend.mjs";
 import { chartLayoutRules } from "../src/agent/lieflatRoleCharts.js";
 
 const employees = [
@@ -13,6 +13,10 @@ assert.equal(matchEmployee(employees, "朱 从军").userid, "zhucongjun");
 assert.equal(matchEmployee(employees, "王亮").status, "duplicate");
 assert.equal(matchEmployee(employees, "邓海新").status, "no-userid");
 assert.equal(matchEmployee(employees, "不存在").status, "missing");
+assert.match(matchEmployee(employees, "邓海新").reason, /员工信息/);
+assert.equal(preferAddressBook([{ name: "王凌云", wecom: "0104171" }], [{ name: "王凌云", wecom: "old" }])[0].wecom, "0104171");
+assert.equal(preferAddressBook([{ name: "王凌云" }], [{ name: "王凌云", wecom: "0104171" }])[0].wecom, "0104171");
+assert.equal(preferAddressBook([], [{ name: "王凌云", wecom: "0104171" }])[0].wecom, "0104171");
 assert.equal(matchEmployee([{ name: "韩瑞丽", webhook: "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=abc-def-123" }], "韩瑞丽").channel, "webhook");
 assert.equal(publicEmployeeMatch(matchEmployee([{ name: "韩瑞丽", webhook: "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=abc-def-123" }], "韩瑞丽")).userid, "");
 assert.equal(normalizeWebhook("abc-def-1234567890"), "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=abc-def-1234567890");

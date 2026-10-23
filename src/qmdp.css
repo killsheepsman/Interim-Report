@@ -12,7 +12,7 @@
 .quality-agent-recipient-combobox { position: relative; min-width: 220px; }
 .quality-agent-recipient-combobox .quality-agent-recipient-input { width: 100%; min-width: 0; padding-right: 30px; }
 .quality-agent-recipient-clear { position: absolute; top: 50%; right: 7px; transform: translateY(-50%); width: 22px; height: 22px; padding: 0; border: 0; background: transparent; color: #71859a; font-size: 18px; line-height: 1; cursor: pointer; }
-.quality-agent-recipient-options { position: absolute; z-index: 20; top: calc(100% + 4px); left: 0; right: 0; max-height: 260px; overflow-y: auto; display: grid; gap: 2px; padding: 5px; border: 1px solid #cbd8e5; border-radius: 8px; background: #fff; box-shadow: 0 12px 28px rgba(23,43,63,.16); }
+.quality-agent-recipient-options { position: absolute; z-index: 20; top: calc(100% + 4px); left: 0; right: 0; max-height: 420px; overflow-y: auto; display: grid; gap: 2px; padding: 5px; border: 1px solid #cbd8e5; border-radius: 8px; background: #fff; box-shadow: 0 12px 28px rgba(23,43,63,.16); }
 .quality-agent-recipient-options button { width: 100%; padding: 7px 9px; border: 0; border-radius: 5px; background: transparent; color: #17324d; text-align: left; font-size: 12px; cursor: pointer; }
 .quality-agent-recipient-options button:hover, .quality-agent-recipient-options button[aria-selected="true"] { background: #eaf4ff; color: #176ecf; }
 .quality-agent-recipient-options button.is-empty { color: #71859a; }
@@ -1385,6 +1385,21 @@
 .quality-agent-final-report.report-profile-porcelain-sheet-v1,.quality-agent-saved-report.report-profile-porcelain-sheet-v1,.quality-agent-imported-report.report-profile-porcelain-sheet-v1,.quality-agent-role-report.report-profile-porcelain-sheet-v1{background:rgb(247,242,235);padding:12px}
 .quality-agent-final-report.report-profile-porcelain-sheet-v1>header{background:rgb(247,242,235)}
 
+
+.ai-employee-rule{display:flex;gap:8px;align-items:end;margin-top:8px}
+.ai-employee-rule label{display:grid;gap:6px;flex:1;min-width:min(100%,640px);color:#52697f;font-size:12px;font-weight:700}
+.ai-employee-rule input{width:100%;min-width:0;box-sizing:border-box;border:1px solid #d4dfea;border-radius:7px;padding:9px 10px;background:#fff;color:#172b3f;font:14px/1.4 "Microsoft YaHei","微软雅黑",sans-serif}
+.ai-employee-chat{display:flex;flex-direction:column;gap:10px;height:min(640px,calc(100vh - 180px));min-height:460px;padding:16px;overflow:hidden}
+.ai-employee-chat h3,.ai-employee-chat>p{flex:none;margin:0}
+.ai-employee-chat-log{flex:1;min-height:0;display:flex;flex-direction:column;gap:12px;overflow:auto;background:#ededed;border-radius:8px;padding:14px 12px}
+.ai-employee-chat-log .bubble{display:flex;width:100%;background:transparent}
+.ai-employee-chat-log .bubble.user{justify-content:flex-end}
+.ai-employee-chat-log .bubble.assistant{justify-content:flex-start}
+.ai-employee-chat-log .bubble p{max-width:72%;margin:0;padding:10px 12px;border-radius:4px 12px 12px 12px;background:#fff;color:#191919;font-size:16px;line-height:1.65;white-space:pre-wrap;word-break:break-word;box-shadow:0 1px 1px rgba(0,0,0,.05)}
+.ai-employee-chat-log .bubble.user p{background:#95ec69;border-radius:12px 4px 12px 12px}
+.ai-employee-chat-ask{display:flex;gap:8px;align-items:end}
+.ai-employee-chat-ask textarea{flex:1;min-height:74px;resize:vertical;border:1px solid #d4dfea;border-radius:7px;padding:9px 10px;background:#fff;color:#172b3f;font:16px/1.5 "Microsoft YaHei","微软雅黑",sans-serif}
+.quality-agent-role-controls .ai-employee-jobs{grid-column:span 5;display:flex;align-items:center;gap:16px;min-height:38px;flex-wrap:wrap}
 .quality-agent-role-controls{display:grid;grid-template-columns:repeat(12,minmax(0,1fr));align-items:start;gap:12px 14px}
 .quality-agent-role-controls>label{min-width:0}
 .quality-agent-role-controls select,.quality-agent-role-controls input{width:100%;min-width:0}
@@ -1447,4 +1462,29 @@
 .wecom-send-tools{display:flex;flex-wrap:wrap;align-items:center;gap:8px 16px;margin-right:auto}
 .wecom-send-tools .wecom-send-check{display:inline-flex;align-items:center;gap:6px;margin:0;color:#526174;font-size:12px;font-weight:650;white-space:nowrap}
 .wecom-send-tools span{color:#71859a;font-size:12px;font-weight:500}
-.quality-agent-role-controls .role-field.person .quality-agent-recipient-combobox,.quality-agent-role-controls .role-field.layout .quality-agent-recipient-combobox{min-width:0;width:100%}
+.quality-agent-role-controls .role-field.person .quality-agent-recipient-combobox,.quality-agent-role-controls .role-field.layout .quality-agent-recipient-combobox,.quality-agent-role-controls .role-field.ai-half .quality-agent-recipient-combobox{min-width:0;width:100%}
+
+.quality-agent-role-controls.ai-employee-controls{align-items:end}
+.quality-agent-role-controls.ai-employee-controls>.ai-top{grid-column:span 3}
+.quality-agent-role-controls.ai-employee-controls>.ai-half{grid-column:span 6}
+.quality-agent-role-controls.ai-employee-controls>.ai-month{grid-column:span 3}
+.quality-agent-role-controls.ai-employee-controls>.ai-employee-jobs{grid-column:span 4;align-self:end;min-height:38px;margin:0}
+.quality-agent-role-controls.ai-employee-controls>.ai-employee-actions{grid-column:span 5;display:flex;justify-content:flex-end;align-items:center;gap:8px;min-height:38px}
+.quality-agent-role-controls.ai-employee-controls>.ai-employee-actions>button{width:auto;min-height:38px}
+.ai-employee-result-head{display:flex;align-items:center;justify-content:space-between;gap:12px}
+.ai-employee-result-head h3{margin:0}
+.ai-employee-fold{padding:0;overflow:hidden}
+.ai-employee-fold>summary{cursor:pointer;display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px 16px;font-weight:700;color:#17324d;list-style:none}
+.ai-employee-fold>summary::-webkit-details-marker{display:none}
+.ai-employee-fold>summary::after{content:"展开";color:#087ea4;font-size:13px;font-weight:700}
+.ai-employee-fold[open]>summary::after{content:"收起"}
+.ai-employee-fold>pre{margin:0;padding:0 16px 16px;white-space:pre-wrap;font-family:"Microsoft YaHei","微软雅黑",sans-serif;font-size:14px;line-height:1.7;color:#243044}
+.ai-employee-fold .quality-agent-report-content{padding:0 16px 16px}
+@media(max-width:1100px){
+  .quality-agent-role-controls.ai-employee-controls>.ai-top,
+  .quality-agent-role-controls.ai-employee-controls>.ai-half,
+  .quality-agent-role-controls.ai-employee-controls>.ai-month{grid-column:span 3}
+  .quality-agent-role-controls.ai-employee-controls>.ai-employee-jobs,
+  .quality-agent-role-controls.ai-employee-controls>.ai-employee-actions{grid-column:span 6}
+  .quality-agent-role-controls.ai-employee-controls>.ai-employee-actions{justify-content:flex-start}
+}

@@ -5,7 +5,7 @@ import path from "node:path";
 import { figureMatchesHeading, periodChartTitle, renderLieflatFigure } from "../src/agent/lieflatRoleCharts.js";
 import { getReportPresentationProfile } from "../src/agent/reportPresentationProfiles.js";
 import { sanitizeHumanReportContent } from "../src/reportSanitizer.js";
-import { renderPorcelainSheet } from "../src/agent/porcelainSheet.js";
+import { normalizeCompanyBrief, renderPorcelainSheet } from "../src/agent/porcelainSheet.js";
 import { renderBasicsSheet } from "../src/agent/basicsSheet.js";
 
 const CONFIG_VERSION = "qms-wecom-config-v1";
@@ -36,6 +36,35 @@ export const publicWecomConfig = (config = {}) => ({
   })) : [],
   updatedAt: config.updatedAt || "",
 });
+
+export const sanitizeAddressBook = (rows = []) => {
+  if (!Array.isArray(rows)) return [];
+  return rows.slice(0, 5000).map((row) => ({
+    id: String(row?.id || "").trim(),
+    name: String(row?.name || "").trim(),
+    dept: String(row?.dept || "").trim(),
+    role: String(row?.role || "").trim(),
+    wecom: String(row?.wecom || "").trim(),
+    webhook: String(row?.webhook || "").trim(),
+    post: String(row?.post || "").trim(),
+  })).filter((row) => row.name);
+};
+
+export const preferAddressBook = (primary = [], fallback = []) => {
+  const main = sanitizeAddressBook(primary);
+  const extra = sanitizeAddressBook(fallback);
+  if (!main.length) return extra;
+  const byName = new Map();
+  extra.forEach((row) => {
+    const key = personKey(row.name);
+    if (key && !byName.has(key)) byName.set(key, row);
+  });
+  return main.map((row) => {
+    if (row.wecom || row.webhook) return row;
+    const old = byName.get(personKey(row.name));
+    return old ? { ...row, wecom: old.wecom, webhook: old.webhook } : row;
+  });
+};
 
 export const loadWecomConfig = async (filePath) => {
   try {
@@ -85,7 +114,7 @@ export const matchEmployee = (employees = [], name = "") => {
   const matches = (Array.isArray(employees) ? employees : []).filter((row) => personKey(row.name) === key);
   if (!matches.length) return { status: "missing", reason: `员工信息中没有「${name}」`, channel: "", matches: [] };
   const targeted = matches.map((row) => ({ row, target: sendTarget(row) })).filter((item) => item.target);
-  if (!targeted.length) return { status: "no-userid", reason: `「${name}」还不能发送。请在员工信息填写群机器人 Webhook`, channel: "", matches };
+  if (!targeted.length) return { status: "no-userid", reason: `「${name}」在系统管理-员工信息里没有企业微信 userid。工号就是 userid，填在这一列即可，不用另配地址`, channel: "", matches };
   if (targeted.some((item) => item.target.channel === "bad-webhook") && !targeted.some((item) => item.target.channel === "webhook" || item.target.channel === "app")) {
     return { status: "bad-webhook", reason: `「${name}」的群机器人 Webhook 格式不对，请粘贴完整地址`, channel: "", matches };
   }
@@ -123,7 +152,7 @@ const wecomError = (payload, fallback) => {
     40013: "CorpId 不正确",
     40001: "Secret 无效，请重新保存企业微信配置",
     40014: "应用令牌失效，请重试",
-    60020: "调用企业微信的出口 IP 不在企业可信 IP 里，自建应用发不出去。请改用群机器人 Webhook",
+    60020: "调用企业微信的出口 IP 不在企业可信 IP 里。地址已按系统管理-员工信息中的企业微信 userid 发送，不用再配一份。请让 IT 把服务器出口 IP 加入企业可信 IP",
     93000: "群机器人 Webhook 无效或已被删除",
     81013: "userid 不存在或已离职，请核对员工信息",
     60111: "userid 不存在",
@@ -402,6 +431,7 @@ export const buildReportHtml = ({ report = {}, content = "", screen = false } = 
   const profile = getReportPresentationProfile(report.layoutProfileId || report.layoutSkillName || "");
   const visualSpec = visualSpecFromReport(report, content);
   content = sanitizeHumanReportContent(content);
+  if ((report.module || "") === "公司") content = normalizeCompanyBrief(content);
   const analysis = !isRoleReport(report);
   const title = reportPdfTitle(report, content);
   const view = { module: report.module || "质量分析", snapshot: report.snapshot || null, visualSpec };
@@ -440,7 +470,7 @@ export const sendOneReport = async ({ config, report, content, pdfDir, deliverTo
     : [htmlFile ? "质量报告已出具，请用浏览器打开附件 HTML。页面连续显示，不会分页截断。" : "质量报告已出具，请查收附件 PDF。", `发给：${targetName}`, report.role ? `角色：${report.role}` : "", report.recipient ? `报告：${report.recipient}` : "", period.start && period.end ? `周期：${period.start} 至 ${period.end}` : ""].filter(Boolean).join("\n");
   if (match.channel === "webhook") await sendWebhookReport(match.webhook, { text: notice, fileName: pdfName, buffer, mime });
     else {
-      if (!config.corpId || !config.secret || !config.agentId) throw new Error("自建应用还没配齐，而且当前出口 IP 需要管理员放行。请改填群机器人 Webhook");
+      if (!config.corpId || !config.secret || !config.agentId) throw new Error("企业微信应用还没配齐。发送地址已经用系统管理-员工信息里的企业微信 userid，请到系统管理-企业微信填写 CorpId、AgentId 和 Secret");
       const token = await getWecomToken(config);
       const mediaId = await uploadWecomFile(token, buffer, pdfName, mime);
       await sendWecomFile(config, { userid: match.userid, mediaId, text: notice });

@@ -2078,7 +2078,7 @@ const handleAi = async (req, res) => {
     if (requestPayload === null) requestPayload = JSON.parse(await readBody(req) || "{}");
     return requestPayload;
   };
-  const preliminaryPayload = ["/api/ai/chat", "/api/ai/reports", "/api/ai/agent-dispatch", "/api/ai/agent-reports", "/api/ai/models", "/api/ai/test", "/api/ai/config", "/api/ai/wecom-config", "/api/ai/wecom-test", "/api/ai/wecom-preview", "/api/ai/wecom-send", "/api/ai/wecom-export-pdf", "/api/ai/wecom-open-folder", "/api/ai/report-pdf"].includes(pathname)
+  const preliminaryPayload = ["/api/ai/chat", "/api/ai/web-search", "/api/ai/reports", "/api/ai/agent-dispatch", "/api/ai/agent-reports", "/api/ai/models", "/api/ai/test", "/api/ai/config", "/api/ai/wecom-config", "/api/ai/wecom-test", "/api/ai/wecom-preview", "/api/ai/wecom-send", "/api/ai/wecom-export-pdf", "/api/ai/wecom-open-folder", "/api/ai/report-pdf"].includes(pathname)
     ? (req.method === "POST" ? await getPayload() : {}) : {};
   const isQualityAgentRequest = preliminaryPayload?.feature === "qualityAgent" || preliminaryPayload?.agentTitle === "质量分析 Agent" || preliminaryPayload?.agent === true;
   const operationFeatureKey = preliminaryPayload?.operation === "quality-agent-start"
@@ -2086,7 +2086,7 @@ const handleAi = async (req, res) => {
     : preliminaryPayload?.operation === "agent-role-report-generate"
       ? "agentRoleReportGenerate"
       : "";
-  const featureKey = operationFeatureKey || (legacyChatAlias ? "aiInterface" : (isQualityAgentRequest || pathname === "/api/ai/skills" || pathname === "/api/ai/agent-dispatch" || pathname.startsWith("/api/ai/agent-reports") || pathname === "/api/ai/report-pdf" || pathname.startsWith("/api/ai/wecom") ? "qualityAgent" : (["/api/ai/config", "/api/ai/models", "/api/ai/test"].includes(pathname) ? "aiInterface" : "aiAnalysis")));
+  const featureKey = operationFeatureKey || (legacyChatAlias ? "aiInterface" : (isQualityAgentRequest || pathname === "/api/ai/skills" || pathname === "/api/ai/agent-dispatch" || pathname.startsWith("/api/ai/agent-reports") || pathname === "/api/ai/report-pdf" || pathname === "/api/ai/web-search" || pathname.startsWith("/api/ai/wecom") ? "qualityAgent" : (["/api/ai/config", "/api/ai/models", "/api/ai/test"].includes(pathname) ? "aiInterface" : "aiAnalysis")));
   const featureRule = user.permissions?.features?.[featureKey] || {};
   const featureAllowed = user.isAdmin || (user.isDeputy ? featureRule.deputy !== false : featureRule.public === true);
   if (!featureAllowed) {
@@ -2268,6 +2268,12 @@ const handleAi = async (req, res) => {
   }
   if (pathname === "/api/ai/wecom-open-folder" && req.method === "POST") {
     const payload = await getPayload();
+    if (payload.library === true) {
+      const library = path.resolve(aiReportDir);
+      await fs.mkdir(library, { recursive: true });
+      spawn("explorer.exe", [library], { windowsHide: false, detached: true, stdio: "ignore" }).unref();
+      return sendJson(res, 200, { ok: true, folder: library });
+    }
     const folder = path.resolve(String(payload.folder || ""));
     const root = path.resolve(roleReportPdfDir) + path.sep;
     if (folder !== path.resolve(roleReportPdfDir) && !folder.startsWith(root)) return sendJson(res, 400, { error: "只能打开报告 PDF 导出目录" });
@@ -2439,6 +2445,88 @@ const handleAi = async (req, res) => {
     const content = extractAiContent(result);
     return sendJson(res, 200, { ok: true, model: config.model, response: String(content).slice(0, 200) });
   }
+  if (pathname === "/api/ai/web-search" && req.method === "POST") {
+    const payload = await getPayload();
+    const query = String(payload.query || "").replace(/\s+/g, " ").trim().slice(0, 120);
+    if (!query) return sendJson(res, 400, { error: "query is required" });
+    const strip = (value) => String(value || "").replace(/<[^>]+>/g, " ").replace(/&amp;/g, "&").replace(/&quot;/g, '"').replace(/&#39;|&apos;/g, "'").replace(/&#(\d+);/g, (_, code) => String.fromCharCode(Number(code))).replace(/\s+/g, " ").trim();
+    const unwrap = (value) => {
+      let url = strip(value);
+      const wrapped = url.match(/[?&](?:uddg|url)=([^&]+)/i);
+      if (wrapped) {
+        try { url = decodeURIComponent(wrapped[1]); } catch { url = wrapped[1]; }
+      }
+      if (url.startsWith("//")) url = "https:" + url;
+      return url;
+    };
+    const pushUnique = (results, title, url, snippet) => {
+      const cleanUrl = unwrap(url);
+      const cleanTitle = strip(title).slice(0, 120);
+      if (!cleanTitle || !/^https?:\/\//i.test(cleanUrl)) return;
+      if (/duckduckgo\.com|bing\.com\/ck\/|baidu\.com\/s\?/i.test(cleanUrl)) return;
+      if (results.some((item) => item.url === cleanUrl)) return;
+      results.push({ title: cleanTitle, url: cleanUrl, snippet: strip(snippet).slice(0, 180) });
+    };
+    const parseDuck = (html, results) => {
+      const link = /<a[^>]*(?:class="[^"]*(?:result-link|result__a)[^"]*"[^>]*href="([^"]+)"|href="([^"]+)"[^>]*class="[^"]*(?:result-link|result__a)[^"]*")[^>]*>([\s\S]*?)<\/a>/gi;
+      const snippets = [...String(html || "").matchAll(/<(?:td|a|span)[^>]*class="[^"]*(?:result-snippet|result__snippet)[^"]*"[^>]*>([\s\S]*?)<\/(?:td|a|span)>/gi)].map((item) => strip(item[1]));
+      let index = 0;
+      let match = link.exec(html);
+      while (match && results.length < 5) {
+        pushUnique(results, match[3], match[1] || match[2], snippets[index] || "");
+        index += 1;
+        match = link.exec(html);
+      }
+    };
+    const parseHeads = (html, results) => {
+      const pattern = /<h[23][^>]*>\s*<a[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/gi;
+      let match = pattern.exec(html);
+      while (match && results.length < 5) {
+        const after = html.slice(match.index, match.index + 900);
+        const snippet = (after.match(/<p[^>]*>([\s\S]*?)<\/p>/i) || [])[1] || "";
+        pushUnique(results, match[2], match[1], snippet);
+        match = pattern.exec(html);
+      }
+    };
+    const loadPage = async (url) => {
+      const response = await fetch(url, {
+        headers: {
+          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+          "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+        },
+        signal: AbortSignal.timeout(8000),
+      });
+      if (!response.ok) return "";
+      return await response.text();
+    };
+    const encoded = encodeURIComponent(query);
+    const sources = [
+      ["https://www.baidu.com/s?wd=" + encoded, parseHeads],
+      ["https://cn.bing.com/search?q=" + encoded + "&setlang=zh-Hans", parseHeads],
+      ["https://lite.duckduckgo.com/lite/?q=" + encoded, parseDuck],
+      ["https://html.duckduckgo.com/html/?q=" + encoded, parseDuck],
+    ];
+    let lastError = "";
+    const foundLists = await Promise.all(sources.map(async ([url, parse]) => {
+      try {
+        const html = await loadPage(url);
+        const found = [];
+        if (html) parse(html, found);
+        return found;
+      } catch (error) {
+        lastError = error?.message || "检索没有完成";
+        return [];
+      }
+    }));
+    const results = [];
+    for (const found of foundLists) {
+      for (const item of found) {
+        if (results.length >= 5) break;
+        if (!results.some((existing) => existing.url === item.url)) results.push(item);
+      }
+    }
+    return sendJson(res, 200, results.length ? { results: results.slice(0, 5) } : { results: [], error: lastError || "检索没有返回" });
+  }
   if (pathname === "/api/ai/chat" && req.method === "POST") {
     const payload = await getPayload();
     const config = await configFromPayload(payload);
@@ -2479,7 +2567,8 @@ const handleAi = async (req, res) => {
     let result;
     try {
       const requestedTimeout = Number(payload.timeoutMs);
-      const chatTimeoutMs = Number.isFinite(requestedTimeout) ? Math.min(Number(process.env.AI_TIMEOUT_MS || 300000), Math.max(20000, Math.round(requestedTimeout))) : undefined;
+      const longBrief = payload.operation === "ai-employee-brief";
+      const chatTimeoutMs = longBrief ? 900000 : (Number.isFinite(requestedTimeout) ? Math.min(Number(process.env.AI_TIMEOUT_MS || 300000), Math.max(20000, Math.round(requestedTimeout))) : undefined);
       result = await requestAi(config, responsesApi ? "/responses" : "/chat/completions", { method: "POST", body: JSON.stringify(requestBody), stream, signal: clientController.signal, ...(chatTimeoutMs ? { timeoutMs: chatTimeoutMs } : {}) });
     } finally {
       req.removeListener("aborted", abortForDisconnect);

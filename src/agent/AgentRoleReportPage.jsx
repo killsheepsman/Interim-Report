@@ -2307,7 +2307,7 @@ setGenerationProgress((current) => ({ ...current, phase: "准备生成", detail:
       const preview = await previewWecomSend([{ fileName: report.fileName, recipient: person, role }]);
       const matched = (preview.rows || [])[0];
       if (!matched || matched.status !== "ok") {
-        setSendNotice({ status: "error", message: matched?.reason || `${person} 还不能发送。请先在员工信息填写发送地址，并同步到发送服务` });
+        setSendNotice({ status: "error", message: matched?.reason || `${person} 还不能发送。请到系统管理-员工信息填写企业微信 userid` });
         return;
       }
       const payload = await sendWecomReports([report.fileName], person, { layoutProfileId: layoutSkillName, format: sendFormat });

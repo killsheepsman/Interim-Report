@@ -1317,11 +1317,13 @@ const buildIqcDetails = (iqcFiles, dateRange, specialAsBad = false) => {
   });
 
   const siteMonthly = {};
+  const supplierMonthlyBySite = {};
   const issueBySite = {};
   const issueSourceBySite = {};
   const issueSuppliersBySite = {};
   const issueInspectedBySite = {};
   const materialBySite = {};
+  const materialBySupplierBySite = {};
   const mainSuppliers = {};
   const supplierCandidates = {};
   const sortSupplierNames = (names) => [...names].sort((a, b) => String(a).localeCompare(String(b), "zh-CN", { sensitivity: "base", numeric: true }));
@@ -1335,9 +1337,41 @@ const buildIqcDetails = (iqcFiles, dateRange, specialAsBad = false) => {
         const good = filtered.filter((row) => iqcIsGood(row, specialAsBad)).length;
         stats[`y${year}Qty`] = filtered.length;
         stats[`y${year}Bad`] = filtered.length - good;
+        stats[`y${year}Special`] = filtered.filter((row) => iqcResult(row) === "特采").length;
         stats[`y${year}Rate`] = filtered.length ? Number((good / filtered.length * 100).toFixed(1)) : 0;
       });
       return { month: `${month}月`, ...stats };
+    });
+
+    const supplierBuckets = new Map();
+    rows.forEach((row) => {
+      const supplierName = text(row["供应商"]);
+      const year = yearOf(row["检验开始时间"]);
+      const month = monthOf(row["检验开始时间"]);
+      if (!supplierName || (year !== 2025 && year !== 2026) || !month) return;
+      if (!supplierBuckets.has(supplierName)) supplierBuckets.set(supplierName, new Map());
+      const byMonth = supplierBuckets.get(supplierName);
+      if (!byMonth.has(month)) byMonth.set(month, { 2025: { qty: 0, good: 0, special: 0 }, 2026: { qty: 0, good: 0, special: 0 } });
+      const bucket = byMonth.get(month)[year];
+      bucket.qty += 1;
+      if (iqcResult(row) === "特采") bucket.special += 1;
+      if (iqcIsGood(row, specialAsBad)) bucket.good += 1;
+    });
+    const yieldMonths = comparisonMonths(dateRange);
+    supplierMonthlyBySite[site] = {};
+    [...supplierBuckets.keys()].sort((a, b) => String(a).localeCompare(String(b), "zh-CN", { sensitivity: "base", numeric: true })).forEach((supplierName) => {
+      const byMonth = supplierBuckets.get(supplierName);
+      supplierMonthlyBySite[site][supplierName] = yieldMonths.map((month) => {
+        const stats = { month: `${month}月` };
+        [2025, 2026].forEach((year) => {
+          const bucket = byMonth.get(month)?.[year] || { qty: 0, good: 0, special: 0 };
+          stats[`y${year}Qty`] = bucket.qty;
+          stats[`y${year}Bad`] = bucket.qty - bucket.good;
+          stats[`y${year}Special`] = bucket.special || 0;
+          stats[`y${year}Rate`] = bucket.qty ? Number((bucket.good / bucket.qty * 100).toFixed(1)) : 0;
+        });
+        return stats;
+      });
     });
 
     const issueSource = [];
@@ -1364,7 +1398,10 @@ const buildIqcDetails = (iqcFiles, dateRange, specialAsBad = false) => {
     issueInspectedBySite[site] = [...inspected.values()];
     issueSuppliersBySite[site] = sortSupplierNames(inspected.keys());
     const issueCounts = { 2025: new Map(), 2026: new Map() };
-    processingRows.filter((row) => iqcResult(row) === "不合格").forEach((row) => {
+    processingRows.filter((row) => {
+      const result = iqcResult(row);
+      return result === "不合格" || (specialAsBad && result === "特采");
+    }).forEach((row) => {
       const year = yearOf(row["检验开始时间"]);
       if (!issueCounts[year]) return;
       const category = classify(iqcIssueText(row), rules.iqc);
@@ -1388,10 +1425,40 @@ const buildIqcDetails = (iqcFiles, dateRange, specialAsBad = false) => {
         const good = filtered.filter((row) => iqcIsGood(row, specialAsBad)).length;
         result[`y${year}Qty`] = filtered.length;
         result[`y${year}Bad`] = filtered.length - good;
+        result[`y${year}Special`] = filtered.filter((row) => iqcResult(row) === "特采").length;
         result[`y${year}Rate`] = filtered.length ? Number((good / filtered.length * 100).toFixed(1)) : 0;
       });
       return result;
     }).filter((x) => x.y2025Qty + x.y2026Qty >= 50).sort((a, b) => b.y2026Qty - a.y2026Qty).slice(0, 12);
+
+    const materialBuckets = new Map();
+    processingRows.forEach((row) => {
+      const supplierName = text(row["供应商"]);
+      const year = yearOf(row["检验开始时间"]);
+      if (!supplierName || (year !== 2025 && year !== 2026)) return;
+      const material = text(row["材质分类"]) || "未分类";
+      if (!materialBuckets.has(supplierName)) materialBuckets.set(supplierName, new Map());
+      const byMaterial = materialBuckets.get(supplierName);
+      if (!byMaterial.has(material)) byMaterial.set(material, { 2025: { qty: 0, good: 0, special: 0 }, 2026: { qty: 0, good: 0, special: 0 } });
+      const bucket = byMaterial.get(material)[year];
+      bucket.qty += 1;
+      if (iqcResult(row) === "特采") bucket.special += 1;
+      if (iqcIsGood(row, specialAsBad)) bucket.good += 1;
+    });
+    materialBySupplierBySite[site] = {};
+    materialBuckets.forEach((byMaterial, supplierName) => {
+      materialBySupplierBySite[site][supplierName] = [...byMaterial.entries()].map(([name, years]) => {
+        const result = { name };
+        [2025, 2026].forEach((year) => {
+          const bucket = years[year] || { qty: 0, good: 0, special: 0 };
+          result[`y${year}Qty`] = bucket.qty;
+          result[`y${year}Bad`] = bucket.qty - bucket.good;
+          result[`y${year}Special`] = bucket.special || 0;
+          result[`y${year}Rate`] = bucket.qty ? Number((bucket.good / bucket.qty * 100).toFixed(1)) : 0;
+        });
+        return result;
+      }).filter((row) => row.y2025Qty + row.y2026Qty > 0).sort((a, b) => b.y2026Qty - a.y2026Qty || b.y2025Qty - a.y2025Qty).slice(0, 12);
+    });
 
     const supplierStats = (supplier, type, useTypeFilter = true) => {
       const supplierRows = processingRows.filter((row) => supplierBaseName(row["供应商"]) === supplierBaseName(supplier));
@@ -1427,6 +1494,30 @@ const buildIqcDetails = (iqcFiles, dateRange, specialAsBad = false) => {
       .sort((a, b) => (b.y2025Qty + b.y2026Qty) - (a.y2025Qty + a.y2026Qty));
   });
   siteMonthly["全公司"] = mergeIqcMonthly(siteMonthly["深圳"] || [], siteMonthly["杭州"] || []);
+  const mergeSupplierMonthly = (left = {}, right = {}) => {
+    const names = new Set([...Object.keys(left), ...Object.keys(right)]);
+    const merged = {};
+    const months = comparisonMonths(dateRange);
+    [...names].sort((a, b) => String(a).localeCompare(String(b), "zh-CN", { sensitivity: "base", numeric: true })).forEach((name) => {
+      const leftRows = left[name] || [];
+      const rightRows = right[name] || [];
+      merged[name] = months.map((month, index) => {
+        const row = { month: `${month}月` };
+        [2025, 2026].forEach((year) => {
+          const qty = Number(leftRows[index]?.[`y${year}Qty`] || 0) + Number(rightRows[index]?.[`y${year}Qty`] || 0);
+          const bad = Number(leftRows[index]?.[`y${year}Bad`] || 0) + Number(rightRows[index]?.[`y${year}Bad`] || 0);
+          const special = Number(leftRows[index]?.[`y${year}Special`] || 0) + Number(rightRows[index]?.[`y${year}Special`] || 0);
+          row[`y${year}Qty`] = qty;
+          row[`y${year}Bad`] = bad;
+          row[`y${year}Special`] = special;
+          row[`y${year}Rate`] = qty ? Number(((qty - bad) / qty * 100).toFixed(1)) : 0;
+        });
+        return row;
+      });
+    });
+    return merged;
+  };
+  supplierMonthlyBySite["全公司"] = mergeSupplierMonthly(supplierMonthlyBySite["深圳"], supplierMonthlyBySite["杭州"]);
   issueBySite["全公司"] = mergeIqcNamedCounts(issueBySite["深圳"] || [], issueBySite["杭州"] || [], 10);
   issueSourceBySite["全公司"] = [...(issueSourceBySite["深圳"] || []), ...(issueSourceBySite["杭州"] || [])];
   issueSuppliersBySite["全公司"] = sortSupplierNames(new Set([...(issueSuppliersBySite["深圳"] || []), ...(issueSuppliersBySite["杭州"] || [])]));
@@ -1439,8 +1530,168 @@ const buildIqcDetails = (iqcFiles, dateRange, specialAsBad = false) => {
   });
   issueInspectedBySite["全公司"] = [...inspectedAll.values()];
   materialBySite["全公司"] = mergeIqcNamedCounts(materialBySite["深圳"] || [], materialBySite["杭州"] || []);
-  return { siteMonthly, issueBySite, issueSourceBySite, issueSuppliersBySite, issueInspectedBySite, materialBySite, mainSuppliers, supplierCandidates };
+  const mergeMaterialSuppliers = (left = {}, right = {}) => {
+    const names = new Set([...Object.keys(left), ...Object.keys(right)]);
+    const merged = {};
+    names.forEach((supplier) => {
+      const map = new Map();
+      [...(left[supplier] || []), ...(right[supplier] || [])].forEach((row) => {
+        const current = map.get(row.name) || { name: row.name, y2025Qty: 0, y2026Qty: 0, y2025Bad: 0, y2026Bad: 0, y2025Special: 0, y2026Special: 0 };
+        current.y2025Qty += row.y2025Qty || 0;
+        current.y2026Qty += row.y2026Qty || 0;
+        current.y2025Bad += row.y2025Bad || 0;
+        current.y2026Bad += row.y2026Bad || 0;
+        current.y2025Special += row.y2025Special || 0;
+        current.y2026Special += row.y2026Special || 0;
+        map.set(row.name, current);
+      });
+      merged[supplier] = [...map.values()].map((row) => ({
+        ...row,
+        y2025Rate: row.y2025Qty ? Number(((row.y2025Qty - row.y2025Bad) / row.y2025Qty * 100).toFixed(1)) : 0,
+        y2026Rate: row.y2026Qty ? Number(((row.y2026Qty - row.y2026Bad) / row.y2026Qty * 100).toFixed(1)) : 0,
+      })).sort((a, b) => b.y2026Qty - a.y2026Qty || b.y2025Qty - a.y2025Qty).slice(0, 12);
+    });
+    return merged;
+  };
+  materialBySupplierBySite["全公司"] = mergeMaterialSuppliers(materialBySupplierBySite["深圳"], materialBySupplierBySite["杭州"]);
+  return { siteMonthly, supplierMonthlyBySite, issueBySite, issueSourceBySite, issueSuppliersBySite, issueInspectedBySite, materialBySite, materialBySupplierBySite, mainSuppliers, supplierCandidates };
 };
+
+const iqcToggleCell = () => ({ qty: 0, bad: 0, special: 0 });
+const iqcToggleYears = () => ({ 2025: iqcToggleCell(), 2026: iqcToggleCell() });
+const iqcToggleIssueYears = () => ({ 2025: { bad: 0, special: 0 }, 2026: { bad: 0, special: 0 } });
+const iqcAddInspection = (cell, result) => {
+  if (!cell) return;
+  cell.qty += 1;
+  if (result === "不合格") cell.bad += 1;
+  else if (result === "特采") cell.special += 1;
+};
+const iqcAddIssue = (cell, result) => {
+  if (!cell) return;
+  if (result === "不合格") cell.bad += 1;
+  else if (result === "特采") cell.special += 1;
+};
+const iqcEnsure = (map, key, create) => {
+  if (!map[key]) map[key] = create();
+  return map[key];
+};
+const iqcMergeCells = (left, right) => {
+  const merged = iqcToggleYears();
+  [2025, 2026].forEach((year) => {
+    merged[year].qty = (left?.[year]?.qty || 0) + (right?.[year]?.qty || 0);
+    merged[year].bad = (left?.[year]?.bad || 0) + (right?.[year]?.bad || 0);
+    merged[year].special = (left?.[year]?.special || 0) + (right?.[year]?.special || 0);
+  });
+  return merged;
+};
+const iqcMergeIssueCells = (left, right) => {
+  const merged = iqcToggleIssueYears();
+  [2025, 2026].forEach((year) => {
+    merged[year].bad = (left?.[year]?.bad || 0) + (right?.[year]?.bad || 0);
+    merged[year].special = (left?.[year]?.special || 0) + (right?.[year]?.special || 0);
+  });
+  return merged;
+};
+const iqcPresentInspection = (cells, specialAsBad) => {
+  const row = {};
+  [2025, 2026].forEach((year) => {
+    const cell = cells?.[year] || iqcToggleCell();
+    const bad = cell.bad + (specialAsBad ? cell.special : 0);
+    row[`y${year}Qty`] = cell.qty;
+    row[`y${year}Bad`] = bad;
+    row[`y${year}Special`] = cell.special;
+    row[`y${year}Rate`] = cell.qty ? Number(((cell.qty - bad) / cell.qty * 100).toFixed(1)) : 0;
+  });
+  return row;
+};
+
+export function buildIqcSpecialToggleBase(files = [], dateRange) {
+  const months = comparisonMonths(dateRange);
+  const monthSet = new Set(months);
+  const standardFiles = (files || []).filter((file) => file?.module === "IQC" && file.subKind !== "IQC_FOCUS_PROJECT" && file.kind !== "IQC_FOCUS_PROJECT" && Array.isArray(file.rows) && file.rows.length);
+  const sites = {
+    深圳: { monthly: {}, suppliers: {}, materials: {}, materialSuppliers: {}, issues: {}, issueSuppliers: {} },
+    杭州: { monthly: {}, suppliers: {}, materials: {}, materialSuppliers: {}, issues: {}, issueSuppliers: {} },
+  };
+  standardFiles.forEach((file) => {
+    const siteName = iqcSite(file.name);
+    const bucket = sites[siteName] || sites["深圳"];
+    file.rows.forEach((row) => {
+      if (iqcIsInternal(row)) return;
+      const year = yearOf(row["检验开始时间"]);
+      const month = monthOf(row["检验开始时间"]);
+      if ((year !== 2025 && year !== 2026) || !monthSet.has(month)) return;
+      const result = iqcResult(row);
+      const supplier = text(row["供应商"]) || "未填写";
+      const processing = !/PCB|标准件|电子|电气/i.test(text(row["材质分类"]));
+      iqcAddInspection(iqcEnsure(bucket.monthly, month, iqcToggleYears)[year], result);
+      const supplierMonths = iqcEnsure(bucket.suppliers, supplier, () => ({}));
+      iqcAddInspection(iqcEnsure(supplierMonths, month, iqcToggleYears)[year], result);
+      if (!processing) return;
+      const material = text(row["材质分类"]) || "未分类";
+      iqcAddInspection(iqcEnsure(bucket.materials, material, iqcToggleYears)[year], result);
+      const supplierMaterials = iqcEnsure(bucket.materialSuppliers, supplier, () => ({}));
+      iqcAddInspection(iqcEnsure(supplierMaterials, material, iqcToggleYears)[year], result);
+      if (result !== "不合格" && result !== "特采") return;
+      const category = classify(iqcIssueText(row), rules.iqc);
+      iqcAddIssue(iqcEnsure(bucket.issues, category, iqcToggleIssueYears)[year], result);
+      const supplierIssues = iqcEnsure(bucket.issueSuppliers, supplier, () => ({}));
+      iqcAddIssue(iqcEnsure(supplierIssues, category, iqcToggleIssueYears)[year], result);
+    });
+  });
+  const namesOf = (siteBucket) => Object.keys(siteBucket.suppliers).sort((a, b) => String(a).localeCompare(String(b), "zh-CN", { sensitivity: "base", numeric: true }));
+  return {
+    months,
+    sites,
+    supplierNames: {
+      深圳: namesOf(sites["深圳"]),
+      杭州: namesOf(sites["杭州"]),
+      全公司: [...new Set([...namesOf(sites["深圳"]), ...namesOf(sites["杭州"])])].sort((a, b) => String(a).localeCompare(String(b), "zh-CN", { sensitivity: "base", numeric: true })),
+    },
+  };
+}
+
+const iqcSiteParts = (base, site) => site === "全公司" ? [base.sites["深圳"], base.sites["杭州"]] : [base.sites[site] || base.sites["深圳"]];
+
+export function readIqcSpecialToggle(base, site = "全公司", supplier = "全部", specialAsBad = false) {
+  if (!base?.sites) return null;
+  const parts = iqcSiteParts(base, site);
+  const useSupplier = supplier && supplier !== "全部";
+  const monthlyMaps = useSupplier ? parts.map((part) => part.suppliers[supplier] || {}) : parts.map((part) => part.monthly);
+  const monthly = (base.months || []).map((month) => ({
+    month: `${month}月`,
+    ...iqcPresentInspection(monthlyMaps.map((item) => item[month]).reduce((sum, item) => iqcMergeCells(sum, item), iqcToggleYears()), specialAsBad),
+  }));
+  const materialMaps = useSupplier ? parts.map((part) => part.materialSuppliers[supplier] || {}) : parts.map((part) => part.materials);
+  const materialNames = new Set(materialMaps.flatMap((item) => Object.keys(item)));
+  const materials = [...materialNames].map((name) => ({
+    name,
+    ...iqcPresentInspection(materialMaps.map((item) => item[name]).reduce((sum, item) => iqcMergeCells(sum, item), iqcToggleYears()), specialAsBad),
+  })).filter((row) => useSupplier ? row.y2025Qty + row.y2026Qty > 0 : row.y2025Qty + row.y2026Qty >= 50)
+    .sort((a, b) => b.y2026Qty - a.y2026Qty || b.y2025Qty - a.y2025Qty)
+    .slice(0, 12);
+  const issueMaps = useSupplier ? parts.map((part) => part.issueSuppliers[supplier] || {}) : parts.map((part) => part.issues);
+  const issueNames = new Set(issueMaps.flatMap((item) => Object.keys(item)));
+  const issueRows = [...issueNames].map((name) => {
+    const cells = issueMaps.map((item) => item[name]).reduce((sum, item) => iqcMergeIssueCells(sum, item), iqcToggleIssueYears());
+    return {
+      name,
+      y2025Count: cells[2025].bad + (specialAsBad ? cells[2025].special : 0),
+      y2026Count: cells[2026].bad + (specialAsBad ? cells[2026].special : 0),
+    };
+  });
+  const totals = issueRows.reduce((sum, row) => ({ y2025: sum.y2025 + row.y2025Count, y2026: sum.y2026 + row.y2026Count }), { y2025: 0, y2026: 0 });
+  const issues = issueRows.map((row) => ({
+    ...row,
+    y2025Share: Number((row.y2025Count / Math.max(totals.y2025, 1) * 100).toFixed(1)),
+    y2026Share: Number((row.y2026Count / Math.max(totals.y2026, 1) * 100).toFixed(1)),
+  })).filter((row) => row.y2025Count || row.y2026Count)
+    .sort((a, b) => b.y2026Count - a.y2026Count || b.y2025Count - a.y2025Count)
+    .slice(0, 10);
+  const inspected = monthly.reduce((sum, row) => ({ y2025: sum.y2025 + row.y2025Qty, y2026: sum.y2026 + row.y2026Qty }), { y2025: 0, y2026: 0 });
+  return { monthly, materials, issues, inspected, supplierNames: base.supplierNames?.[site] || [] };
+}
+
 
 
 

@@ -1,4 +1,5 @@
 import { cardMeta, chartFamily, closingTitle, packBasicsRows } from "./reportSheetLayout.js";
+import { renderCompanyPorcelain } from "./porcelainSheet.js";
 const escapeHtml = (value) => String(value ?? "").replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#39;" }[char]));
 const finite = (value) => Number.isFinite(Number(value));
 const num = (value) => finite(value) ? Number(value) : null;
@@ -644,6 +645,7 @@ const cardsFor = (text, module, snapshot, visualSpec) => {
 };
 
 export const renderBasicsSheet = (content, { module = "质量分析", snapshot = null, visualSpec = null } = {}) => {
+  if (module === "公司") return renderCompanyPorcelain(content);
   const source = String(content || "");
   const title = source.match(/^#\s+(.+)$/m)?.[1]?.trim() || module || "质量报告";
   const period = (source.match(/统计(?:周期|区间)：([^\n]+)/) || [])[1] || "";

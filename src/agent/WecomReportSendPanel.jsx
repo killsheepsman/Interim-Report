@@ -132,7 +132,7 @@ export function WecomReportSendPanel({ role = "", recipient = "", currentFileNam
       const payload = await previewWecomSend(selectedRows.map((row) => ({ fileName: row.fileName, recipient: receiver || row.recipient, role: row.role })));
       setPreview(payload);
       const blocked = (payload.rows || []).filter((row) => row.status !== "ok");
-      setStatus({ type: blocked.length ? "warn" : "ok", message: payload.configured ? `可发送 ${(payload.rows || []).filter((row) => row.status === "ok").length} 份，需处理 ${blocked.length} 份` : "还没有可发送的地址。请先在员工信息填写群机器人 Webhook，并同步到发送服务" });
+      setStatus({ type: blocked.length ? "warn" : "ok", message: payload.configured ? `可发送 ${(payload.rows || []).filter((row) => row.status === "ok").length} 份，需处理 ${blocked.length} 份` : "还没有可发送的地址。请到系统管理-员工信息填写企业微信 userid" });
     } catch (error) {
       setStatus({ type: "error", message: error.message || "预览失败" });
     }

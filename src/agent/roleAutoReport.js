@@ -1,50 +1,29 @@
-import { loadAgentReport, loadAgentReports, loadQualityAgentRoleSnapshotRegistry, notifyWecomText, sendWecomReports } from "../dataStore.js";
-import { normalizeRoleSnapshotRegistry, pickRoleSnapshotEntry, snapshotMatchesPeriod } from "./roleSnapshotRegistry.js";
+import { loadAgentSkills, loadQualityAgentSnapshotRegistry, notifyWecomText, requestAiChat, saveAgentReportFile, saveLocalAgentReport, searchAiWeb, sendWecomReports } from "../dataStore.js";
+import { actionLines, annotateFacts, buildBriefMessages, buildChatMessages, digestSnapshot, digestUseful, fallbackSkill, monthInQuestion, reviewBrief, SKILL_ID } from "./aiEmployeeSkill.js";
+import { buildBriefFacts, runEmployeeTurn } from "./aiEmployeeAgent.js";
+import { normalizeReportPresentationProfile } from "./reportPresentationProfiles.js";
 
 export const AI_EMPLOYEE_EVENT = "qms-ai-employee-config";
 export const ROLE_NAMES = ["组装人员", "机长", "交付经理", "供应链经理", "研发工程师", "PM", "TPM", "产总"];
-const SAVED_KEY = "qms-ai-employee-config-v1";
-const DRAFT_KEY = "qms-ai-employee-draft-v1";
-const LOG_KEY = "qms-ai-employee-log-v1";
-const RUN_KEY = "qms-ai-employee-run-v1";
-const LEGACY_PEOPLE_KEY = "qms-role-auto-people-v1";
+const SAVED_KEY = "qms-ai-employee-config-v2";
+const DRAFT_KEY = "qms-ai-employee-draft-v2";
+const LOG_KEY = "qms-ai-employee-log-v2";
+const RUN_KEY = "qms-ai-employee-run-v2";
 const RETRY_MS = 30 * 60 * 1000;
+const REQUIRED = ["IQC", "IPQC", "OQC", "DQA", "DOAM"];
 
-export const AI_EMPLOYEE_DELIVERIES = [
-  { key: "alarmOnly", label: "不合格只报警，不发送" },
-  { key: "sendSelf", label: "合格报告发给员工本人" },
-  { key: "sendNamed", label: "合格报告发给指定人" },
-  { key: "alarmNamed", label: "报警发给指定人" },
-];
-
-const emptyDelivery = () => ({ alarmOnly: true, sendSelf: false, sendNamed: false, alarmNamed: false, named: "" });
-const emptyQualify = () => ({
-  mustTitle: "分析结论",
-  actionTitle: "本月措施",
-  directorTitle: "重点关注事项",
-  banned: "数据审计\n已证实事实\n证据等级\n合理推断\nqms-agent-role-version",
-});
-
-const legacyPeople = () => {
-  try {
-    const value = JSON.parse(localStorage.getItem(LEGACY_PEOPLE_KEY) || "[]");
-    return Array.isArray(value) ? value.map((item) => String(item || "").trim()).filter(Boolean) : [];
-  } catch {
-    return [];
-  }
-};
-const cleanPeople = (value) => [...new Set((Array.isArray(value) ? value : []).map((item) => String(item || "").trim()).filter(Boolean))];
 const asInt = (value) => {
   if (value === "" || value === null || value === undefined) return "";
   const number = Number(value);
   return Number.isInteger(number) ? number : "";
 };
+const cleanRules = (value) => [...new Set((Array.isArray(value) ? value : String(value || "").split("\n")).map((item) => String(item || "").replace(/\s+/g, " ").trim()).filter((item) => item && item.length <= 200))].slice(0, 20);
 
 export const blankAiEmployeeConfig = () => ({
-  people: legacyPeople(),
   period: { day: 8, monthsBack: 1 },
-  qualify: emptyQualify(),
-  delivery: emptyDelivery(),
+  job: { brief: true, alarmMissing: true },
+  recipient: "",
+  addedRules: [],
   confirmed: false,
   savedAt: "",
 });
@@ -52,24 +31,14 @@ export const blankAiEmployeeConfig = () => ({
 export const normalizeAiEmployeeConfig = (value = {}) => {
   const base = blankAiEmployeeConfig();
   const period = value.period || {};
-  const qualify = value.qualify || {};
-  const delivery = value.delivery || {};
+  const job = value.job || {};
   return {
-    people: cleanPeople(value.people ?? base.people),
     period: { day: asInt(period.day ?? base.period.day), monthsBack: asInt(period.monthsBack ?? base.period.monthsBack) },
-    qualify: {
-      mustTitle: String(qualify.mustTitle ?? base.qualify.mustTitle).trim(),
-      actionTitle: String(qualify.actionTitle ?? base.qualify.actionTitle).trim(),
-      directorTitle: String(qualify.directorTitle ?? base.qualify.directorTitle).trim(),
-      banned: String(qualify.banned ?? base.qualify.banned),
-    },
-    delivery: {
-      alarmOnly: delivery.alarmOnly !== false,
-      sendSelf: delivery.sendSelf === true,
-      sendNamed: delivery.sendNamed === true,
-      alarmNamed: delivery.alarmNamed === true,
-      named: String(delivery.named || "").trim(),
-    },
+    job: { brief: job.brief !== false, alarmMissing: job.alarmMissing !== false },
+    recipient: String(value.recipient || "").trim(),
+    skillId: String(value.skillId || "quality-director-brief").trim() || "quality-director-brief",
+    layoutProfileId: normalizeReportPresentationProfile(value.layoutProfileId || "porcelain-sheet-v1"),
+    addedRules: cleanRules(value.addedRules),
     confirmed: value.confirmed === true,
     savedAt: String(value.savedAt || ""),
   };
@@ -102,18 +71,14 @@ export const writeAiEmployeeSaved = (config) => {
   return next;
 };
 export const configBody = (config) => JSON.stringify(normalizeAiEmployeeConfig(config || {}), (key, value) => (key === "confirmed" || key === "savedAt" ? undefined : value));
-
 export const configGaps = (config) => {
   const gaps = [];
   const day = config?.period?.day;
   const back = config?.period?.monthsBack;
-  if (!config?.people?.length) gaps.push("还没有勾选人员");
-  if (!Number.isInteger(day) || day < 1 || day > 28) gaps.push("启动日要填 1 到 28 的整数");
-  if (!Number.isInteger(back) || back < 0 || back > 12) gaps.push("往前几个月要填 0 到 12 的整数");
-  if (!config?.qualify?.mustTitle || !config?.qualify?.actionTitle || !config?.qualify?.directorTitle) gaps.push("合格标准里的标题还没填全");
-  const delivery = config?.delivery || {};
-  if (!delivery.alarmOnly && !delivery.sendSelf && !delivery.sendNamed && !delivery.alarmNamed) gaps.push("发给谁至少要选一项");
-  if ((delivery.sendNamed || delivery.alarmNamed) && !delivery.named) gaps.push("选了指定人，还没有选出是谁");
+  if (!Number.isInteger(day) || day < 1 || day > 28) gaps.push("每月第几日要填 1 到 28");
+  if (!Number.isInteger(back) || back < 0 || back > 12) gaps.push("往前几个月要填 0 到 12");
+  if (!config?.job?.brief && !config?.job?.alarmMissing) gaps.push("至少勾选一件到点要做的事");
+  if (!String(config?.recipient || "").trim()) gaps.push("要选接收人");
   return gaps;
 };
 
@@ -161,7 +126,6 @@ const shouldRun = (config, now, schedule) => {
   return now >= schedule.triggerDate;
 };
 const dateText = (date) => date.getFullYear() + "年" + (date.getMonth() + 1) + "月" + date.getDate() + "日";
-
 export const previewSchedule = (config, now = new Date()) => {
   const day = Number(config?.period?.day);
   const back = Number(config?.period?.monthsBack);
@@ -173,143 +137,328 @@ export const previewSchedule = (config, now = new Date()) => {
   return "下一次是 " + dateText(next) + "，统计 " + period.label + "（" + period.start + " 至 " + period.end + "）";
 };
 
-export const readAiEmployeeLog = () => readJson(LOG_KEY) || { phase: "等待配置", summary: "", alarms: [], passes: [], updatedAt: "" };
-const readRun = () => readJson(RUN_KEY) || { buckets: {}, sent: [] };
+const emptyLog = () => ({ phase: "等待配置", summary: "", alarms: [], passes: [], actions: [], brief: "", progress: 0, activity: [], updatedAt: "" });
+export const readAiEmployeeLog = () => ({ ...emptyLog(), ...(readJson(LOG_KEY) || {}) });
+const readRun = () => readJson(RUN_KEY) || { buckets: {} };
 const sameList = (left = [], right = []) => JSON.stringify(left) === JSON.stringify(right);
 const publishLog = (next) => {
   const prev = readAiEmployeeLog();
-  if (prev.phase === next.phase && prev.summary === next.summary && sameList(prev.alarms, next.alarms) && sameList(prev.passes, next.passes)) return prev;
-  const value = { ...next, updatedAt: new Date().toISOString() };
+  const keep = next.report === false;
+  const value = {
+    phase: keep ? (prev.phase || "") : (next.phase || ""),
+    summary: keep ? (prev.summary || "") : (next.summary || ""),
+    alarms: keep ? (prev.alarms || []) : (next.alarms || []),
+    passes: keep ? (prev.passes || []) : (next.passes || []),
+    actions: next.actions || prev.actions || [],
+    brief: next.brief == null ? (prev.brief || "") : next.brief,
+    fileName: keep ? (prev.fileName || "") : String(next.fileName || ""),
+    savedPath: keep ? (prev.savedPath || "") : String(next.savedPath || ""),
+    recipient: keep ? (prev.recipient || "") : String(next.recipient || ""),
+    resultPhase: keep ? (prev.resultPhase || "") : (next.phase || ""),
+    resultSummary: keep ? (prev.resultSummary || "") : (next.summary || ""),
+    resultAt: keep ? (prev.resultAt || "") : new Date().toISOString(),
+    progress: next.progress == null ? (prev.progress || 0) : next.progress,
+    activity: Array.isArray(next.activity) ? next.activity : (prev.activity || []),
+    updatedAt: new Date().toISOString(),
+  };
+  if (prev.phase === value.phase && prev.summary === value.summary && sameList(prev.alarms, value.alarms) && sameList(prev.passes, value.passes) && prev.brief === value.brief && prev.fileName === value.fileName && prev.savedPath === value.savedPath && prev.progress === value.progress && (prev.activity || []).length === (value.activity || []).length) return prev;
   localStorage.setItem(LOG_KEY, JSON.stringify(value));
   window.dispatchEvent(new Event(AI_EMPLOYEE_EVENT));
   return value;
 };
-export const matchEmployeeRole = (row = {}) => {
-  const post = String(row.post || "").trim();
-  return ROLE_NAMES.find((role) => role.toLowerCase() === post.toLowerCase()) || "";
-};
-const bannedWords = (text) => String(text || "").split(/[\n,，、]/).map((item) => item.trim()).filter(Boolean);
-const qualifyContent = ({ role, content, rules }) => {
-  const fails = [];
-  const actionTitle = role === "产总" ? rules.directorTitle : rules.actionTitle;
-  if (rules.mustTitle && !String(content).includes(rules.mustTitle)) fails.push("没有「" + rules.mustTitle + "」");
-  if (actionTitle && !String(content).includes(actionTitle)) fails.push("没有「" + actionTitle + "」");
-  bannedWords(rules.banned).forEach((word) => { if (String(content).includes(word)) fails.push("出现了「" + word + "」"); });
-  return fails;
-};
-const reportWindow = (report) => {
-  const period = report?.period || {};
-  return { start: period._periodStart || period.start || "", end: period._periodEnd || period.end || "" };
-};
 const useridOf = (row) => String(row?.wecom || row?.id || "").trim();
+const covers = (entry, period) => {
+  const range = entry?.dateRange || {};
+  const key = period.year + "-" + String(period.month).padStart(2, "0");
+  if (String(range.periodKey || "") === key) return true;
+  const start = range.start2026 || range.start || "";
+  const end = range.end2026 || range.end || "";
+  return Boolean(start && end && start <= period.start && end >= period.end);
+};
+const pickEntries = (history, period) => {
+  const best = new Map();
+  (Array.isArray(history) ? history : []).forEach((entry) => {
+    const module = String(entry?.module || "");
+    if (![...REQUIRED, "QMS"].includes(module) || !covers(entry, period)) return;
+    if (entry?.status && entry.status !== "ready") return;
+    const score = (entry?.dateRange?.granularity || entry?.granularity) === "month" ? 2 : 1;
+    const current = best.get(module);
+    const prev = current ? ((current.dateRange?.granularity || current.granularity) === "month" ? 2 : 1) : -1;
+    if (!current || score > prev || (score === prev && String(entry.generatedAt || "") > String(current.generatedAt || ""))) best.set(module, entry);
+  });
+  return best;
+};
+const loadSkillText = async (skillId = SKILL_ID) => {
+  const id = String(skillId || SKILL_ID).trim() || SKILL_ID;
+  try {
+    const payload = await loadAgentSkills([id]);
+    const text = payload?.skills?.find((item) => item.id === id)?.content || "";
+    if (text.trim()) return text;
+  } catch {}
+  if (id === SKILL_ID) return fallbackSkill();
+  throw new Error("没有读到所选简报技能");
+};
+const notifyPerson = async (employees, name, text) => {
+  const row = (employees || []).find((item) => String(item?.name || "").trim() === name);
+  const userid = useridOf(row);
+  if (!userid) return name + "没有工号，消息没有发出去";
+  await notifyWecomText(userid, text);
+  return "";
+};
+
+const monthCandidates = (history, module, period) => {
+  const key = period.year + "-" + String(period.month).padStart(2, "0");
+  return (Array.isArray(history) ? history : [])
+    .filter((entry) => String(entry?.module || "") === module && (!entry?.status || entry.status === "ready") && entry?.id)
+    .filter((entry) => (entry?.dateRange?.granularity || entry?.granularity) === "month" && String(entry?.dateRange?.periodKey || "").startsWith(String(period.year) + "-"))
+    .sort((left, right) => {
+      const leftExact = String(left?.dateRange?.periodKey || "") === key ? 1 : 0;
+      const rightExact = String(right?.dateRange?.periodKey || "") === key ? 1 : 0;
+      if (leftExact !== rightExact) return rightExact - leftExact;
+      return String(right.generatedAt || "").localeCompare(String(left.generatedAt || ""));
+    });
+};
+const hasMonthRow = (digest, period) => {
+  const label = String(period.month) + "月";
+  return Object.values(digest || {}).some((item) => Array.isArray(item?.monthly) && item.monthly.some((row) => String(row?.month || "").replace(/\s/g, "") === label));
+};
+export const collectCompanyFacts = async (period) => {
+  const index = await loadQualityAgentSnapshotRegistry({ indexOnly: true });
+  if (!index) return { facts: [], missing: ["没有连上数据服务，已经保存的快照这次没有读到"] };
+  const history = index?.history || [];
+  const missing = [];
+  const facts = [];
+  for (const module of [...REQUIRED, "QMS"]) {
+    const candidates = monthCandidates(history, module, period);
+    if (!candidates.length) {
+      if (REQUIRED.includes(module)) missing.push(module + " 没有盖住 " + period.label + " 的快照");
+      continue;
+    }
+    let chosen = null;
+    let fallback = null;
+    for (const meta of candidates.slice(0, 4)) {
+      const loaded = await loadQualityAgentSnapshotRegistry({ entryId: meta.id });
+      const entry = loaded?.history?.[0] || meta;
+      const digest = digestSnapshot(entry);
+      if (!digestUseful(digest)) continue;
+      if (hasMonthRow(digest, period)) { chosen = digest; break; }
+      if (!fallback) fallback = digest;
+    }
+    const digest = chosen || fallback;
+    if (!digest) {
+      if (REQUIRED.includes(module)) missing.push(module + " 快照里没有可用指标");
+      continue;
+    }
+    facts.push(digest);
+  }
+  return { facts, missing };
+};
+
 let cycleLock = false;
 
 export const runAiEmployeeCycle = async (employees = [], now = new Date()) => {
   if (cycleLock) return readAiEmployeeLog();
   const saved = readAiEmployeeSaved();
-  if (!saved) return publishLog({ phase: "等待配置", summary: "配置还没保存。保存之前不会自己开工。", alarms: [], passes: [] });
+  if (!saved) return publishLog({ phase: "等待配置", summary: "配置还没保存。保存之前不会自己开工。", alarms: [], passes: [], report: false });
   const gaps = configGaps(saved);
-  if (gaps.length) return publishLog({ phase: "等待配置", summary: gaps.join("；"), alarms: [], passes: [] });
+  if (gaps.length) return publishLog({ phase: "等待配置", summary: gaps.join("；"), alarms: [], passes: [], report: false });
   const schedule = scheduleOf(saved, now);
   if (!shouldRun(saved, now, schedule)) {
-    const next = nextTriggerDate(now, Number(saved.period.day));
-    return publishLog({ phase: "未到日期", summary: previewSchedule(saved, now) + (now >= schedule.triggerDate ? "。已经错过的那一轮不补做。" : "。"), alarms: readAiEmployeeLog().alarms || [], passes: readAiEmployeeLog().passes || [] });
+    const log = readAiEmployeeLog();
+    return publishLog({ phase: "未到日期", summary: previewSchedule(saved, now) + (schedule && now >= schedule.triggerDate ? "。已经错过的那一轮不补做。" : "。"), alarms: log.alarms || [], passes: log.passes || [], actions: log.actions, brief: log.brief, report: false });
   }
-  if (!employees.length) return publishLog({ phase: "正在处理", summary: "员工名单还没读到，这一轮先等一下。", alarms: readAiEmployeeLog().alarms || [], passes: readAiEmployeeLog().passes || [] });
   const runState = readRun();
   const bucketKey = schedule.triggerKey + "|" + saved.savedAt;
-  const bucket = runState.buckets[bucketKey] || { people: {} };
-  const alarms = [];
-  const passes = [];
-  const chosen = [];
-  saved.people.forEach((name) => {
-    const previous = bucket.people[name];
-    if (previous && (previous.status === "sent" || previous.status === "pass")) return;
-    if (previous?.status === "alarm" && Date.now() - Number(previous.at || 0) < RETRY_MS) return;
-    const row = employees.find((item) => String(item?.name || "").trim() === name);
-    if (!row) { alarms.push({ name, detail: "员工名单里没有这个人" }); return; }
-    chosen.push({ ...row, name, roleName: matchEmployeeRole(row) });
-  });
-  if (!chosen.length && !alarms.length) {
-    const doneAlarms = Object.entries(bucket.people).filter(([, row]) => row.status === "alarm").map(([name, row]) => ({ name, detail: row.detail }));
-    const donePasses = Object.entries(bucket.people).filter(([, row]) => row.status !== "alarm").map(([name, row]) => ({ name, detail: row.detail }));
-    return publishLog({ phase: "本轮已核对", summary: schedule.period.label + " 这一轮已经按配置处理过。", alarms: doneAlarms, passes: donePasses });
+  const bucket = runState.buckets[bucketKey] || { attempts: 0, notified: false };
+  if (bucket.status === "sent" || bucket.status === "pass") {
+    return publishLog({ phase: "本轮已完成", summary: schedule.period.label + "的公司简报已经处理过。", alarms: [], passes: [{ name: "公司简报", detail: bucket.detail || "已完成" }], actions: bucket.actions || [], brief: bucket.brief || "", report: false });
+  }
+  if (bucket.status === "alarm" && Date.now() - Number(bucket.at || 0) < RETRY_MS) return readAiEmployeeLog();
+  if (bucket.status === "fail" && Number(bucket.attempts || 0) >= 2) {
+    return publishLog({ phase: "本轮已停下", summary: schedule.period.label + "写了两次仍不合格，这一轮停下。", alarms: [{ name: "公司简报", detail: bucket.detail || "不合格" }], passes: [], actions: bucket.actions || [], brief: bucket.brief || "" });
   }
   cycleLock = true;
-  publishLog({ phase: "正在处理", summary: "正在处理 " + schedule.period.label + "，这一轮 " + (chosen.length + alarms.length) + " 人。", alarms: readAiEmployeeLog().alarms || [], passes: readAiEmployeeLog().passes || [] });
+  publishLog({ phase: "正在处理", summary: "正在核对 " + schedule.period.label + " 的快照。", alarms: [], passes: [] });
   try {
-    const byRole = new Map();
-    chosen.forEach((row) => {
-      if (!row.roleName) alarms.push({ name: row.name, detail: "员工信息里看不出岗位" });
-      else byRole.set(row.roleName, [...(byRole.get(row.roleName) || []), row]);
-    });
-    for (const [role, people] of byRole) {
-      let registry = null;
-      try { registry = normalizeRoleSnapshotRegistry(await loadQualityAgentRoleSnapshotRegistry({ role, period: schedule.period })); }
-      catch (error) {
-        people.forEach((row) => alarms.push({ name: row.name, detail: role + " 的快照没有读到：" + (error?.message || "请检查项目服务") }));
-        continue;
-      }
-      for (const row of people) {
-        const entry = pickRoleSnapshotEntry(registry, { role, recipient: row.name, period: schedule.period });
-        const ready = entry && (snapshotMatchesPeriod(entry, schedule.period) || entry.matchLevel === "coverage");
-        if (!ready) { alarms.push({ name: row.name, detail: schedule.period.label + "没有可用快照，这一轮停下，没有改已有报告" }); continue; }
-        let match = null;
-        try {
-          const listed = await loadAgentReports({ role, recipient: row.name, limit: 40 });
-          match = (listed?.reports || []).filter((item) => { const window = reportWindow(item); return window.start === schedule.period.start && window.end === schedule.period.end; }).sort((a, b) => String(b.updatedAt || b.savedAt || "").localeCompare(String(a.updatedAt || a.savedAt || "")))[0] || null;
-        } catch (error) { alarms.push({ name: row.name, detail: "报告没有读到：" + (error?.message || "请检查项目服务") }); continue; }
-        if (!match?.fileName) { alarms.push({ name: row.name, detail: schedule.period.label + "还没有对上的报告正文，这一轮不发送" }); continue; }
-        let content = "";
-        try { content = String((await loadAgentReport(match.fileName))?.content || ""); }
-        catch (error) { alarms.push({ name: row.name, detail: "报告正文没有读到：" + (error?.message || "请检查项目服务") }); continue; }
-        const fails = qualifyContent({ role, content, rules: saved.qualify });
-        if (fails.length) { alarms.push({ name: row.name, detail: fails.join("；") }); continue; }
-        const targets = [];
-        if (saved.delivery.sendSelf) targets.push(row.name);
-        if (saved.delivery.sendNamed && saved.delivery.named) targets.push(saved.delivery.named);
-        const sentTo = [];
-        let sendError = "";
-        for (const target of targets) {
-          const sentKey = schedule.triggerKey + "|" + match.fileName + "|" + target;
-          if (runState.sent.includes(sentKey)) { sentTo.push(target); continue; }
-          try {
-            const result = await sendWecomReports([match.fileName], target, { format: "html" });
-            if (!result?.ok) throw new Error(result?.results?.find((item) => !item.ok)?.reason || "发送失败");
-            runState.sent.push(sentKey);
-            sentTo.push(target);
-          } catch (error) { sendError = error?.message || "发送失败"; }
-        }
-        if (sendError) alarms.push({ name: row.name, detail: "报告合格，但没有发出去：" + sendError });
-        else if (sentTo.length) passes.push({ name: row.name, detail: schedule.period.label + "合格，已发给 " + sentTo.join("、") });
-        else passes.push({ name: row.name, detail: schedule.period.label + "合格。这一项没有勾选发送，所以没有发。" });
-      }
-    }
+    const { facts, missing: realMissing } = await collectCompanyFacts(schedule.period);
     const nowMs = Date.now();
-    alarms.forEach((item) => { bucket.people[item.name] = { ...(bucket.people[item.name] || {}), status: "alarm", detail: item.detail, at: nowMs }; });
-    passes.forEach((item) => { bucket.people[item.name] = { status: item.detail.includes("已发给") ? "sent" : "pass", detail: item.detail, at: nowMs }; });
-    if (saved.delivery.alarmNamed && alarms.length) {
-      const named = employees.find((row) => String(row?.name || "").trim() === saved.delivery.named);
-      const userid = useridOf(named);
-      const fresh = alarms.filter((item) => !bucket.people[item.name]?.notified);
-      if (!userid) alarms.push({ name: saved.delivery.named || "指定人", detail: "指定人没有工号，企业微信报警没有发出去" });
-      else if (fresh.length) {
-        try {
-          const text = ["AI员工报警 " + schedule.period.label, ...fresh.map((item) => item.name + "：" + item.detail)].join("\n").slice(0, 1500);
-          await notifyWecomText(userid, text);
-          fresh.forEach((item) => { if (bucket.people[item.name]) bucket.people[item.name].notified = true; });
-        } catch (error) { alarms.push({ name: saved.delivery.named, detail: "企业微信报警没有发出去：" + (error?.message || "发送失败") }); }
+    if (realMissing.length) {
+      bucket.status = "alarm";
+      bucket.at = nowMs;
+      bucket.detail = realMissing.join("；");
+      let notifyError = "";
+      if (saved.job.alarmMissing && !bucket.notified) {
+        try { notifyError = await notifyPerson(employees, saved.recipient, ["公司简报缺数据 " + schedule.period.label, ...realMissing].join("\n").slice(0, 1500)); }
+        catch (error) { notifyError = error?.message || "报警没有发出去"; }
+        if (!notifyError) bucket.notified = true;
       }
+      runState.buckets[bucketKey] = bucket;
+      localStorage.setItem(RUN_KEY, JSON.stringify(runState));
+      const alarms = [{ name: "公司简报", detail: bucket.detail }];
+      if (notifyError) alarms.push({ name: saved.recipient, detail: notifyError });
+      return publishLog({ phase: realMissing[0].startsWith("没有连上") ? "没有连上" : "缺数据", summary: realMissing[0].startsWith("没有连上") ? realMissing[0] : schedule.period.label + "还不能写简报：" + realMissing.join("；"), alarms, passes: [] });
     }
-    if (alarms.some((item) => item.detail.includes("没有工号") || item.detail.includes("企业微信报警"))) {
-      alarms.filter((item) => item.detail.includes("没有工号") || item.detail.includes("企业微信报警")).forEach((item) => { bucket.people[item.name] = { ...(bucket.people[item.name] || {}), status: "alarm", detail: item.detail, at: nowMs }; });
+    if (!saved.job.brief) {
+      bucket.status = "pass";
+      bucket.at = nowMs;
+      bucket.detail = schedule.period.label + " 快照齐全。这一项没有勾选出简报。";
+      runState.buckets[bucketKey] = bucket;
+      localStorage.setItem(RUN_KEY, JSON.stringify(runState));
+      return publishLog({ phase: "本轮已完成", summary: bucket.detail, alarms: [], passes: [{ name: "公司简报", detail: bucket.detail }] });
     }
+    const skill = await loadSkillText(saved.skillId);
+    const prior = readAiEmployeeLog().actions || [];
+    const result = await requestAiChat(buildBriefMessages({ skill, period: schedule.period, facts: (await buildBriefFacts(schedule.period)) || JSON.stringify(facts).slice(0, 18000), actions: prior, addedRules: saved.addedRules }), { max_tokens: 8000, agent: true, operation: "ai-employee-brief" });
+    const reviewed = reviewBrief(result?.content || "");
+    if (reviewed.fails.length) {
+      bucket.attempts = Number(bucket.attempts || 0) + 1;
+      bucket.status = bucket.attempts >= 2 ? "fail" : "alarm";
+      bucket.at = nowMs;
+      bucket.detail = reviewed.fails.join("；");
+      bucket.brief = reviewed.content.slice(0, 8000);
+      runState.buckets[bucketKey] = bucket;
+      localStorage.setItem(RUN_KEY, JSON.stringify(runState));
+      return publishLog({ phase: bucket.status === "fail" ? "本轮已停下" : "简报不合格", summary: schedule.period.label + " 的简报没有发出去。", alarms: [{ name: "公司简报", detail: bucket.detail }], passes: [], brief: bucket.brief });
+    }
+    const actions = actionLines(reviewed.content);
+    let fileName = "";
+    let saveError = "";
+    try {
+      const stored = await saveAgentReportFile({ module: "公司", skillName: saved.skillId || SKILL_ID, layoutProfileId: saved.layoutProfileId, period: { start: schedule.period.start, end: schedule.period.end, label: schedule.period.label }, model: result?.model || "", content: reviewed.content });
+      fileName = stored?.fileName || "";
+    } catch (error) {
+      saveError = error?.message || "没有存进报告库";
+      try { await saveLocalAgentReport({ module: "公司", skillName: saved.skillId || SKILL_ID, layoutProfileId: saved.layoutProfileId, period: { start: schedule.period.start, end: schedule.period.end, label: schedule.period.label }, model: result?.model || "", content: reviewed.content }); } catch {}
+    }
+    let sendError = "";
+    if (fileName) {
+      try {
+        const sent = await sendWecomReports([fileName], saved.recipient, { format: "html", layoutProfileId: saved.layoutProfileId });
+        if (!sent?.ok) throw new Error(sent?.results?.find((item) => !item.ok)?.reason || "发送失败");
+      } catch (error) { sendError = error?.message || "发送失败"; }
+    } else {
+      try {
+        const note = await notifyPerson(employees, saved.recipient, (schedule.period.label + "公司简报\n" + reviewed.content).slice(0, 1500));
+        sendError = note;
+      } catch (error) { sendError = error?.message || "发送失败"; }
+    }
+    bucket.status = sendError ? "alarm" : "sent";
+    bucket.at = nowMs;
+    bucket.detail = sendError ? "简报已写好，但没有发给" + saved.recipient + "：" + sendError : schedule.period.label + "已发给 " + saved.recipient;
+    bucket.actions = actions;
+    bucket.brief = reviewed.content.slice(0, 8000);
+    bucket.fileName = fileName;
     runState.buckets[bucketKey] = bucket;
     localStorage.setItem(RUN_KEY, JSON.stringify(runState));
-    const allAlarms = Object.entries(bucket.people).filter(([, row]) => row.status === "alarm").map(([name, row]) => ({ name, detail: row.detail }));
-    const allPasses = Object.entries(bucket.people).filter(([, row]) => row.status !== "alarm").map(([name, row]) => ({ name, detail: row.detail }));
-    return publishLog({ phase: "本轮已核对", summary: describeSchedule(saved, now) + "。不合格 " + allAlarms.length + " 人，通过 " + allPasses.length + " 人。", alarms: allAlarms, passes: allPasses });
+    const alarms = sendError ? [{ name: "公司简报", detail: bucket.detail }] : [];
+    const passes = sendError ? [] : [{ name: "公司简报", detail: bucket.detail }];
+    return publishLog({ phase: sendError ? "已写好未发出" : "本轮已完成", summary: bucket.detail, alarms, passes, actions, brief: bucket.brief });
   } catch (error) {
-    return publishLog({ phase: "本轮已核对", summary: "这一轮没有做完：" + (error?.message || "请检查项目服务"), alarms, passes });
+    const message = error?.message || "请检查项目服务";
+    try {
+      const runState = readRun();
+      const schedule = scheduleOf(readAiEmployeeSaved(), new Date());
+      const saved = readAiEmployeeSaved();
+      if (schedule && saved) {
+        const bucketKey = schedule.triggerKey + "|" + saved.savedAt;
+        const bucket = runState.buckets[bucketKey] || { attempts: 0, notified: false };
+        bucket.status = "alarm";
+        bucket.at = Date.now();
+        bucket.detail = message;
+        runState.buckets[bucketKey] = bucket;
+        localStorage.setItem(RUN_KEY, JSON.stringify(runState));
+      }
+    } catch {}
+    return publishLog({ phase: "本轮未完成", summary: message, alarms: [{ name: "公司简报", detail: message }], passes: [] });
   } finally { cycleLock = false; }
+};
+
+export const runAiEmployeeNow = async (employees = [], config, yearMonth = "", options = {}) => {
+  if (cycleLock) throw new Error("正在生成，请稍等");
+  const saved = normalizeAiEmployeeConfig(config || readAiEmployeeSaved() || readAiEmployeeDraft());
+  const picked = monthPeriod(yearMonth);
+  const schedule = picked ? { period: picked } : scheduleOf(saved);
+  if (!schedule?.period) throw new Error("请选择要生成的月份");
+  cycleLock = true;
+  const activity = [];
+  const step = (progress, message) => {
+    activity.push({ at: new Date().toISOString(), message });
+    return publishLog({ phase: "正在生成", summary: message, progress, activity: activity.slice(), alarms: [], passes: [] });
+  };
+  step(8, "开始按 " + schedule.period.label + " 写公司简报。");
+  try {
+    step(18, "正在读取各模块快照。");
+    const { facts, missing } = await collectCompanyFacts(schedule.period);
+    if (missing.length) {
+      step(100, "快照没对上：" + missing.join("；"));
+      return publishLog({ phase: missing[0].startsWith("没有连上") ? "没有连上" : "缺数据", summary: missing[0].startsWith("没有连上") ? missing[0] : schedule.period.label + "还不能写简报：" + missing.join("；"), progress: 100, activity: activity.slice(), alarms: [{ name: "公司简报", detail: missing.join("；") }], passes: [] });
+    }
+    step(36, "六个模块的快照都对上了。");
+    step(44, "正在读取简报技能。");
+    const skill = await loadSkillText(saved.skillId);
+    const prior = readAiEmployeeLog().actions || [];
+    step(58, "正在让模型写简报。这一步最久，结束前不会有新正文。");
+    const result = await requestAiChat(buildBriefMessages({ skill, period: schedule.period, facts: (await buildBriefFacts(schedule.period)) || JSON.stringify(facts).slice(0, 18000), actions: prior, addedRules: saved.addedRules }), { max_tokens: 8000, agent: true, operation: "ai-employee-brief" });
+    step(82, "模型已返回，正在检查版式。");
+    const reviewed = reviewBrief(result?.content || "");
+    if (reviewed.fails.length) {
+      const headings = (reviewed.content.match(/^(?:#{1,3}\s*)?\S.{0,24}$/gm) || []).slice(0, 8).join("、");
+      const detail = reviewed.fails.join("；") + (headings ? "。看到的标题：" + headings : "。模型没有写出标题。");
+      step(100, "检查没通过：" + detail);
+      return publishLog({ phase: "简报不合格", summary: detail, progress: 100, activity: activity.slice(), alarms: [{ name: "公司简报", detail }], passes: [], brief: reviewed.content.slice(0, 8000) });
+    }
+    const actions = actionLines(reviewed.content);
+    let fileName = "";
+    let savedPath = "";
+    const reportBody = { module: "公司", skillName: saved.skillId || SKILL_ID, layoutProfileId: saved.layoutProfileId, recipient: saved.recipient || "", period: { start: schedule.period.start, end: schedule.period.end, label: schedule.period.label }, model: result?.model || "", content: reviewed.content };
+    try {
+      const stored = await saveAgentReportFile(reportBody);
+      fileName = stored?.fileName || "";
+      savedPath = stored?.relativePath || (fileName ? ("outputs/ai_saved_reports/" + fileName) : "");
+    } catch {
+      try {
+        const local = await saveLocalAgentReport(reportBody);
+        fileName = local?.fileName || "";
+        savedPath = fileName ? ("本机浏览器里的报告，" + fileName) : "";
+      } catch {}
+    }
+    let sendError = "";
+    if (options.send && saved.recipient && !fileName) sendError = "报告没有存进报告库，发不出去";
+    else if (options.send && saved.recipient) {
+      try {
+        const sent = await sendWecomReports([fileName], saved.recipient, { format: "html", layoutProfileId: saved.layoutProfileId });
+        if (!sent?.ok) throw new Error(sent?.results?.find((item) => !item.ok)?.reason || "发送失败");
+      } catch (error) { sendError = error?.message || "发送失败"; }
+    }
+    const where = savedPath ? ("报告保存在 " + savedPath) : "报告没有存下来";
+    const detail = !options.send
+      ? (schedule.period.label + "已写好，还没有发送。" + where)
+      : (!saved.recipient
+        ? (schedule.period.label + "已写好，没有接收人，所以没有发送。" + where)
+        : (sendError ? ("没有发给" + saved.recipient + "：" + sendError + "。" + where) : (schedule.period.label + "已发给 " + saved.recipient + "。" + where)));
+    const phase = !fileName ? "没有保存" : (!options.send || !saved.recipient || sendError ? "已写好未发出" : "已发送");
+    const log = publishLog({ phase, summary: detail, progress: 100, activity: activity.slice(), fileName, savedPath, recipient: saved.recipient || "", alarms: (saved.recipient && sendError) ? [{ name: "公司简报", detail }] : [], passes: (saved.recipient && sendError) ? [] : [{ name: "公司简报", detail }], actions, brief: "" });
+    return log;
+  } catch (error) {
+    const message = error?.message || "没有生成";
+    step(100, message);
+    return publishLog({ phase: "没有生成", summary: message, progress: 100, activity: activity.slice(), alarms: [{ name: "公司简报", detail: message }], passes: [] });
+  } finally { cycleLock = false; }
+};
+
+export const sendAiEmployeeReport = async (recipient, fileName, layoutProfileId) => {
+  const name = String(recipient || "").trim();
+  const file = String(fileName || "").trim();
+  if (!name) throw new Error("请先选择接收人");
+  if (!file) throw new Error("请先选择一份已保存的简报");
+  const sent = await sendWecomReports([file], name, { format: "html", layoutProfileId });
+  if (!sent?.ok) throw new Error(sent?.results?.find((item) => !item.ok)?.reason || "发送失败");
+  return publishLog({ phase: "已发送", summary: "已发给 " + name + "。", fileName: file, savedPath: "outputs/ai_saved_reports/" + file, recipient: name, alarms: [], passes: [{ name: "公司简报", detail: "已发给 " + name }], progress: 100 });
+};
+
+export const askAiEmployee = async ({ question, history = [], addedRules = [], yearMonth = "" } = {}) => {
+  const saved = readAiEmployeeSaved() || readAiEmployeeDraft();
+  const skill = await loadSkillText(saved.skillId);
+  const answer = await runEmployeeTurn({ question, history, addedRules: addedRules.length ? addedRules : saved.addedRules, skill });
+  return { content: answer.content, period: yearMonth || "" };
 };

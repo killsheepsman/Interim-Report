@@ -734,6 +734,7 @@ export const testAiConfig = async (config) => {
   if (next && typeof localStorage !== "undefined") localStorage.setItem(LOCAL_AI_CONFIG_KEY, JSON.stringify(next));
   return await aiApiJson("/ai/test", { method: "POST", body: JSON.stringify(next ? { config: next } : {}) });
 };
+export const searchAiWeb = async (query) => await aiApiJson("/ai/web-search", { method: "POST", body: JSON.stringify({ query: String(query || "").slice(0, 120), agent: true, feature: "qualityAgent" }) });
 export const requestAiChat = async (messages, options = {}) => {
   const { signal, config, ...payload } = options || {};
   const local = localAiRequestConfig(config || {});
@@ -745,7 +746,23 @@ export const loadWecomConfig = async () => await aiApiJson("/ai/wecom-config", {
 export const saveWecomConfig = async (config) => await aiApiJson("/ai/wecom-config", { method: "PUT", body: JSON.stringify(config) });
 export const testWecomSend = async (userid) => await aiApiJson("/ai/wecom-test", { method: "POST", body: JSON.stringify({ userid, feature: "qualityAgent" }) });
 export const notifyWecomText = async (userid, text) => await aiApiJson("/ai/wecom-test", { method: "POST", body: JSON.stringify({ userid, text: String(text || "").slice(0, 1500), feature: "qualityAgent" }) });
-export const previewWecomSend = async (items) => await aiApiJson("/ai/wecom-preview", { method: "POST", body: JSON.stringify({ items, feature: "qualityAgent" }) });
+const systemEmployeesForSend = () => {
+  try {
+    const value = JSON.parse(localStorage.getItem("qms-qmdp-system-config-v1") || "{}");
+    const rows = Array.isArray(value.employees) ? value.employees : [];
+    return rows.map((row) => ({
+      id: String(row?.id || ""),
+      name: String(row?.name || ""),
+      dept: String(row?.dept || ""),
+      wecom: String(row?.wecom || ""),
+      webhook: String(row?.webhook || ""),
+      post: String(row?.post || ""),
+    })).filter((row) => row.name).slice(0, 5000);
+  } catch {
+    return [];
+  }
+};
+export const previewWecomSend = async (items) => await aiApiJson("/ai/wecom-preview", { method: "POST", body: JSON.stringify({ items, employees: systemEmployeesForSend(), feature: "qualityAgent" }) });
 export const fetchReportFile = async (report = {}) => {
   const base = sharedApiBase();
   if (!base) throw new Error("当前页面未连接QMS后端，请通过项目服务地址打开");
@@ -770,7 +787,7 @@ export const fetchReportFile = async (report = {}) => {
   return { blob, fileName };
 };
 export const fetchReportPdf = (report = {}) => fetchReportFile({ ...report, format: "pdf" });
-export const sendWecomReports = async (fileNames, recipient = "", extra = {}) => await aiApiJson("/ai/wecom-send", { method: "POST", body: JSON.stringify({ fileNames, recipient: String(recipient || "").trim(), layoutProfileId: String(extra.layoutProfileId || "").trim(), format: String(extra.format || "pdf").toLowerCase() === "html" ? "html" : "pdf", snapshot: extra.snapshot || null, visualSpec: extra.visualSpec || null, feature: "qualityAgent" }) });
+export const sendWecomReports = async (fileNames, recipient = "", extra = {}) => await aiApiJson("/ai/wecom-send", { method: "POST", body: JSON.stringify({ fileNames, recipient: String(recipient || "").trim(), employees: systemEmployeesForSend(), layoutProfileId: String(extra.layoutProfileId || "").trim(), format: String(extra.format || "pdf").toLowerCase() === "html" ? "html" : "pdf", snapshot: extra.snapshot || null, visualSpec: extra.visualSpec || null, feature: "qualityAgent" }) });
 export const employeeChoices = (employees = []) => {
   const grouped = new Map();
   (Array.isArray(employees) ? employees : []).forEach((row) => {
@@ -787,6 +804,7 @@ export const employeeChoices = (employees = []) => {
 };
 export const exportWecomPdfs = async (fileNames, extra = {}) => await aiApiJson("/ai/wecom-export-pdf", { method: "POST", body: JSON.stringify({ fileNames, format: String(extra.format || "pdf").toLowerCase() === "html" ? "html" : "pdf", layoutProfileId: String(extra.layoutProfileId || "").trim(), feature: "qualityAgent" }) });
 export const openWecomPdfFolder = async (folder) => await aiApiJson("/ai/wecom-open-folder", { method: "POST", body: JSON.stringify({ folder, feature: "qualityAgent" }) });
+export const openReportLibraryFolder = async () => await aiApiJson("/ai/wecom-open-folder", { method: "POST", body: JSON.stringify({ library: true, feature: "qualityAgent" }) });
 export const loadAgentDispatches = async () => await aiApiJson("/ai/agent-dispatch", { method: "GET", cache: "no-store" });
 export const saveRoleSkillLessons = async (skillId, lessons = []) => aiApiJson(`/ai/skills/${encodeURIComponent(skillId)}/lessons`, { method: "POST", body: JSON.stringify({ lessons }) });
 export const loadAgentSkills = async (skillIds = null) => {

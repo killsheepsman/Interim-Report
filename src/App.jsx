@@ -9,7 +9,7 @@ import {
   Question, Rows, ShieldCheck, SidebarSimple, Sparkle, Table, Target, Trash,
   UploadSimple, User, Warning, WarningCircle, X,
 } from "@phosphor-icons/react";
-import { analyzeImported, buildDqaEngineerSupplementSource, buildOqcRuleDimensionDispersions, downloadJson, isIpqcExcludedBadType, normalizeIpqcLeaderMapRows, normalizeIpqcWorkshop, parseDqaAgentRawFiles, parseDqaEngineerSupplementFiles, parseDqaRdImportFiles, parseFiles, parseOqcProjectNameByRules, pruneEngineerSupplementToReviews } from "./dataEngine.js";
+import { analyzeImported, buildDqaEngineerSupplementSource, buildOqcRuleDimensionDispersions, downloadJson, isIpqcExcludedBadType, normalizeIpqcLeaderMapRows, normalizeIpqcWorkshop, parseDqaAgentRawFiles, parseDqaEngineerSupplementFiles, parseDqaRdImportFiles, parseFiles, parseOqcProjectNameByRules, pruneEngineerSupplementToReviews, buildIqcSpecialToggleBase, readIqcSpecialToggle } from "./dataEngine.js";
 import { clearDqaAgentRaw as clearDqaAgentRawState, clearDqaEngineerSupplement as clearDqaEngineerSupplementState, controlKnowledgeDistillationJob, createExamSession, createKnowledgeDocument, createSourcesSignature, createSnapshotJob, deleteKnowledgeDocument, downloadSourceFiles, generateKnowledgeMatches, governKnowledgeDocument, importKnowledgeDistillation, listSnapshotJobs, loadAgentSkills, loadAiConfig, loadAiModels, loadAppliedDateRange, loadCachedAnalysis, loadCurrentUser, loadDqaAgentRaw, loadDefaultAnalysis, loadDefaultAnnotations, loadDefaultQmsSources, loadDefaultSources, loadDistilledKnowledge, loadDqaEngineerSupplement, loadExamResults, loadExamSession, loadImportedSources, loadKnowledgeAuditLogs, loadKnowledgeClauses, loadKnowledgeConflicts, loadKnowledgeConsistency, loadKnowledgeDocuments, loadKnowledgeFeedbackRecords, loadKnowledgeIssues, loadKnowledgeJob, loadKnowledgeJobs, loadKnowledgeMatches, loadKnowledgePerformanceMetrics, loadKnowledgeRecurrences, loadKnowledgeReviewPoints, loadKnowledgeReviewSessions, loadPermissionConfig, loadProjectNameMapping, loadQualityAgentRoleSnapshotRegistry, loadQualityAgentSnapshotRegistry, loadReportQualityRules, loadSnapshotJob, mergeImportedSources, openSnapshotStorage, patchCachedAnalysis, reparseKnowledgeDocument, requestAiChat, reviewDistilledKnowledge, reviewKnowledgeDocument, reviewKnowledgeMatch, runKnowledgePerformanceBenchmark, saveAiConfig, saveAiReport, saveDqaAgentRaw, saveKnowledgeConflict, saveKnowledgeFeedbackRecord, saveKnowledgeRecurrenceAction, saveKnowledgeReviewSession, saveLocalAiReport, saveAppliedDateRange, saveCachedAnalysis, saveDqaEngineerSupplement, saveImportedSources, savePermissionConfig, saveProjectNameMapping, saveQualityAgentRoleSnapshotRegistry, saveQualityAgentSnapshotRegistry, sourceRowCount, startKnowledgeDistillation, submitExamSession, summarizeSources, syncKnowledgeIssues, testAiConfig, updateKnowledgeDocumentMetadata, updateSnapshotJob, uploadKnowledgeSource, uploadSourceFiles, syncLinkedOrgMapping, withMappingFile, withoutMappingFile, mappingRowKey } from "./dataStore.js";
 import { bulkReviewKnowledgeCards, bulkUpdateKnowledgeCards, deleteKnowledgeCard, deleteKnowledgeClause, exportKnowledgeData, loadKnowledgeBackups, loadKnowledgeImpact, restoreKnowledgeBackup, updateKnowledgeCard, updateKnowledgeClause } from "./dataStore.js";
 import { loadOqcEquipmentRuleCache } from "./dataStore.js";
@@ -72,7 +72,7 @@ class SnapshotPanelBoundary extends Component {
     return <section className="qmdp-card qmdp-page-error"><WarningCircle size={24}/><div><strong>{this.props.title}未能加载</strong><p>该区域的数据格式异常，已隔离，不影响其它快照功能。</p><small>{String(this.state.error?.message || "未知错误").slice(0, 180)}</small></div></section>;
   }
 }
-const ANALYSIS_CACHE_VERSION = "server-analysis-cache-v11-ipqc-type-row-count";
+const ANALYSIS_CACHE_VERSION = "server-analysis-cache-v14-iqc-special-count";
 const safeParse = (value, fallback) => {
   try { return value ? JSON.parse(value) : fallback; } catch { return fallback; }
 };
@@ -740,7 +740,7 @@ function AnnotationTransferActions() {
   </div>;
 }
 
-function FloatingTabs({ options, active, onChange, watchSelector = ".sticky-switch-bar .site-tabs", className = "" }) {
+function FloatingTabs({ options, active, onChange, watchSelector = ".sticky-switch-bar .site-tabs", className = "", extra = null }) {
   const [visible, setVisible] = useState(false);
   useEffect(() => {
     if (typeof document === "undefined") return undefined;
@@ -768,7 +768,8 @@ function FloatingTabs({ options, active, onChange, watchSelector = ".sticky-swit
   }, [watchSelector]);
   if (typeof document === "undefined" || !visible) return null;
   const normalized = options.map((option) => typeof option === "string" ? { value: option, label: option } : option);
-  return createPortal(<div className={`module-floating-tabs ${className}`} aria-label="module quick switch">
+  return createPortal(<div className={`module-floating-tabs ${extra ? "has-extra" : ""} ${className}`} aria-label="module quick switch">
+    {extra}
     {normalized.map((option) => <button key={option.value} className={active === option.value ? "active" : ""} onClick={() => preserveScrollPosition(() => onChange(option.value))}>{option.label}</button>)}
   </div>, document.body);
 }
@@ -6044,7 +6045,7 @@ function SystemManagementPage({ active, onNavigate, data, auth, files = [], date
       const next = withoutMappingFile(current, kind, file);
       const saved = { ...next, logs: [{ id: Date.now(), message: `已删除导入文件 ${file?.name || ""}`, at: new Date().toISOString() }, ...(next.logs || [])].slice(0, 100) };
       localStorage.setItem(qmdpSystemKey, JSON.stringify(saved));
-      if (kind === "employee") saveWecomConfig({ employees: saved.employees }).catch((error) => setStatus(error?.message || "员工文件已删除，同步发送服务失败"));
+      if (kind === "employee") saveWecomConfig({ employees: saved.employees }).catch((error) => setStatus(error?.message || "员工信息已更新。服务器备份没写上，发送仍用本机员工信息"));
       return saved;
     });
     setStatus(`已删除 ${file?.name || "导入文件"}`);
@@ -6133,7 +6134,7 @@ function SystemManagementPage({ active, onNavigate, data, auth, files = [], date
           const recordWithWebhook = { ...record, rows };
           const next = { ...withMappingFile(current, "employee", recordWithWebhook), employees: rows, logs: [{ id: Date.now(), message: `员工信息已从 ${file.name} 导入 ${parsed.rows.length} 人`, at: importedAt }, ...(current.logs || [])].slice(0, 100) };
           localStorage.setItem(qmdpSystemKey, JSON.stringify(next));
-          saveWecomConfig({ employees: next.employees }).catch((error) => setStatus(error?.message || "员工名单已导入，同步发送服务失败"));
+          saveWecomConfig({ employees: next.employees }).catch((error) => setStatus(error?.message || "员工名单已导入。服务器备份没写上，发送仍用本机员工信息"));
           return next;
         });
         setStatus(`员工信息导入成功：${parsed.rows.length} 人`);
@@ -6258,7 +6259,7 @@ function SystemManagementPage({ active, onNavigate, data, auth, files = [], date
     </>;
   };
   const importActions = (kind, section) => <div style={{ display: "flex", gap: 8, alignItems: "center" }}><button className="qmdp-secondary-btn" disabled={!editable || importingKind === kind} onClick={() => openMappingImport(kind)}><UploadSimple size={15}/>{importingKind === kind ? "解析中…" : "导入 Excel"}</button>{kind === "org" && config.importMeta?.org?.suppressed ? <button type="button" className="qmdp-secondary-btn" disabled={!editable} onClick={reconnectOrgMapping}>重新连接</button> : null}<span style={{ color: "#8190a2", fontSize: 10 }}>{config.importMeta?.[kind]?.suppressed ? "已删除导入文件，自动同步已停止" : config.importMeta?.[kind]?.linked ? `已连接 ${config.importMeta[kind].name} · ${config.importMeta[kind].count} 条 · 文件更新后自动同步` : config.importMeta?.[kind]?.name ? `最近导入：${config.importMeta[kind].name}（${config.importMeta[kind].count} 条）` : `支持 ${kind === "org" ? "产品部 / 产总 / TPM / PM" : "厂区 / 工坊 / 交付经理 / 机长"} 表头`}</span></div>;
-  const content = tab === "后台快照" ? <BackgroundSnapshotPage data={data} files={files} dateRange={dateRange} auth={auth} onEnsureAgentSources={onEnsureAgentSources} orgMappings={config.orgMappings || []}/> : tab === "研发项目映射" ? <DqaAgentProjectMappingPanel raw={dqaAgentRaw} editable={editable} onSave={onSaveDqaAgentRaw}/> : tab === "研发组织映射" ? <><Panel title="研发组织映射维护" subtitle="产品部只有半导体&北美、产品五部、海外亚太项目开发部、FPC事业部。项目组只属于半导体&北美：北美项目部、传感器产品部、IC载版。其它产品部项目组留空。" action={importActions("org", "orgMappings")}>{<ImportedFileTable files={mappingFilesOf("org")} editable={editable} onDelete={(file) => deleteImportFile("org", file)} />}{renderMapping()}<button className="qmdp-secondary-btn" disabled={!editable} onClick={() => addRow("orgMappings", { productDept: "", projectGroup: "", productionDirector: "", tpm: "", pm: "", active: true })}><Plus size={15}/>新增映射</button></Panel></> : tab === "供应链映射" ? <><Panel title="供应商/供应链人员映射" subtitle="厂区、工坊、交付经理与机长" action={importActions("supply", "supplyMappings")}>{<ImportedFileTable files={mappingFilesOf("supply")} editable={editable} onDelete={(file) => deleteImportFile("supply", file)} />}{renderSupply()}<button className="qmdp-secondary-btn" disabled={!editable} onClick={() => addRow("supplyMappings", { site: "深圳", workshop: "", manager: "", leader: "", active: true })}><Plus size={15}/>新增映射</button></Panel></> : tab === "项目名称映射" ? renderProjectNameMapping() : tab === "员工信息" ? <><Panel title="员工信息 / 发送地址" subtitle="职位是人事职称。岗位填组装人员、机长、交付经理、供应链经理、研发工程师、PM、TPM、产总。Excel 增加列「岗位」。姓名必填。" action={<button className="qmdp-secondary-btn" disabled={!editable || importingKind === "employees"} onClick={() => openMappingImport("employees")}><UploadSimple size={15}/>{importingKind === "employees" ? "解析中…" : "导入 Excel"}</button>}>{<ImportedFileTable files={mappingFilesOf("employee")} editable={editable} onDelete={(file) => deleteImportFile("employee", file)} empty="尚未导入员工文件" />}{renderEmployees()}<div style={{display:"flex",gap:8,flexWrap:"wrap"}}><button className="qmdp-secondary-btn" disabled={!editable} onClick={() => addRow("employees", { id: "", name: "", dept: "", role: "", post: "", wecom: "", webhook: "" })}><Plus size={15}/>新增员工</button><button className="qmdp-primary-btn" disabled={!editable} onClick={async () => { try { await saveWecomConfig({ employees: config.employees }); saveMessage("员工名单已同步到发送服务"); } catch (error) { saveMessage(error?.message || "同步失败"); } }}>同步到发送服务</button></div></Panel></> : tab === "评分权重" ? <Panel title="质量风险评分权重" subtitle="权重总和应为 100"><div className="qmdp-weight-grid">{[["ecn", "ECN个人占比"], ["issue", "研发问题数量"], ["severity", "高严重度问题"], ["review", "设计评审问题占比"], ["nonBom", "非BOM加工件比例"], ["open", "未关闭问题数量"]].map(([key, label]) => <label key={key}><span>{label}</span><input type="number" min="0" max="100" value={config.weights?.[key] ?? 0} disabled={!editable} onChange={(event) => setConfig((current) => ({ ...current, weights: { ...current.weights, [key]: Number(event.target.value) } }))}/></label>)}</div><div className="qmdp-weight-total">当前权重合计：<strong>{Object.values(config.weights || {}).reduce((sum, value) => sum + Number(value || 0), 0)}%</strong><button className="qmdp-primary-btn" disabled={!editable} onClick={() => saveMessage("质量评分权重已保存")}>保存权重</button></div></Panel> : tab === "企业微信" ? <Panel title="企业微信应用配置" subtitle="这里的自建应用发私信需要管理员把出口 IP 加入可信 IP。不找管理员时，不用填这里，改在员工信息填群机器人 Webhook。"><div className="qmdp-form-grid">{[["corpId", "CorpId"], ["agentId", "AgentId"], ["secret", "Secret"]].map(([key, label]) => <label key={key}><span>{label}</span><input type={key === "secret" ? "password" : "text"} value={config.wecom?.[key] || ""} disabled={!editable} onChange={(event) => setConfig((current) => ({ ...current, wecom: { ...current.wecom, [key]: event.target.value } }))}/></label>)}</div><div className="qmdp-form-grid"><label><span>测试 userid</span><input id="wecom-test-userid" placeholder="先填自己的企业微信 userid"/></label></div><div style={{display:"flex",gap:8,flexWrap:"wrap"}}><button className="qmdp-primary-btn" disabled={!editable} onClick={async () => { try { await saveWecomConfig({ ...config.wecom, employees: config.employees }); saveMessage("企业微信配置已保存到服务器"); } catch (error) { saveMessage(error?.message || "保存失败"); } }}>保存到服务器</button><button className="qmdp-secondary-btn" disabled={!editable} onClick={async () => { const userid = document.getElementById("wecom-test-userid")?.value?.trim(); if (!userid) { saveMessage("请先填写测试 userid"); return; } try { const result = await testWecomSend(userid); saveMessage(result.message || "测试已发送"); } catch (error) { saveMessage(error?.message || "测试失败"); } }}>发给自己试一条</button></div></Panel> : <Panel title="操作日志" subtitle="记录映射、权重与发送配置的变更"><div className="qmdp-log-list">{(config.logs || []).map((item) => <div key={item.id}><span>{formatSyncDateTime(item.at)}</span><strong>{item.message}</strong></div>)}{!(config.logs || []).length && <div className="qmdp-empty compact">暂无操作日志。</div>}</div></Panel>;
+  const content = tab === "后台快照" ? <BackgroundSnapshotPage data={data} files={files} dateRange={dateRange} auth={auth} onEnsureAgentSources={onEnsureAgentSources} orgMappings={config.orgMappings || []}/> : tab === "研发项目映射" ? <DqaAgentProjectMappingPanel raw={dqaAgentRaw} editable={editable} onSave={onSaveDqaAgentRaw}/> : tab === "研发组织映射" ? <><Panel title="研发组织映射维护" subtitle="产品部只有半导体&北美、产品五部、海外亚太项目开发部、FPC事业部。项目组只属于半导体&北美：北美项目部、传感器产品部、IC载版。其它产品部项目组留空。" action={importActions("org", "orgMappings")}>{<ImportedFileTable files={mappingFilesOf("org")} editable={editable} onDelete={(file) => deleteImportFile("org", file)} />}{renderMapping()}<button className="qmdp-secondary-btn" disabled={!editable} onClick={() => addRow("orgMappings", { productDept: "", projectGroup: "", productionDirector: "", tpm: "", pm: "", active: true })}><Plus size={15}/>新增映射</button></Panel></> : tab === "供应链映射" ? <><Panel title="供应商/供应链人员映射" subtitle="厂区、工坊、交付经理与机长" action={importActions("supply", "supplyMappings")}>{<ImportedFileTable files={mappingFilesOf("supply")} editable={editable} onDelete={(file) => deleteImportFile("supply", file)} />}{renderSupply()}<button className="qmdp-secondary-btn" disabled={!editable} onClick={() => addRow("supplyMappings", { site: "深圳", workshop: "", manager: "", leader: "", active: true })}><Plus size={15}/>新增映射</button></Panel></> : tab === "项目名称映射" ? renderProjectNameMapping() : tab === "员工信息" ? <><Panel title="员工信息 / 发送地址" subtitle="发送直接用这一页的企业微信 userid，工号就是 userid，不用再同步，也不用另配地址。职位是人事职称。岗位填组装人员、机长、交付经理、供应链经理、研发工程师、PM、TPM、产总。" action={<button className="qmdp-secondary-btn" disabled={!editable || importingKind === "employees"} onClick={() => openMappingImport("employees")}><UploadSimple size={15}/>{importingKind === "employees" ? "解析中…" : "导入 Excel"}</button>}>{<ImportedFileTable files={mappingFilesOf("employee")} editable={editable} onDelete={(file) => deleteImportFile("employee", file)} empty="尚未导入员工文件" />}{renderEmployees()}<div style={{display:"flex",gap:8,flexWrap:"wrap"}}><button className="qmdp-secondary-btn" disabled={!editable} onClick={() => addRow("employees", { id: "", name: "", dept: "", role: "", post: "", wecom: "", webhook: "" })}><Plus size={15}/>新增员工</button></div></Panel></> : tab === "评分权重" ? <Panel title="质量风险评分权重" subtitle="权重总和应为 100"><div className="qmdp-weight-grid">{[["ecn", "ECN个人占比"], ["issue", "研发问题数量"], ["severity", "高严重度问题"], ["review", "设计评审问题占比"], ["nonBom", "非BOM加工件比例"], ["open", "未关闭问题数量"]].map(([key, label]) => <label key={key}><span>{label}</span><input type="number" min="0" max="100" value={config.weights?.[key] ?? 0} disabled={!editable} onChange={(event) => setConfig((current) => ({ ...current, weights: { ...current.weights, [key]: Number(event.target.value) } }))}/></label>)}</div><div className="qmdp-weight-total">当前权重合计：<strong>{Object.values(config.weights || {}).reduce((sum, value) => sum + Number(value || 0), 0)}%</strong><button className="qmdp-primary-btn" disabled={!editable} onClick={() => saveMessage("质量评分权重已保存")}>保存权重</button></div></Panel> : tab === "企业微信" ? <Panel title="企业微信应用配置" subtitle="这里只填企业微信应用。收件人不用再配，发送时直接用员工信息里的企业微信 userid。出口 IP 需由 IT 加入企业可信 IP。"><div className="qmdp-form-grid">{[["corpId", "CorpId"], ["agentId", "AgentId"], ["secret", "Secret"]].map(([key, label]) => <label key={key}><span>{label}</span><input type={key === "secret" ? "password" : "text"} value={config.wecom?.[key] || ""} disabled={!editable} onChange={(event) => setConfig((current) => ({ ...current, wecom: { ...current.wecom, [key]: event.target.value } }))}/></label>)}</div><div className="qmdp-form-grid"><label><span>测试 userid</span><input id="wecom-test-userid" placeholder="先填自己的企业微信 userid"/></label></div><div style={{display:"flex",gap:8,flexWrap:"wrap"}}><button className="qmdp-primary-btn" disabled={!editable} onClick={async () => { try { await saveWecomConfig({ ...config.wecom, employees: config.employees }); saveMessage("企业微信配置已保存到服务器"); } catch (error) { saveMessage(error?.message || "保存失败"); } }}>保存到服务器</button><button className="qmdp-secondary-btn" disabled={!editable} onClick={async () => { const userid = document.getElementById("wecom-test-userid")?.value?.trim(); if (!userid) { saveMessage("请先填写测试 userid"); return; } try { const result = await testWecomSend(userid); saveMessage(result.message || "测试已发送"); } catch (error) { saveMessage(error?.message || "测试失败"); } }}>发给自己试一条</button></div></Panel> : <Panel title="操作日志" subtitle="记录映射、权重与发送配置的变更"><div className="qmdp-log-list">{(config.logs || []).map((item) => <div key={item.id}><span>{formatSyncDateTime(item.at)}</span><strong>{item.message}</strong></div>)}{!(config.logs || []).length && <div className="qmdp-empty compact">暂无操作日志。</div>}</div></Panel>;
   return <div className="qmdp-page"><input ref={mappingInputRef} type="file" accept=".xlsx,.xls,.xlsm" hidden onChange={(event) => importMapping(event, mappingInputRef.current?.getAttribute("data-kind") || "supply")}/><QmdpPageHeader icon={GearSix} eyebrow="系统管理 / Administration" title={tab} description={editable ? "副管理员和主管理员可维护映射、权重与发送配置。" : "当前账号仅可查看系统配置。"} action={<>{status && <span className="qmdp-inline-status"><CheckCircle size={15}/>{status}</span>}</>}/><div className="qmdp-admin-tabs">{qmdpMenuGroups.find((group) => group.label === "系统管理").children.map((item) => <button key={item} className={tab === item ? "active" : ""} onClick={() => { setTab(item); onNavigate?.(item); }}>{item}</button>)}</div>{content}<div className="qmdp-note"><Database size={15}/>系统管理数据与现有数据导入、IPQC过程管控、研发质量分析相互隔离。</div></div>;
 }
 
@@ -6453,7 +6454,7 @@ function QualityOverviewPage({ data }) {
   </div>;
 }
 
-function ExecutiveDashboard({ data, files, dqaEngineerSupplement, dqaAgentRaw, onLoadDqaAgentRaw, onSaveDqaAgentRaw, onImport, onDeleteSource, onSourcesChanged, onImportDqaRd, onClearDqaRd, onDeleteDqaRdFile, onEnsureAgentSources, onClearAgentSources, view, onViewChange, dateRange, teamDefaultRange, lastServerSavedAt, serverSyncStatus, onDateRange, onRefreshDate, dateRefreshStatus, refreshProgress, fontSize, onFontSize, analysisKey, labelControlsVisible, onToggleLabelControls, uiTheme, onThemeChange, sidebarCollapsed, onToggleSidebar, auth, permissions, onPermissionsChanged }) {
+function ExecutiveDashboard({ data, files, dqaEngineerSupplement, dqaAgentRaw, onLoadDqaAgentRaw, onSaveDqaAgentRaw, onImport, onDeleteSource, onSourcesChanged, onImportDqaRd, onClearDqaRd, onDeleteDqaRdFile, onEnsureAgentSources, onClearAgentSources, view, onViewChange, dateRange, appliedDateRange, teamDefaultRange, lastServerSavedAt, serverSyncStatus, onDateRange, onRefreshDate, dateRefreshStatus, refreshProgress, fontSize, onFontSize, analysisKey, labelControlsVisible, onToggleLabelControls, uiTheme, onThemeChange, sidebarCollapsed, onToggleSidebar, auth, permissions, onPermissionsChanged }) {
   const [active, setActive] = useState(() => examTokenFromUrl() ? "知识考试" : qualityAgentMenuFromUrl() || "总览");
   const [sidebarWidth, setSidebarWidth] = useState(() => clampSidebarWidth(localStorage.getItem("qms-sidebar-width") || sidebarWidthLimits.default));
   const moduleView = ["IQC", "IPQC", "OQC", "DQA", "QMS", "DOAM"].includes(active) ? active : null;
@@ -6499,7 +6500,7 @@ function ExecutiveDashboard({ data, files, dqaEngineerSupplement, dqaAgentRaw, o
       </header>}
       {!qmdpView && <DateRangeFilter value={dateRange} teamDefaultRange={teamDefaultRange} lastServerSavedAt={lastServerSavedAt} onChange={onDateRange} onRefresh={onRefreshDate} refreshStatus={dateRefreshStatus} refreshProgress={refreshProgress} canRefresh={allowTemporaryRefresh} fontSize={fontSize} onFontSize={onFontSize}/>}
       <PageErrorBoundary pageKey={active} onRecover={() => setActive("总览")}>
-      {active === "权限设置" && auth?.isAdmin ? <PermissionSettingsPage auth={auth} permissions={permissions} onPermissionsChanged={onPermissionsChanged}/> : qmdpKnowledgeView ? <KnowledgeManagementPage active={active} qualitySources={agentFiles} onEnsureAgentSources={onEnsureAgentSources} auth={auth}/> : qmdpReportView ? <QualityReportsPage active={active} data={data} files={files} dateRange={dateRange} onRoleChange={setActive}/> : qualityAgentView && canUseFeature(auth, permissions, "qualityAgent") ? <Suspense fallback={<div className="qmdp-empty">正在加载质量分析 Agent…</div>}><QualityAgentPage key={active} data={data} files={files} dateRange={dateRange} module={qualityAgentMenuModules[active]} onEnsureAgentSources={onEnsureAgentSources} canStart={canUseFeature(auth, permissions, "qualityAgentStart")} canSaveToServer={auth?.isAdmin === true} orgMappings={reportConfig().orgMappings || []} employees={reportConfig().employees || []}/></Suspense> : roleAutoReportView && canUseFeature(auth, permissions, "aiEmployee") ? <RoleAutoReportPage employees={reportConfig().employees || []}/> : batchSendView && canUseFeature(auth, permissions, "qualityAgent") ? <RoleReportBatchSendPage canSend={auth?.isAdmin === true} employees={reportConfig().employees || []}/> : qualityBatchSendView && canUseFeature(auth, permissions, "qualityAgent") ? <QualityReportBatchSendPage canSend={auth?.isAdmin === true} employees={reportConfig().employees || []}/> : agentRoleReportView && canUseFeature(auth, permissions, "qualityAgent") ? <Suspense fallback={<div className="qmdp-empty">正在加载角色报告…</div>}><AgentRoleReportPage key={active} initialRole={agentRoleMenuRoles[active]} data={data} files={agentFiles} dateRange={dateRange} onEnsureAgentSources={onEnsureAgentSources} canGenerate={canUseFeature(auth, permissions, "agentRoleReportGenerate")} canSaveToServer={auth?.isAdmin === true} employees={reportConfig().employees || []}/></Suspense> : active === "报告历史对比" && canUseFeature(auth, permissions, "qualityAgent") ? <ReportHistoryComparePage/> : agentExamStatsView && canUseFeature(auth, permissions, "qualityAgent") ? <Suspense fallback={<div className="qmdp-empty">正在加载知识考试…</div>}><AgentExamStatsPage/></Suspense> : qmdpSystemView ? <SystemManagementPage key="system-management" active={active} onNavigate={setActive} data={data} auth={auth} files={agentFiles} dateRange={dateRange} onEnsureAgentSources={onEnsureAgentSources} dqaAgentRaw={dqaAgentRaw} onLoadDqaAgentRaw={onLoadDqaAgentRaw} onSaveDqaAgentRaw={onSaveDqaAgentRaw}/> : active === "AI接口" && canUseFeature(auth, permissions, "aiInterface") ? <AiInterfacePage canSaveToServer={auth?.isAdmin === true}/> : active === "数据导入" && allowImport ? <DataSourcePage files={files} onImportModule={onImport} onDelete={onDeleteSource} onSourcesChanged={onSourcesChanged} dqaEngineerSupplement={dqaEngineerSupplement} dqaAgentRaw={dqaAgentRaw} onLoadDqaAgentRaw={onLoadDqaAgentRaw} onImportDqaRd={onImportDqaRd} onClearDqaRd={onClearDqaRd} onDeleteDqaRdFile={onDeleteDqaRdFile}/> : active === "AI分析" && canUseFeature(auth, permissions, "aiAnalysis") ? <AiAnalysisPage data={data} dateRange={dateRange} analysisKey={analysisKey} canSaveToServer={auth?.isAdmin === true}/> : moduleView ? <ModuleDetail key={`${moduleView}-${analysisKey}`} module={moduleView} data={data} files={files} /> : <>
+      {active === "权限设置" && auth?.isAdmin ? <PermissionSettingsPage auth={auth} permissions={permissions} onPermissionsChanged={onPermissionsChanged}/> : qmdpKnowledgeView ? <KnowledgeManagementPage active={active} qualitySources={agentFiles} onEnsureAgentSources={onEnsureAgentSources} auth={auth}/> : qmdpReportView ? <QualityReportsPage active={active} data={data} files={files} dateRange={dateRange} onRoleChange={setActive}/> : qualityAgentView && canUseFeature(auth, permissions, "qualityAgent") ? <Suspense fallback={<div className="qmdp-empty">正在加载质量分析 Agent…</div>}><QualityAgentPage key={active} data={data} files={files} dateRange={dateRange} module={qualityAgentMenuModules[active]} onEnsureAgentSources={onEnsureAgentSources} canStart={canUseFeature(auth, permissions, "qualityAgentStart")} canSaveToServer={auth?.isAdmin === true} orgMappings={reportConfig().orgMappings || []} employees={reportConfig().employees || []}/></Suspense> : roleAutoReportView && canUseFeature(auth, permissions, "aiEmployee") ? <RoleAutoReportPage employees={reportConfig().employees || []}/> : batchSendView && canUseFeature(auth, permissions, "qualityAgent") ? <RoleReportBatchSendPage canSend={auth?.isAdmin === true} employees={reportConfig().employees || []}/> : qualityBatchSendView && canUseFeature(auth, permissions, "qualityAgent") ? <QualityReportBatchSendPage canSend={auth?.isAdmin === true} employees={reportConfig().employees || []}/> : agentRoleReportView && canUseFeature(auth, permissions, "qualityAgent") ? <Suspense fallback={<div className="qmdp-empty">正在加载角色报告…</div>}><AgentRoleReportPage key={active} initialRole={agentRoleMenuRoles[active]} data={data} files={agentFiles} dateRange={dateRange} onEnsureAgentSources={onEnsureAgentSources} canGenerate={canUseFeature(auth, permissions, "agentRoleReportGenerate")} canSaveToServer={auth?.isAdmin === true} employees={reportConfig().employees || []}/></Suspense> : active === "报告历史对比" && canUseFeature(auth, permissions, "qualityAgent") ? <ReportHistoryComparePage/> : agentExamStatsView && canUseFeature(auth, permissions, "qualityAgent") ? <Suspense fallback={<div className="qmdp-empty">正在加载知识考试…</div>}><AgentExamStatsPage/></Suspense> : qmdpSystemView ? <SystemManagementPage key="system-management" active={active} onNavigate={setActive} data={data} auth={auth} files={agentFiles} dateRange={dateRange} onEnsureAgentSources={onEnsureAgentSources} dqaAgentRaw={dqaAgentRaw} onLoadDqaAgentRaw={onLoadDqaAgentRaw} onSaveDqaAgentRaw={onSaveDqaAgentRaw}/> : active === "AI接口" && canUseFeature(auth, permissions, "aiInterface") ? <AiInterfacePage canSaveToServer={auth?.isAdmin === true}/> : active === "数据导入" && allowImport ? <DataSourcePage files={files} onImportModule={onImport} onDelete={onDeleteSource} onSourcesChanged={onSourcesChanged} dqaEngineerSupplement={dqaEngineerSupplement} dqaAgentRaw={dqaAgentRaw} onLoadDqaAgentRaw={onLoadDqaAgentRaw} onImportDqaRd={onImportDqaRd} onClearDqaRd={onClearDqaRd} onDeleteDqaRdFile={onDeleteDqaRdFile}/> : active === "AI分析" && canUseFeature(auth, permissions, "aiAnalysis") ? <AiAnalysisPage data={data} dateRange={dateRange} analysisKey={analysisKey} canSaveToServer={auth?.isAdmin === true}/> : moduleView ? <ModuleDetail key={`${moduleView}-${analysisKey}`} module={moduleView} data={data} files={files} dateRange={appliedDateRange || dateRange} onEnsureSources={onEnsureAgentSources} /> : <>
         <QualityOverviewPage data={data}/>
       </>}
       </PageErrorBoundary>
@@ -8574,9 +8575,9 @@ function QmsAnalysis({ data }) {
   </div>;
 }
 
-function ModuleDetail({ module, data, files }) {
+function ModuleDetail({ module, data, files, dateRange, onEnsureSources }) {
   if (module === "DOAM") return <DoamPage/>;
-  if (module === "IQC") return <IqcSupplierAnalysis data={data} />;
+  if (module === "IQC") return <IqcSupplierAnalysis data={data} files={files} dateRange={dateRange} onEnsureSources={onEnsureSources} />;
   if (module === "IPQC") return <IpqcAnalysis data={data} />;
   if (module === "OQC") return <OqcAnalysis data={data} files={(files || []).filter((file) => file.module !== "DOAM")} />;
   if (module === "DQA") return <DqaAnalysis data={data}/>;
@@ -8892,50 +8893,106 @@ function buildIqcIssueTypeRows(records = [], suppliers = "全选", includeSpecia
   })).sort((a, b) => b.y2026Count - a.y2026Count || b.y2025Count - a.y2025Count).slice(0, 10);
 }
 
-function IqcSupplierAnalysis({ data }) {
+function IqcSupplierSearch({ names = [], value = "全部", onChange }) {
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const keyword = query.trim().toLocaleLowerCase();
+  const options = useMemo(() => {
+    const all = ["全部", ...names];
+    return keyword ? all.filter((name) => name.toLocaleLowerCase().includes(keyword)) : all;
+  }, [names, keyword]);
+  return <div className="iqc-supplier-search" onBlur={(event) => { if (event.currentTarget.contains(event.relatedTarget)) return; setOpen(false); setQuery(""); }}>
+    <input value={open ? query : value} placeholder="搜索供应商，或选全部" aria-label="供应商良率" autoComplete="off" onFocus={() => { setOpen(true); setQuery(""); }} onChange={(event) => { setQuery(event.target.value); setOpen(true); }} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); if (options[0]) { onChange(options[0]); setQuery(""); setOpen(false); } } if (event.key === "Escape") { setOpen(false); setQuery(""); } }} />
+    {open && <div className="iqc-supplier-search-list" role="listbox">{options.map((name) => <button type="button" role="option" aria-selected={name === value} key={name} onMouseDown={(event) => event.preventDefault()} onClick={() => { onChange(name); setQuery(""); setOpen(false); }}>{name}</button>)}{!options.length && <span>没有匹配的供应商</span>}</div>}
+  </div>;
+}
+
+function iqcStoredModesReady(iqc) {
+  const accepted = iqc?.qualityModes?.accepted;
+  const rejected = iqc?.qualityModes?.rejected;
+  if (!accepted || !rejected) return false;
+  const company = "\u5168\u516c\u53f8";
+  const shenzhen = "\u6df1\u5733";
+  const materialLeft = accepted.materialBySite?.[company]?.[0] || accepted.materialBySite?.[shenzhen]?.[0];
+  const materialRight = rejected.materialBySite?.[company]?.[0] || rejected.materialBySite?.[shenzhen]?.[0];
+  const materialDiff = !!materialLeft && !!materialRight && (materialLeft.y2025Bad !== materialRight.y2025Bad || materialLeft.y2026Bad !== materialRight.y2026Bad || materialLeft.y2025Rate !== materialRight.y2025Rate || materialLeft.y2026Rate !== materialRight.y2026Rate);
+  const monthLeft = accepted.siteMonthly?.[company]?.[0] || accepted.siteMonthly?.[shenzhen]?.[0];
+  const monthRight = rejected.siteMonthly?.[company]?.[0] || rejected.siteMonthly?.[shenzhen]?.[0];
+  const monthDiff = !!monthLeft && !!monthRight && (monthLeft.y2025Bad !== monthRight.y2025Bad || monthLeft.y2026Bad !== monthRight.y2026Bad || monthLeft.y2025Rate !== monthRight.y2025Rate || monthLeft.y2026Rate !== monthRight.y2026Rate);
+  const issueRows = accepted.issueSourceBySite?.[shenzhen] || accepted.issueSourceBySite?.[company] || [];
+  const issueDiff = issueRows.some((row) => row?.special === true) || ((rejected.issueBySite?.[shenzhen]?.[0]?.y2026Count || 0) !== (accepted.issueBySite?.[shenzhen]?.[0]?.y2026Count || 0));
+  return monthDiff && materialDiff && issueDiff;
+}
+
+function iqcRowsReady(files = []) {
+  return (files || []).filter((file) => file?.module === "IQC" && file.subKind !== "IQC_FOCUS_PROJECT" && file.kind !== "IQC_FOCUS_PROJECT" && Array.isArray(file.rows) && file.rows.length);
+}
+
+function IqcSupplierAnalysis({ data, files = [], dateRange, onEnsureSources }) {
   const uiTheme = useUiTheme();
   const [site, setSite] = useState("全公司");
   const [specialAsBad, setSpecialAsBad] = useState(false);
-  const [issueSupplierAll, setIssueSupplierAll] = useState(true);
-  const [issueSupplierNamesSelected, setIssueSupplierNamesSelected] = useState([]);
-  const [includeSpecialIssue, setIncludeSpecialIssue] = useState(false);
+  const [yieldSupplier, setYieldSupplier] = useState("全部");
+  const [hydratedFiles, setHydratedFiles] = useState([]);
+  const [toggleStatus, setToggleStatus] = useState("");
+  const [toggleBase, setToggleBase] = useState(null);
+  const modesReady = iqcStoredModesReady(data?.iqc);
+  const localIqcFiles = useMemo(() => iqcRowsReady(files), [files]);
+  const iqcSourceFiles = localIqcFiles.length ? localIqcFiles : hydratedFiles;
+  const sourceKey = iqcSourceFiles.map((file) => `${file.name}:${file.rows.length}`).join("|");
+  useEffect(() => {
+    if (modesReady || localIqcFiles.length || !onEnsureSources) return undefined;
+    let stop = false;
+    setToggleStatus("正在读取原始检验记录");
+    onEnsureSources(["IQC"]).then((hydrated) => {
+      if (stop) return;
+      const next = iqcRowsReady(hydrated);
+      setHydratedFiles(next);
+      if (!next.length) setToggleStatus("没有读到原始检验记录");
+    }).catch(() => { if (!stop) setToggleStatus("原始检验记录没有读出来"); });
+    return () => { stop = true; };
+  }, [modesReady, localIqcFiles.length, onEnsureSources]);
+  useEffect(() => {
+    if (modesReady || !sourceKey) {
+      if (modesReady) setToggleBase(null);
+      return undefined;
+    }
+    let stop = false;
+    setToggleStatus("正在按原始检验记录重算");
+    const timer = window.setTimeout(() => {
+      const base = buildIqcSpecialToggleBase(iqcSourceFiles, dateRange);
+      if (stop) return;
+      setToggleBase(base);
+      setToggleStatus("");
+    }, 0);
+    return () => { stop = true; window.clearTimeout(timer); };
+  }, [modesReady, sourceKey, dateRange]);
   if (!data?.iqc) return <div className="qmdp-empty">IQC 数据尚未准备好，请稍后刷新。</div>;
-  const mode = specialAsBad ? data.iqc.qualityModes?.rejected : data.iqc.qualityModes?.accepted;
-  const iqcData = mode || data.iqc;
-  const monthly = iqcData.siteMonthly?.[site] || [];
-  const issueSupplierNames = iqcData.issueSuppliersBySite?.[site] || [];
-  const selectedIssueSuppliers = issueSupplierNamesSelected.filter((name) => issueSupplierNames.includes(name));
-  const issueSupplierFilter = issueSupplierAll ? "全选" : selectedIssueSuppliers;
-  const issueRecords = iqcData.issueSourceBySite?.[site];
-  const issueInspected = iqcData.issueInspectedBySite?.[site] || [];
-  const suppliersWithIssues = new Set((Array.isArray(issueRecords) ? issueRecords : []).filter((row) => includeSpecialIssue || !row.special).map((row) => row.supplier));
-  const issues = Array.isArray(issueRecords)
-    ? buildIqcIssueTypeRows(issueRecords, issueSupplierFilter, includeSpecialIssue)
-    : (issueSupplierFilter === "全选" && !includeSpecialIssue ? (iqcData.issueBySite?.[site] || []) : []);
-  const selectedInspection = issueInspected
-    .filter((row) => issueSupplierFilter === "全选" || selectedIssueSuppliers.includes(row.supplier))
-    .reduce((sum, row) => ({ y2025: sum.y2025 + (row.y2025 || 0), y2026: sum.y2026 + (row.y2026 || 0) }), { y2025: 0, y2026: 0 });
-  const issueSupplierLabel = issueSupplierAll ? "全选" : (selectedIssueSuppliers.length ? `已选 ${selectedIssueSuppliers.length} 家，异常数量叠加` : "未选供应商");
-  const issueSubtitle = !issues.length && issueSupplierFilter !== "全选"
-    ? `${site} · ${issueSupplierLabel} · 有检验，没有异常`
-    : `${site} · ${issueSupplierLabel} · ${includeSpecialIssue ? "统计质检结果=不合格和特采" : "仅统计质检结果=不合格"}`;
-  const toggleIssueSupplier = (name) => {
-    if (issueSupplierAll) {
-      setIssueSupplierAll(false);
-      setIssueSupplierNamesSelected(issueSupplierNames.filter((item) => item !== name));
-      return;
-    }
-    const next = new Set(selectedIssueSuppliers);
-    if (next.has(name)) next.delete(name);
-    else next.add(name);
-    if (issueSupplierNames.length && next.size === issueSupplierNames.length) {
-      setIssueSupplierAll(true);
-      setIssueSupplierNamesSelected([]);
-      return;
-    }
-    setIssueSupplierNamesSelected([...next]);
-  };
-  const materials = iqcData.materialBySite?.[site] || [];
+  const acceptedData = data.iqc.qualityModes?.accepted || data.iqc;
+  const rejectedData = data.iqc.qualityModes?.rejected || null;
+  const iqcData = modesReady && specialAsBad && rejectedData ? rejectedData : acceptedData;
+  const supplierMonthly = iqcData.supplierMonthlyBySite?.[site] || {};
+  const yieldSupplierNames = (!modesReady && toggleBase?.supplierNames?.[site]?.length)
+    ? toggleBase.supplierNames[site]
+    : Object.keys(supplierMonthly).sort((a, b) => String(a).localeCompare(String(b), "zh-CN", { sensitivity: "base", numeric: true }));
+  const activeYieldSupplier = yieldSupplier !== "全部" && yieldSupplierNames.includes(yieldSupplier) ? yieldSupplier : "全部";
+  const liveView = !modesReady && toggleBase ? readIqcSpecialToggle(toggleBase, site, activeYieldSupplier, specialAsBad) : null;
+  const monthly = liveView ? liveView.monthly : (activeYieldSupplier === "全部" ? (iqcData.siteMonthly?.[site] || []) : (supplierMonthly[activeYieldSupplier] || []));
+  const yieldScope = activeYieldSupplier === "全部" ? site : `${site} · ${activeYieldSupplier}`;
+  const issueRecords = acceptedData.issueSourceBySite?.[site] || iqcData.issueSourceBySite?.[site];
+  const issueSupplierFilter = activeYieldSupplier === "全部" ? "全选" : [activeYieldSupplier];
+  const issues = liveView
+    ? liveView.issues
+    : (Array.isArray(issueRecords)
+      ? buildIqcIssueTypeRows(issueRecords, issueSupplierFilter, specialAsBad)
+      : (iqcData.issueBySite?.[site] || []));
+  const selectedInspection = liveView ? liveView.inspected : ((iqcData.issueInspectedBySite?.[site] || [])
+    .filter((row) => activeYieldSupplier === "全部" || row.supplier === activeYieldSupplier)
+    .reduce((sum, row) => ({ y2025: sum.y2025 + (row.y2025 || 0), y2026: sum.y2026 + (row.y2026 || 0) }), { y2025: 0, y2026: 0 }));
+  const issueSubtitle = `${yieldScope} · ${specialAsBad ? "不合格和特采都计入" : "只统计不合格，特采不计入"}${toggleStatus ? " · " + toggleStatus : ""}`;
+  const materials = liveView ? liveView.materials : (activeYieldSupplier === "全部"
+    ? (iqcData.materialBySite?.[site] || [])
+    : (iqcData.materialBySupplierBySite?.[site]?.[activeYieldSupplier] || []));
   const siteSuppliers = iqcData.mainSuppliers || { 深圳: [], 杭州: [] };
   const supplierCandidates = iqcData.supplierCandidates || { 深圳: [], 杭州: [] };
   const totals = monthly.reduce((acc, row) => ({
@@ -8947,51 +9004,33 @@ function IqcSupplierAnalysis({ data }) {
     return qty ? monthly.reduce((sum, row) => sum + row[`y${year}Qty`] * row[`y${year}Rate`], 0) / qty : 0;
   };
   return <div className={`module-page iqc-supplier-page ${uiTheme === "apple" ? "iqc-apple-page" : ""}`}>
-    <FloatingTabs options={["全公司", "深圳", "杭州"]} active={site} onChange={setSite}/>
+    <FloatingTabs options={["全公司", "深圳", "杭州"]} active={site} onChange={setSite} extra={<label className={`special-toggle floating-special-toggle ${specialAsBad ? "active" : ""}`}><input type="checkbox" checked={specialAsBad} onChange={(event) => setSpecialAsBad(event.target.checked)}/><span>计入特采</span></label>}/>
     <div className="iqc-section-title">
-      <div><span className="section-number">1</span><div><h2>供应商加工件同比分析</h2><p>按检验批次计算数量和批次良率，可切换全公司、深圳、杭州</p></div></div>
+      <div><span className="section-number">1</span><div><h2>供应商加工件同比分析</h2><p>{toggleStatus || "按检验批次计算数量和批次良率，可切换全公司、深圳、杭州"}</p></div></div>
       <div className="iqc-title-actions sticky-switch-bar"><label className={`special-toggle ${specialAsBad ? "active" : ""}`}><input type="checkbox" checked={specialAsBad} onChange={(event) => setSpecialAsBad(event.target.checked)}/><span>计入特采</span></label><div className="site-tabs"><button className={site==="全公司"?"active":""} onClick={()=>preserveScrollPosition(() => setSite("全公司"))}>全公司</button><button className={site==="深圳"?"active":""} onClick={()=>preserveScrollPosition(() => setSite("深圳"))}>深圳</button><button className={site==="杭州"?"active":""} onClick={()=>preserveScrollPosition(() => setSite("杭州"))}>杭州</button></div></div>
     </div>
     <div className="iqc-summary-strip">
-      <div><span>{site} 2025检验批次</span><strong>{totals.y2025Qty.toLocaleString()}</strong></div>
-      <div><span>{site} 2026检验批次</span><strong>{totals.y2026Qty.toLocaleString()}</strong></div>
+      <div><span>{yieldScope} 2025检验批次</span><strong>{totals.y2025Qty.toLocaleString()}</strong></div>
+      <div><span>{yieldScope} 2026检验批次</span><strong>{totals.y2026Qty.toLocaleString()}</strong></div>
       <div><span>2025批次良率</span><strong>{weightedRate(2025).toFixed(1)}%</strong></div>
       <div><span>2026批次良率</span><strong className={weightedRate(2026) < weightedRate(2025) ? "red" : "green"}>{weightedRate(2026).toFixed(1)}%</strong></div>
       <div><span>同比变化</span><strong className={weightedRate(2026) < weightedRate(2025) ? "red" : "green"}>{weightedRate(2026)-weightedRate(2025)>=0?"↑":"↓"} {Math.abs(weightedRate(2026)-weightedRate(2025)).toFixed(1)}pp</strong></div>
     </div>
     <div className="iqc-analysis-grid">
-      <AxisControlledPanel title="1.供应商良率趋势" subtitle={`${site} · 按月同比 · 柱形为检验总数/不合格数，折线为批次良率`} className="iqc-wide" axisKey={`iqc-${site}-${specialAsBad ? "special-bad" : "special-good"}-monthly-axis-v1`} defaults={{ min: 80, max: 100 }}>
-        {(axis) => <QuantityRateCombo rows={monthly} labelKey="month" height={360} rateAxisOverride={axis.effective} hideRateAxisControl />}
-      </AxisControlledPanel>
-      <AxisControlledPanel title="1.2.1 加工件异常类型" subtitle={issueSubtitle} className="iqc-wide" axisKey={`iqc-${site}-${issueSupplierAll ? "all" : selectedIssueSuppliers.length}-${includeSpecialIssue ? "with-special" : "reject-only"}-issues-axis-v1`} defaults={{ min: 0, max: 80 }}>
+      <AxisControlledPanel title="1.供应商良率趋势" subtitle={`${yieldScope} · 按月同比 · 柱形为检验总数/不合格数，折线为批次良率`} className="iqc-wide" axisKey={`iqc-${site}-${activeYieldSupplier}-${specialAsBad ? "special-bad" : "special-good"}-monthly-axis-v1`} defaults={{ min: 80, max: 100 }}>
         {(axis) => <>
           <div className="iqc-issue-filters">
-            <details className="iqc-supplier-fold">
-              <summary>
-                <span>供应商</span>
-                <b>{issueSupplierAll ? "全选" : (selectedIssueSuppliers.length ? `已选 ${selectedIssueSuppliers.length} 家` : "请选择")}</b>
-              </summary>
-              <div className="iqc-supplier-grid">
-                <label className={`iqc-supplier-chip ${issueSupplierAll ? "on" : ""}`}>
-                  <input type="checkbox" checked={issueSupplierAll} onChange={(event) => { setIssueSupplierAll(event.target.checked); if (event.target.checked) setIssueSupplierNamesSelected([]); }}/>
-                  <span>全选</span>
-                </label>
-                {issueSupplierNames.map((name) => <label className={`iqc-supplier-chip ${(issueSupplierAll || selectedIssueSuppliers.includes(name)) ? "on" : ""}`} key={name}>
-                  <input type="checkbox" checked={issueSupplierAll || selectedIssueSuppliers.includes(name)} onChange={() => toggleIssueSupplier(name)}/>
-                  <span>{suppliersWithIssues.has(name) ? name : `${name}（无异常）`}</span>
-                </label>)}
-              </div>
-            </details>
-            <label className={`special-toggle ${includeSpecialIssue ? "active" : ""}`}>
-              <input type="checkbox" checked={includeSpecialIssue} onChange={(event) => setIncludeSpecialIssue(event.target.checked)}/>
-              <span>特采</span>
-            </label>
+            <span>供应商</span>
+            <IqcSupplierSearch names={yieldSupplierNames} value={activeYieldSupplier} onChange={setYieldSupplier} />
           </div>
-          {!issueSupplierAll && !selectedIssueSuppliers.length ? <div className="iqc-issue-clear"><strong>请选择供应商</strong><p>可多选。选中的供应商，同一异常类型的数量会加在一起。</p></div> : issues.length ? <QuantityRateCombo rows={issues} qty2025="y2025Count" qty2026="y2026Count" rate2025="y2025Share" rate2026="y2026Share" rateLabel="异常占比" qtyLabel="异常批次" showBad={false} height={370} rateAxisOverride={axis.effective} hideRateAxisControl /> : <div className="iqc-issue-clear"><strong>{issueSupplierFilter === "全选" ? "当前范围没有异常" : `已选 ${selectedIssueSuppliers.length} 家没有异常`}</strong><p>{issueSupplierFilter === "全选" ? "加工件有检验记录，没有需要展示的异常类型。" : `2025 检验 ${selectedInspection.y2025} 批，2026 检验 ${selectedInspection.y2026} 批。${includeSpecialIssue ? "没有不合格，也没有特采。" : "没有不合格。"}`}</p></div>}
+          <QuantityRateCombo rows={monthly} labelKey="month" height={360} rateAxisOverride={axis.effective} hideRateAxisControl />
         </>}
       </AxisControlledPanel>
-      <AxisControlledPanel title="1.2.2 异常加工件材料属性" subtitle={`${site} · 按材料类别同比 · 柱形为检验总数/不合格数，折线为材料批次良率`} className="iqc-wide" axisKey={`iqc-${site}-${specialAsBad ? "special-bad" : "special-good"}-materials-axis-v1`} defaults={{ min: 80, max: 100 }}>
-        {(axis) => <QuantityRateCombo rows={materials} height={380} rateAxisOverride={axis.effective} hideRateAxisControl />}
+      <AxisControlledPanel title="1.2.1 加工件异常类型" subtitle={issueSubtitle} className="iqc-wide" axisKey={`iqc-${site}-${activeYieldSupplier}-${specialAsBad ? "with-special" : "reject-only"}-issues-axis-v1`} defaults={{ min: 0, max: 80 }}>
+        {(axis) => issues.length ? <QuantityRateCombo rows={issues} qty2025="y2025Count" qty2026="y2026Count" rate2025="y2025Share" rate2026="y2026Share" rateLabel="异常占比" qtyLabel="异常批次" showBad={false} height={370} chartKey={`iqc-issues-${site}-${activeYieldSupplier}-${specialAsBad ? "bad" : "good"}`} rateAxisOverride={axis.effective} hideRateAxisControl /> : <div className="iqc-issue-clear"><strong>{activeYieldSupplier === "全部" ? "当前范围没有异常" : `${activeYieldSupplier}没有异常`}</strong><p>{activeYieldSupplier === "全部" ? "加工件有检验记录，没有需要展示的异常类型。" : `2025 检验 ${selectedInspection.y2025} 批，2026 检验 ${selectedInspection.y2026} 批。${specialAsBad ? "没有不合格，也没有特采。" : "没有不合格。"}`}</p></div>}
+      </AxisControlledPanel>
+      <AxisControlledPanel title="1.2.2 异常加工件材料属性" subtitle={`${yieldScope} · ${specialAsBad ? "特采计入不合格" : "特采不计入不合格"} · 柱形为检验总数/不合格数，折线为材料批次良率`} className="iqc-wide" axisKey={`iqc-${site}-${activeYieldSupplier}-${specialAsBad ? "special-bad" : "special-good"}-materials-axis-v1`} defaults={{ min: 80, max: 100 }}>
+        {(axis) => materials.length ? <QuantityRateCombo rows={materials} height={380} chartKey={`iqc-materials-${site}-${activeYieldSupplier}-${specialAsBad ? "bad" : "good"}`} rateAxisOverride={axis.effective} hideRateAxisControl /> : <div className="iqc-issue-clear"><strong>{activeYieldSupplier === "全部" ? "当前范围没有材料数据" : `${activeYieldSupplier}没有可展示的材料`}</strong><p>{iqcData.materialBySupplierBySite ? "加工件检验里没有这种材料分类。" : "请刷新页面后，再按这家供应商查看材料。"}</p></div>}
       </AxisControlledPanel>
       <div className="iqc-table-heading"><span className="section-number">1.2.4</span><div><h2>主要供应商良率趋势</h2><p>按提纲指定加工类型筛选，深圳、杭州分别呈现</p></div></div>
       <div className="iqc-supplier-tables">

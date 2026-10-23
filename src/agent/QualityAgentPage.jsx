@@ -7,7 +7,7 @@ import { hydrateDoamDefault, mergeDoamDatasets } from "../doamEngine.js";
 import { chooseAgentRunSnapshot, closeQualityAgentAction, iqcSnapshotReady, loadQualityAgentRuns, qualityAgentSnapshotHash, QUALITY_AGENT_STAGES, runQualityAgent, saveQualityAgentRuns } from "./qualityAgent.js";
 import { calloutToneClass, headingClass, isLayoutMarker, isMachineMetadataLine, metricLine, sectionClass, tableToneClass } from "./reportLayout.js";
 import { DEFAULT_REPORT_PRESENTATION_PROFILE, getReportPresentationProfile, normalizeReportPresentationProfile, presentationOwnsCharts, REPORT_PRESENTATION_PROFILES, reportPresentationClass } from "./reportPresentationProfiles.js";
-import { renderPorcelainSheet } from "./porcelainSheet.js";
+import { normalizeCompanyBrief, renderPorcelainSheet } from "./porcelainSheet.js";
 import { ensurePersonalReportHeading } from "./roleFixedEvidenceReport.js";
 import { renderBasicsSheet } from "./basicsSheet.js";
 import { normalizeQualitySnapshotRegistry, pickLatestQualitySnapshot } from "./snapshotRegistry.js";
@@ -1137,8 +1137,9 @@ const doamStructuredTable = (split, title) => {
 };
 
 
-export const renderAgentMarkdown = (content, { chartFirst = false, snapshot = null, includeSnapshotCharts = false, publisher = false, profileId = DEFAULT_REPORT_PRESENTATION_PROFILE, module = "质量分析", visualSpec = null, chartTheme = "", lede = "", orgMappings = [], recipient = "", period = null, role = "" } = {}) => {
+export const renderAgentMarkdown = (rawContent, { chartFirst = false, snapshot = null, includeSnapshotCharts = false, publisher = false, profileId = DEFAULT_REPORT_PRESENTATION_PROFILE, module = "质量分析", visualSpec = null, chartTheme = "", lede = "", orgMappings = [], recipient = "", period = null, role = "" } = {}) => {
   // The visual contract is machine-readable metadata, never report prose.
+  const content = module === "公司" ? normalizeCompanyBrief(rawContent || "") : rawContent;
   const visualFigures = visualFigureList(visualSpec || extractReportVisualSpec(content || ""));
   const resolvedChartTheme = chartTheme || (visualSpec?.reportKind === "role" || String(module || "").startsWith("角色报告") ? "lieflat" : "default");
   const reportText = ensurePersonalReportHeading(sanitizeHumanReportContent(content || "暂无报告"), { recipient, period, role, module });
@@ -1818,7 +1819,7 @@ export function QualityAgentPage({ data, files = [], dateRange, module = "DQA", 
       const preview = await previewWecomSend([{ fileName, recipient: person, role: "" }]);
       const matched = (preview.rows || [])[0];
       if (!matched || matched.status !== "ok") {
-        setSendNotice({ status: "error", message: matched?.reason || `${person} 还不能发送。请先在员工信息填写发送地址，并同步到发送服务` });
+        setSendNotice({ status: "error", message: matched?.reason || `${person} 还不能发送。请到系统管理-员工信息填写企业微信 userid` });
         return;
       }
       const payload = await sendWecomReports([fileName], person, { layoutProfileId: layoutSkillName, format: sendFormat, snapshot: pageExportSnapshot(), visualSpec: pageExportVisualSpec(selectedReportContent, selectedReport || {}) });
