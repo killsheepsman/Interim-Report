@@ -31,7 +31,62 @@ const wrap = (deg) => {
   let angle = ((deg % 360) + 360) % 360;
   return angle > 180 ? angle - 360 : angle;
 };
-const statusText = (file, awaitingReview, processing) => file.status === "review_required" ? "需要复核/重试" : awaitingReview ? "OCR待人工复核" : file.status === "completed" ? "已完成" : file.status === "failed" ? "处理失败" : file.status === "distilling" ? "知识蒸馏中" : file.status === "registered" ? "已登记待解析" : processing ? "后台处理中" : "本机旧记录";
+const statusText = (file, awaitingReview, processing, job) => {
+  if (job?.status === "paused") return "蒸馏已暂停";
+  if (job?.status === "failed") return "蒸馏失败";
+  if (job?.status === "waiting") return "等待蒸馏";
+  if (job?.status === "running") return "正在蒸馏";
+  if (file.status === "indexing") return "正在整理证据";
+  if (file.status === "parsing") return "正在解析证据";
+  if (file.status === "waiting") return "等待解析";
+  return file.status === "review_required" ? "需要复核/重试" : awaitingReview ? "OCR待人工复核" : file.status === "completed" ? "已完成" : file.status === "failed" ? "处理失败" : file.status === "distilling" ? "正在蒸馏" : file.status === "registered" ? "已登记待解析" : processing ? "后台处理中" : "本机旧记录";
+};
+const distillProgress = (job) => {
+  if (!job || !["waiting", "running", "paused", "failed"].includes(job.status)) return null;
+  const batches = job.result?.batches || [];
+  const total = Number(job.result?.totalBatches || batches.length || 0);
+  const done = batches.filter((batch) => batch.status === "completed").length;
+  const running = batches.filter((batch) => batch.status === "running").length;
+  const percent = Number.isFinite(Number(job.progress)) ? Math.max(0, Math.min(100, Math.round(Number(job.progress)))) : (total ? Math.round(done / total * 100) : 0);
+  const message = job.status === "paused" ? "已暂停。点「继续蒸馏」接着做。" : job.status === "failed" ? (job.errorMessage || job.message || "蒸馏失败") : job.status === "waiting" ? "排队中，还没开始这一批。" : (job.message || (running ? "正在处理当前批次。" : "正在蒸馏。"));
+  return { percent, total, done, message, status: job.status, startedAt: job.startedAt || job.createdAt || "", updatedAt: job.updatedAt || "" };
+};
+const elapsedText = (progress, now) => {
+  if (!progress?.startedAt) return "";
+  const start = new Date(progress.startedAt).getTime();
+  if (!Number.isFinite(start)) return "";
+  const frozen = ["paused", "failed", "completed"].includes(progress.status);
+  const end = frozen ? new Date(progress.updatedAt || now).getTime() : now;
+  const seconds = Math.max(0, Math.round((end - start) / 1000));
+  if (seconds < 60) return "已用 " + seconds + "秒";
+  return "已用 " + Math.floor(seconds / 60) + "分" + String(seconds % 60).padStart(2, "0") + "秒";
+};
+const parseProgress = (file, job) => {
+  const jobActive = job && ["waiting", "running", "paused"].includes(job.status) && job.jobType !== "distill";
+  const fileActive = ["waiting", "parsing", "indexing"].includes(file.status);
+  if (!jobActive && !fileActive) return null;
+  const source = jobActive ? job : file;
+  const raw = Number(source.progress);
+  const percent = Number.isFinite(raw) ? Math.max(3, Math.min(99, Math.round(raw))) : 3;
+  const message = String(source.message || "正在解析证据").split(" · 证据解析：")[0] || "正在解析证据";
+  return { percent, total: 0, done: 0, message, status: jobActive ? job.status : "running", startedAt: job?.startedAt || job?.createdAt || file.metadata?.processingStages?.evidence?.startedAt || "", updatedAt: job?.updatedAt || file.updatedAt || "" };
+};
+const workProgress = (file, facts) => {
+  if (["waiting", "parsing", "indexing"].includes(file.status)) return parseProgress(file, facts.activeParseJob);
+  return distillProgress(facts.activeDistillJob);
+};
+const knowledgeCardMeter = (file, job) => {
+  const published = Number(file?.metadata?.publishedKnowledgeCount || 0);
+  const saved = Math.max(Number(file?.distillationCount || 0), Number(job?.result?.knowledgeCount || 0));
+  const cards = Math.max(saved, published);
+  const estimated = false;
+  const green = cards > 0 ? Math.max(0, Math.min(100, Math.round(published / cards * 100))) : 0;
+  return { published, cards, estimated, green };
+};
+function KnowledgeCardBar({ meter }) {
+  const title = "已发布 " + meter.published + " 张 · 知识卡片 " + (meter.estimated ? "约 " : "") + meter.cards + " 张";
+  return <i className={"knowledge-card-bar" + (meter.cards ? "" : " is-empty")} title={title} aria-label={title}>{meter.cards > 0 && <b className="is-published" style={{ width: meter.green + "%" }} />}{meter.cards > 0 && <b className="is-cards" style={{ width: (100 - meter.green) + "%" }} />}</i>;
+}
 
 const fileFacts = (file, documentJobs = {}) => {
   const processing = ["waiting", "parsing", "indexing", "distilling"].includes(file.status);
@@ -40,9 +95,10 @@ const fileFacts = (file, documentJobs = {}) => {
   const reviewCount = Number(file.metadata?.reviewPageCount || ocrPages || 0);
   const awaitingReview = reviewCount > 0 && reviewStatus !== "approved";
   const activeDistillJob = documentJobs[file.id]?.distill;
+  const activeParseJob = documentJobs[file.id]?.parse;
   const failedBatchCount = (activeDistillJob?.result?.batches || []).filter((batch) => batch.status === "failed").length;
   const failedPages = Number(file.metadata?.failedPageCount || file.metadata?.failedPageNumbers?.length || 0);
-  return { processing, reviewStatus, ocrPages, reviewCount, awaitingReview, activeDistillJob, failedBatchCount, failedPages, canDistill: file.status === "completed" && !awaitingReview };
+  return { processing, reviewStatus, ocrPages, reviewCount, awaitingReview, activeDistillJob, activeParseJob, failedBatchCount, failedPages, canDistill: file.status === "completed" && !awaitingReview };
 };
 
 export function KnowledgeExamCarousel({ files = [], checkedFileIds = [], onToggleFile, generationStates = {}, documentJobs = {}, busy = false, distillingId = "", generatingId = "", selectedKnowledgeSkillId = "", selectedExamSkillId = "", processingClock = Date.now(), timingLabel, onOpenDetail, onImportDistillation, onControlJob, onRetryParse, onRetryFailedParse, onReviewFile, onDistill, onGenerateExam, onDelete }) {
@@ -135,6 +191,7 @@ export function KnowledgeExamCarousel({ files = [], checkedFileIds = [], onToggl
   const front = files.find((file) => file.id === frontId) || files[0];
   if (!files.length) return <div className="qmdp-empty"><Database size={30}/><strong>暂无匹配知识文件</strong><span>导入规范、SOP 或经验文档后会显示在这里。</span></div>;
   const facts = front ? fileFacts(front, documentJobs) : null;
+  const progress = facts ? workProgress(front, facts) : null;
   const locked = busy || turning;
   const buttons = front && facts ? [
     { key: "evidence", label: "查看证据", icon: <Rows size={14}/>, show: true, enabled: front.clauseCount > 0 && !locked, onClick: () => onOpenDetail(front, "clauses") },
@@ -147,9 +204,9 @@ export function KnowledgeExamCarousel({ files = [], checkedFileIds = [], onToggl
     { key: "retry-pages", label: "仅重试失败页", icon: <ArrowsClockwise size={14}/>, show: true, enabled: facts.failedPages > 0 && !locked, onClick: () => onRetryFailedParse(front) },
     { key: "approve", label: "复核通过", icon: <CheckCircle size={14}/>, show: true, enabled: facts.awaitingReview && front.clauseCount > 0 && !locked, onClick: () => onReviewFile(front, "approved") },
     { key: "redo", label: "标记需重做", icon: <WarningCircle size={14}/>, show: true, enabled: facts.reviewStatus === "approved" && facts.reviewCount > 0 && !locked, onClick: () => onReviewFile(front, "rejected") },
-    { key: "distill", label: distillingId === front.id ? "正在蒸馏…" : front.distillationCount ? "重新蒸馏" : "蒸馏知识", icon: <Sparkle size={14}/>, show: true, enabled: Boolean(selectedKnowledgeSkillId) && facts.canDistill && !locked, onClick: () => onDistill(front) },
+    { key: "distill", label: distillingId === front.id ? "正在蒸馏…" : (front.distillationCount || facts.activeDistillJob) ? "重新蒸馏" : "蒸馏知识", icon: <Sparkle size={14}/>, show: true, enabled: Boolean(selectedKnowledgeSkillId) && facts.canDistill && !locked, onClick: () => onDistill(front) },
     { key: "exam", label: generatingId === front.id ? "正在生成…" : front.examQuestionCount ? "重新出题" : "生成题目", icon: <Brain size={14}/>, show: true, enabled: Boolean(selectedExamSkillId) && Boolean(front.preview) && !facts.awaitingReview && front.status === "completed" && !locked, onClick: () => onGenerateExam(front) },
-    { key: "delete", label: "删除", icon: <Trash size={14}/>, show: true, enabled: !locked, danger: true, onClick: () => onDelete(front) },
+    { key: "delete", label: "删除", icon: <Trash size={14}/>, show: true, enabled: true, danger: true, onClick: () => onDelete(front) },
   ] : [];
   return <div className="knowledge-orbit">
     <div className="knowledge-orbit-stage" ref={stageRef}>
@@ -163,13 +220,14 @@ export function KnowledgeExamCarousel({ files = [], checkedFileIds = [], onToggl
           <span className="knowledge-orbit-tag">{file.category || "未分类"}</span>
           <h3>{file.name}</h3>
           <p>{file.preview || "尚未提取文本；可作为知识文件留档。"}</p>
-          <footer><b>{statusText(file, itemFacts.awaitingReview, itemFacts.processing)}</b><small>{file.clauseCount || 0} 条证据 · {file.distillationCount || 0} 张卡片</small></footer>
+          <footer><b>{statusText(file, itemFacts.awaitingReview, itemFacts.processing, itemFacts.activeDistillJob)}</b><small>{["waiting", "parsing", "indexing"].includes(file.status) && workProgress(file, itemFacts)?.message ? workProgress(file, itemFacts).message : `${file.clauseCount || 0} 条证据 · ${file.distillationCount || 0} 张卡片`}{elapsedText(workProgress(file, itemFacts), processingClock) ? ` · ${elapsedText(workProgress(file, itemFacts), processingClock)}` : ""}</small><KnowledgeCardBar meter={knowledgeCardMeter(file, itemFacts.activeDistillJob)} /></footer>
         </article>;
       })}
     </div>
     {front && <section className="knowledge-orbit-dock">
       <strong>{front.name}</strong>
-      <p>{turning ? "正在转动，按钮暂不可点" : `${statusText(front, facts.awaitingReview, facts.processing)} · ${front.clauseCount || 0} 条证据 · ${front.distillationCount || 0} 张卡片`}{timingLabel ? ` · ${timingLabel(front, processingClock) || ""}` : ""}{generationStates[front.id]?.message ? ` · ${generationStates[front.id].message}` : ""}</p>
+      <p>{turning ? "正在转动，按钮暂不可点" : `${statusText(front, facts.awaitingReview, facts.processing, facts.activeDistillJob)} · ${front.clauseCount || 0} 条证据 · ${front.distillationCount || 0} 张卡片`}{!progress && timingLabel ? ` · ${timingLabel(front, processingClock) || ""}` : ""}{generationStates[front.id]?.message ? ` · ${generationStates[front.id].message}` : ""}</p>
+      {(() => { const meter = knowledgeCardMeter(front, facts.activeDistillJob); return <div className="knowledge-orbit-meters" aria-label="知识卡片数量"><div><b>知识卡片</b><span>{meter.estimated ? "约 " : ""}{meter.cards} 张</span></div><KnowledgeCardBar meter={meter} />{facts.activeDistillJob?.status === "failed" && progress?.message ? <small>{progress.message}</small> : null}</div>; })()}
       <div className="knowledge-orbit-actions">
         {buttons.map((button) => button.file ? <label key={button.key} className={`qmdp-secondary-btn ${button.enabled ? "" : "is-disabled"}`}>{button.icon}{button.label}<input type="file" accept=".json,.md" disabled={!button.enabled} onChange={(event) => onImportDistillation(front, event)}/></label> : <button key={button.key} type="button" className={button.danger ? "qmdp-danger-btn" : button.primary ? "qmdp-primary-btn" : "qmdp-secondary-btn"} disabled={!button.enabled} onClick={button.onClick}>{button.icon}{button.label}</button>)}
       </div>

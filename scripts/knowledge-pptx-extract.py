@@ -59,7 +59,9 @@ def main():
             key=lambda name: int(posixpath.basename(name)[5:-4]),
         )
         slides = []
-        for slide_name in slide_names:
+        total_slides = len(slide_names)
+        print(f"PROGRESS 0 {total_slides}", file=sys.stderr, flush=True)
+        for slide_index, slide_name in enumerate(slide_names, 1):
             slide_number = int(posixpath.basename(slide_name)[5:-4])
             root = ET.fromstring(archive.read(slide_name))
             relations = slide_relations(archive, slide_name)
@@ -89,6 +91,7 @@ def main():
                     "cropBox": xfrm_box(picture.find("p:spPr/a:xfrm", NS)),
                 })
             slides.append({"slide": slide_number, "texts": texts, "images": images})
+            print(f"PROGRESS {slide_index} {total_slides}", file=sys.stderr, flush=True)
     with open(output, "w", encoding="utf-8") as target:
         json.dump({"schemaVersion": "qms-pptx-evidence-v1", "slideSize": slide_size, "slides": slides}, target, ensure_ascii=False)
 

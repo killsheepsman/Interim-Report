@@ -11,7 +11,7 @@ import {
 } from "@phosphor-icons/react";
 import { analyzeImported, buildDqaEngineerSupplementSource, buildOqcRuleDimensionDispersions, downloadJson, isIpqcExcludedBadType, normalizeIpqcLeaderMapRows, normalizeIpqcWorkshop, parseDqaAgentRawFiles, parseDqaEngineerSupplementFiles, parseDqaRdImportFiles, parseFiles, parseOqcProjectNameByRules, pruneEngineerSupplementToReviews, buildIqcSpecialToggleBase, readIqcSpecialToggle } from "./dataEngine.js";
 import { clearDqaAgentRaw as clearDqaAgentRawState, clearDqaEngineerSupplement as clearDqaEngineerSupplementState, controlKnowledgeDistillationJob, createExamSession, createKnowledgeDocument, createSourcesSignature, createSnapshotJob, deleteKnowledgeDocument, downloadSourceFiles, generateKnowledgeMatches, governKnowledgeDocument, importKnowledgeDistillation, listSnapshotJobs, loadAgentSkills, loadAiConfig, loadAiModels, loadAppliedDateRange, loadCachedAnalysis, loadCurrentUser, loadDqaAgentRaw, loadDefaultAnalysis, loadDefaultAnnotations, loadDefaultQmsSources, loadDefaultSources, loadDistilledKnowledge, loadDqaEngineerSupplement, loadExamResults, loadExamSession, loadImportedSources, loadKnowledgeAuditLogs, loadKnowledgeClauses, loadKnowledgeConflicts, loadKnowledgeConsistency, loadKnowledgeDocuments, loadKnowledgeFeedbackRecords, loadKnowledgeIssues, loadKnowledgeJob, loadKnowledgeJobs, loadKnowledgeMatches, loadKnowledgePerformanceMetrics, loadKnowledgeRecurrences, loadKnowledgeReviewPoints, loadKnowledgeReviewSessions, loadPermissionConfig, loadProjectNameMapping, loadQualityAgentRoleSnapshotRegistry, loadQualityAgentSnapshotRegistry, loadReportQualityRules, loadSnapshotJob, mergeImportedSources, openSnapshotStorage, patchCachedAnalysis, reparseKnowledgeDocument, requestAiChat, reviewDistilledKnowledge, reviewKnowledgeDocument, reviewKnowledgeMatch, runKnowledgePerformanceBenchmark, saveAiConfig, saveAiReport, saveDqaAgentRaw, saveKnowledgeConflict, saveKnowledgeFeedbackRecord, saveKnowledgeRecurrenceAction, saveKnowledgeReviewSession, saveLocalAiReport, saveAppliedDateRange, saveCachedAnalysis, saveDqaEngineerSupplement, saveImportedSources, savePermissionConfig, saveProjectNameMapping, saveQualityAgentRoleSnapshotRegistry, saveQualityAgentSnapshotRegistry, sourceRowCount, startKnowledgeDistillation, submitExamSession, summarizeSources, syncKnowledgeIssues, testAiConfig, updateKnowledgeDocumentMetadata, updateSnapshotJob, uploadKnowledgeSource, uploadSourceFiles, syncLinkedOrgMapping, withMappingFile, withoutMappingFile, mappingRowKey } from "./dataStore.js";
-import { bulkReviewKnowledgeCards, bulkUpdateKnowledgeCards, deleteKnowledgeCard, deleteKnowledgeClause, exportKnowledgeData, loadKnowledgeBackups, loadKnowledgeImpact, restoreKnowledgeBackup, updateKnowledgeCard, updateKnowledgeClause } from "./dataStore.js";
+import { bulkReviewKnowledgeCards, bulkUpdateKnowledgeCards, publishKnowledgeCards, deleteKnowledgeCard, deleteKnowledgeClause, exportKnowledgeData, loadKnowledgeBackups, loadKnowledgeImpact, restoreKnowledgeBackup, updateKnowledgeCard, updateKnowledgeClause } from "./dataStore.js";
 import { loadOqcEquipmentRuleCache } from "./dataStore.js";
 import { DoamPage } from "./DoamPage.jsx";
 import { buildDoamDataset, decodeDoamFile } from "./doamEngine.js";
@@ -3282,6 +3282,7 @@ function KnowledgeBasePage({ qualitySources = [], onEnsureAgentSources, auth }) 
   const [issueMatchState, setIssueMatchState] = useState({ status: "idle", message: "先同步质量问题，再生成候选规范" });
   const [issueListLoading, setIssueListLoading] = useState(false);
   const issueRequestSeqRef = useRef(0);
+  const removedKnowledgeIdsRef = useRef(new Set());
   const [batchMatchProgress, setBatchMatchProgress] = useState(null);
   const batchMatchStopRef = useRef(false);
   const [matchThreshold, setMatchThreshold] = useState(() => Number(localStorage.getItem("qmdp-knowledge-match-threshold") || 80));
@@ -3324,9 +3325,9 @@ function KnowledgeBasePage({ qualitySources = [], onEnsureAgentSources, auth }) 
         }
       });
       setDocumentJobs(nextJobs);
-      const documents = (response?.documents || []).map((item) => ({ ...item, serverStored: true }));
+      const documents = (response?.documents || []).map((item) => ({ ...item, serverStored: true })).filter((item) => !removedKnowledgeIdsRef.current.has(item.id));
       if (documents.length) setFiles((current) => documents.map((item) => ({ ...current.find((row) => row.id === item.id), ...item })));
-      else setFiles((current) => current.filter((item) => !item.serverStored));
+      else setFiles((current) => current.filter((item) => !item.serverStored && !removedKnowledgeIdsRef.current.has(item.id)));
       if (!silent) setStatus(documents.length ? `已读取 ${documents.length} 个知识文件` : "知识库已连接，暂无服务器知识文件");
       return documents;
     } catch (error) {
@@ -3381,12 +3382,12 @@ function KnowledgeBasePage({ qualitySources = [], onEnsureAgentSources, auth }) 
     } finally { setCheckingKnowledgeConsistency(false); }
   };
   useEffect(() => { refreshDocuments(false); }, [refreshDocuments]);
+  const knowledgeWorkActive = files.some((file) => ["waiting", "parsing", "indexing", "distilling"].includes(file.status)) || Object.values(documentJobs).some((item) => ["waiting", "running"].includes(item?.distill?.status) || ["waiting", "running"].includes(item?.parse?.status));
   useEffect(() => {
-    const active = files.some((file) => ["waiting", "parsing", "indexing", "distilling"].includes(file.status));
-    if (!active) return undefined;
+    if (!knowledgeWorkActive) return undefined;
     const timer = window.setInterval(() => refreshDocuments(true), 1800);
     return () => window.clearInterval(timer);
-  }, [files, refreshDocuments]);
+  }, [knowledgeWorkActive, refreshDocuments]);
   useEffect(() => {
     const metadata = files.map(({ sourceText, segments, ...file }) => ({ ...file, preview: String(file.preview || "").slice(0, 1200), ...(file.serverStored ? {} : { segments: (segments || []).slice(0, 80) }) }));
     try { localStorage.setItem(qmdpKnowledgeKey, JSON.stringify(metadata)); } catch {}
@@ -3828,21 +3829,36 @@ function KnowledgeBasePage({ qualitySources = [], onEnsureAgentSources, auth }) 
   const toggleVisibleFiles = () => setCheckedFileIds((current) => allVisibleChecked ? current.filter((id) => !visibleIds.includes(id)) : [...new Set([...current, ...visibleIds])]);
   const toggleKnowledgeFile = (id) => setCheckedFileIds((current) => current.includes(id) ? current.filter((item) => item !== id) : [...current, id]);
   const deleteKnowledgeFiles = async (ids) => {
-    const remove = new Set();
+    const removed = [];
+    const failed = [];
     for (const id of ids) {
       const file = files.find((item) => item.id === id);
-      try { if (file?.serverStored) await deleteKnowledgeDocument(id); remove.add(id); }
-      catch (error) { remove.add(id); setStatus(`已从当前页面移除“${file?.name || id}”；后台删除将在服务恢复后重试`); }
+      const name = file?.name || "这份规范";
+      setStatus(`正在删除“${name}”…`);
+      try {
+        if (file?.serverStored) {
+          const result = await deleteKnowledgeDocument(id);
+          if (result && result.deleted === false) throw new Error("后台没有删掉这份规范");
+        }
+        removedKnowledgeIdsRef.current.add(id);
+        removed.push(name);
+      } catch (error) {
+        failed.push(`${name}：${error?.message || "删除失败"}`);
+      }
     }
-    setFiles((current) => current.filter((item) => !remove.has(item.id)));
-    setCheckedFileIds((current) => current.filter((id) => !remove.has(id)));
-    if (detail && remove.has(detail.fileId)) setDetail(null);
+    if (removed.length) {
+      setFiles((current) => current.filter((item) => !removedKnowledgeIdsRef.current.has(item.id)));
+      setCheckedFileIds((current) => current.filter((id) => !removedKnowledgeIdsRef.current.has(id)));
+      if (detail && removedKnowledgeIdsRef.current.has(detail.fileId)) setDetail(null);
+      await refreshDocuments(true);
+    }
+    if (failed.length) setStatus(`没有删掉：${failed.join("；")}`);
+    else if (removed.length) setStatus(removed.length === 1 ? `已删除“${removed[0]}”` : `已删除 ${removed.length} 份规范`);
   };
   const deleteCheckedKnowledgeFiles = async () => {
     const count = checkedFileIds.length;
     if (!count || !window.confirm(`确定删除已选中的 ${count} 个知识文件吗？对应条款和蒸馏结果也会删除，题库历史题目不会自动删除。`)) return;
     await deleteKnowledgeFiles(checkedFileIds);
-    setStatus(`已批量删除 ${count} 个知识文件`);
   };
   const generateCheckedKnowledgeFiles = async () => {
     if (generatingId || batchProgress || !checkedFileIds.length || !selectedExamSkillId) return;
@@ -3916,38 +3932,48 @@ function KnowledgeBasePage({ qualitySources = [], onEnsureAgentSources, auth }) 
   };
   const toggleKnowledgeSelection = (id) => setSelectedKnowledgeIds((current) => current.includes(id) ? current.filter((item) => item !== id) : [...current, id]);
   const batchReviewKnowledge = async (action) => {
-    if (action !== "publish" || !detail?.rows?.length || busy || !selectedKnowledgeIds.length) return;
-    let rows = detail.rows.filter((row) => selectedKnowledgeIds.includes(row.id));
-    if (rows.length < selectedKnowledgeIds.length) {
-      const all = await loadDistilledKnowledge(detail.fileId, { limit: 10000, offset: 0 });
-      rows = (all.knowledge || []).filter((row) => selectedKnowledgeIds.includes(row.id));
-    }
-    setKnowledgePublishProgress({ current: 0, total: rows.length, failed: 0 });
-    let completed = 0; let failed = 0; let cursor = 0;
-    const publishWorker = async () => {
-      while (cursor < rows.length) {
-        const row = rows[cursor]; cursor += 1;
-        try {
-          await reviewDistilledKnowledge(row.id, { action: "publish", reviewer: auth?.name || auth?.username || "管理员", note: "批量发布知识", documentId: row.documentId });
-          completed += 1;
-        } catch { failed += 1; }
-        setKnowledgePublishProgress({ current: completed + failed, total: rows.length, failed });
-        await new Promise((resolve) => window.setTimeout(resolve, 0));
+    if (action !== "publish" || busy || !selectedKnowledgeIds.length) return;
+    const ids = [...selectedKnowledgeIds];
+    setKnowledgePublishProgress({ current: 0, total: ids.length, failed: 0 });
+    let completed = 0;
+    let failed = 0;
+    const size = 250;
+    for (let index = 0; index < ids.length; index += size) {
+      const chunk = ids.slice(index, index + size);
+      try {
+        const result = await publishKnowledgeCards(chunk, { note: "批量发布知识" });
+        const updated = Number(result?.updated || 0);
+        completed += updated;
+        failed += Math.max(0, chunk.length - updated);
+      } catch {
+        failed += chunk.length;
       }
-    };
-    await Promise.all(Array.from({ length: Math.min(4, rows.length) }, () => publishWorker()));
+      setKnowledgePublishProgress({ current: completed + failed, total: ids.length, failed });
+    }
     setSelectedKnowledgeIds([]);
     setKnowledgePublishProgress(null);
-    setStatus(`批量发布完成：${completed}/${rows.length} 条知识卡${failed ? `，失败 ${failed} 条` : ""}`);
+    setStatus(`批量发布完成：${completed}/${ids.length} 条知识卡${failed ? `，失败 ${failed} 条` : ""}`);
     await refreshDocuments(true);
-    await openDetail(files.find((file) => file.id === detail.fileId), "knowledge", detail.page);
+    if (detail?.fileId) await openDetail(files.find((file) => file.id === detail.fileId), "knowledge", detail.page);
   };
   const selectAllKnowledgeCards = async () => {
     if (!detail?.fileId || detail.mode !== "knowledge" || detail.loading) return;
     try {
-      const response = await loadDistilledKnowledge(detail.fileId, { limit: 10000, offset: 0 });
-      setSelectedKnowledgeIds((response.knowledge || []).map((row) => row.id));
-      setStatus(`已选中该文件全部 ${response.knowledge?.length || 0} 条知识卡`);
+      const ids = [];
+      const pageSize = 1000;
+      let offset = 0;
+      let total = Infinity;
+      while (offset < total) {
+        const response = await loadDistilledKnowledge(detail.fileId, { limit: pageSize, offset });
+        const rows = response.knowledge || [];
+        total = Number(response.total || 0);
+        ids.push(...rows.map((row) => row.id).filter(Boolean));
+        if (!rows.length || rows.length < pageSize) break;
+        offset += rows.length;
+      }
+      const unique = [...new Set(ids)];
+      setSelectedKnowledgeIds(unique);
+      setStatus(unique.length < total ? `已选中 ${unique.length} 条，清单里共 ${total} 条` : `已选中该文件全部 ${unique.length} 条知识卡`);
     } catch (error) { setStatus(`全选知识卡失败：${error?.message || error}`); }
   };
   const openGovernanceForDocument = (documentId) => {

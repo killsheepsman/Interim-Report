@@ -977,6 +977,7 @@ export const deleteKnowledgeClause = async (id) => knowledgeApiJson(`/knowledge/
 export const updateKnowledgeCard = async (id, payload) => knowledgeApiJson(`/knowledge/cards/${encodeURIComponent(id)}`, { method: "PUT", body: JSON.stringify(payload) });
 export const bulkUpdateKnowledgeCards = async (ids, patch) => knowledgeApiJson("/knowledge/cards/bulk", { method: "PUT", body: JSON.stringify({ ids, patch }) });
 export const bulkReviewKnowledgeCards = async (ids, action) => knowledgeApiJson("/knowledge/cards/bulk-review", { method: "POST", body: JSON.stringify({ ids, action }) });
+export const publishKnowledgeCards = async (ids, payload = {}) => knowledgeApiJson("/knowledge/cards/publish", { method: "POST", body: JSON.stringify({ ids, ...payload }) });
 export const deleteKnowledgeCard = async (id) => knowledgeApiJson(`/knowledge/cards/${encodeURIComponent(id)}`, { method: "DELETE", body: JSON.stringify({}) });
 export const loadKnowledgeImpact = async (kind, id) => knowledgeApiJson(`/knowledge/impact/${encodeURIComponent(kind)}/${encodeURIComponent(id)}`, { method: "GET", cache: "no-store" });
 export const exportKnowledgeData = (documentId = "") => `${sharedApiBase()}/knowledge/export?documentId=${encodeURIComponent(documentId)}`;

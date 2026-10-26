@@ -554,7 +554,7 @@ const loadProjectSkillContent = async (skillId) => {
   if (!filePath.startsWith(path.resolve(agentSkillDir) + path.sep)) throw new Error("知识蒸馏Skill路径无效");
   return await fs.readFile(filePath, "utf8");
 };
-const completeKnowledgeAi = async ({ messages, maxTokens = 5000, signal, config: suppliedConfig }) => {
+const completeKnowledgeAi = async ({ messages, maxTokens = 5000, signal, timeoutMs, config: suppliedConfig }) => {
   const config = suppliedConfig || await loadAiConfig();
   if (!config.apiKey || !config.model) throw new Error("请先由管理员配置服务器AI接口、模型和密钥");
   assertKnownAiModel(config);
@@ -566,7 +566,7 @@ const completeKnowledgeAi = async ({ messages, maxTokens = 5000, signal, config:
   }
   if (responsesApi && ["high", "xhigh"].includes(config.reasoningEffort)) requestBody.reasoning = { effort: config.reasoningEffort };
   requestBody.stream = true;
-  const result = await requestAi(config, responsesApi ? "/responses" : "/chat/completions", { method: "POST", body: JSON.stringify(requestBody), stream: true, signal });
+  const result = await requestAi(config, responsesApi ? "/responses" : "/chat/completions", { method: "POST", body: JSON.stringify(requestBody), stream: true, signal, ...(Number(timeoutMs) > 0 ? { timeoutMs: Number(timeoutMs) } : {}) });
   return { model: config.model, content: extractAiContent(result), usage: result?.usage || null };
 };
 const knowledgeService = createKnowledgeService({ filePath: knowledgeStoreFile, originalDir: knowledgeOriginalDir, scriptDir: path.join(rootDir, "scripts"), aiComplete: completeKnowledgeAi, loadSkillContent: loadProjectSkillContent });
@@ -920,6 +920,11 @@ const handleKnowledge = async (req, res) => {
       if (!user.isAdmin) return sendJson(res, 403, { error: "只有管理员可以批量修改知识卡片" });
       const payload = await jsonBody();
       return sendJson(res, 200, await knowledgeService.bulkUpdateKnowledgeCards(payload.ids || [], payload.patch || {}, user.name || user.ip || "", user.ip || ""));
+    }
+    if (pathname === "/api/knowledge/cards/publish" && req.method === "POST") {
+      if (!user.isAdmin) return sendJson(res, 403, { error: "只有管理员可以发布正式知识" });
+      const payload = await jsonBody();
+      return sendJson(res, 200, await knowledgeService.publishKnowledgeCards(payload.ids || [], { ...payload, reviewer: user.name || user.ip || "", actorIp: user.ip || "" }));
     }
     if (pathname === "/api/knowledge/cards/bulk-review" && req.method === "POST") {
       if (!user.isAdmin) return sendJson(res, 403, { error: "只有管理员可以批量审核知识卡片" });

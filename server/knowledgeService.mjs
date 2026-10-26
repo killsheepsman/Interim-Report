@@ -8,6 +8,8 @@ import {
   deletePostgresKnowledgeClauses,
   deletePostgresDistilledKnowledge,
   deletePostgresKnowledgeDocument,
+  listPostgresActiveKnowledgeJobIds,
+  postgresStatus,
   deletePostgresQualityIssue,
   listPostgresConfirmedKnowledgeMatches,
   listPostgresDistilledKnowledge,
@@ -28,6 +30,8 @@ import {
   replacePostgresKnowledgeMatches,
   replacePostgresDistilledKnowledge,
   updatePostgresDistilledKnowledge,
+  readPostgresDistilledKnowledgeById,
+  publishPostgresKnowledgeCards,
   replacePostgresKnowledgeClauses,
   reviewPostgresKnowledgeMatch,
   upsertPostgresQualityIssues,
@@ -82,11 +86,12 @@ const toArray = (value) => Array.isArray(value) ? value.map((item) => String(ite
 const parseAiKnowledgePayload = (content) => {
   const text = cleanText(content).replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/i, "");
   let value;
-  try { value = JSON.parse(text); }
+  const tryParse = (raw) => JSON.parse(String(raw || "").replace(/,\s*([}\]])/g, "$1"));
+  try { value = tryParse(text); }
   catch {
-    const match = text.match(/\{[\s\S]*\}|\[[\s\S]*\]/);
-    if (!match) throw new Error("模型没有返回可识别的知识JSON");
-    try { value = JSON.parse(match[0]); } catch { throw new Error("模型返回的知识JSON格式无效"); }
+    const start = text.search(/[\[\{]/);
+    if (start < 0) throw new Error("模型没有返回可识别的知识JSON");
+    try { value = tryParse(text.slice(start)); } catch { throw new Error("模型返回的知识JSON格式无效"); }
   }
   const rows = Array.isArray(value) ? value : value?.knowledge || value?.items || [];
   if (!Array.isArray(rows)) throw new Error("模型返回的知识结果不是数组");
@@ -510,14 +515,15 @@ export const buildPptTextEvidenceClauses = (document = {}, slides = []) => slide
 
 let activeTaskSignal = null;
 const runProcess = (command, args, options = {}) => new Promise((resolve, reject) => {
-  const child = spawn(command, args, { windowsHide: true, ...options });
+  const { onStderr, ...spawnOptions } = options;
+  const child = spawn(command, args, { windowsHide: true, ...spawnOptions });
   const signal = options.signal || activeTaskSignal;
   const abort = () => { try { child.kill(); } catch {} };
   if (signal) { if (signal.aborted) abort(); else signal.addEventListener("abort", abort, { once: true }); }
   let stdout = "";
   let stderr = "";
   child.stdout?.on("data", (chunk) => { stdout += chunk.toString(); });
-  child.stderr?.on("data", (chunk) => { stderr += chunk.toString(); });
+  child.stderr?.on("data", (chunk) => { const text = chunk.toString(); stderr += text; onStderr?.(text); });
   child.once("error", reject);
   child.once("close", (code) => { if (signal) signal.removeEventListener("abort", abort); code === 0 ? resolve({ stdout, stderr }) : reject(new Error(`${path.basename(command)} 执行失败（${code}）：${stderr || stdout}`.slice(0, 1200))); });
 });
@@ -1268,6 +1274,7 @@ export const createKnowledgeService = ({ filePath, originalDir = path.join(path.
       throw error;
     }
   };
+  const fallbackTooLarge = async () => (await fs.stat(filePath).then((stat) => stat.size).catch(() => 0)) > 100 * 1024 * 1024;
   const writeFallback = async (store) => {
     const existingSize = await fs.stat(filePath).then((stat) => stat.size).catch(() => 0);
     if (existingSize > 100 * 1024 * 1024) return;
@@ -1326,15 +1333,19 @@ export const createKnowledgeService = ({ filePath, originalDir = path.join(path.
   const upsertFallback = (items, next, key = "id") => [next, ...items.filter((item) => item[key] !== next[key])];
 
   const persistDocument = async (document) => {
-    await mutateFallback((store) => {
-      store.documents = upsertFallback(store.documents, document);
-      return { store };
-    });
+    if (deletedDocumentIds.has(document?.id)) return null;
+    if (!(await fallbackTooLarge())) {
+      await mutateFallback((store) => {
+        store.documents = upsertFallback(store.documents, document);
+        return { store };
+      });
+    }
     await writePostgresKnowledgeDocument(document);
     invalidateDocumentIndexCache();
     return document;
   };
   const persistJob = async (job) => {
+    if (deletedJobIds.has(job?.id) || deletedDocumentIds.has(job?.documentId)) return job;
     await mutateFallback((store) => {
       store.jobs = upsertFallback(store.jobs, job);
       return { store };
@@ -1346,8 +1357,9 @@ export const createKnowledgeService = ({ filePath, originalDir = path.join(path.
     return job;
   };
   const updateDocument = async (id, patch) => {
+    if (deletedDocumentIds.has(id)) return null;
     const document = await getDocument(id);
-    if (!document) return null;
+    if (!document || deletedDocumentIds.has(id)) return null;
     const next = { ...document, ...patch };
     if (patch.governanceStatus != null && !governanceStatuses.has(String(patch.governanceStatus))) {
       throw new Error(`无效的知识文档状态：${patch.governanceStatus}`);
@@ -1559,7 +1571,7 @@ export const createKnowledgeService = ({ filePath, originalDir = path.join(path.
   const recordAudit = async (payload = {}) => {
     const createdAt = nowIso();
     const log = { id: cleanText(payload.id) || stableId("audit", `${createdAt}:${payload.action || "event"}:${payload.entityType || "knowledge"}:${payload.entityId || ""}:${randomUUID()}`), action: cleanText(payload.action || "event"), entityType: cleanText(payload.entityType || "knowledge"), entityId: cleanText(payload.entityId), actor: cleanText(payload.actor), actorIp: cleanText(payload.actorIp), summary: cleanText(payload.summary).slice(0, 1000), beforeState: payload.beforeState && typeof payload.beforeState === "object" ? payload.beforeState : {}, afterState: payload.afterState && typeof payload.afterState === "object" ? payload.afterState : {}, metadata: payload.metadata && typeof payload.metadata === "object" ? payload.metadata : {}, createdAt };
-    await mutateFallback((store) => { store.auditLogs = [log, ...(store.auditLogs || []).filter((item) => item.id !== log.id)].slice(0, 5000); return { store }; });
+    if (!(await fallbackTooLarge())) await mutateFallback((store) => { store.auditLogs = [log, ...(store.auditLogs || []).filter((item) => item.id !== log.id)].slice(0, 5000); return { store }; });
     await writePostgresKnowledgeAuditLog(log);
     return log;
   };
@@ -1730,7 +1742,25 @@ export const createKnowledgeService = ({ filePath, originalDir = path.join(path.
       await updateJob(jobId, { status: "running", progress: 8, message: "正在提取幻灯片文字和嵌入图片", startedAt: nowIso(), errorMessage: "" });
       await updateDocument(document.id, { status: "parsing", governanceStatus: "待解析", progress: 8, message: "正在提取幻灯片文字和嵌入图片", errorMessage: "" });
       const script = path.join(scriptDir, "knowledge-pptx-extract.py");
-      await runProcess(pythonCommand(), pythonArgs(script, [sourcePath, outputPath, mediaDir]));
+      let slideBuffer = "";
+      let lastSlideWrite = 0;
+      const noteSlides = (chunk) => {
+        slideBuffer += chunk;
+        const lines = slideBuffer.split("\n");
+        slideBuffer = lines.pop() || "";
+        const line = lines.reverse().find((item) => item.startsWith("PROGRESS "));
+        if (!line || Date.now() - lastSlideWrite < 400) return;
+        const parts = line.trim().split(" ");
+        const current = Number(parts[1]);
+        const total = Number(parts[2]);
+        if (!total) return;
+        lastSlideWrite = Date.now();
+        const progress = Math.min(24, Math.round(8 + (current / total) * 16));
+        const message = "正在提取幻灯片 " + current + "/" + total;
+        updateJob(jobId, { status: "running", progress, message }).catch(() => {});
+        updateDocument(document.id, { status: "parsing", progress, message }).catch(() => {});
+      };
+      await runProcess(pythonCommand(), pythonArgs(script, [sourcePath, outputPath, mediaDir]), { onStderr: noteSlides });
       const extracted = JSON.parse(await fs.readFile(outputPath, "utf8"));
       const slides = Array.isArray(extracted.slides) ? extracted.slides : [];
       const images = slides.flatMap((slide) => (slide.images || []).map((image) => ({ ...image, slide: slide.slide })));
@@ -1913,8 +1943,8 @@ export const createKnowledgeService = ({ filePath, originalDir = path.join(path.
     return [...unique.values()];
   };
   const createDistillationBatches = (clauses, options = {}) => {
-    const batchChars = Math.min(20000, Math.max(3000, Number(options.batchChars || process.env.QMS_KNOWLEDGE_DISTILL_BATCH_CHARS || 14000)));
-    const maxBatchClauses = Math.min(100, Math.max(5, Number(options.maxBatchClauses || process.env.QMS_KNOWLEDGE_DISTILL_BATCH_CLAUSES || 50)));
+    const batchChars = Math.min(6000, Math.max(1500, Number(options.batchChars || process.env.QMS_KNOWLEDGE_DISTILL_BATCH_CHARS || 3500)));
+    const maxBatchClauses = Math.min(8, Math.max(1, Number(options.maxBatchClauses || process.env.QMS_KNOWLEDGE_DISTILL_BATCH_CLAUSES || 4)));
     const batches = [];
     let current = [];
     let size = 0;
@@ -1989,13 +2019,11 @@ export const createKnowledgeService = ({ filePath, originalDir = path.join(path.
         const attemptStartedAt = performance.now();
         batch.errorMessage = "";
         result = distillationLog({ ...result, batches: [...batches] }, `第 ${index + 1}/${batches.length} 批开始，第 ${batch.attempts} 次尝试`);
+        const batchProgress = Math.round(8 + batches.filter((item) => item.status === "completed").length / Math.max(1, batches.length) * 82);
+        await persistState({ status: "running", progress: batchProgress, message: `正在蒸馏第 ${index + 1}/${batches.length} 批条款`, result });
+        await updateDocument(document.id, { status: "distilling", progress: batchProgress, message: `正在蒸馏第 ${index + 1}/${batches.length} 批条款` });
         try {
-          const batchMode = classifyDistillationBatch(sourceRows);
-          const systemPrompt = buildDistillationSystemPrompt(skillContent);
-          const modeInstruction = batchMode === "simple"
-            ? "本批为简单文字规则。优先合并重复句，标题和content保持简短；只输出原文明确的规则，不生成解释性扩展。"
-            : "本批为复杂或结构化规则。必须逐项保留数字、单位、条件、例外和适用边界；OCR内容疑似不完整时设置mustReview=true。";
-          const ai = await aiComplete({ messages: [{ role: "system", content: `${systemPrompt}\n${modeInstruction}` }, { role: "user", content: `来源文档：${document.name}\n版本：${document.version || "未标注"}\n批次：${index + 1}/${batches.length}\n处理模式：${batchMode}\n证据条款：${JSON.stringify(sourceRows)}` }], maxTokens: batchMode === "simple" ? Math.min(2600, Math.max(1200, sourceRows.length * 55)) : Math.min(4000, Math.max(1800, sourceRows.length * 75)), signal: controller.signal, operation: "knowledge-distillation" });
+          const ai = await aiComplete({ messages: [{ role: "system", content: `严格执行以下知识蒸馏Skill。只允许使用用户提供的公司规范条款；输出纯JSON。\n\n${String(skillContent || "").slice(0, 30000)}` }, { role: "user", content: `来源文档：${document.name}\n版本：${document.version || "未标注"}\n这是第 ${index + 1}/${batches.length} 批条款。按Skill输出 {"knowledge": [...]}。每个知识点必须引用本批次存在的clauseId，并逐字给出原文quote。\n\n条款：\n${JSON.stringify(sourceRows)}` }], maxTokens: 5000, signal: controller.signal, operation: "knowledge-distillation" });
           if (controller.signal.aborted) { const aborted = new Error("stopped"); aborted.name = "AbortError"; throw aborted; }
           batch.knowledge = parseAiKnowledgePayload(ai.content);
           batch.status = "completed";
@@ -2012,8 +2040,11 @@ export const createKnowledgeService = ({ filePath, originalDir = path.join(path.
           // Persist a checkpoint every few batches instead of serializing the
           // complete growing result after every AI call. Segment completion
           // remains a mandatory checkpoint for restart safety.
-          if (segmentDone || completedCount % 5 === 0) {
-            await persistState({ status: "running", progress: Math.round(8 + completedCount / batches.length * 82), message: `已完成 ${completedCount}/${batches.length} 批（并发 ${concurrency}）`, result });
+          const produced = deduplicateKnowledge(batches.filter((item) => item.status === "completed").flatMap((item) => item.knowledge || []));
+          await updateDocument(document.id, { status: "distilling", distillationCount: produced.length, progress: Math.round(8 + completedCount / batches.length * 82), message: `已生成 ${produced.length} 张知识卡片` });
+          await saveDistillation(document.id, { jobId: "", skillId, knowledge: produced, finalize: false, mergeExisting: true }).catch((error) => { result = distillationLog({ ...result }, `本批知识保存失败：${error.message || error}`, "error"); });
+          if (segmentDone || completedCount % 5 === 0 || completedCount > 0) {
+            await persistState({ status: "running", progress: Math.round(8 + completedCount / batches.length * 82), message: `已生成 ${produced.length} 张知识卡片`, result });
           }
           if (segment && segmentDone) {
             segment.status = "completed";
@@ -2253,42 +2284,47 @@ export const createKnowledgeService = ({ filePath, originalDir = path.join(path.
 
   const deleteDocument = async (id, audit = {}) => {
     deletedDocumentIds.add(id);
-    const activeJobs = (await listJobs(id)).filter((job) => ["waiting", "running", "paused"].includes(job.status));
-    activeJobs.forEach((job) => { deletedJobIds.add(job.id); pausedJobIds.delete(job.id); distillationControllers.get(job.id)?.abort(); taskControllers.get(job.id)?.abort(); });
+    queue.filter((item) => item.documentId === id).forEach((item) => {
+      deletedJobIds.add(item.jobId);
+      pausedJobIds.delete(item.jobId);
+      distillationControllers.get(item.jobId)?.abort();
+      taskControllers.get(item.jobId)?.abort();
+    });
     queue = queue.filter((item) => item.documentId !== id);
-    // PostgreSQL is authoritative in normal operation. Avoid parsing the
-    // legacy 400MB JSON snapshot for a delete request.
-    const postgresDocument = await readPostgresKnowledgeDocument(id);
-    if (postgresDocument.available && postgresDocument.found) {
+    const activeJobs = await listPostgresActiveKnowledgeJobIds(id).catch(() => ({ ids: [] }));
+    (activeJobs.ids || []).forEach((jobId) => {
+      deletedJobIds.add(jobId);
+      pausedJobIds.delete(jobId);
+      distillationControllers.get(jobId)?.abort();
+      taskControllers.get(jobId)?.abort();
+    });
+    const postgresDocument = await readPostgresKnowledgeDocument(id, false);
+    if (postgresDocument.available) {
+      let removed = await deletePostgresKnowledgeDocument(id);
+      if (removed.error || (postgresDocument.found && !removed.deleted)) {
+        await new Promise((resolve) => setTimeout(resolve, 400));
+        removed = await deletePostgresKnowledgeDocument(id);
+      }
+      if (removed.error || (postgresDocument.found && !removed.deleted)) {
+        const stillThere = await readPostgresKnowledgeDocument(id, false);
+        if (stillThere.found || removed.error) {
+          deletedDocumentIds.delete(id);
+          throw new Error(removed.error || "这份规范还在，没有删掉");
+        }
+      }
       const existingDocument = postgresDocument.document;
-      await deletePostgresKnowledgeDocument(id);
-      await mutateFallback((store) => {
-        store.documents = (store.documents || []).filter((item) => item.id !== id);
-        store.clauses = (store.clauses || []).filter((item) => item.documentId !== id);
-        store.jobs = (store.jobs || []).filter((item) => item.documentId !== id);
-        store.knowledge = (store.knowledge || []).filter((item) => item.documentId !== id);
-        store.matches = (store.matches || []).filter((item) => item.documentId !== id);
-        store.conflicts = (store.conflicts || []).filter((item) => item.leftDocumentId !== id && item.rightDocumentId !== id);
-        return { store };
-      }).catch(() => {});
       const originalPath = existingDocument?.metadata?.originalStored ? resolveOriginalPath(existingDocument) : "";
       if (originalPath && audit.reason !== "stale-original") await fs.unlink(originalPath).catch(() => {});
       invalidateCorpusCache();
       invalidateDocumentIndexCache();
+      retrievalCache.clear();
       return true;
     }
-    // Legacy fallback snapshots can be hundreds of MB because they contain
-    // raw sourceText. Remove the targeted document without JSON.parse.
+    if (postgresStatus().configured) {
+      deletedDocumentIds.delete(id);
+      throw new Error("知识库数据库暂时连不上，这份规范还没有删掉");
+    }
     if (await removeFallbackDocumentFast(id)) {
-      await mutateFallback((store) => {
-        store.clauses = store.clauses.filter((item) => item.documentId !== id);
-        store.jobs = store.jobs.filter((item) => item.documentId !== id);
-        store.knowledge = store.knowledge.filter((item) => item.documentId !== id);
-        store.matches = (store.matches || []).filter((item) => item.documentId !== id);
-        store.conflicts = (store.conflicts || []).filter((item) => item.leftDocumentId !== id && item.rightDocumentId !== id);
-        return { store };
-      });
-      await deletePostgresKnowledgeDocument(id).catch(() => {});
       invalidateCorpusCache();
       invalidateDocumentIndexCache();
       return true;
@@ -2303,18 +2339,10 @@ export const createKnowledgeService = ({ filePath, originalDir = path.join(path.
     store.matches = (store.matches || []).filter((item) => item.documentId !== id);
     store.conflicts = (store.conflicts || []).filter((item) => item.leftDocumentId !== id && item.rightDocumentId !== id);
     await writeFallback(store);
-    // Do not hold the HTTP request open on a large/locked PostgreSQL row.
-    // Fallback/index data is removed first; the database cleanup is bounded
-    // and can finish in the background without blocking the UI.
-    await Promise.race([
-      deletePostgresKnowledgeDocument(id),
-      new Promise((resolve) => setTimeout(() => resolve({ available: false, timedOut: true }), 2500)),
-    ]).catch(() => {});
     if (existingDocument?.metadata?.originalStored) {
       const originalPath = resolveOriginalPath(existingDocument);
       if (originalPath && audit.reason !== "stale-original") await fs.unlink(originalPath).catch(() => {});
     }
-    if (existingDocument) await recordAudit({ action: "delete", entityType: "document", entityId: id, actor: audit.actor || "", actorIp: audit.actorIp || "", summary: `删除知识文件：${existingDocument.name}`, beforeState: { name: existingDocument.name, version: existingDocument.version, governanceStatus: existingDocument.governanceStatus } });
     invalidateCorpusCache();
     invalidateDocumentIndexCache();
     retrievalCache.clear();
@@ -2409,7 +2437,7 @@ export const createKnowledgeService = ({ filePath, originalDir = path.join(path.
     const active = (await listJobs(documentId)).find((item) => item.jobType === "distill" && ["waiting", "running", "paused"].includes(item.status));
     if (active) return active;
     const previous = (await listJobs(documentId)).filter((item) => item.jobType === "distill" && ["failed", "paused"].includes(item.status)).sort((a, b) => String(b.updatedAt || b.createdAt).localeCompare(String(a.updatedAt || a.createdAt)))[0];
-    if (previous?.result?.batches?.length) {
+    if (previous?.result?.batches?.some((item) => item.status === "completed") && !previous.result?.autoRetried) {
       const resumed = await updateJob(previous.id, { status: "waiting", message: "已恢复上次蒸馏任务，将跳过已完成段和批次", errorMessage: "", completedAt: null });
       queueDistillation(documentId, previous.id);
       return resumed;
@@ -2677,11 +2705,53 @@ export const createKnowledgeService = ({ filePath, originalDir = path.join(path.
     for (const id of unique) updated.push(await updateKnowledgeCard(id, { ...patch, actor, actorIp }));
     return { updated, count: updated.length };
   };
+  const publishKnowledgeCards = async (ids = [], payload = {}) => {
+    const unique = [...new Set(ids.map(String).filter(Boolean))];
+    if (!unique.length) return { updated: 0, documents: [] };
+    const reviewer = cleanText(payload.reviewer || "");
+    const note = cleanText(payload.note || "批量发布知识").slice(0, 2000);
+    const reviewedAt = nowIso();
+    const postgres = await publishPostgresKnowledgeCards(unique, { note, reviewer, reviewedAt });
+    let updated = Number(postgres.updated || 0);
+    let documentIds = postgres.documentIds || [];
+    if (!postgres.available) {
+      const idSet = new Set(unique);
+      const touched = new Set();
+      await mutateFallback((store) => {
+        store.knowledge = (store.knowledge || []).map((item) => {
+          if (!idSet.has(String(item.id))) return item;
+          touched.add(item.documentId);
+          updated += 1;
+          return { ...item, reviewStatus: "approved", publicationStatus: "published", publicationNote: note, reviewedBy: reviewer, reviewedAt, updatedAt: reviewedAt };
+        });
+        return { store };
+      });
+      documentIds = [...touched].filter(Boolean);
+    }
+    const documents = [];
+    for (const documentId of documentIds) {
+      const page = await listPostgresDistilledKnowledge(documentId, { limit: 1, offset: 0 });
+      const counts = page.statusCounts || {};
+      const publishedCount = page.available ? Number(counts.published || 0) : 0;
+      const pendingCount = page.available ? Number(counts.candidate || 0) + Number(counts.approved || 0) : 0;
+      const document = await getDocument(documentId);
+      if (document) await updateDocument(document.id, { governanceStatus: publishedCount ? "已发布" : "候选知识", message: `知识已发布 ${publishedCount} 条${pendingCount ? `，待确认 ${pendingCount} 条` : ""}`, metadata: { ...(document.metadata || {}), publishedKnowledgeCount: publishedCount, pendingKnowledgeCount: pendingCount } });
+      for (const key of distilledPageCache.keys()) if (String(key).startsWith(`${documentId}:`)) distilledPageCache.delete(key);
+      documents.push({ id: documentId, publishedCount, pendingCount });
+    }
+    invalidateCorpusCache();
+    await recordAudit({ action: "publish", entityType: "knowledge", entityId: documentIds[0] || "", actor: reviewer, actorIp: payload.actorIp || "", summary: `批量发布 ${updated} 张知识卡片`, afterState: { updated, documentIds }, metadata: { count: updated } });
+    return { updated, documents };
+  };
   const bulkReviewKnowledgeCards = async (ids = [], action = "", actor = "", actorIp = "") => {
     const unique = [...new Set(ids.map(String).filter(Boolean))];
     if (!["publish", "return"].includes(action)) throw new Error("批量审核仅支持发布或退回修改");
+    if (action === "publish") {
+      const result = await publishKnowledgeCards(unique, { reviewer: actor, actorIp, note: "后台批量发布" });
+      return { updated: [], count: result.updated, documents: result.documents };
+    }
     const updated = [];
-    for (const id of unique) updated.push(await reviewDistilledKnowledge(id, { action, reviewer: actor, actorIp, note: action === "publish" ? "后台批量发布" : "后台批量退回修改" }));
+    for (const id of unique) updated.push(await reviewDistilledKnowledge(id, { action, reviewer: actor, actorIp, note: "后台批量退回修改" }));
     return { updated: updated.filter(Boolean), count: updated.filter(Boolean).length };
   };
   const enqueueBulkReview = async (ids = [], action = "", actor = "", actorIp = "") => {
@@ -2752,8 +2822,9 @@ export const createKnowledgeService = ({ filePath, originalDir = path.join(path.
   const reviewDistilledKnowledge = async (id, payload = {}) => {
     const action = String(payload.action || "").trim();
     if (!knowledgeReviewActions.has(action)) throw new Error("无效的知识审核动作");
-    const all = (await readFallback()).knowledge || [];
-    let current = all.find((item) => item.id === id);
+    const lookedUp = await readPostgresDistilledKnowledgeById(id);
+    let current = lookedUp.available ? lookedUp.knowledge : null;
+    if (!current && !(await fallbackTooLarge())) current = ((await readFallback()).knowledge || []).find((item) => item.id === id);
     if (!current) {
       const postgres = await listPostgresDistilledKnowledge(String(payload.documentId || ""), { limit: 1000, offset: 0 });
       current = postgres.knowledge?.find((item) => item.id === id);
@@ -2768,16 +2839,18 @@ export const createKnowledgeService = ({ filePath, originalDir = path.join(path.
     const next = { ...changed, reviewStatus: action === "reject" || action === "return" ? "rejected" : action === "conflict" ? "rejected" : "approved", publicationStatus: action === "publish" ? "published" : action === "conflict" ? "conflict" : action === "reject" || action === "return" ? "rejected" : "approved", publicationNote: cleanText(payload.note || "").slice(0, 2000), reviewedBy: reviewer, reviewedAt, updatedAt: reviewedAt };
     // 发布是人工复核后的明确动作。资料完整性、来源等级和冲突等问题由“退回修改”处理，
     // 不在最后一步重复设置发布门禁，避免出现“能退回但永远不能发布”的断点。
-    await mutateFallback((store) => {
-      store.knowledge = (store.knowledge || []).map((item) => item.id === id ? next : item);
-      return { store };
-    });
+    if (!(await fallbackTooLarge())) {
+      await mutateFallback((store) => {
+        store.knowledge = (store.knowledge || []).map((item) => item.id === id ? next : item);
+        return { store };
+      });
+    }
     await updatePostgresDistilledKnowledge(next);
     if (action === "publish") {
-      const postgresKnowledge = await listPostgresDistilledKnowledge(document.id, { limit: 10000, offset: 0 });
-      const documentKnowledge = postgresKnowledge.available ? (postgresKnowledge.knowledge || []) : (await readFallback()).knowledge.filter((item) => item.documentId === document.id);
-      const publishedCount = documentKnowledge.filter((item) => item.publicationStatus === "published").length;
-      const pendingCount = documentKnowledge.filter((item) => ["candidate", "approved"].includes(item.publicationStatus)).length;
+      const postgresKnowledge = await listPostgresDistilledKnowledge(document.id, { limit: 1, offset: 0 });
+      const counts = postgresKnowledge.statusCounts || {};
+      const publishedCount = postgresKnowledge.available ? Number(counts.published || 0) : (await readFallback()).knowledge.filter((item) => item.documentId === document.id && item.publicationStatus === "published").length;
+      const pendingCount = postgresKnowledge.available ? Number(counts.candidate || 0) + Number(counts.approved || 0) : (await readFallback()).knowledge.filter((item) => item.documentId === document.id && ["candidate", "approved"].includes(item.publicationStatus)).length;
       await updateDocument(document.id, { governanceStatus: publishedCount ? "已发布" : "候选知识", message: `知识已发布 ${publishedCount} 条${pendingCount ? `，待确认 ${pendingCount} 条` : ""}`, metadata: { ...(document.metadata || {}), publishedKnowledgeCount: publishedCount, pendingKnowledgeCount: pendingCount } });
     }
     else if (action === "accept") await updateDocument(document.id, { governanceStatus: "待技术评审", message: "候选知识已初审，等待发布审核" });
@@ -3778,7 +3851,10 @@ export const createKnowledgeService = ({ filePath, originalDir = path.join(path.
     if (!parsed?.answer || parsed.answer === "知识库没有对应条款" || !matched.size) return { ...empty, model: completion?.model || "" };
     return { answer: parsed.answer, sources: clauses.filter((item) => matched.has(item.index)), model: completion?.model || "", recalled: clauses.length };
   };
-  return { enqueueBulkReview, bulkReviewKnowledgeCards, answerStandardQuestion, bulkUpdateKnowledgeCards, cleanupDataQuality, controlDistillationJob, createDocument, deleteDocument, deleteIssue, deleteJob, enqueueParse, exportKnowledgeData, generateMatches, getConsistencyReport, getDataQualityReport, getKnowledgeImpact, repairDataQuality, mergeKnowledgeCards, listKnowledgeBackups, restoreKnowledgeBackup, getDocument, getJob, getPerformanceMetrics, getSearchMetrics, governDocument, importDistillation, listAuditLogs, listClauses, listConfirmedMatches, listConflicts, listDistilled, listDocuments, listFeedbackRecords, listIssues, listJobs, listMatches, listRecurrences, listReviewPoints, listReviewSessions, recordAudit, resume, reviewDistilledKnowledge, reviewDocument, reviewMatch, runReadBenchmark, saveConflict, saveDistillation, saveFeedbackRecord, saveRecurrenceAction, saveReviewSession, startDistillation, syncIssues, updateDocumentMetadata, updateJob, updateKnowledgeClause, deleteKnowledgeClause, updateKnowledgeCard, deleteKnowledgeCard };
+  setTimeout(() => {
+    listJobs().then((jobs) => Promise.all(jobs.filter((job) => job.jobType === "distill" && ["waiting", "running"].includes(job.status) && !distillationControllers.has(job.id)).map(async (job) => { await updateJob(job.id, { status: "failed", message: "蒸馏已中断，请重新蒸馏", errorMessage: "服务重启时任务已不在运行", completedAt: nowIso(), result: { ...(job.result || {}), autoRetried: true } }); await updateDocument(job.documentId, { status: "completed", progress: 100, message: "规范条款可用，可重新蒸馏", errorMessage: "" }); await startDistillation(job.documentId, job.skillId); }))).catch((error) => console.error("Distillation reset failed", error));
+  }, 3000);
+  return { enqueueBulkReview, bulkReviewKnowledgeCards, answerStandardQuestion, bulkUpdateKnowledgeCards, cleanupDataQuality, controlDistillationJob, createDocument, deleteDocument, deleteIssue, deleteJob, enqueueParse, exportKnowledgeData, generateMatches, getConsistencyReport, getDataQualityReport, getKnowledgeImpact, repairDataQuality, mergeKnowledgeCards, listKnowledgeBackups, restoreKnowledgeBackup, getDocument, getJob, getPerformanceMetrics, getSearchMetrics, governDocument, importDistillation, listAuditLogs, listClauses, listConfirmedMatches, listConflicts, listDistilled, listDocuments, listFeedbackRecords, listIssues, listJobs, listMatches, listRecurrences, listReviewPoints, listReviewSessions, recordAudit, resume, publishKnowledgeCards, reviewDistilledKnowledge, reviewDocument, reviewMatch, runReadBenchmark, saveConflict, saveDistillation, saveFeedbackRecord, saveRecurrenceAction, saveReviewSession, startDistillation, syncIssues, updateDocumentMetadata, updateJob, updateKnowledgeClause, deleteKnowledgeClause, updateKnowledgeCard, deleteKnowledgeCard };
 };
 const documentReviewState = (document = {}, now = Date.now()) => {
   const due = dateTimestamp(document.reviewDue);

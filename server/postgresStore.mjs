@@ -608,11 +608,12 @@ export const listPostgresKnowledgeDocuments = async () => {
   }
 };
 
-export const readPostgresKnowledgeDocument = async (id) => {
+export const readPostgresKnowledgeDocument = async (id, includeSource = true) => {
   if (!(await ensureReady())) return { available: false, found: false, document: null };
   try {
-    const result = await pool.query("SELECT * FROM qms_knowledge_documents WHERE id=$1", [String(id || "")]);
-    return { available: true, found: result.rows.length > 0, document: result.rows[0] ? knowledgeDocumentRow(result.rows[0], true) : null };
+    const columns = includeSource ? "*" : "id, file_name, category, content_type, file_hash, version, source_level, source_category, publisher, edition, effective_status, applicable_scope, copyright_status, owner, review_due, governance_status, status, progress, message, segment_count, clause_count, distillation_count, file_size, source_preview, metadata, error_message, imported_at, updated_at";
+    const result = await pool.query(`SELECT ${columns} FROM qms_knowledge_documents WHERE id=$1`, [String(id || "")]);
+    return { available: true, found: result.rows.length > 0, document: result.rows[0] ? knowledgeDocumentRow(result.rows[0], includeSource) : null };
   } catch (error) {
     disabledUntil = Date.now() + retryAfterMs;
     logFailure(error);
@@ -620,12 +621,31 @@ export const readPostgresKnowledgeDocument = async (id) => {
   }
 };
 
+export const listPostgresActiveKnowledgeJobIds = async (documentId) => {
+  if (!(await ensureReady())) return { available: false, ids: [] };
+  try {
+    const result = await pool.query("SELECT id FROM qms_knowledge_jobs WHERE document_id=$1 AND status = ANY($2::text[])", [String(documentId || ""), ["waiting", "running", "paused"]]);
+    return { available: true, ids: result.rows.map((row) => row.id) };
+  } catch (error) {
+    return { available: false, ids: [], error: String(error?.message || error) };
+  }
+};
+
+const postgresConnectionError = (error) => ["ECONNREFUSED", "ECONNRESET", "ETIMEDOUT", "ENOTFOUND", "57P01", "08006", "08001", "53300"].includes(error?.code) || /connect|Connection terminated|server closed the connection/i.test(String(error?.message || ""));
+const knowledgeDeleteError = (error) => {
+  const message = String(error?.message || error || "");
+  if (/lock timeout|canceling statement due to lock timeout/i.test(message)) return "这份规范正在被后台任务占用，请稍后再删";
+  if (/statement timeout|canceling statement due to statement timeout/i.test(message)) return "这份规范关联的内容较多，这一次没有删完，请再试一次";
+  return message.slice(0, 180) || "删除失败";
+};
 export const deletePostgresKnowledgeDocument = async (id) => {
-  if (!(await ensureReady())) return { available: false, deleted: false };
+  if (!(await ensureReady())) return { available: false, deleted: false, error: "知识库数据库暂时连不上" };
   const documentId = String(id || "");
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
+    await client.query("SET LOCAL lock_timeout = '4s'");
+    await client.query("SET LOCAL statement_timeout = '30s'");
     await client.query("DELETE FROM qms_knowledge_matches WHERE document_id=$1", [documentId]);
     await client.query("DELETE FROM qms_knowledge_conflicts WHERE left_document_id=$1 OR right_document_id=$1", [documentId]);
     await client.query("DELETE FROM qms_distilled_knowledge WHERE document_id=$1", [documentId]);
@@ -636,11 +656,13 @@ export const deletePostgresKnowledgeDocument = async (id) => {
     return { available: true, deleted: result.rowCount > 0 };
   } catch (error) {
     await client.query("ROLLBACK").catch(() => {});
-    disabledUntil = Date.now() + retryAfterMs;
-    logFailure(error);
-    return { available: false, deleted: false };
-  } finally { client.release();
-  }
+    if (postgresConnectionError(error)) {
+      disabledUntil = Date.now() + retryAfterMs;
+      logFailure(error);
+      return { available: false, deleted: false, error: "知识库数据库暂时连不上" };
+    }
+    return { available: true, deleted: false, error: knowledgeDeleteError(error) };
+  } finally { client.release(); }
 };
 
 export const replacePostgresKnowledgeClauses = async (document, clauses = []) => {
@@ -822,6 +844,30 @@ export const searchPostgresKnowledgeCandidates = async ({ terms = [], moduleTerm
     logFailure(error);
     return { available: false, candidates: [], elapsedMs: Math.round(performance.now() - startedAt), storage: "json", error: String(error?.message || error) };
   }
+};
+
+export const readPostgresDistilledKnowledgeById = async (id) => {
+  if (!(await ensureReady()) || !id) return { available: false, knowledge: null };
+  try {
+    const result = await pool.query("SELECT * FROM qms_distilled_knowledge WHERE id=$1", [String(id)]);
+    return { available: true, knowledge: result.rows[0] ? distilledRow(result.rows[0]) : null };
+  } catch (error) { disabledUntil = Date.now() + retryAfterMs; logFailure(error); return { available: false, knowledge: null }; }
+};
+
+export const publishPostgresKnowledgeCards = async (ids = [], { note = "", reviewer = "", reviewedAt = null } = {}) => {
+  const unique = [...new Set(ids.map(String).filter(Boolean))];
+  if (!(await ensureReady()) || !unique.length) return { available: false, updated: 0, documentIds: [] };
+  try {
+    const result = await pool.query(
+      `UPDATE qms_distilled_knowledge
+       SET review_status='approved', publication_status='published', publication_note=$2,
+           reviewed_by=$3, reviewed_at=COALESCE($4::timestamptz, NOW()), updated_at=NOW()
+       WHERE id = ANY($1::text[])
+       RETURNING document_id`,
+      [unique, String(note || "").slice(0, 2000), String(reviewer || ""), reviewedAt || null]
+    );
+    return { available: true, updated: result.rowCount || 0, documentIds: [...new Set(result.rows.map((row) => row.document_id).filter(Boolean))] };
+  } catch (error) { disabledUntil = Date.now() + retryAfterMs; logFailure(error); return { available: false, updated: 0, documentIds: [] }; }
 };
 
 export const updatePostgresDistilledKnowledge = async (item = {}) => {
