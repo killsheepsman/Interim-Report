@@ -3828,8 +3828,17 @@ function KnowledgeBasePage({ qualitySources = [], onEnsureAgentSources, auth }) 
   const allVisibleChecked = visibleIds.length > 0 && visibleIds.every((id) => checkedFileIds.includes(id));
   const toggleVisibleFiles = () => setCheckedFileIds((current) => allVisibleChecked ? current.filter((id) => !visibleIds.includes(id)) : [...new Set([...current, ...visibleIds])]);
   const toggleKnowledgeFile = (id) => setCheckedFileIds((current) => current.includes(id) ? current.filter((item) => item !== id) : [...current, id]);
+  const removeGeneratedQuestions = (ids, names) => {
+    const idSet = new Set(ids.map(String));
+    const nameSet = new Set(names.map((name) => String(name || "")).filter(Boolean));
+    const current = safeParse(localStorage.getItem(qmdpQuestionsKey), []);
+    const next = current.filter((item) => !idSet.has(String(item.sourceKnowledgeId || "")) && !nameSet.has(String(item.sourceFileName || item.knowledge || "")));
+    if (next.length !== current.length) localStorage.setItem(qmdpQuestionsKey, JSON.stringify(next));
+    return current.length - next.length;
+  };
   const deleteKnowledgeFiles = async (ids) => {
     const removed = [];
+    const removedIds = [];
     const failed = [];
     for (const id of ids) {
       const file = files.find((item) => item.id === id);
@@ -3842,10 +3851,12 @@ function KnowledgeBasePage({ qualitySources = [], onEnsureAgentSources, auth }) 
         }
         removedKnowledgeIdsRef.current.add(id);
         removed.push(name);
+        removedIds.push(id);
       } catch (error) {
         failed.push(`${name}：${error?.message || "删除失败"}`);
       }
     }
+    const removedQuestions = removedIds.length ? removeGeneratedQuestions(removedIds, removed) : 0;
     if (removed.length) {
       setFiles((current) => current.filter((item) => !removedKnowledgeIdsRef.current.has(item.id)));
       setCheckedFileIds((current) => current.filter((id) => !removedKnowledgeIdsRef.current.has(id)));
@@ -3853,11 +3864,11 @@ function KnowledgeBasePage({ qualitySources = [], onEnsureAgentSources, auth }) 
       await refreshDocuments(true);
     }
     if (failed.length) setStatus(`没有删掉：${failed.join("；")}`);
-    else if (removed.length) setStatus(removed.length === 1 ? `已删除“${removed[0]}”` : `已删除 ${removed.length} 份规范`);
+    else if (removed.length) setStatus((removed.length === 1 ? `已删除“${removed[0]}”` : `已删除 ${removed.length} 份规范`) + (removedQuestions ? `，并删除 ${removedQuestions} 道试题` : "，证据和知识卡片已一起删除"));
   };
   const deleteCheckedKnowledgeFiles = async () => {
     const count = checkedFileIds.length;
-    if (!count || !window.confirm(`确定删除已选中的 ${count} 个知识文件吗？对应条款和蒸馏结果也会删除，题库历史题目不会自动删除。`)) return;
+    if (!count || !window.confirm(`确定删除已选中的 ${count} 个知识文件吗？规范、证据、知识卡片和由它生成的试题都会一起删除。`)) return;
     await deleteKnowledgeFiles(checkedFileIds);
   };
   const generateCheckedKnowledgeFiles = async () => {

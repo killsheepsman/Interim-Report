@@ -730,6 +730,29 @@ export const listPostgresKnowledgeJobs = async (documentId = "") => {
   } catch (error) { logFailure(error); return { available: false, jobs: [] }; }
 };
 
+export const listPostgresKnowledgeJobSummaries = async (documentId = "") => {
+  if (!(await ensureReady())) return { available: false, jobs: [] };
+  try {
+    const filter = documentId ? "WHERE document_id=$1" : "";
+    const values = documentId ? [String(documentId)] : [];
+    const result = await pool.query(`
+      SELECT id, document_id, job_type, status, progress, message, skill_id, error_message,
+        created_at, started_at, completed_at, updated_at,
+        jsonb_build_object(
+          'batchSummary', COALESCE(result->'batchSummary', '{}'::jsonb),
+          'totalBatches', COALESCE(result->'totalBatches', '0'::jsonb),
+          'knowledgeCount', COALESCE(result->'knowledgeCount', '0'::jsonb),
+          'totalClauses', COALESCE(result->'totalClauses', '0'::jsonb)
+        ) AS result
+      FROM qms_knowledge_jobs
+      ${filter}
+      ORDER BY created_at DESC
+      LIMIT 500
+    `, values);
+    return { available: true, jobs: result.rows.map(knowledgeJobRow) };
+  } catch (error) { logFailure(error); return { available: false, jobs: [] }; }
+};
+
 export const deletePostgresKnowledgeClauses = async (ids = []) => {
   if (!(await ensureReady()) || !ids.length) return { available: false, deleted: 0 };
   try { const result = await pool.query("DELETE FROM qms_knowledge_clauses WHERE id = ANY($1::text[])", [[...new Set(ids.map(String))]]); return { available: true, deleted: result.rowCount || 0 }; }

@@ -16,6 +16,7 @@ import {
   listPostgresKnowledgeClauses,
   listPostgresKnowledgeDocuments,
   listPostgresKnowledgeJobs,
+  listPostgresKnowledgeJobSummaries,
   readPostgresKnowledgeJob,
   listPostgresKnowledgeMatches,
   listPostgresKnowledgeFeedbackRecords,
@@ -1295,6 +1296,7 @@ export const createKnowledgeService = ({ filePath, originalDir = path.join(path.
   };
   const removeFallbackDocumentFast = async (id) => {
     try {
+      if (await fallbackTooLarge()) return false;
       const source = await fs.readFile(filePath, "utf8");
       const marker = `"id":"${String(id || "")}"`;
       const markerIndex = source.indexOf(marker);
@@ -1434,7 +1436,7 @@ export const createKnowledgeService = ({ filePath, originalDir = path.join(path.
     });
     // Older versions exposed a failed distillation job as a completed
     // document. Reconcile that visible state with one compact jobs query.
-    const allJobs = (await listPostgresKnowledgeJobs("")).jobs;
+    const allJobs = (await listPostgresKnowledgeJobSummaries("")).jobs;
     const failedDistillationByDocument = new Map();
     const latestDistillationByDocument = new Map();
     const latestParseByDocument = new Map();
@@ -1447,15 +1449,6 @@ export const createKnowledgeService = ({ filePath, originalDir = path.join(path.
       if (!failedDistillationByDocument.has(job.documentId)) failedDistillationByDocument.set(job.documentId, job);
     });
     const recoveredKnowledgeByDocument = new Map();
-    for (const job of failedDistillationByDocument.values()) {
-      const partial = deduplicateKnowledge((job.result?.batches || []).filter((batch) => batch.status === "completed").flatMap((batch) => batch.knowledge || []));
-      if (!partial.length) continue;
-      recoveredKnowledgeByDocument.set(job.documentId, partial.length);
-      const document = documents.find((item) => item.id === job.documentId);
-      if (document && Number(document.distillationCount || 0) === 0) {
-        await saveDistillation(job.documentId, { jobId: "", skillId: job.skillId || "quality-knowledge-distillation", knowledge: partial, finalize: false });
-      }
-    }
     // The index is a first-screen endpoint. Do not fetch every knowledge card
     // for every document here; that made startup transfer and render scale
     // with the full corpus. Counts are maintained on the document row and the
@@ -2320,9 +2313,9 @@ export const createKnowledgeService = ({ filePath, originalDir = path.join(path.
       retrievalCache.clear();
       return true;
     }
-    if (postgresStatus().configured) {
+    if (postgresStatus().configured || await fallbackTooLarge()) {
       deletedDocumentIds.delete(id);
-      throw new Error("知识库数据库暂时连不上，这份规范还没有删掉");
+      throw new Error(postgresStatus().configured ? "知识库数据库暂时连不上，这份规范还没有删掉" : "知识档案太大，不能整份读入内存，这次没有删除");
     }
     if (await removeFallbackDocumentFast(id)) {
       invalidateCorpusCache();
