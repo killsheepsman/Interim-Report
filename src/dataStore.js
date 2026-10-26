@@ -956,7 +956,7 @@ export const uploadKnowledgeSource = async (file, { category = "未分类", sour
 };
 export const uploadKnowledgePdf = uploadKnowledgeSource;
 export const createKnowledgeDocument = async (document) => knowledgeApiJson("/knowledge/documents", { method: "POST", body: JSON.stringify(document) });
-export const deleteKnowledgeDocument = async (documentId) => knowledgeApiJson(`/knowledge/documents/${encodeURIComponent(documentId)}`, { method: "DELETE" });
+export const deleteKnowledgeDocument = async (documentId) => knowledgeApiJson(`/knowledge/documents/${encodeURIComponent(documentId)}/delete`, { method: "POST", body: "{}" });
 export const reparseKnowledgeDocument = async (documentId, failedOnly = false) => knowledgeApiJson(`/knowledge/documents/${encodeURIComponent(documentId)}/parse`, { method: "POST", body: JSON.stringify({ failedOnly: Boolean(failedOnly) }) });
 export const reviewKnowledgeDocument = async (documentId, reviewStatus, reviewNote = "") => knowledgeApiJson(`/knowledge/documents/${encodeURIComponent(documentId)}/review`, { method: "PUT", body: JSON.stringify({ reviewStatus, reviewNote }) });
 export const updateKnowledgeDocumentMetadata = async (documentId, payload) => knowledgeApiJson(`/knowledge/documents/${encodeURIComponent(documentId)}`, { method: "PUT", body: JSON.stringify(payload) });

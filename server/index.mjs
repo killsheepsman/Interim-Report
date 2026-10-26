@@ -836,6 +836,13 @@ const handleKnowledge = async (req, res) => {
       const job = await knowledgeService.updateJob(decodeURIComponent(jobMatch[1]), await jsonBody());
       return job ? sendJson(res, 200, { job }) : sendJson(res, 404, { error: "知识任务不存在" });
     }
+    const documentDeleteMatch = pathname.match(/^\/api\/knowledge\/documents\/([^/]+)\/delete$/);
+    if (documentDeleteMatch && req.method === "POST") {
+      const documentId = decodeURIComponent(documentDeleteMatch[1]);
+      const deleted = await knowledgeService.deleteDocument(documentId, { actor: user.name || user.ip || "", actorIp: user.ip || "" });
+      const removedExamSessions = deleted ? await removeExamSessionsForKnowledgeDocument(documentId) : 0;
+      return sendJson(res, 200, { deleted, removedExamSessions });
+    }
     const documentMatch = pathname.match(/^\/api\/knowledge\/documents\/([^/]+)$/);
     if (documentMatch && req.method === "GET") {
       const document = await knowledgeService.getDocument(decodeURIComponent(documentMatch[1]));

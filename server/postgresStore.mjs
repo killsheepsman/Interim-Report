@@ -599,7 +599,7 @@ export const writePostgresKnowledgeDocument = async (document = {}) => {
 export const listPostgresKnowledgeDocuments = async () => {
   if (!(await ensureReady())) return { available: false, documents: [] };
   try {
-    const result = await pool.query("SELECT * FROM qms_knowledge_documents ORDER BY imported_at DESC, file_name");
+    const result = await pool.query("SELECT id, file_name, category, content_type, file_hash, version, source_level, source_category, publisher, edition, effective_status, applicable_scope, copyright_status, owner, review_due, governance_status, status, progress, message, segment_count, clause_count, distillation_count, file_size, source_preview, metadata, error_message, imported_at, updated_at FROM qms_knowledge_documents ORDER BY imported_at DESC, file_name");
     return { available: true, documents: result.rows.map((row) => knowledgeDocumentRow(row, false)) };
   } catch (error) {
     disabledUntil = Date.now() + retryAfterMs;
@@ -644,12 +644,18 @@ export const deletePostgresKnowledgeDocument = async (id) => {
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
-    await client.query("SET LOCAL lock_timeout = '4s'");
-    await client.query("SET LOCAL statement_timeout = '30s'");
+    await client.query("SET LOCAL lock_timeout = '8s'");
+    await client.query("SET LOCAL statement_timeout = '20s'");
+    const removeChunk = async (table) => {
+      for (;;) {
+        const removed = await client.query(`DELETE FROM ${table} WHERE id IN (SELECT id FROM ${table} WHERE document_id=$1 LIMIT 300)`, [documentId]);
+        if (!removed.rowCount) break;
+      }
+    };
     await client.query("DELETE FROM qms_knowledge_matches WHERE document_id=$1", [documentId]);
     await client.query("DELETE FROM qms_knowledge_conflicts WHERE left_document_id=$1 OR right_document_id=$1", [documentId]);
-    await client.query("DELETE FROM qms_distilled_knowledge WHERE document_id=$1", [documentId]);
-    await client.query("DELETE FROM qms_knowledge_clauses WHERE document_id=$1", [documentId]);
+    await removeChunk("qms_distilled_knowledge");
+    await removeChunk("qms_knowledge_clauses");
     await client.query("DELETE FROM qms_knowledge_jobs WHERE document_id=$1", [documentId]);
     const result = await client.query("DELETE FROM qms_knowledge_documents WHERE id=$1", [documentId]);
     await client.query("COMMIT");
