@@ -1348,15 +1348,22 @@ export const createKnowledgeService = ({ filePath, originalDir = path.join(path.
   };
   const persistJob = async (job) => {
     if (deletedJobIds.has(job?.id) || deletedDocumentIds.has(job?.documentId)) return job;
-    await mutateFallback((store) => {
-      store.jobs = upsertFallback(store.jobs, job);
-      return { store };
-    });
+    // A large legacy archive must not be parsed just to record job progress.
+    // Evidence generation updates this row many times; reading the whole file
+    // here is what exhausted the server heap after import.
+    const skipArchive = await fallbackTooLarge();
+    if (!skipArchive) {
+      await mutateFallback((store) => {
+        store.jobs = upsertFallback(store.jobs, job);
+        return { store };
+      });
+    }
     // Legacy JSON records may reference documents that were never migrated;
     // keep them in the fallback store without violating PostgreSQL FKs.
     const document = await getDocument(job.documentId);
-    if (document?.storage !== "json") await writePostgresKnowledgeJob(job);
-    return job;
+    const saved = document?.storage === "json" ? { available: false, job: null } : await writePostgresKnowledgeJob(job);
+    if (skipArchive && !saved.available) throw new Error("知识档案太大，数据库暂时连不上，这次证据任务没有保存");
+    return saved.job || job;
   };
   const updateDocument = async (id, patch) => {
     if (deletedDocumentIds.has(id)) return null;
@@ -1395,16 +1402,23 @@ export const createKnowledgeService = ({ filePath, originalDir = path.join(path.
     return updateDocument(documentId, { metadata: { ...(document.metadata || {}), processingStages: stages } });
   };
   const updateJob = async (id, patch) => {
-    const jobs = await listJobs();
-    const current = jobs.find((job) => job.id === id);
+    const current = await getJob(id);
     if (!current) return null;
-    const next = await mutateFallback((store) => {
-      const latest = store.jobs.find((job) => job.id === id) || current;
+    const applyPatch = (latest) => {
       const guardedPatch = ["paused", "cancelled"].includes(latest.status) && patch.status === "running" ? { ...patch, status: latest.status, message: latest.message, result: latest.result } : patch;
-      const value = { ...latest, ...guardedPatch, progress: clampProgress(guardedPatch.progress ?? latest.progress), updatedAt: nowIso(), storage: undefined };
-      store.jobs = upsertFallback(store.jobs, value);
-      return { store, value };
-    });
+      return { ...latest, ...guardedPatch, progress: clampProgress(guardedPatch.progress ?? latest.progress), updatedAt: nowIso(), storage: undefined };
+    };
+    let next;
+    if (await fallbackTooLarge()) {
+      next = applyPatch(current);
+    } else {
+      next = await mutateFallback((store) => {
+        const latest = store.jobs.find((job) => job.id === id) || current;
+        const value = applyPatch(latest);
+        store.jobs = upsertFallback(store.jobs, value);
+        return { store, value };
+      });
+    }
     await writePostgresKnowledgeJob(next);
     if (next.jobType === "distill") {
       const status = next.status === "failed" ? "failed" : next.status === "completed" ? "completed" : "distilling";
@@ -1511,7 +1525,8 @@ export const createKnowledgeService = ({ filePath, originalDir = path.join(path.
   };
   const listJobs = async (documentId = "", options = {}) => {
     const postgres = await listPostgresKnowledgeJobs(documentId);
-    const jobs = postgres.available && postgres.jobs.length ? postgres.jobs : (await readFallback()).jobs.filter((job) => !documentId || job.documentId === documentId);
+    const skipArchive = postgres.available || await fallbackTooLarge();
+    const jobs = postgres.available ? postgres.jobs : skipArchive ? [] : (await readFallback()).jobs.filter((job) => !documentId || job.documentId === documentId);
     // Reconcile jobs left in a non-terminal state after a process restart.
     // When every distillation batch is completed or failed, the job itself
     // must not remain "running" (for example after a stalled persistence
@@ -1523,15 +1538,16 @@ export const createKnowledgeService = ({ filePath, originalDir = path.join(path.
       const nextStatus = failedCount ? "failed" : "completed";
       const next = { ...job, status: nextStatus, progress: nextStatus === "completed" ? 100 : Math.round(batches.filter((batch) => batch.status === "completed").length / batches.length * 90), message: failedCount ? `${failedCount} 个批次失败；已完成批次已保留` : "全部蒸馏批次完成", completedAt: job.completedAt || nowIso(), updatedAt: nowIso() };
       Object.assign(job, next);
-      await mutateFallback((store) => ({ store: { ...store, jobs: upsertFallback(store.jobs, next) } }));
+      if (!skipArchive) await mutateFallback((store) => ({ store: { ...store, jobs: upsertFallback(store.jobs, next) } }));
       await writePostgresKnowledgeJob(next);
     }
     return options.compact ? jobs.map(compactKnowledgeJob) : jobs;
   };
   const getJob = async (id) => {
     const postgres = await readPostgresKnowledgeJob(id);
-    if (postgres.available && postgres.found) return postgres.job;
-    return (await listJobs()).find((job) => job.id === id) || null;
+    if (postgres.available) return postgres.found ? postgres.job : null;
+    if (await fallbackTooLarge()) return null;
+    return (await readFallback()).jobs.find((job) => job.id === id) || null;
   };
   const deleteJob = async (id) => {
     const job = await getJob(id);
@@ -1629,7 +1645,7 @@ export const createKnowledgeService = ({ filePath, originalDir = path.join(path.
       updatedAt: completedAt,
     };
     const completedJob = {
-      ...(await listJobs(document.id)).find((job) => job.id === jobId),
+      ...(await getJob(jobId) || {}),
       id: jobId,
       documentId: document.id,
       jobType,
@@ -1642,14 +1658,20 @@ export const createKnowledgeService = ({ filePath, originalDir = path.join(path.
       completedAt,
       updatedAt: completedAt,
     };
-    const store = await readFallback();
-    store.clauses = [...clauses, ...store.clauses.filter((clause) => clause.documentId !== document.id)];
-    store.documents = upsertFallback(store.documents, completedDocument);
-    store.jobs = upsertFallback(store.jobs, completedJob);
-    await writeFallback(store);
-    await writePostgresKnowledgeDocument(completedDocument);
-    await replacePostgresKnowledgeClauses(completedDocument, clauses);
-    await writePostgresKnowledgeJob(completedJob);
+    const skipArchive = await fallbackTooLarge();
+    if (!skipArchive) {
+      const store = await readFallback();
+      store.clauses = [...clauses, ...store.clauses.filter((clause) => clause.documentId !== document.id)];
+      store.documents = upsertFallback(store.documents, completedDocument);
+      store.jobs = upsertFallback(store.jobs, completedJob);
+      await writeFallback(store);
+    }
+    const savedDocument = await writePostgresKnowledgeDocument(completedDocument);
+    const savedClauses = await replacePostgresKnowledgeClauses(completedDocument, clauses);
+    const savedJob = await writePostgresKnowledgeJob(completedJob);
+    if (skipArchive && (!savedDocument.available || !savedClauses.available || !savedJob.available)) {
+      throw new Error("知识档案太大，证据没能写入数据库");
+    }
     invalidateCorpusCache();
     return { completedDocument, completedJob };
   };
