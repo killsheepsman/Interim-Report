@@ -30,6 +30,7 @@ import {
   readPostgresQualityIssue,
   replacePostgresKnowledgeMatches,
   replacePostgresDistilledKnowledge,
+  appendPostgresDistilledKnowledge,
   updatePostgresDistilledKnowledge,
   readPostgresDistilledKnowledgeById,
   publishPostgresKnowledgeCards,
@@ -111,7 +112,7 @@ const distillationOutputContract = `只输出JSON：{"knowledge":[...]}
 type只能是mandatory、prohibited、threshold、recommendation、evidence、definition、failure_mode、exam_point。明确区分：REQUIREMENT/PROHIBITION/THRESHOLD用mandatory/prohibited/threshold；RECOMMENDATION用recommendation；DEFINITION用definition；EVIDENCE或资料事实用evidence；失效机理用failure_mode，不能把推荐建议标成mandatory。
 atomicRule必须包含ruleType、topic、subject、action、object、condition、exceptions；ruleType仅用REQUIREMENT、PROHIBITION、RESTRICTION、TIME_LIMIT、PERMISSION、EXCEPTION、RESPONSIBILITY、PENALTY、APPLICABILITY、RECOMMENDATION、DEFINITION、EVIDENCE。topic、subject、action、object缺一不可；原文不支持就不要生成该卡片。
 mandatory、prohibited、threshold、recommendation、failure_mode必须提供至少一条客观violationBasis；definition和纯资料事实可以为空。sourceCitations至少一个，必须引用本批次的clauseId，quote必须是原文连续子串。无法由原文证明的字段用空字符串或空数组。不要生成reviewPoints、correctionActions、verification、method、commonViolations、engineeringExplanation。`;
-const buildDistillationSystemPrompt = (skillContent) => `你是QMS规范知识蒸馏器。只使用输入证据，不补充外部知识。将一条或多条原文整理为可检索、可复核的知识卡片；保留数字、单位、条件、例外和责任边界。删除页眉、标题、重复背景和无规则碎片。表格/数据密集内容应按同一适用条件合并，不要把单个数值或单位标题单独生成卡片。${distillationOutputContract}\n质量要求：每条知识必须有精确引用；同义内容合并但不能合并不同条件；原文不支持就不生成；返回前逐条检查类型与ruleType一致、atomicRule四个核心字段齐全、违反依据完整。\nSkill要点：${String(skillContent || "").slice(0, 12000)}`;
+const buildDistillationSystemPrompt = (skillContent) => `你是QMS规范知识蒸馏器。只使用输入证据，不补充外部知识。将一条或多条原文整理为可检索、可复核的知识卡片；保留数字、单位、条件、例外和责任边界。删除页眉、标题、重复背景和无规则碎片。表格/数据密集内容应按同一适用条件合并，不要把单个数值或单位标题单独生成卡片。${distillationOutputContract}\n质量要求：每条知识必须有精确引用；同义内容合并但不能合并不同条件；原文不支持就不生成；返回前逐条检查类型与ruleType一致、atomicRule四个核心字段齐全、违反依据完整。\nSkill要点：${String(skillContent || "").slice(0, 2000)}`;
 const classifyDistillationBatch = (rows) => {
   const text = rows.map((row) => `${row.text || ""} ${row.sectionPath || ""}`).join(" ");
   const hasNumericRule = /\d+(?:\.\d+)?\s*(?:mm|cm|m|kg|g|N|Pa|MPa|V|A|Hz|℃|%|秒|分钟|小时|天|扣牙|mm|±)/i.test(text);
@@ -1958,8 +1959,8 @@ export const createKnowledgeService = ({ filePath, originalDir = path.join(path.
     return [...unique.values()];
   };
   const createDistillationBatches = (clauses, options = {}) => {
-    const batchChars = Math.min(6000, Math.max(1500, Number(options.batchChars || process.env.QMS_KNOWLEDGE_DISTILL_BATCH_CHARS || 3500)));
-    const maxBatchClauses = Math.min(8, Math.max(1, Number(options.maxBatchClauses || process.env.QMS_KNOWLEDGE_DISTILL_BATCH_CLAUSES || 4)));
+    const batchChars = Math.min(12000, Math.max(1500, Number(options.batchChars || process.env.QMS_KNOWLEDGE_DISTILL_BATCH_CHARS || 8000)));
+    const maxBatchClauses = Math.min(16, Math.max(1, Number(options.maxBatchClauses || process.env.QMS_KNOWLEDGE_DISTILL_BATCH_CLAUSES || 16)));
     const batches = [];
     let current = [];
     let size = 0;
@@ -1984,9 +1985,31 @@ export const createKnowledgeService = ({ filePath, originalDir = path.join(path.
     }
     return { batchChars, maxBatchClauses, segmentClauses: segmentSize, batches: normalizedBatches, segments };
   };
+  const compactDistillationResult = (value, batchRows) => ({
+    ...value,
+    knowledgeCount: batchRows.reduce((sum, item) => sum + (item.knowledge || []).length, 0),
+    batches: batchRows.map(({ knowledge = [], ...batch }) => ({ ...batch, knowledgeCount: knowledge.length })),
+  });
+  const appendDistillationBatch = async (document, skillId, items, clauseById) => {
+    const accepted = [];
+    for (const item of items || []) {
+      const citations = (Array.isArray(item.sourceCitations) ? item.sourceCitations : []).map((citation) => {
+        const clause = clauseById.get(String(citation.clauseId || ""));
+        const quote = String(citation.quote || "").trim();
+        if (!clause || !quote || !String(clause.clauseText || "").includes(quote)) return null;
+        return { ...citation, clauseId: clause.id, clauseNumber: citation.clauseNumber || clause.clauseNumber || "", sectionPath: citation.sectionPath || clause.sectionPath || "", quote };
+      }).filter(Boolean);
+      if (citations.length) accepted.push({ ...item, sourceCitations: citations });
+    }
+    if (!accepted.length) throw new Error("本批没有通过原文引用校验");
+    const normalized = normalizeKnowledge(document, skillId, accepted).map((item) => ({ ...item, publicationStatus: "candidate" }));
+    const saved = await appendPostgresDistilledKnowledge(document.id, skillId, normalized, { updateDocument: false });
+    if (!saved.available) throw new Error("本批知识没有写入数据库");
+    return saved;
+  };
   const processDistillationJobInner = async (document, jobId, controller) => {
     if (typeof aiComplete !== "function" || typeof loadSkillContent !== "function") throw new Error("服务端知识蒸馏尚未配置AI调用和Skill读取器");
-    let job = (await listJobs(document.id)).find((item) => item.id === jobId);
+    let job = await getJob(jobId);
     if (!job || ["paused", "cancelled", "completed"].includes(job.status)) return;
     const skillId = job.skillId || "quality-knowledge-distillation";
     const skillContent = await loadSkillContent(skillId);
@@ -2003,7 +2026,7 @@ export const createKnowledgeService = ({ filePath, originalDir = path.join(path.
     const existingSegments = new Map((job.result?.segments || []).map((item) => [item.id, item]));
     const segments = configured.segments.map((item) => ({ ...item, ...(existingSegments.get(item.id) || {}), status: existingSegments.get(item.id)?.status === "running" ? "pending" : existingSegments.get(item.id)?.status || "pending" }));
     let result = distillationLog({ ...(job.result || {}), schemaVersion: "qms-distillation-job-v3", batchChars: configured.batchChars, maxBatchClauses: configured.maxBatchClauses, segmentClauses: configured.segmentClauses, maxRetries, totalClauses: clauses.length, totalBatches: batches.length, totalSegments: segments.length, batches, segments }, `准备蒸馏 ${clauses.length} 条条款，分为 ${segments.length} 段、${batches.length} 批`);
-    job = (await listJobs(document.id)).find((item) => item.id === jobId);
+    job = await getJob(jobId);
     if (!job || controller.signal.aborted || ["paused", "cancelled", "completed"].includes(job.status)) return;
     await updateJob(jobId, { status: "running", progress: Math.max(5, job.progress || 5), message: `准备蒸馏 ${clauses.length} 条条款，共 ${batches.length} 批`, result, startedAt: job.startedAt || nowIso(), errorMessage: "", completedAt: null });
     const clauseById = new Map(clauses.map((item) => [item.id, item]));
@@ -2026,7 +2049,7 @@ export const createKnowledgeService = ({ filePath, originalDir = path.join(path.
       let completed = false;
       while (!completed && batch.attempts <= maxRetries) {
         if (controller.signal.aborted) return;
-        const current = (await listJobs(document.id)).find((item) => item.id === jobId);
+        const current = await getJob(jobId);
         if (!current || ["paused", "cancelled"].includes(current.status)) return;
         batch.attempts += 1;
         batch.status = "running";
@@ -2035,10 +2058,9 @@ export const createKnowledgeService = ({ filePath, originalDir = path.join(path.
         batch.errorMessage = "";
         result = distillationLog({ ...result, batches: [...batches] }, `第 ${index + 1}/${batches.length} 批开始，第 ${batch.attempts} 次尝试`);
         const batchProgress = Math.round(8 + batches.filter((item) => item.status === "completed").length / Math.max(1, batches.length) * 82);
-        await persistState({ status: "running", progress: batchProgress, message: `正在蒸馏第 ${index + 1}/${batches.length} 批条款`, result });
         await updateDocument(document.id, { status: "distilling", progress: batchProgress, message: `正在蒸馏第 ${index + 1}/${batches.length} 批条款` });
         try {
-          const ai = await aiComplete({ messages: [{ role: "system", content: `严格执行以下知识蒸馏Skill。只允许使用用户提供的公司规范条款；输出纯JSON。\n\n${String(skillContent || "").slice(0, 30000)}` }, { role: "user", content: `来源文档：${document.name}\n版本：${document.version || "未标注"}\n这是第 ${index + 1}/${batches.length} 批条款。按Skill输出 {"knowledge": [...]}。每个知识点必须引用本批次存在的clauseId，并逐字给出原文quote。\n\n条款：\n${JSON.stringify(sourceRows)}` }], maxTokens: 5000, signal: controller.signal, operation: "knowledge-distillation" });
+          const ai = await aiComplete({ messages: [{ role: "system", content: buildDistillationSystemPrompt(skillContent) }, { role: "user", content: `来源文档：${document.name}\n版本：${document.version || "未标注"}\n这是第 ${index + 1}/${batches.length} 批条款。按Skill输出 {"knowledge": [...]}。每个知识点必须引用本批次存在的clauseId，并逐字给出原文quote。\n\n条款：\n${JSON.stringify(sourceRows)}` }], maxTokens: 8000, signal: controller.signal, operation: "knowledge-distillation" });
           if (controller.signal.aborted) { const aborted = new Error("stopped"); aborted.name = "AbortError"; throw aborted; }
           batch.knowledge = parseAiKnowledgePayload(ai.content);
           batch.status = "completed";
@@ -2055,11 +2077,13 @@ export const createKnowledgeService = ({ filePath, originalDir = path.join(path.
           // Persist a checkpoint every few batches instead of serializing the
           // complete growing result after every AI call. Segment completion
           // remains a mandatory checkpoint for restart safety.
-          const produced = deduplicateKnowledge(batches.filter((item) => item.status === "completed").flatMap((item) => item.knowledge || []));
-          await updateDocument(document.id, { status: "distilling", distillationCount: produced.length, progress: Math.round(8 + completedCount / batches.length * 82), message: `已生成 ${produced.length} 张知识卡片` });
-          await saveDistillation(document.id, { jobId: "", skillId, knowledge: produced, finalize: false, mergeExisting: true }).catch((error) => { result = distillationLog({ ...result }, `本批知识保存失败：${error.message || error}`, "error"); });
-          if (segmentDone || completedCount % 5 === 0 || completedCount > 0) {
-            await persistState({ status: "running", progress: Math.round(8 + completedCount / batches.length * 82), message: `已生成 ${produced.length} 张知识卡片`, result });
+          const batchKnowledge = deduplicateKnowledge(batch.knowledge || []);
+          batch.knowledge = batchKnowledge;
+          const producedCount = batches.reduce((sum, item) => sum + (item.knowledge || []).length, 0);
+          await updateDocument(document.id, { status: "distilling", distillationCount: producedCount, progress: Math.round(8 + completedCount / batches.length * 82), message: "已生成 " + producedCount + " 张知识卡片" });
+          await appendDistillationBatch(document, skillId, batchKnowledge, clauseById).catch((error) => { result = distillationLog({ ...result }, "本批知识保存失败：" + (error.message || error), "error"); });
+          if (completedCount % 10 === 0 || completedCount === batches.length) {
+            await persistState({ status: "running", progress: Math.round(8 + completedCount / batches.length * 82), message: "已生成 " + producedCount + " 张知识卡片", result: compactDistillationResult(result, batches) });
           }
           if (segment && segmentDone) {
             segment.status = "completed";
@@ -2067,13 +2091,12 @@ export const createKnowledgeService = ({ filePath, originalDir = path.join(path.
             segment.completedAt = nowIso();
             result = distillationLog({ ...result, batches: [...batches], segments: [...segments] }, `第 ${segment.index + 1}/${segments.length} 段完成，已保存 ${segment.knowledgeCount} 条知识候选`);
             segmentSave = segmentSave.then(async () => {
-              await saveDistillation(document.id, { jobId: "", skillId, knowledge: deduplicateKnowledge(batches.filter((item) => item.status === "completed").flatMap((item) => item.knowledge || [])), finalize: false, mergeExisting: Boolean(job.result?.mergeExisting) });
               await persistState({ status: "running", progress: Math.round(8 + segments.filter((item) => item.status === "completed").length / Math.max(1, segments.length) * 82), message: `已完成 ${segments.filter((item) => item.status === "completed").length}/${segments.length} 段`, result });
             }).catch((error) => { result = distillationLog({ ...result }, `中间知识保存失败：${error.message || error}`, "error"); });
             await segmentSave;
           }
         } catch (error) {
-          const latest = (await listJobs(document.id)).find((item) => item.id === jobId);
+          const latest = await getJob(jobId);
           if (latest?.status === "paused" || latest?.status === "cancelled") {
             batch.status = "pending";
             batch.errorMessage = "";
@@ -2105,7 +2128,7 @@ export const createKnowledgeService = ({ filePath, originalDir = path.join(path.
     };
     await Promise.all(Array.from({ length: Math.min(concurrency, batches.length) }, () => worker()));
     await segmentSave;
-    const latestAfterWorkers = (await listJobs(document.id)).find((item) => item.id === jobId);
+    const latestAfterWorkers = await getJob(jobId);
     if (controller.signal.aborted || ["paused", "cancelled"].includes(latestAfterWorkers?.status)) return;
     const failed = batches.filter((item) => item.status === "failed");
     if (failed.length) {
@@ -2127,7 +2150,7 @@ export const createKnowledgeService = ({ filePath, originalDir = path.join(path.
       return;
     }
     const knowledge = deduplicateKnowledge(batches.flatMap((item) => item.knowledge || []));
-    await updateJob(jobId, { status: "running", progress: 94, message: "正在校验逐字引用并写入知识库", result: distillationLog({ ...result, batches: [...batches] }, "全部批次完成，开始引用校验和入库") });
+    await updateJob(jobId, { status: "running", progress: 94, message: "正在校验逐字引用并写入知识库", result: distillationLog(compactDistillationResult(result, batches), "全部批次完成，开始引用校验和入库") });
     await recordProcessingStage(document.id, "knowledgePersistence", "start");
     await saveDistillation(document.id, { jobId, skillId, knowledge, finalize: true, mergeExisting: Boolean(job.result?.mergeExisting) });
     await recordProcessingStage(document.id, "distillation", "complete");
@@ -2298,6 +2321,8 @@ export const createKnowledgeService = ({ filePath, originalDir = path.join(path.
   };
 
   const deleteDocument = async (id, audit = {}) => {
+    id = String(id || "").trim();
+    if (!id) throw new Error("没有指定要删除的规范");
     deletedDocumentIds.add(id);
     queue.filter((item) => item.documentId === id).forEach((item) => {
       deletedJobIds.add(item.jobId);
@@ -2329,7 +2354,7 @@ export const createKnowledgeService = ({ filePath, originalDir = path.join(path.
       }
       const existingDocument = postgresDocument.document;
       const originalPath = existingDocument?.metadata?.originalStored ? resolveOriginalPath(existingDocument) : "";
-      if (originalPath && audit.reason !== "stale-original") await fs.unlink(originalPath).catch(() => {});
+      if (originalPath && audit.reason !== "stale-original") { const info = await fs.stat(originalPath).catch(() => null); if (info?.isFile()) await fs.unlink(originalPath).catch(() => {}); }
       invalidateCorpusCache();
       invalidateDocumentIndexCache();
       retrievalCache.clear();
@@ -2356,7 +2381,7 @@ export const createKnowledgeService = ({ filePath, originalDir = path.join(path.
     await writeFallback(store);
     if (existingDocument?.metadata?.originalStored) {
       const originalPath = resolveOriginalPath(existingDocument);
-      if (originalPath && audit.reason !== "stale-original") await fs.unlink(originalPath).catch(() => {});
+      if (originalPath && audit.reason !== "stale-original") { const info = await fs.stat(originalPath).catch(() => null); if (info?.isFile()) await fs.unlink(originalPath).catch(() => {}); }
     }
     invalidateCorpusCache();
     invalidateDocumentIndexCache();
@@ -2614,14 +2639,15 @@ export const createKnowledgeService = ({ filePath, originalDir = path.join(path.
     const coverageAudit = buildKnowledgeCoverageAudit(clauseRows, normalized);
     const blockedByReview = normalized.some((item) => item.metadata?.mustReview);
     normalized.forEach((item) => { if (blockedByReview || item.metadata?.mustReview) item.publicationStatus = "candidate"; });
-    const store = await readFallback();
-    store.knowledge = [...normalized, ...store.knowledge.filter((item) => item.documentId !== documentId || item.skillId !== skillId)];
-    const fallbackDocument = store.documents.find((item) => item.id === documentId);
+    const skipArchive = await fallbackTooLarge();
+    const store = skipArchive ? null : await readFallback();
+    if (store) store.knowledge = [...normalized, ...store.knowledge.filter((item) => item.documentId !== documentId || item.skillId !== skillId)];
+    const fallbackDocument = store?.documents.find((item) => item.id === documentId);
     const completionMessage = `已蒸馏 ${normalized.length} 条知识点${audit.rejectedCount ? `，剔除 ${audit.rejectedCount} 条无效引用` : ""}${coverageAudit.missingTopics ? `，发现 ${coverageAudit.missingTopics} 个原文重点未覆盖` : ""}，等待人工审核`;
-    if (fallbackDocument) store.documents = upsertFallback(store.documents, finalize
+    if (store && fallbackDocument) store.documents = upsertFallback(store.documents, finalize
       ? { ...fallbackDocument, status: "completed", governanceStatus: "候选知识", progress: 100, message: completionMessage, distillationCount: normalized.length, errorMessage: "", updatedAt: nowIso() }
       : { ...fallbackDocument, status: "distilling", governanceStatus: "知识蒸馏中", message: `已保存 ${normalized.length} 条知识候选，蒸馏任务继续执行`, distillationCount: normalized.length, errorMessage: "", updatedAt: nowIso() });
-    await writeFallback(store);
+    if (store) await writeFallback(store);
     await updateDocument(documentId, { metadata: { ...(document.metadata || {}), knowledgeCoverage: coverageAudit }, message: completionMessage });
     await replacePostgresDistilledKnowledge(documentId, skillId, normalized, { finalize, progress: finalize ? 100 : 50 });
     invalidateCorpusCache();

@@ -796,6 +796,28 @@ export const replacePostgresDistilledKnowledge = async (documentId, skillId, ite
   } catch (error) { await client.query("ROLLBACK").catch(() => {}); logFailure(error); return { available: false }; } finally { client.release(); }
 };
 
+
+export const appendPostgresDistilledKnowledge = async (documentId, skillId, items = [], options = {}) => {
+  if (!(await ensureReady())) return { available: false, saved: 0, total: 0 };
+  if (!items.length) return { available: true, saved: 0, total: 0 };
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    for (const item of items) {
+      await client.query("INSERT INTO qms_distilled_knowledge (id,document_id,clause_ids,knowledge_type,title,content,applicable_roles,processes,issue_tags,synonyms,confidence,skill_id,source_citations,review_status,metadata,publication_status,publication_note,reviewed_by,reviewed_at,created_at,updated_at) VALUES ($1,$2,$3::jsonb,$4,$5,$6,$7::jsonb,$8::jsonb,$9::jsonb,$10::jsonb,$11,$12,$13::jsonb,$14,$15::jsonb,$16,$17,$18,$19,$20,$21) ON CONFLICT (id) DO NOTHING", [item.id, documentId, JSON.stringify(item.clauseIds || []), item.type || "mandatory", item.title, item.content, JSON.stringify(item.applicableRoles || []), JSON.stringify(item.processes || []), JSON.stringify(item.issueTags || []), JSON.stringify(item.synonyms || []), Number(item.confidence || 0), skillId, JSON.stringify(item.sourceCitations || []), item.reviewStatus || "pending", JSON.stringify(item.metadata || {}), item.publicationStatus || "candidate", item.publicationNote || "", item.reviewedBy || "", item.reviewedAt || null, item.createdAt || new Date().toISOString(), item.updatedAt || new Date().toISOString()]);
+    }
+    const count = await client.query("SELECT COUNT(*)::int AS total FROM qms_distilled_knowledge WHERE document_id=$1", [documentId]);
+    const total = Number(count.rows[0]?.total || 0);
+    if (options.updateDocument !== false) await client.query("UPDATE qms_knowledge_documents SET distillation_count=$2, status='distilling', governance_status='知识蒸馏中', progress=$3, message=$4, updated_at=NOW() WHERE id=$1", [documentId, total, Math.min(99, Number(options.progress || 50)), "已保存 " + total + " 条知识候选，蒸馏任务继续执行"]);
+    await client.query("COMMIT");
+    return { available: true, saved: items.length, total };
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => {});
+    logFailure(error);
+    return { available: false, saved: 0, total: 0 };
+  } finally { client.release(); }
+};
+
 export const listPostgresDistilledKnowledge = async (documentId, { limit = 100, offset = 0 } = {}) => {
   if (!(await ensureReady())) return { available: false, knowledge: [], total: 0 };
   try {

@@ -3327,7 +3327,7 @@ function KnowledgeBasePage({ qualitySources = [], onEnsureAgentSources, auth }) 
       setDocumentJobs(nextJobs);
       const documents = (response?.documents || []).map((item) => ({ ...item, serverStored: true })).filter((item) => !removedKnowledgeIdsRef.current.has(item.id));
       if (documents.length) setFiles((current) => documents.map((item) => ({ ...current.find((row) => row.id === item.id), ...item })));
-      else setFiles((current) => current.filter((item) => !item.serverStored && !removedKnowledgeIdsRef.current.has(item.id)));
+      else if (!silent) setFiles((current) => current.filter((item) => !item.serverStored && !removedKnowledgeIdsRef.current.has(item.id)));
       if (!silent) setStatus(documents.length ? `已读取 ${documents.length} 个知识文件` : "知识库已连接，暂无服务器知识文件");
       return documents;
     } catch (error) {
@@ -3836,40 +3836,67 @@ function KnowledgeBasePage({ qualitySources = [], onEnsureAgentSources, auth }) 
     if (next.length !== current.length) localStorage.setItem(qmdpQuestionsKey, JSON.stringify(next));
     return current.length - next.length;
   };
+  const deleteOneKnowledgeFile = (file) => {
+    const id = String(file?.id || "").trim();
+    const match = files.find((item) => item.id === id);
+    if (!id || !match) return setStatus("请先选定一份规范，再删除");
+    if (!window.confirm("确定删除这份规范吗？\n\n文件名称：" + match.name + "\n\n只删除这一份。点取消不会删除。")) return;
+    return deleteKnowledgeFiles([id]);
+  };
   const deleteKnowledgeFiles = async (ids) => {
+    const requested = [...new Set((Array.isArray(ids) ? ids : []).map((id) => String(id || "").trim()).filter(Boolean))];
+    const targets = requested.map((id) => files.find((item) => item.id === id)).filter(Boolean);
+    if (!targets.length || targets.length !== requested.length) {
+      setStatus("没有找到要删除的规范，已取消");
+      return;
+    }
     const removed = [];
     const removedIds = [];
     const failed = [];
-    for (const id of ids) {
-      const file = files.find((item) => item.id === id);
-      const name = file?.name || "这份规范";
+    for (const file of targets) {
+      const name = file.name || "这份规范";
       setStatus(`正在删除“${name}”…`);
       try {
-        if (file?.serverStored) {
-          const result = await deleteKnowledgeDocument(id);
+        if (file.serverStored) {
+          const result = await deleteKnowledgeDocument(file.id);
           if (result && result.deleted === false) throw new Error("后台没有删掉这份规范");
         }
-        removedKnowledgeIdsRef.current.add(id);
+        removedKnowledgeIdsRef.current.add(file.id);
         removed.push(name);
-        removedIds.push(id);
+        removedIds.push(file.id);
       } catch (error) {
         failed.push(`${name}：${error?.message || "删除失败"}`);
       }
     }
     const removedQuestions = removedIds.length ? removeGeneratedQuestions(removedIds, removed) : 0;
-    if (removed.length) {
-      setFiles((current) => current.filter((item) => !removedKnowledgeIdsRef.current.has(item.id)));
-      setCheckedFileIds((current) => current.filter((id) => !removedKnowledgeIdsRef.current.has(id)));
-      if (detail && removedKnowledgeIdsRef.current.has(detail.fileId)) setDetail(null);
-      await refreshDocuments(true);
+    if (removedIds.length) {
+      const survivors = files.filter((item) => !removedIds.includes(item.id));
+      setFiles(survivors);
+      setCheckedFileIds((current) => current.filter((id) => !removedIds.includes(id)));
+      if (detail && removedIds.includes(detail.fileId)) setDetail(null);
+      const returned = await refreshDocuments(true);
+      const returnedIds = new Set((returned || []).map((item) => item.id));
+      if (!returned?.length) setFiles(survivors);
+      else {
+        const dropped = survivors.filter((item) => item.serverStored && !returnedIds.has(item.id));
+        if (dropped.length) {
+          setFiles((current) => {
+            const seen = new Set(current.map((item) => item.id));
+            return [...current, ...dropped.filter((item) => !seen.has(item.id))];
+          });
+        }
+      }
     }
     if (failed.length) setStatus(`没有删掉：${failed.join("；")}`);
-    else if (removed.length) setStatus((removed.length === 1 ? `已删除“${removed[0]}”` : `已删除 ${removed.length} 份规范`) + (removedQuestions ? `，并删除 ${removedQuestions} 道试题` : "，证据和知识卡片已一起删除"));
+    else if (removed.length === 1) setStatus(`已删除“${removed[0]}”，其它规范未删除` + (removedQuestions ? `，并删除 ${removedQuestions} 道试题` : ""));
+    else if (removed.length) setStatus(`已删除 ${removed.length} 份已选规范，未选中的没有删除` + (removedQuestions ? `，并删除 ${removedQuestions} 道试题` : ""));
   };
   const deleteCheckedKnowledgeFiles = async () => {
-    const count = checkedFileIds.length;
-    if (!count || !window.confirm(`确定删除已选中的 ${count} 个知识文件吗？规范、证据、知识卡片和由它生成的试题都会一起删除。`)) return;
-    await deleteKnowledgeFiles(checkedFileIds);
+    const selected = checkedFileIds.map((id) => files.find((file) => file.id === id)).filter(Boolean);
+    if (!selected.length) return setStatus("请先勾选要删除的规范");
+    const names = selected.map((file) => file.name).join("\n");
+    if (!window.confirm(`确定删除已勾选的 ${selected.length} 份规范吗？\n\n${names}\n\n没有勾选的不会删除。点取消不会删除。`)) return;
+    await deleteKnowledgeFiles(selected.map((file) => file.id));
   };
   const generateCheckedKnowledgeFiles = async () => {
     if (generatingId || batchProgress || !checkedFileIds.length || !selectedExamSkillId) return;
@@ -4097,7 +4124,7 @@ function KnowledgeBasePage({ qualitySources = [], onEnsureAgentSources, auth }) 
     <section className="qmdp-knowledge-exam-center"><header className="qmdp-knowledge-exam-center-head"><button className="qmdp-knowledge-center-toggle" onClick={() => setKnowledgeExamCenterOpen((value) => !value)}><CaretDown size={16} className={knowledgeExamCenterOpen ? "rotate" : ""}/><strong>知识考题中心</strong><span>导入知识、蒸馏知识、生成考题</span></button><div className="qmdp-inline-actions"><button className="qmdp-secondary-btn" onClick={checkKnowledgeConsistency} disabled={checkingKnowledgeConsistency}><ListChecks size={15}/>{checkingKnowledgeConsistency ? "核对中…" : "核对数据"}</button><label className="qmdp-primary-btn"><UploadSimple size={15}/>导入知识文件<input type="file" multiple accept=".pdf,.png,.jpg,.jpeg,.webp,.bmp,.doc,.docx,.pptx,.txt,.md,.srt,.vtt,.xlsx,.xls,.xlsm,.xmind" onChange={importFiles}/></label></div></header>{knowledgeExamCenterOpen && <div className="qmdp-knowledge-exam-center-body">    <div className="qmdp-toolbar"><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索文件名或文本预览"/><select value={category} onChange={(event) => setCategory(event.target.value)}>{["全部", "研发设计规范", "组装工艺", "研发 Lesson Learned", "调试 SOP"].map((item) => <option key={item}>{item}</option>)}</select><select value={knowledgeReviewFilter} onChange={(event) => setKnowledgeReviewFilter(event.target.value)} aria-label="知识复核状态"><option value="all">全部复核状态</option><option value="candidate">待复核/候选</option><option value="needs-review">解析待复核</option><option value="approved">已初审</option><option value="published">已发布</option></select><span>{knowledgeConsistency ? knowledgeConsistency.consistent ? `数据一致 · ${knowledgeConsistency.counts.documents} 份文档 / ${knowledgeConsistency.counts.clauses} 条证据 / ${knowledgeConsistency.counts.publishedKnowledge} 张已发布` : `数据异常 · ${knowledgeConsistency.issues.join("；")}` : status || `当前显示 ${visible.length} 个文件`}</span>{checkedFileIds.length === 1 && <button className="qmdp-secondary-btn" onClick={() => completeKnowledgeMetadata(files.find((file) => file.id === checkedFileIds[0]))} disabled={busy}><GearSix size={14}/>完善所选资料信息</button>}</div>
     <div className="qmdp-batch-toolbar qmdp-knowledge-distill-toolbar"><label><input type="checkbox" checked={allVisibleChecked} onChange={toggleVisibleFiles} disabled={!visibleIds.length || busy}/><span>{allVisibleChecked ? "取消全选当前结果" : "全选当前结果"}</span></label><label className="qmdp-exam-skill-select"><span>知识蒸馏 Skill</span><select value={selectedKnowledgeSkillId} onChange={(event) => setSelectedKnowledgeSkillId(event.target.value)} disabled={busy || !knowledgeSkills.length}>{knowledgeSkills.length ? knowledgeSkills.map((skill) => <option key={skill.id} value={skill.id}>{skill.name || skill.id}</option>) : <option value="">暂无可用 Skill</option>}</select><small>{knowledgeSkillStatus}</small></label><strong>已选 {checkedFileIds.length} 项</strong><button className="qmdp-secondary-btn" onClick={distillCheckedKnowledgeFiles} disabled={!checkedFileIds.length || !selectedKnowledgeSkillId || busy}><Sparkle size={14}/>{distillBatchProgress ? `正在蒸馏 ${distillBatchProgress.current}/${distillBatchProgress.total}` : "批量蒸馏知识"}</button><button className="qmdp-danger-btn" onClick={deleteCheckedKnowledgeFiles} disabled={!checkedFileIds.length || busy}><Trash size={14}/>批量删除</button>{distillBatchProgress && <small className="qmdp-batch-generation-status">当前：{distillBatchProgress.fileName}</small>}</div>
     <div className="qmdp-batch-toolbar qmdp-question-generation-toolbar"><label className="qmdp-exam-skill-select"><span>考试题目 Skill</span><select value={selectedExamSkillId} onChange={(event) => setSelectedExamSkillId(event.target.value)} disabled={busy || !examSkills.length}>{examSkills.length ? examSkills.map((skill) => <option key={skill.id} value={skill.id}>{skill.name || skill.id}</option>) : <option value="">暂无可用 Skill</option>}</select><small>{examSkillStatus}</small></label><div className="qmdp-question-counts"><label><span>单选题数量</span><input type="number" min="0" max="20" value={questionCounts.singleChoice} onChange={(event) => setQuestionCounts((current) => ({ ...current, singleChoice: event.target.value }))} disabled={busy}/></label><label><span>判断题数量</span><input type="number" min="0" max="20" value={questionCounts.trueFalse} onChange={(event) => setQuestionCounts((current) => ({ ...current, trueFalse: event.target.value }))} disabled={busy}/></label></div><button className="qmdp-secondary-btn" onClick={generateCheckedKnowledgeFiles} disabled={!checkedFileIds.length || !selectedExamSkillId || busy}><Brain size={14}/>{batchProgress ? `正在生成 ${batchProgress.current}/${batchProgress.total}` : "批量生成题目"}</button>{batchProgress && <small className="qmdp-batch-generation-status">当前：{batchProgress.fileName}</small>}</div>
-    <KnowledgeExamCarousel files={visible} checkedFileIds={checkedFileIds} onToggleFile={toggleKnowledgeFile} generationStates={generationStates} documentJobs={documentJobs} busy={busy} distillingId={distillingId} generatingId={generatingId} selectedKnowledgeSkillId={selectedKnowledgeSkillId} selectedExamSkillId={selectedExamSkillId} processingClock={processingClock} timingLabel={processingTimingLabel} onOpenDetail={openDetail} onImportDistillation={importDistillationForFile} onControlJob={controlDocumentJob} onRetryParse={retryParse} onRetryFailedParse={retryFailedParse} onReviewFile={reviewFile} onDistill={distillKnowledgeForFile} onGenerateExam={generateExamQuestions} onDelete={(file) => deleteKnowledgeFiles([file.id])} />
+    <KnowledgeExamCarousel files={visible} checkedFileIds={checkedFileIds} onToggleFile={toggleKnowledgeFile} generationStates={generationStates} documentJobs={documentJobs} busy={busy} distillingId={distillingId} generatingId={generatingId} selectedKnowledgeSkillId={selectedKnowledgeSkillId} selectedExamSkillId={selectedExamSkillId} processingClock={processingClock} timingLabel={processingTimingLabel} onOpenDetail={openDetail} onImportDistillation={importDistillationForFile} onControlJob={controlDocumentJob} onRetryParse={retryParse} onRetryFailedParse={retryFailedParse} onReviewFile={reviewFile} onDistill={distillKnowledgeForFile} onGenerateExam={generateExamQuestions} onDelete={(file) => deleteOneKnowledgeFile(file)} />
     {detail && <section className="qmdp-knowledge-detail"><header><div><small>{detail.mode === "clauses" ? "原始证据片段" : "知识卡审核"}</small><h3>{detail.fileName}</h3></div><div><span>共 {detail.total} 条</span><button className="qmdp-secondary-btn" onClick={() => setDetail(null)}><X size={14}/>关闭</button></div></header>{detail.mode === "knowledge" && <div className="qmdp-knowledge-batch-toolbar"><label><input type="checkbox" checked={detail.rows.length > 0 && detail.rows.every((row) => selectedKnowledgeIds.includes(row.id))} onChange={() => setSelectedKnowledgeIds(detail.rows.every((row) => selectedKnowledgeIds.includes(row.id)) ? [] : detail.rows.map((row) => row.id))}/><span>全选本页知识卡</span></label><button className="qmdp-secondary-btn" onClick={selectAllKnowledgeCards} disabled={busy || detail.loading}>全选所有知识卡</button><strong>已选 {selectedKnowledgeIds.length} 条</strong><button className="qmdp-primary-btn" onClick={() => batchReviewKnowledge("publish")} disabled={!selectedKnowledgeIds.length || busy}><ShieldCheck size={14}/>批量发布知识</button>{knowledgePublishProgress && <span className="qmdp-batch-publish-progress"><i><b style={{ width: `${Math.round((knowledgePublishProgress.current / Math.max(1, knowledgePublishProgress.total)) * 100)}%` }}/></i>{knowledgePublishProgress.current}/{knowledgePublishProgress.total}</span>}</div>}{detail.loading ? <div className="qmdp-empty compact">正在分页读取…</div> : detail.error ? <div className="qmdp-empty compact">{detail.error}</div> : <div className={`qmdp-knowledge-detail-list ${detail.mode === "knowledge" ? "is-knowledge-list" : "is-evidence-list"}`}>{detail.rows.map((row, index) => detail.mode === "clauses" ? <article key={row.id}><div><b>{row.clauseNumber || `证据 ${row.ordinal}`}</b><span>{row.sourceLocation?.locator || row.metadata?.sourceLocation?.locator || row.sectionPath || "未识别位置"}{row.ocrStatus && row.ocrStatus !== "native" && row.ocrStatus !== "not_required" ? ` · OCR ${row.ocrStatus}` : ""}</span></div><p>{row.clauseText}</p></article> : <KnowledgeReviewCard key={row.id} row={row} sourceDocument={detail.fileName} ordinal={detail.page * detailPageSize + index + 1} selected={selectedKnowledgeIds.includes(row.id)} onToggleSelect={toggleKnowledgeSelection} onAction={reviewKnowledgeAction} onOpenGovernance={openGovernanceForDocument}/>)}</div>}<footer><button className="qmdp-secondary-btn" disabled={detail.page <= 0 || detail.loading} onClick={() => openDetail(files.find((file) => file.id === detail.fileId), detail.mode, detail.page - 1)}>上一页</button><span>第 {detail.page + 1} / {Math.max(1, Math.ceil(detail.total / detailPageSize))} 页</span><button className="qmdp-secondary-btn" disabled={(detail.page + 1) * detailPageSize >= detail.total || detail.loading} onClick={() => openDetail(files.find((file) => file.id === detail.fileId), detail.mode, detail.page + 1)}>下一页</button></footer></section>}
     </div>}</section>
     <KnowledgeTaskCenter files={files} onRefreshDocuments={refreshDocuments}/>
