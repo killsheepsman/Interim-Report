@@ -75,15 +75,29 @@ const workProgress = (file, facts) => {
   if (["waiting", "parsing", "indexing"].includes(file.status)) return parseProgress(file, facts.activeParseJob);
   return distillProgress(facts.activeDistillJob);
 };
+const distillationBatches = (job) => {
+  const batches = Array.isArray(job?.result?.batches) ? job.result.batches : [];
+  const summary = job?.result?.batchSummary;
+  const totalBatches = Number(job?.result?.totalBatches || summary?.total || batches.length || 0);
+  const doneBatches = summary && Number.isFinite(Number(summary.completed)) ? Number(summary.completed) : batches.filter((batch) => batch.status === "completed").length;
+  const progress = totalBatches > 0 ? Math.max(0, Math.min(100, Math.round(doneBatches / totalBatches * 100))) : 0;
+  return { totalBatches, doneBatches, progress };
+};
 const distillationCardText = (file, job) => {
   const current = Math.max(Number(file?.distillationCount || 0), Number(job?.result?.knowledgeCount || 0));
   const active = file?.status === "distilling" || ["waiting", "running", "paused", "failed"].includes(job?.status);
   if (!active) return current + " 张卡片";
-  const batches = Array.isArray(job?.result?.batches) ? job.result.batches : [];
-  const totalBatches = Number(job?.result?.totalBatches || job?.result?.batchSummary?.total || batches.length || 0);
-  const doneBatches = Number(job?.result?.batchSummary?.completed || batches.filter((batch) => batch.status === "completed").length || 0);
+  const { totalBatches, doneBatches } = distillationBatches(job);
   const batchText = totalBatches ? " · " + doneBatches + "/" + totalBatches + "批" : "";
   return "已生成 " + current + " 张" + batchText;
+};
+const publishCardState = (file, job) => {
+  const published = Math.max(0, Number(file?.metadata?.publishedKnowledgeCount || 0));
+  const cards = Math.max(Number(file?.distillationCount || 0), Number(job?.result?.knowledgeCount || 0), published);
+  if (cards <= 0) return null;
+  if (published <= 0) return { published, cards, text: "知识卡未发布", tone: "is-unpublished" };
+  if (published >= cards) return { published, cards, text: "知识卡已发布", tone: "is-published" };
+  return { published, cards, text: "已发布 " + published + "/" + cards, tone: "is-partial" };
 };
 const knowledgeCardMeter = (file, job) => {
   const published = Number(file?.metadata?.publishedKnowledgeCount || 0);
@@ -93,12 +107,12 @@ const knowledgeCardMeter = (file, job) => {
   const expected = cards;
   const estimated = false;
   const green = cards > 0 ? Math.max(0, Math.min(100, Math.round(published / cards * 100))) : 0;
-  const progress = active ? Math.max(0, Math.min(99, Math.round(Number(file?.progress || 0)))) : 0;
+  const progress = active ? distillationBatches(job).progress : 0;
   return { published, cards, expected, active, estimated, green, progress };
 };
 function KnowledgeCardBar({ meter }) {
   const title = meter.active ? "已生成 " + meter.cards + " 张，按批次进度显示" : "已发布 " + meter.published + " 张 · 知识卡片 " + (meter.estimated ? "约 " : "") + meter.cards + " 张";
-  return <i className={"knowledge-card-bar" + ((meter.cards || meter.active) ? "" : " is-empty")} title={title} aria-label={title}>{meter.active ? <b className="is-published" style={{ width: meter.progress + "%" }} /> : <>{meter.cards > 0 && <b className="is-published" style={{ width: meter.green + "%" }} />}{meter.cards > 0 && <b className="is-cards" style={{ width: (100 - meter.green) + "%" }} />}</>}</i>;
+  return <i className={"knowledge-card-bar" + ((meter.cards || meter.active) ? "" : " is-empty")} title={title} aria-label={title}>{meter.active ? <b className="is-published" style={{ width: meter.progress + "%", flex: "0 0 " + meter.progress + "%" }} /> : <>{meter.cards > 0 && <b className="is-published" style={{ width: meter.green + "%" }} />}{meter.cards > 0 && <b className="is-cards" style={{ width: (100 - meter.green) + "%" }} />}</>}</i>;
 }
 
 const fileFacts = (file, documentJobs = {}) => {
@@ -233,14 +247,14 @@ export function KnowledgeExamCarousel({ files = [], checkedFileIds = [], onToggl
           <span className="knowledge-orbit-tag">{file.category || "未分类"}</span>
           <h3>{file.name}</h3>
           <p>{file.preview || "尚未提取文本；可作为知识文件留档。"}</p>
-          <footer><b>{statusText(file, itemFacts.awaitingReview, itemFacts.processing, itemFacts.activeDistillJob)}</b><small>{["waiting", "parsing", "indexing"].includes(file.status) && workProgress(file, itemFacts)?.message ? workProgress(file, itemFacts).message : `${file.clauseCount || 0} 条证据 · ${distillationCardText(file, itemFacts.activeDistillJob)}`}</small>{elapsedText(workProgress(file, itemFacts), processingClock) ? <small className="knowledge-orbit-elapsed">{elapsedText(workProgress(file, itemFacts), processingClock)}</small> : null}<KnowledgeCardBar meter={knowledgeCardMeter(file, itemFacts.activeDistillJob)} /></footer>
+          <footer><b>{statusText(file, itemFacts.awaitingReview, itemFacts.processing, itemFacts.activeDistillJob)}</b><small>{["waiting", "parsing", "indexing"].includes(file.status) && workProgress(file, itemFacts)?.message ? workProgress(file, itemFacts).message : `${file.clauseCount || 0} 条证据 · ${distillationCardText(file, itemFacts.activeDistillJob)}`}</small>{(() => { const publish = publishCardState(file, itemFacts.activeDistillJob); return publish ? <small className={"knowledge-orbit-publish " + publish.tone}>{publish.text}</small> : null; })()}{elapsedText(workProgress(file, itemFacts), processingClock) ? <small className="knowledge-orbit-elapsed">{elapsedText(workProgress(file, itemFacts), processingClock)}</small> : null}<KnowledgeCardBar meter={knowledgeCardMeter(file, itemFacts.activeDistillJob)} /></footer>
         </article>;
       })}
     </div>
     {front && <section className="knowledge-orbit-dock">
       <strong>{front.name}</strong>
       <p>{turning ? "正在转动，按钮暂不可点" : `${statusText(front, facts.awaitingReview, facts.processing, facts.activeDistillJob)} · ${front.clauseCount || 0} 条证据 · ${distillationCardText(front, facts.activeDistillJob)}`}{elapsedText(progress, processingClock) ? ` · ${elapsedText(progress, processingClock)}` : (!progress && timingLabel ? ` · ${timingLabel(front, processingClock) || ""}` : "")}{generationStates[front.id]?.message ? ` · ${generationStates[front.id].message}` : ""}</p>
-      {(() => { const meter = knowledgeCardMeter(front, facts.activeDistillJob); return <div className="knowledge-orbit-meters" aria-label="知识卡片数量"><div><b>知识卡片</b><span>{meter.active ? "已生成 " + meter.cards + " 张" : (meter.estimated ? "约 " : "") + meter.cards + " 张"}</span></div><KnowledgeCardBar meter={meter} />{facts.activeDistillJob?.status === "failed" && progress?.message ? <small>{progress.message}</small> : null}</div>; })()}
+      {(() => { const meter = knowledgeCardMeter(front, facts.activeDistillJob); const publish = publishCardState(front, facts.activeDistillJob); return <div className="knowledge-orbit-meters" aria-label="知识卡片数量"><div><b>知识卡片</b><span>{meter.active ? "已生成 " + meter.cards + " 张" : (meter.estimated ? "约 " : "") + meter.cards + " 张"}{publish ? <> · <em className={"knowledge-orbit-publish " + publish.tone}>{publish.text}</em></> : null}</span></div><KnowledgeCardBar meter={meter} />{facts.activeDistillJob?.status === "failed" && progress?.message ? <small>{progress.message}</small> : null}</div>; })()}
       <div className="knowledge-orbit-actions">
         {buttons.map((button) => button.file ? <label key={button.key} className={`qmdp-secondary-btn ${button.enabled ? "" : "is-disabled"}`}>{button.icon}{button.label}<input type="file" accept=".json,.md" disabled={!button.enabled} onChange={(event) => onImportDistillation(front, event)}/></label> : <button key={button.key} type="button" className={button.danger ? "qmdp-danger-btn" : button.primary ? "qmdp-primary-btn" : "qmdp-secondary-btn"} disabled={!button.enabled} onClick={(event) => { event.stopPropagation(); button.onClick?.(); }}>{button.icon}{button.label}</button>)}
       </div>
