@@ -1439,8 +1439,16 @@ const createSourcesSignature = (sources = []) => {
   return `sources-v1:${stableHash(JSON.stringify(payload))}`;
 };
 
+class SnapshotSuperseded extends Error {
+  constructor() {
+    super("SNAPSHOT_SUPERSEDED");
+    this.name = "SnapshotSuperseded";
+  }
+}
 const snapshotJobs = new Map();
 let snapshotWorkerRunning = false;
+let snapshotEpoch = 0;
+let snapshotActive = null;
 // Progress updates arrive from the worker and HTTP requests at the same time.
 // Keep the whole read/merge/write transaction serial so Windows never sees two
 // temporary files trying to replace the task index concurrently.
@@ -1541,10 +1549,20 @@ const appendTaskHistory = async (key, task, currentRegistry = null) => {
 };
 
 const processSnapshotJob = async (jobId) => {
+  const epoch = snapshotEpoch;
+  const noteSnapshot = async (patch) => {
+    if (epoch !== snapshotEpoch) throw new SnapshotSuperseded();
+    if (snapshotActive && snapshotActive.id === jobId) snapshotActive.beat = Date.now();
+    return updateSnapshotJob(jobId, patch);
+  };
+  const saveSnapshotRegistry = async (key, value) => {
+    if (epoch !== snapshotEpoch) throw new SnapshotSuperseded();
+    await saveStateValue(key, value);
+  };
   const jobs = await loadSnapshotJobs();
   const job = jobs.find((item) => item.id === jobId);
   if (!job || !["queued", "running"].includes(job.status)) return;
-  await updateSnapshotJob(jobId, { status: "running", progress: 1, message: "正在准备数据", startedAt: job.startedAt || new Date().toISOString() });
+  await noteSnapshot( { status: "running", progress: 1, message: "正在准备数据", startedAt: job.startedAt || new Date().toISOString() });
   try {
     if (job.kind === "module") {
       const [analysisCache, importedSources, registryValue] = await Promise.all([loadStateValue("analysis-cache"), loadStateValue("imported-sources"), loadStateValue(QUALITY_SNAPSHOT_REGISTRY_KEY)]);
@@ -1556,9 +1574,9 @@ const processSnapshotJob = async (jobId) => {
       const hydrateModules = [...new Set(rules.flatMap((rule) => rule.module === "DOAM" ? [] : (rule.sourceModules || [rule.module])))];
       let hydratedFiles = files;
       if (hydrateModules.length) {
-        await updateSnapshotJob(jobId, { progress: 2, message: "正在解析原始 Excel" });
+        await noteSnapshot( { progress: 2, message: "正在解析原始 Excel" });
         hydratedFiles = await rehydrateSnapshotSources(files, hydrateModules, async ({ index, total: fileTotal, source }) => {
-          await updateSnapshotJob(jobId, { progress: 2, message: `正在解析原始数据 ${index + 1}/${fileTotal} · ${source.name || source.module}` });
+          await noteSnapshot( { progress: 2, message: `正在解析原始数据 ${index + 1}/${fileTotal} · ${source.name || source.module}` });
         });
       }
       const periods = buildSnapshotPeriods(job.payload?.dateRange || {});
@@ -1572,7 +1590,7 @@ const processSnapshotJob = async (jobId) => {
         const latestRuleJob = (await loadSnapshotJobs()).find((item) => item.id === jobId);
         if (latestRuleJob?.status === "cancelled") {
           await appendTaskHistory(QUALITY_SNAPSHOT_REGISTRY_KEY, { id: jobId, batchId: latestRuleJob.batchId || `module-batch-${jobId}`, kind: "模块", startedAt: latestRuleJob.startedAt || new Date().toISOString(), finishedAt: new Date().toISOString(), status: "cancelled", total: latestRuleJob.total || 0, done: latestRuleJob.done || 0, failed: latestRuleJob.failed || 0, failedItems: [], rules: Array.isArray(latestRuleJob.payload?.ruleIds) ? latestRuleJob.payload.ruleIds : [], period: latestRuleJob.payload?.dateRange || {} });
-          await updateSnapshotJob(jobId, { status: "cancelled", message: "任务已取消", finishedAt: new Date().toISOString() });
+          await noteSnapshot( { status: "cancelled", message: "任务已取消", finishedAt: new Date().toISOString() });
           return;
         }
         const moduleFiles = hydratedFiles.filter((source) => (rule.sourceModules || [rule.module]).includes(source.module));
@@ -1582,7 +1600,7 @@ const processSnapshotJob = async (jobId) => {
           const latestPeriodJob = (await loadSnapshotJobs()).find((item) => item.id === jobId);
           if (latestPeriodJob?.status === "cancelled") {
             await appendTaskHistory(QUALITY_SNAPSHOT_REGISTRY_KEY, { id: jobId, batchId: latestPeriodJob.batchId || `module-batch-${jobId}`, kind: "模块", startedAt: latestPeriodJob.startedAt || new Date().toISOString(), finishedAt: new Date().toISOString(), status: "cancelled", total: latestPeriodJob.total || 0, done: latestPeriodJob.done || 0, failed: latestPeriodJob.failed || 0, failedItems: [], rules: Array.isArray(latestPeriodJob.payload?.ruleIds) ? latestPeriodJob.payload.ruleIds : [], period: latestPeriodJob.payload?.dateRange || {} });
-            await updateSnapshotJob(jobId, { status: "cancelled", message: "任务已取消", finishedAt: new Date().toISOString() });
+            await noteSnapshot( { status: "cancelled", message: "任务已取消", finishedAt: new Date().toISOString() });
             return;
           }
           if (retryItems && !retryItems.some((item) => item.ruleId === rule.id && item.periodKey === period.periodKey)) {
@@ -1607,19 +1625,19 @@ const processSnapshotJob = async (jobId) => {
             failedItems.push({ ruleId: rule.id, module: rule.module, periodKey: period.periodKey, error: String(error?.message || error || "快照失败").slice(0, 800) });
           }
           done += 1;
-          await updateSnapshotJob(jobId, { progress: Math.round(done / Math.max(total, 1) * 100), done, total, failed: failedItems.length, failedItems, message: `${rule.module} · ${period.granularity === "range" ? "总周期" : period.periodKey}` });
+          await noteSnapshot( { progress: Math.round(done / Math.max(total, 1) * 100), done, total, failed: failedItems.length, failedItems, message: `${rule.module} · ${period.granularity === "range" ? "总周期" : period.periodKey}` });
           await new Promise((resolve) => setTimeout(resolve, 0));
         }
         next = compactQualityHistory(next);
-        await saveStateValue(QUALITY_SNAPSHOT_REGISTRY_KEY, next);
+        await saveSnapshotRegistry(QUALITY_SNAPSHOT_REGISTRY_KEY, next);
       }
       next = compactQualityHistory(next);
-      await saveStateValue(QUALITY_SNAPSHOT_REGISTRY_KEY, next);
+      await saveSnapshotRegistry(QUALITY_SNAPSHOT_REGISTRY_KEY, next);
       const finishedAt = new Date().toISOString();
       const outcome = snapshotBatchOutcome({ failedItems, skippedItems, kind: "模块快照" });
       const task = { id: jobId, batchId: job.batchId || `module-batch-${jobId}`, kind: "模块", startedAt: job.startedAt || finishedAt, finishedAt, status: outcome.status, total, done, failed: failedItems.length, failedItems, rules: rules.map((rule) => rule.module), period: job.payload?.dateRange || {} };
       await appendTaskHistory(QUALITY_SNAPSHOT_REGISTRY_KEY, task, next);
-      await updateSnapshotJob(jobId, { status: outcome.status, progress: 100, failed: failedItems.length, failedItems, message: outcome.message, finishedAt });
+      await noteSnapshot( { status: outcome.status, progress: 100, failed: failedItems.length, failedItems, message: outcome.message, finishedAt });
       return;
     }
     if (job.kind === "role") {
@@ -1636,16 +1654,16 @@ const processSnapshotJob = async (jobId) => {
       const rolePeriod = { start: job.payload?.dateRange?.start || job.payload?.dateRange?.start2026 || job.payload?.dateRange?.start2025 || "", end: job.payload?.dateRange?.end || job.payload?.dateRange?.end2026 || job.payload?.dateRange?.end2025 || "" };
       const periods = [{ ...rolePeriod, granularity: "range", periodKey: "range" }, ...buildSnapshotPeriods({ start2026: rolePeriod.start, end2026: rolePeriod.end }).filter((item) => item.granularity !== "range").map((item) => ({ start: item.start2026 || item.start2025, end: item.end2026 || item.end2025, granularity: item.granularity, periodKey: item.periodKey }))];
       const total = rules.length * periods.length;
-      await updateSnapshotJob(jobId, { progress: 2, done: 0, total, message: "正在筛选角色原始数据" });
+      await noteSnapshot( { progress: 2, done: 0, total, message: "正在筛选角色原始数据" });
       // Role metrics use the dedicated dqa-agent-raw store for ECN/non-BOM.
       // Parsing the legacy 200k-row DQA_ECN workbooks again blocks Node's event
       // loop for minutes and does not add any personal evidence.
       const snapshotSourceIndex = sourceIndex.filter((source) => !(source.module === "DQA" && ["DQA_ECN", "DQA_MACHINED_PARTS"].includes(source.subKind || source.kind)));
       const files = await rehydrateSnapshotSources(snapshotSourceIndex, neededModules, async ({ index, total: fileTotal, source }) => {
-        await updateSnapshotJob(jobId, { progress: 3, done: 0, total, message: `正在解析原始数据 ${index + 1}/${fileTotal} · ${source.name || source.module}` });
+        await noteSnapshot( { progress: 3, done: 0, total, message: `正在解析原始数据 ${index + 1}/${fileTotal} · ${source.name || source.module}` });
       const needsReportEvidence = rules.some((rule) => ["PM", "TPM", "产总"].includes(rule.role));
       const summaryFiles = needsReportEvidence ? await rehydrateSnapshotSources(sourceIndex.filter((source) => source.module === "DQA" && ["DQA_ECN", "DQA_MACHINED_PARTS"].includes(source.subKind || source.kind)), ["DQA"], async ({ index, total: fileTotal, source }) => {
-        await updateSnapshotJob(jobId, { progress: 4, done: 0, total, message: "正在解析报告汇总表 " + (index + 1) + "/" + fileTotal + " · " + (source.name || source.module) });
+        await noteSnapshot( { progress: 4, done: 0, total, message: "正在解析报告汇总表 " + (index + 1) + "/" + fileTotal + " · " + (source.name || source.module) });
       }) : [];
       });
       const supplementSource = buildDqaEngineerSupplementSource(engineerSupplement, { start2026: rolePeriod.start, end2026: rolePeriod.end });
@@ -1661,7 +1679,7 @@ const processSnapshotJob = async (jobId) => {
         const latestRuleJob = (await loadSnapshotJobs()).find((item) => item.id === jobId);
         if (latestRuleJob?.status === "cancelled") {
           await appendTaskHistory(QUALITY_ROLE_SNAPSHOT_REGISTRY_KEY, { id: jobId, batchId: latestRuleJob.batchId || `role-batch-${jobId}`, kind: "角色", startedAt: latestRuleJob.startedAt || new Date().toISOString(), finishedAt: new Date().toISOString(), status: "cancelled", total: latestRuleJob.total || 0, done: latestRuleJob.done || 0, failed: latestRuleJob.failed || 0, failedItems: [], rules: Array.isArray(latestRuleJob.payload?.ruleIds) ? latestRuleJob.payload.ruleIds : [], period: latestRuleJob.payload?.dateRange || {} });
-          await updateSnapshotJob(jobId, { status: "cancelled", message: "任务已取消", finishedAt: new Date().toISOString() });
+          await noteSnapshot( { status: "cancelled", message: "任务已取消", finishedAt: new Date().toISOString() });
           return;
         }
         const ruleModules = roleRuleModules(rule);
@@ -1676,7 +1694,7 @@ const processSnapshotJob = async (jobId) => {
           const latestPeriodJob = (await loadSnapshotJobs()).find((item) => item.id === jobId);
           if (latestPeriodJob?.status === "cancelled") {
             await appendTaskHistory(QUALITY_ROLE_SNAPSHOT_REGISTRY_KEY, { id: jobId, batchId: latestPeriodJob.batchId || `role-batch-${jobId}`, kind: "角色", startedAt: latestPeriodJob.startedAt || new Date().toISOString(), finishedAt: new Date().toISOString(), status: "cancelled", total: latestPeriodJob.total || 0, done: latestPeriodJob.done || 0, failed: latestPeriodJob.failed || 0, failedItems: [], rules: Array.isArray(latestPeriodJob.payload?.ruleIds) ? latestPeriodJob.payload.ruleIds : [], period: latestPeriodJob.payload?.dateRange || {} });
-            await updateSnapshotJob(jobId, { status: "cancelled", message: "任务已取消", finishedAt: new Date().toISOString() });
+            await noteSnapshot( { status: "cancelled", message: "任务已取消", finishedAt: new Date().toISOString() });
             return;
           }
           if (retryItems && !retryItems.some((item) => item.ruleId === rule.id && item.periodKey === period.periodKey)) {
@@ -1695,7 +1713,7 @@ const processSnapshotJob = async (jobId) => {
             if (!payload.people.length) {
               skippedItems.push({ ruleId: rule.id, role: rule.role, periodKey: period.periodKey, message: "当前周期无角色活动，已跳过空快照" });
               done += 1;
-              await updateSnapshotJob(jobId, { progress: Math.round(done / Math.max(total, 1) * 100), done, total, failed: failedItems.length, failedItems, skipped: skippedItems.length, skippedItems, message: `${rule.role} · ${period.periodKey} 无活动，已跳过` });
+              await noteSnapshot( { progress: Math.round(done / Math.max(total, 1) * 100), done, total, failed: failedItems.length, failedItems, skipped: skippedItems.length, skippedItems, message: `${rule.role} · ${period.periodKey} 无活动，已跳过` });
               continue;
             }
             next = mergeRoleSnapshotRegistry(next, { role: rule.role, ruleId: rule.id, period, granularity: period.granularity, sourceSignature: payload.sourceSignature || sourceSignature, mappingSignature, snapshot: payload, batchId: job.batchId || `role-batch-${job.id}`, skillName: rule.selectedSkill || rule.defaultSkill, layoutProfileId: rule.layoutProfileId });
@@ -1703,47 +1721,86 @@ const processSnapshotJob = async (jobId) => {
             failedItems.push({ ruleId: rule.id, role: rule.role, periodKey: period.periodKey, error: String(error?.message || error || "快照失败").slice(0, 800) });
           }
           done += 1;
-          await updateSnapshotJob(jobId, { progress: Math.round(done / Math.max(total, 1) * 100), done, total, failed: failedItems.length, failedItems, message: `${rule.role} · ${period.granularity === "range" ? "总周期" : period.periodKey}` });
+          await noteSnapshot( { progress: Math.round(done / Math.max(total, 1) * 100), done, total, failed: failedItems.length, failedItems, message: `${rule.role} · ${period.granularity === "range" ? "总周期" : period.periodKey}` });
           await new Promise((resolve) => setTimeout(resolve, 0));
         }
         next = compactRoleHistory(next);
-        await saveStateValue(QUALITY_ROLE_SNAPSHOT_REGISTRY_KEY, next);
+        await saveSnapshotRegistry(QUALITY_ROLE_SNAPSHOT_REGISTRY_KEY, next);
       }
       next = compactRoleHistory(next);
-      await saveStateValue(QUALITY_ROLE_SNAPSHOT_REGISTRY_KEY, next);
+      await saveSnapshotRegistry(QUALITY_ROLE_SNAPSHOT_REGISTRY_KEY, next);
       const finishedAt = new Date().toISOString();
       const outcome = snapshotBatchOutcome({ failedItems, skippedItems, kind: "角色快照" });
       const task = { id: jobId, batchId: job.batchId || `role-batch-${jobId}`, kind: "角色", startedAt: job.startedAt || finishedAt, finishedAt, status: outcome.status, total, done, failed: failedItems.length, failedItems, skipped: skippedItems.length, skippedItems, rules: rules.map((rule) => rule.role), period: { start: rolePeriod.start, end: rolePeriod.end } };
       await appendTaskHistory(QUALITY_ROLE_SNAPSHOT_REGISTRY_KEY, task, next);
-      await updateSnapshotJob(jobId, { status: outcome.status, progress: 100, failed: failedItems.length, failedItems, skipped: skippedItems.length, skippedItems, message: outcome.message, finishedAt });
+      await noteSnapshot( { status: outcome.status, progress: 100, failed: failedItems.length, failedItems, skipped: skippedItems.length, skippedItems, message: outcome.message, finishedAt });
       return;
     }
     throw new Error("未知快照任务类型");
   } catch (error) {
+    if (epoch !== snapshotEpoch || error instanceof SnapshotSuperseded) return;
     const finishedAt = new Date().toISOString();
     const current = (await loadSnapshotJobs()).find((item) => item.id === jobId);
     const task = current ? { id: jobId, batchId: current.batchId || `${current.kind}-batch-${jobId}`, kind: current.kind === "role" ? "角色" : "模块", startedAt: current.startedAt || finishedAt, finishedAt, status: "failed", total: current.total || 0, done: current.done || 0, failed: 1, failedItems: [{ error: String(error?.message || error || "快照任务失败").slice(0, 800) }], rules: Array.isArray(current.payload?.ruleIds) ? current.payload.ruleIds : [], period: current.payload?.dateRange || {} } : null;
     if (task) {
       await appendTaskHistory(current.kind === "role" ? QUALITY_ROLE_SNAPSHOT_REGISTRY_KEY : QUALITY_SNAPSHOT_REGISTRY_KEY, task);
     }
-    await updateSnapshotJob(jobId, { status: "failed", progress: 0, message: String(error?.message || error || "快照任务失败").slice(0, 800), errorMessage: String(error?.message || error || "快照任务失败").slice(0, 1200), finishedAt });
+    await noteSnapshot( { status: "failed", progress: 0, message: String(error?.message || error || "快照任务失败").slice(0, 800), errorMessage: String(error?.message || error || "快照任务失败").slice(0, 1200), finishedAt });
   }
 };
 
 const runSnapshotWorker = async () => {
   if (snapshotWorkerRunning) return;
   snapshotWorkerRunning = true;
+  const epoch = snapshotEpoch;
   try {
-    while (true) {
+    while (epoch === snapshotEpoch) {
       const jobs = await loadSnapshotJobs();
       const next = jobs.find((item) => ["queued", "running"].includes(item.status));
       if (!next) break;
+      snapshotActive = { id: next.id, epoch, beat: Date.now() };
+      console.log("[snapshot-jobs] start", next.id, next.kind, next.message || "");
       await processSnapshotJob(next.id);
+      if (epoch !== snapshotEpoch) break;
     }
+  } catch (error) {
+    if (!(error instanceof SnapshotSuperseded)) console.error("[snapshot-jobs] worker failed", error);
   } finally {
-    snapshotWorkerRunning = false;
+    if (epoch === snapshotEpoch) {
+      snapshotWorkerRunning = false;
+      snapshotActive = null;
+    }
   }
 };
+
+const abandonStuckSnapshot = async (jobId, reason) => {
+  snapshotEpoch += 1;
+  snapshotWorkerRunning = false;
+  snapshotActive = null;
+  const current = (await loadSnapshotJobs().catch(() => [])).find((item) => item.id === jobId);
+  if (current && ["queued", "running"].includes(current.status)) {
+    await updateSnapshotJob(jobId, { status: "failed", progress: current.progress || 0, message: reason, errorMessage: reason, finishedAt: new Date().toISOString() });
+  }
+  console.error("[snapshot-jobs] aborted", jobId, reason);
+  runSnapshotWorker().catch((error) => console.error("[snapshot-jobs] resume failed", error));
+};
+
+const watchSnapshotQueue = async () => {
+  const staleMs = 8 * 60 * 1000;
+  if (snapshotWorkerRunning && snapshotActive && Date.now() - snapshotActive.beat > staleMs) {
+    await abandonStuckSnapshot(snapshotActive.id, "快照超过 8 分钟没有推进，已中断。可以重新生成。");
+    return;
+  }
+  if (snapshotWorkerRunning) return;
+  const jobs = await loadSnapshotJobs();
+  if (jobs.some((item) => ["queued", "running"].includes(item.status))) {
+    console.log("[snapshot-jobs] resume queued snapshot");
+    runSnapshotWorker().catch((error) => console.error("[snapshot-jobs] resume failed", error));
+  }
+};
+setInterval(() => {
+  watchSnapshotQueue().catch((error) => console.error("[snapshot-jobs] watch failed", error));
+}, 20000).unref();
 
 const enqueueSnapshotJob = async (payload = {}, creator = "") => {
   if (["module", "role"].includes(String(payload.kind || "module")) && (!Array.isArray(payload.ruleIds) || !payload.ruleIds.length)) {
@@ -2670,6 +2727,7 @@ const startServer = async () => {
     console.log(`[storage] Agent reports ready in PostgreSQL (${migration.migrated} migrated / ${migration.total} files)`);
   }
   await knowledgeService.resume();
+  runSnapshotWorker().catch((error) => console.error("[snapshot-jobs] startup resume failed", error));
   queueOqcEquipmentRuleCacheRebuild();
   server.listen(port, host, () => {
     console.log(`QMS server listening on http://${host}:${port}`);
