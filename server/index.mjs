@@ -229,6 +229,32 @@ const mimeTypes = {
   ".ico": "image/x-icon",
 };
 
+const stateBodyCache = new Map();
+const staticGzipCache = new Map();
+const sendBuffered = (res, status, body, gzipped) => {
+  const acceptsGzip = /\bgzip\b/i.test(String(res.req?.headers?.["accept-encoding"] || ""));
+  if (acceptsGzip && gzipped) {
+    res.writeHead(status, {
+      "Content-Type": "application/json; charset=utf-8",
+      "Content-Encoding": "gzip",
+      "Vary": "Accept-Encoding",
+      "Content-Length": gzipped.length,
+    });
+    res.end(gzipped);
+    return;
+  }
+  res.writeHead(status, { "Content-Type": "application/json; charset=utf-8", "Content-Length": body.length });
+  res.end(body);
+};
+const cachedStateBody = async (key, value) => {
+  const hit = stateBodyCache.get(key);
+  if (hit && hit.source === value) return hit;
+  const json = Buffer.from(JSON.stringify({ key, value: value ?? defaultValueFor(key) }));
+  const gzipped = json.length >= 1024 ? await gzipAsync(json, { level: 1 }) : null;
+  const body = { source: value, json, gzipped };
+  stateBodyCache.set(key, body);
+  return body;
+};
 const sendJson = async (res, status, body) => {
   const payload = Buffer.from(JSON.stringify(body));
   const acceptsGzip = /\bgzip\b/i.test(String(res.req?.headers?.["accept-encoding"] || ""));
@@ -1306,29 +1332,30 @@ const loadStateValue = async (key) => {
   const database = await readPostgresState(key);
   let fileValue = null;
   let fileTime = 0;
+  let fileError = null;
   try {
     const stat = await fs.stat(filePath);
     fileTime = Number(stat.mtimeMs || 0);
     fileValue = await readJsonFile(filePath);
-  } catch {}
+  } catch (error) {
+    fileError = error;
+  }
+  let value;
   if (database.available && database.found) {
     const pgTime = database.updatedAt ? new Date(database.updatedAt).getTime() : 0;
-    if (fileValue && fileTime && fileTime > pgTime + 500) return fileValue;
-    return database.value;
+    value = fileValue != null && fileTime > pgTime + 500 ? fileValue : database.value;
+  } else if (fileValue != null) {
+    value = fileValue;
+    if (database.available && !database.found) writePostgresState(key, value).catch((error) => console.error("[storage] migrate failed", key, error));
+  } else if (fileError && fileError.code !== "ENOENT") {
+    await backupCorruptFile(filePath, fileError);
+    value = defaultValueFor(key);
+  } else {
+    value = await loadLegacyStateValue(key);
   }
-  try {
-    const value = await readJsonFile(filePath);
-    if (value !== null) {
-      // First read after enabling PostgreSQL migrates the existing JSON cache
-      // without requiring a separate deployment script.
-      if (database.available && !database.found) await writePostgresState(key, value);
-      return value;
-    }
-  } catch (error) {
-    await backupCorruptFile(filePath, error);
-    return defaultValueFor(key);
-  }
-  return await loadLegacyStateValue(key);
+  stateMemory.set(key, value);
+  stateBodyCache.delete(key);
+  return value;
 };
 
 const writeQueues = new Map();
@@ -1400,6 +1427,7 @@ const saveStateValue = async (key, value) => {
   const previous = writeQueues.get(key) || Promise.resolve();
   const next = previous.catch(() => {}).then(async () => {
     stateMemory.set(key, value);
+    stateBodyCache.delete(key);
     const database = await writePostgresState(key, value);
     await fs.mkdir(stateDir, { recursive: true });
     const tempFile = `${filePath}.${process.pid}.${Date.now()}.tmp`;
@@ -2045,7 +2073,8 @@ const handleApi = async (req, res) => {
       }) : [] };
       return sendJson(res, 200, { key, value: index });
     }
-    return sendJson(res, 200, { key, value: value ?? defaultValueFor(key) });
+    const body = await cachedStateBody(key, value ?? defaultValueFor(key));
+    return sendBuffered(res, 200, body.json, body.gzipped);
   }
 
   if (req.method === "PATCH" && key === "analysis-cache") {
@@ -2677,10 +2706,27 @@ const serveStatic = async (req, res) => {
   }
 
   const ext = path.extname(filePath).toLowerCase();
-  res.writeHead(200, {
+  const stat = await fs.stat(filePath);
+  const compressible = new Set([".html", ".js", ".css", ".json", ".svg"]);
+  const acceptsGzip = /\bgzip\b/i.test(String(req.headers["accept-encoding"] || ""));
+  const headers = {
     "Content-Type": mimeTypes[ext] || "application/octet-stream",
     "Cache-Control": ext === ".html" ? "no-store" : "public, max-age=31536000, immutable",
-  });
+    "Vary": "Accept-Encoding",
+  };
+  if (acceptsGzip && compressible.has(ext) && stat.size > 1024 && stat.size < 8 * 1024 * 1024) {
+    let hit = staticGzipCache.get(filePath);
+    if (!hit || hit.mtimeMs !== stat.mtimeMs) {
+      const gzipped = await gzipAsync(await fs.readFile(filePath), { level: 1 });
+      hit = { mtimeMs: stat.mtimeMs, gzipped };
+      if (staticGzipCache.size > 40) staticGzipCache.clear();
+      staticGzipCache.set(filePath, hit);
+    }
+    res.writeHead(200, { ...headers, "Content-Encoding": "gzip", "Content-Length": hit.gzipped.length });
+    res.end(hit.gzipped);
+    return;
+  }
+  res.writeHead(200, { ...headers, "Content-Length": stat.size });
   createReadStream(filePath).pipe(res);
 };
 
@@ -2728,6 +2774,7 @@ const startServer = async () => {
   }
   await knowledgeService.resume();
   runSnapshotWorker().catch((error) => console.error("[snapshot-jobs] startup resume failed", error));
+  loadStateValue("analysis-cache").then((value) => cachedStateBody("analysis-cache", value)).catch((error) => console.error("[startup] warm analysis-cache failed", error));
   queueOqcEquipmentRuleCacheRebuild();
   server.listen(port, host, () => {
     console.log(`QMS server listening on http://${host}:${port}`);
