@@ -1,4 +1,5 @@
 import { chartFamily, closingTitle } from "./reportSheetLayout.js";
+import { parseConfirmedKnowledgeSection } from "./roleKnowledgeEvidence.js";
 const escapeHtml = (value) => String(value ?? "").replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#39;" }[char]));
 const BG = "rgb(247,242,235)";
 const TXT = "rgb(8,31,92)";
@@ -597,6 +598,14 @@ const actionHtml = (source) => {
   if (!grid && !noteHtml) return "";
   return '<div class="secthead"><span class="line"></span><span class="t">' + escapeHtml(title) + "</span></div>" + noteHtml + grid;
 };
+
+const knowledgeHtml = (source) => {
+  const section = parseConfirmedKnowledgeSection(source);
+  if (!section) return "";
+  const items = section.items.map((item) => "<li>" + escapeHtml(item) + "</li>").join("");
+  const notes = section.notes.map((line) => "<p>" + escapeHtml(line) + "</p>").join("");
+  return '<div class="secthead"><span class="line"></span><span class="t">' + escapeHtml(section.title) + '</span></div><div class="prose"><ul>' + items + "</ul>" + notes + "</div>";
+};
 const spineTitle = (title, module) => {
   if (String(module || "").startsWith("角色报告")) return String(title || "").trim() || "质量报告";
   const source = title + module;
@@ -695,6 +704,8 @@ const slotsFromFigures = (source, visualSpec) => {
     const rows = headSlices(items);
     return rows.length >= 2 ? { title: chart.title, claim: "同一类构成排在一起，只留最大的几块。", rows } : null;
   }).filter(Boolean);
+  const combos = figures.filter((chart) => !used.has(chart.title) && chart.kind === "combo");
+  combos.forEach((chart) => used.add(chart.title));
   const rowSets = ranks.map((chart) => ({ title: chart.title, unit: chart.unit || "", items: pinSubjectRows(chart.rows || [], 8) })).filter((chart) => chart.items.length >= 2);
   const rate = grabNumber(source, /([\d.]+)%/);
   const rankItems = rowSets[0]?.items || [];
@@ -710,6 +721,7 @@ const slotsFromFigures = (source, visualSpec) => {
     rows: rowSets[0] || null,
     rowSets,
     ranked: rankedOf(rankItems, rowSets[0]?.unit || "", true),
+    combos,
     rankedTitle: "最靠前的三项",
   };
 };
@@ -956,6 +968,18 @@ const collectPorcelainItems = (slots) => {
       nameLen: maxName(chart.points),
     });
   });
+  (slots.combos || []).forEach((chart) => {
+    const svg = comboChart(chart);
+    if (!svg) return;
+    const count = (chart.categories || []).length;
+    addPorcelainItem(items, chart.title, svg, {
+      family: "trend",
+      count,
+      nameLen: Math.max(0, ...(chart.categories || []).map((name) => String(name).length)),
+      rowSize: 1,
+    });
+  });
+
   if (slots.heat?.items?.length) {
     const svg = heatChart(slots.heat.items, { worst: slots.heat.worst || "low" });
     addPorcelainItem(items, slots.heat.title || "比率对照", svg, {
@@ -996,9 +1020,10 @@ const composePorcelain = (items) => {
   const rows = [{ size: 1, items: [ready[0]], hero: true }];
   const rest = ready.slice(1);
   let folded = null;
-  if (rest.length && !wideTrend(rest[rest.length - 1]) && rest[rest.length - 1].title !== "点名缺陷") folded = rest.pop();
+  const keepFull = (item) => /下属|个人风险|排名/.test(item?.title || "");
+  if (rest.length && !wideTrend(rest[rest.length - 1]) && rest[rest.length - 1].title !== "点名缺陷" && !keepFull(rest[rest.length - 1])) folded = rest.pop();
   const groups = [];
-  const fullRow = (item) => item?.title === "点名缺陷" || (item?.nameLen || 0) > 10;
+  const fullRow = (item) => item?.title === "点名缺陷" || (item?.nameLen || 0) > 10 || /下属|个人风险|排名/.test(item?.title || "");
 for (let index = 0; index < rest.length; index += 1) {
   if (fullRow(rest[index]) || !rest[index + 1] || fullRow(rest[index + 1])) { groups.push([rest[index]]); continue; }
   groups.push([rest[index], rest[index + 1]]);
@@ -1026,12 +1051,13 @@ const renderPoster = (source, options) => {
   const charts = composed.rows.map(porcelainRow).join("");
   const stats = statsBand(slots, composed.folded);
   const actions = actionHtml(source);
+  const knowledge = knowledgeHtml(source);
   const personal = String(options.module || "").startsWith("角色报告");
   const spine = personal ? title : spineTitle(title, options.module);
   const spineSize = personal ? 18 : 28;
   const head = personal
     ? '<div class="tophead personal-title"><span class="site">' + escapeHtml(title) + "</span></div>"
     : '<div class="tophead"><span class="site">QMS</span><span class="sep">|</span><span class="tag">' + escapeHtml(period || options.module || "") + "</span></div>";
-  return '<div class="porcelain-wrap report-publisher"><div class="sheet"><div class="spine"><div class="t' + (personal ? " is-personal" : "") + '" style="font-size:' + spineSize + 'px">' + escapeHtml(spine) + '</div><div class="b">QMS</div></div><div class="content">' + head + charts + stats + (actions ? '<div class="sheet-action">' + actions + "</div>" : "") + '<div class="foot"><span>' + escapeHtml(title) + "</span></div></div></div></div>";
+  return '<div class="porcelain-wrap report-publisher"><div class="sheet"><div class="spine"><div class="t' + (personal ? " is-personal" : "") + '" style="font-size:' + spineSize + 'px">' + escapeHtml(spine) + '</div><div class="b">QMS</div></div><div class="content">' + head + charts + stats + (actions ? '<div class="sheet-action">' + actions + "</div>" : "") + (knowledge ? '<div class="sheet-action">' + knowledge + "</div>" : "") + '<div class="foot"><span>' + escapeHtml(title) + "</span></div></div></div></div>";
 };
 export const renderDataSheet = (content, options = {}) => renderPoster(String(content || ""), options);

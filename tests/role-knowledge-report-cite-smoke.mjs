@@ -3,7 +3,10 @@ import {
   appendConfirmedKnowledgeToReport,
   confirmedKnowledgePromptInstruction,
   confirmedKnowledgeReportMarkdown,
+  parseConfirmedKnowledgeSection,
 } from "../src/agent/roleKnowledgeEvidence.js";
+import { renderDataSheet } from "../src/agent/porcelainCharts.js";
+import { renderBasicsSheet } from "../src/agent/basicsSheet.js";
 
 const cards = [
   {
@@ -47,5 +50,16 @@ assert.equal(llmInvented.includes("已确认规范依据"), false);
 
 const skipped = appendConfirmedKnowledgeToReport("原始正文", undefined);
 assert.equal(skipped, "原始正文");
+
+const knowledgeMarkdown = "# 成强报告\n\n## 本月措施\n\n| 措施 | Owner |\n| --- | --- |\n| 核对端子 | 成强 |\n\n## 已确认规范依据\n- **QS-QP07-EN06 气路走线通用规范--V3.0.docx**：气管两端要有标签；对应问题：气管缺少标签\n\n以上条款已对应您本期问题。下一批同类作业前，请按规范当场核对后再送检。\n";
+const parsedKnowledge = parseConfirmedKnowledgeSection(knowledgeMarkdown);
+assert.equal(parsedKnowledge.items.length, 1);
+assert.match(parsedKnowledge.items[0], /气路走线通用规范/);
+assert.equal(parseConfirmedKnowledgeSection("## 已确认规范依据\n\n待核实：不得编造条款。\n"), null);
+for (const html of [renderDataSheet(knowledgeMarkdown, { module: "角色报告-组装人员" }), renderBasicsSheet(knowledgeMarkdown, { module: "角色报告-组装人员" })]) {
+  assert.match(html, /已确认规范依据/);
+  assert.match(html, /气路走线通用规范/);
+  assert.ok(html.indexOf("本月措施") < html.indexOf("已确认规范依据"));
+}
 
 console.log("role knowledge report cite smoke test passed");

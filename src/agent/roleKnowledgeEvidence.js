@@ -81,3 +81,24 @@ export const confirmedKnowledgePromptInstruction = (confirmedKnowledge) => {
   if (!confirmedKnowledge.length) return "没有已确认规范依据。不要输出该章节，不得编造条款。";
   return `已确认规范依据（必须在正文引用，不得改写条款号和正确做法）：${JSON.stringify(confirmedKnowledge)}`;
 };
+
+
+export const parseConfirmedKnowledgeSection = (content = "") => {
+  const text = String(content || "");
+  const match = text.match(/^##\s*已确认规范依据\s*$/m);
+  if (!match) return null;
+  const rest = text.slice(match.index + match[0].length).replace(/^\r?\n/, "");
+  const next = rest.search(/\n##\s+/);
+  const body = (next >= 0 ? rest.slice(0, next) : rest).trim();
+  const items = [];
+  const notes = [];
+  body.split(/\r?\n/).forEach((line) => {
+    const trimmed = line.trim();
+    if (!trimmed || /^\|/.test(trimmed)) return;
+    const plain = trimmed.replace(/\*\*/g, "");
+    if (/^[-*]\s+/.test(plain)) items.push(plain.replace(/^[-*]\s+/, ""));
+    else notes.push(plain);
+  });
+  if (!items.length) return null;
+  return { title: "已确认规范依据", items, notes };
+};

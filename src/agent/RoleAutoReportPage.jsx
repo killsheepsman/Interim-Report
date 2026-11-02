@@ -157,7 +157,7 @@ export function RoleAutoReportPage({ employees = [] }) {
     catch (error) { setFolderNote(error?.message || "没有打开文件夹"); }
   };
   return <div className="qmdp-page quality-agent-page">
-    <div className="quality-agent-hero"><div><span className="qmdp-eyebrow">岗位角色报告</span><h2>AI员工</h2><p>到了设定日期，按所选简报技能写一份公司简报。每个月只判断该盯谁。</p></div></div>
+    <div className="quality-agent-hero"><div><span className="qmdp-eyebrow">知识管理</span><h2>AI员工</h2><p>到了设定日期，按所选简报技能写一份公司简报。每个月只判断该盯谁。</p></div></div>
     <section className="qmdp-card quality-agent-controls quality-agent-role-controls ai-employee-controls">
       <label className="role-field ai-top">每月第几日<input type="number" min="1" max="28" value={draft.period.day} onChange={(event) => change({ ...draft, period: { ...draft.period, day: event.target.value === "" ? "" : Number(event.target.value) } })} /></label>
       <label className="role-field ai-top">往前几个月<input type="number" min="0" max="12" value={draft.period.monthsBack} onChange={(event) => change({ ...draft, period: { ...draft.period, monthsBack: event.target.value === "" ? "" : Number(event.target.value) } })} /></label>

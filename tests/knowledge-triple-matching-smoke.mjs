@@ -10,6 +10,15 @@ assert.equal(pin.display.defect, "过打/过定位");
 assert.equal(pin.display.process, "装配");
 assert.match(formatIssueTriple(pin), /对象：销钉/);
 
+const estop = extractIssueTriple({ module: "DQA", issueType: "安规问题", issueText: "急停信号改为常闭，图纸未更新" });
+assert.equal(estop.display.object, "急停信号");
+assert.equal(estop.display.defect, "未更新为常闭");
+assert.equal(estop.objects.some((item) => item.canonical === "图纸"), false);
+const estopCard = extractCardTriple({ title: "急停信号要常闭", issueTags: [], synonyms: [] });
+const drawingCard = extractCardTriple({ title: "精密加工科技图加工", atomicRule: { object: "图纸" }, issueTags: ["图纸"], synonyms: [] });
+assert.equal(isObjectMismatch(estop, estopCard), false);
+assert.equal(isObjectMismatch(estop, drawingCard), true);
+
 const needle = extractIssueTriple({ module: "IPQC", issueText: "针模一片针穿错针" });
 assert.equal(needle.display.object, "片针、针模");
 assert.equal(needle.display.defect, "错装");
@@ -59,6 +68,20 @@ try {
     { id: "issue-wire", module: "IPQC", issueKind: "组装过程问题", personName: "杨孟岩", issueDate: "2026-09-12", issueType: "接线问题", issueText: "PE地线型号规格不一致", normalizedText: "pe地线型号规格不一致", tags: ["不一致"], sourceFile: "IPQC匹配验证.xlsx", sourceKey: "wire", metadata: {}, createdAt: now, updatedAt: now },
     { id: "issue-first", module: "IPQC", issueKind: "组装过程问题", personName: "测试人员", issueDate: "2026-08-29", issueType: "首件", issueText: "组装首件未确认", normalizedText: "组装首件未确认", tags: ["首件"], sourceFile: "test.xlsx", sourceKey: "first", metadata: {}, createdAt: now, updatedAt: now },
   ];
+  const estopIssue = { id: "issue-estop", module: "DQA", issueKind: "研发质量问题", personName: "袁世勇", issueDate: "2026-09-01", issueType: "安规问题", issueText: "急停信号改为常闭，图纸未更新", normalizedText: "急停信号改为常闭，图纸未更新", tags: [], sourceFile: "DQA匹配验证.xlsx", sourceKey: "estop", metadata: {}, createdAt: now, updatedAt: now };
+  const estopKnowledge = { id: "knowledge-estop", documentId: "doc-estop", clauseIds: ["doc-estop-clause"], type: "mandatory", title: "急停信号要常闭", content: "急停信号应保持常闭。", applicableRoles: ["研发工程师"], processes: ["设计"], issueTags: ["急停信号", "常闭"], synonyms: [], sourceLevel: "A", version: "5.2", confidence: 0.95, skillId: "quality-knowledge-distillation", sourceCitations: [{ clauseId: "doc-estop-clause", clauseNumber: "4", sectionPath: "条款", quote: "急停信号要常闭。" }], reviewStatus: "approved", publicationStatus: "published", metadata: { atomicRule: { object: "急停信号", action: "常闭", topic: "急停", subject: "研发工程师" } }, createdAt: now, updatedAt: now };
+  const drawingKnowledge = { id: "knowledge-drawing", documentId: "doc-drawing", clauseIds: ["doc-drawing-clause"], type: "mandatory", title: "精密加工科技图加工", content: "计划采购部精密加工科须按照图纸设计要求加工物料。", applicableRoles: ["研发工程师"], processes: ["设计"], issueTags: ["图纸"], synonyms: [], sourceLevel: "C", version: "3.0", confidence: 0.8, skillId: "quality-knowledge-distillation", sourceCitations: [{ clauseId: "doc-drawing-clause", clauseNumber: "3.4", sectionPath: "条款", quote: "按照图纸设计要求加工物料。" }], reviewStatus: "approved", publicationStatus: "published", metadata: { atomicRule: { object: "图纸", action: "加工", topic: "图纸", subject: "研发工程师" } }, createdAt: now, updatedAt: now };
+  knowledge.push(estopKnowledge, drawingKnowledge);
+  documents.push(
+    { id: "doc-estop", name: "设备安全设计规范", category: "安全设计", contentType: "text", sourceLevel: "A", version: "5.2", effectiveStatus: "active", governanceStatus: "已解析", status: "completed", clauseCount: 1, distillationCount: 0, sourceText: "急停信号要常闭。", metadata: {} },
+    { id: "doc-drawing", name: "材料选型规范", category: "材料", contentType: "text", sourceLevel: "C", version: "3.0", effectiveStatus: "active", governanceStatus: "已解析", status: "completed", clauseCount: 1, distillationCount: 0, sourceText: "按照图纸设计要求加工物料。", metadata: {} },
+  );
+  clauses.push(
+    { id: "doc-estop-clause", documentId: "doc-estop", ordinal: 1, sectionPath: "条款", clauseNumber: "4", title: "急停信号要常闭", clauseText: "急停信号要常闭。", searchText: "急停信号要常闭", metadata: {}, createdAt: now },
+    { id: "doc-drawing-clause", documentId: "doc-drawing", ordinal: 1, sectionPath: "条款", clauseNumber: "3.4", title: "精密加工科技图加工", clauseText: "按照图纸设计要求加工物料。", searchText: "按照图纸设计要求加工物料", metadata: {}, createdAt: now },
+  );
+  issues.push(estopIssue);
+  await fs.writeFile(filePath, JSON.stringify({ version: 5, documents, clauses, jobs: [], knowledge, issues, matches: [], recurrenceActions: [] }), "utf8");
   await fs.writeFile(filePath, JSON.stringify({ version: 5, documents, clauses, jobs: [], knowledge, issues, matches: [], recurrenceActions: [] }), "utf8");
   const service = createKnowledgeService({ filePath });
 
@@ -80,6 +103,10 @@ try {
   assert.equal(wireMatches.matches.some((item) => item.knowledgeId === "knowledge-screw"), false, "接线问题不能配到螺钉卡");
   const listed = await service.listMatches("issue-wire");
   assert.equal(listed.matches.some((item) => item.knowledgeId === "knowledge-screw"), false, "已保存的对象不符匹配不能出现在候选列表");
+
+  const estopMatches = await service.generateMatches("issue-estop");
+  assert.ok(estopMatches.matches.some((item) => item.knowledgeId === "knowledge-estop"), "急停信号应配到常闭条款");
+  assert.equal(estopMatches.matches.some((item) => item.knowledgeId === "knowledge-drawing"), false, "图纸未更新不能把对象切成图纸");
 
   console.log("knowledge triple matching smoke passed");
 } finally {

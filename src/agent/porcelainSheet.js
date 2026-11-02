@@ -169,7 +169,7 @@ const sheetCss = `
 .porcelain-wrap .watch{width:100%;border-collapse:collapse;margin-top:8px}
 .porcelain-wrap .watch th,.porcelain-wrap .watch td{text-align:left;vertical-align:top;font-size:18px;font-weight:400;line-height:1.65;padding:10px 12px 10px 0;border-bottom:1px dotted rgba(8,31,92,.32)}.porcelain-wrap .watch td.num{font-weight:700;text-align:right}
 .porcelain-wrap .watch th{font-size:18px;letter-spacing:.14em;color:rgba(8,31,92,.45);border-bottom:1px solid rgb(8,31,92)}
-.porcelain-wrap .prose p,.porcelain-wrap .prose li{font-size:18px;line-height:1.75;margin:6px 0}
+.porcelain-wrap .prose p,.porcelain-wrap .prose li{font-size:18px;line-height:1.75;margin:6px 0}.porcelain-wrap .prose ul{margin:8px 0 4px;padding-left:1.4em}
 .porcelain-wrap .foot{margin-top:48px;border-top:1px solid rgb(8,31,92);padding-top:12px;display:flex;justify-content:space-between;gap:16px;color:rgba(8,31,92,.6)}
 @media(max-width:900px){.porcelain-wrap .sheet{grid-template-columns:1fr}.porcelain-wrap .spine{display:none}.porcelain-wrap .content{padding-left:0}.porcelain-wrap .duo,.porcelain-wrap .stats,.porcelain-wrap .chart-row.c2,.porcelain-wrap .chart-row.c3{grid-template-columns:1fr}}
 `;

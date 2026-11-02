@@ -403,15 +403,23 @@ export const patchCachedAnalysis = async (patch = {}) => {
   return payload?.value || null;
 };
 
-export const downloadSourceFiles = async (sources = []) => {
+export const downloadSourceFiles = async (sources = [], onProgress) => {
+  const list = sources.filter((source) => source.serverFile);
   const files = [];
-  for (const source of sources) {
-    if (!source.serverFile) continue;
+  for (let index = 0; index < list.length; index += 1) {
+    const source = list[index];
+    onProgress?.({ index, total: list.length, name: source.name });
     const path = source.serverFile.startsWith("/api") ? source.serverFile.slice(4) : source.serverFile;
-    const response = await requestSharedApi(path, { method: "GET", cache: "no-store" });
-    if (!response) continue;
-    const blob = await response.blob();
-    files.push(new File([blob], source.name, { type: blob.type || "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }));
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 45000);
+    try {
+      const response = await requestSharedApi(path, { method: "GET", cache: "no-store", signal: controller.signal });
+      if (!response) continue;
+      const blob = await response.blob();
+      files.push(new File([blob], source.name, { type: blob.type || "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }));
+    } finally {
+      clearTimeout(timer);
+    }
   }
   return files;
 };

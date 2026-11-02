@@ -786,7 +786,7 @@ const handleKnowledge = async (req, res) => {
       return sendJson(res, 200, result);
     }
     if (pathname === "/api/knowledge/recurrences" && req.method === "GET") {
-      const result = await knowledgeService.listRecurrences({ module: requestUrl.searchParams.get("module") || "", query: requestUrl.searchParams.get("query") || "", state: requestUrl.searchParams.get("state") || "", limit: requestUrl.searchParams.get("limit"), offset: requestUrl.searchParams.get("offset"), compact: requestUrl.searchParams.get("compact") === "true" }, await loadExamSessions());
+      const result = await knowledgeService.listRecurrences({ module: requestUrl.searchParams.get("module") || "", query: requestUrl.searchParams.get("query") || "", state: requestUrl.searchParams.get("state") || "", limit: requestUrl.searchParams.get("limit"), offset: requestUrl.searchParams.get("offset"), compact: requestUrl.searchParams.get("compact") === "true" }, []);
       return sendJson(res, 200, result);
     }
     if (pathname === "/api/knowledge/review-points" && req.method === "GET") {
@@ -1590,6 +1590,7 @@ const processSnapshotJob = async (jobId) => {
   const jobs = await loadSnapshotJobs();
   const job = jobs.find((item) => item.id === jobId);
   if (!job || !["queued", "running"].includes(job.status)) return;
+  await new Promise((resolve) => setImmediate(resolve));
   await noteSnapshot( { status: "running", progress: 1, message: "正在准备数据", startedAt: job.startedAt || new Date().toISOString() });
   try {
     if (job.kind === "module") {
@@ -2773,7 +2774,7 @@ const startServer = async () => {
     console.log(`[storage] Agent reports ready in PostgreSQL (${migration.migrated} migrated / ${migration.total} files)`);
   }
   await knowledgeService.resume();
-  runSnapshotWorker().catch((error) => console.error("[snapshot-jobs] startup resume failed", error));
+  setTimeout(() => runSnapshotWorker().catch((error) => console.error("[snapshot-jobs] startup resume failed", error)), 8000);
   loadStateValue("analysis-cache").then((value) => cachedStateBody("analysis-cache", value)).catch((error) => console.error("[startup] warm analysis-cache failed", error));
   queueOqcEquipmentRuleCacheRebuild();
   server.listen(port, host, () => {

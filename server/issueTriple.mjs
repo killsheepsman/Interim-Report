@@ -18,6 +18,7 @@ const OBJECT_GROUPS = [
   { canonical: "电控板", aliases: ["电控板", "继电器"] },
   { canonical: "工装", aliases: ["工装", "治具"] },
   { canonical: "BOM", aliases: ["BOM", "物料清单"] },
+  { canonical: "急停信号", aliases: ["急停信号"] },
   { canonical: "图纸", aliases: ["图纸", "图纸标注"] },
   { canonical: "物料", aliases: ["物料"] },
   { canonical: "接口", aliases: ["接口"] },
@@ -45,6 +46,7 @@ const DEFECT_GROUPS = [
   { canonical: "划伤", aliases: ["划伤", "破损", "变形"] },
   { canonical: "缺失", aliases: ["缺失", "未做", "未确认"] },
   { canonical: "不一致", aliases: ["不一致"] },
+  { canonical: "未更新", aliases: ["未更新", "没更新", "没有更新", "未改图", "图纸未更新"] },
 ];
 
 const PROCESS_GROUPS = [
@@ -117,9 +119,45 @@ export const ISSUE_VOCABULARY = unique([
   ...Object.values(FIELD_LANGUAGE).flatMap((item) => [...(item.issueTags || []), ...(item.synonyms || [])]),
 ]);
 
+
+const phraseObjectHits = (text) => {
+  const hits = [];
+  const pattern = /(?:^|[，,。；;\s])([\u4e00-\u9fa5]{2,8})(?:改为|要)/g;
+  let match;
+  while ((match = pattern.exec(String(text || "")))) {
+    const phrase = match[1];
+    if (GENERIC_MATCH_TERMS.has(phrase)) continue;
+    if (PROCESS_GROUPS.some((item) => item.canonical === phrase || item.aliases.includes(phrase))) continue;
+    if (DEFECT_GROUPS.some((item) => item.canonical === phrase || item.aliases.includes(phrase))) continue;
+    hits.push(phrase);
+  }
+  return unique(hits);
+};
+
+const mergePhraseObjects = (objects, phrases) => {
+  const next = objects.map((item) => ({ ...item, matched: [...item.matched] }));
+  phrases.forEach((phrase) => {
+    const known = next.find((item) => item.canonical === phrase || item.aliases.includes(phrase));
+    if (known) {
+      if (!known.matched.includes(phrase)) known.matched.unshift(phrase);
+      return;
+    }
+    next.unshift({ canonical: phrase, aliases: [phrase], matched: [phrase] });
+  });
+  return next;
+};
+
+const dropStaleDrawingObject = (objects, text) => {
+  const compact = normalizeMatchText(text);
+  const stripped = compact.replace(/图纸未更新|图纸没更新|图纸没有更新/g, "");
+  if (!compact.includes("图纸") || stripped.includes("图纸")) return objects;
+  return objects.filter((item) => item.canonical !== "图纸");
+};
+
 export const extractIssueTriple = (issue = {}) => {
   const raw = `${issue.issueType || ""} ${issue.issueText || ""} ${(issue.tags || []).join(" ")}`;
-  const objects = findGroups(raw, OBJECT_GROUPS);
+  const issueBody = `${issue.issueText || ""}`;
+  const objects = dropStaleDrawingObject(mergePhraseObjects(findGroups(raw, OBJECT_GROUPS), phraseObjectHits(issueBody)), issueBody);
   const defects = findGroups(raw, DEFECT_GROUPS);
   const explicitProcesses = findGroups(raw, PROCESS_GROUPS).map((item) => ({ ...item, explicit: true }));
   const processes = explicitProcesses.length ? explicitProcesses : [defaultProcess(issue.module)];
@@ -139,6 +177,8 @@ export const extractIssueTriple = (issue = {}) => {
   if (objects.some((item) => item.canonical === "片针")) {
     display.object = unique(["片针", "针模"].filter((item) => collectText(raw).includes(normalizeMatchText(item)))).join("、") || "片针/针模";
   }
+  if (defects.some((item) => item.canonical === "未更新") && /常闭/.test(raw)) display.defect = display.defect.replace("未更新", "未更新为常闭");
+  if (defects.some((item) => item.canonical === "未更新") && /常开/.test(raw) && !/常闭/.test(raw)) display.defect = display.defect.replace("未更新", "未更新为常开");
   return { objects, defects, processes, tags, display, raw };
 };
 
@@ -153,7 +193,7 @@ const cardAnchorText = (card = {}) => [
 
 export const extractCardTriple = (card = {}) => {
   const anchor = cardAnchorText(card);
-  const objects = findGroups(anchor, OBJECT_GROUPS);
+  const objects = dropStaleDrawingObject(mergePhraseObjects(findGroups(anchor, OBJECT_GROUPS), phraseObjectHits(card.title || anchor)), card.title || anchor);
   const defects = findGroups(`${anchor} ${(card.issueTags || []).join(" ")} ${(card.synonyms || []).join(" ")}`, DEFECT_GROUPS);
   const processes = findGroups(`${anchor} ${(card.processes || []).join(" ")}`, PROCESS_GROUPS).map((item) => ({ ...item, explicit: true }));
   return {

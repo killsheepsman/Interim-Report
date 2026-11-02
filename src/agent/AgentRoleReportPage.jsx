@@ -1874,33 +1874,27 @@ const charts = skills.filter((item) => isRoleChartSkill(item));
       const generationRoleRowIndex = roleRowIndex || (individualRoles.has(role) ? buildRoleRowIndex(generationRoleRows, spec.fields) : null);
       let autoSaved = 0;
       let autoSaveError = "";
-      let previousExamByRecipient = new Map();
       let confirmedKnowledgeByRecipient = null;
       let recurrenceRows = [];
       try {
-        setGenerationProgress((current) => ({ ...current, phase: "读取闭环", detail: "正在读取人工确认后的重复问题、考试和措施有效性" }));
+        setGenerationProgress((current) => ({ ...current, phase: "读取闭环", detail: "正在读取重复问题和措施有效性" }));
         const recurrenceModule = ["组装人员", "机长", "交付经理", "供应链经理"].includes(role) ? "IPQC" : "DQA";
-        const response = await loadKnowledgeRecurrences({ module: recurrenceModule, limit: 10000, compact: true });
+        const response = await Promise.race([
+          loadKnowledgeRecurrences({ module: recurrenceModule, limit: 10000, compact: true }),
+          new Promise((_, reject) => setTimeout(() => reject(new Error("timeout")), 12000)),
+        ]);
         recurrenceRows = response.recurrences || [];
       } catch {
         recurrenceRows = [];
       }
       if (individualRoles.has(role)) {
-        const roleName = examRoleForAgent(role);
-        const localResults = readLocalExamResults(roleName);
         try {
-          const response = await loadExamResults({ roleName, includePending: false, limit: 1000 });
-          previousExamByRecipient = latestCompletedExamResults([...(response.records || []), ...localResults]);
-        } catch {
-          previousExamByRecipient = latestCompletedExamResults(localResults);
-        }
-        try {
-          const response = await loadConfirmedKnowledgeMatches({ module: role === "组装人员" ? "IPQC" : "DQA", limit: 10000 });
-          // IPQC personName comes from 送检人; DQA personName comes from 工程师/责任人.
+          const response = await Promise.race([
+            loadConfirmedKnowledgeMatches({ module: role === "组装人员" ? "IPQC" : "DQA", limit: 10000 }),
+            new Promise((_, reject) => setTimeout(() => reject(new Error("timeout")), 12000)),
+          ]);
           confirmedKnowledgeByRecipient = groupConfirmedKnowledgeByRecipient(response.matches || [], { start: period.start, end: period.end });
-          
         } catch {
-          // Older/offline servers keep the previous deterministic text matching as a compatibility fallback.
           confirmedKnowledgeByRecipient = null;
         }
       }
@@ -2061,7 +2055,6 @@ setGenerationProgress((current) => ({ ...current, phase: "准备生成", detail:
           : (slicedRanking.some((row) => Number(row.value) > 0) ? slicedRanking : liveRanking);
         const deterministicVisualSpec = buildRoleVisualSpec(role, name, evidence, personRankingRows, roleDateRange);
         assertRoleVisualConsistency(role, evidence, deterministicVisualSpec);
-        const previousExamResult = previousExamByRecipient.get(name) || null;
         const reportDate = new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Shanghai" });
         const nextReviewDate = addIsoDays(reportDate, 30);
         const analysisBrief = buildRoleAnalysisBrief(role, evidence, personRankingRows, roleDateRange);
@@ -2213,12 +2206,7 @@ setGenerationProgress((current) => ({ ...current, phase: "准备生成", detail:
           timeout: usedTimeoutFallback,
           role,
         });
-        if (individualRoles.has(role)) {
-          const confirmedMatches = confirmedKnowledgeByRecipient == null ? null : (confirmedKnowledgeByRecipient.get(knowledgePersonKey(name)) || []);
-          const exam = await createAgentExamLink(role, name, evidence, confirmedMatches);
-          reportContent += previousExamResultMarkdown(previousExamResult);
-          reportContent += exam.markdown;
-        }
+
         reportContent = `${reportContent.trim()}\n\n<REPORT_VISUAL_SPEC_JSON>${JSON.stringify(deterministicVisualSpec)}</REPORT_VISUAL_SPEC_JSON>\n\n${REPORT_VERSION_MARKER}`;
         reports[name] = reportContent;
         setGenerationProgress((current) => ({ ...current, visible: true, currentName: name, phase: "保存报告", detail: `正在保存 ${name} 的报告（${index + 1}/${targetRecipients.length}${acceptanceNote ? `，${acceptanceNote}` : ""}）` }));

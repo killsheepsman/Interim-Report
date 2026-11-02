@@ -1,5 +1,6 @@
 import { cardMeta, chartFamily, closingTitle, packBasicsRows } from "./reportSheetLayout.js";
 import { renderCompanyPorcelain } from "./porcelainSheet.js";
+import { parseConfirmedKnowledgeSection } from "./roleKnowledgeEvidence.js";
 const escapeHtml = (value) => String(value ?? "").replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#39;" }[char]));
 const finite = (value) => Number.isFinite(Number(value));
 const num = (value) => finite(value) ? Number(value) : null;
@@ -27,6 +28,8 @@ const css = `
 .basics-wrap .kpis b{display:block;font-size:36px;font-weight:700;letter-spacing:0;line-height:1}
 .basics-wrap .kpis span{display:block;margin-top:8px;font-size:18px;color:#8F8E88}
 .basics-wrap .note{margin-top:12px;font-size:18px;line-height:1.7;color:#8F8E88}
+.basics-wrap .knowledge-list{margin:0;padding-left:1.4em}
+.basics-wrap .knowledge-list li{font-size:18px;line-height:1.7;margin:6px 0}
 .basics-wrap table{width:100%;border-collapse:collapse}
 .basics-wrap th,.basics-wrap td{text-align:left;vertical-align:top;font-size:18px;line-height:1.65;padding:10px 14px 10px 0;border-bottom:1px solid #DEDDD6}
 .basics-wrap th{font-size:18px;color:#8F8E88;font-weight:700}
@@ -347,6 +350,14 @@ const actionHtml = (source) => {
   return card(title, note + table, true);
 };
 
+
+const knowledgeHtml = (source) => {
+  const section = parseConfirmedKnowledgeSection(source);
+  if (!section) return "";
+  const items = '<ul class="knowledge-list">' + section.items.map((item) => "<li>" + escapeHtml(item) + "</li>").join("") + "</ul>";
+  const notes = section.notes.map((line) => '<p class="note">' + escapeHtml(line) + "</p>").join("");
+  return card(section.title, items + notes, true, { kind: "text" });
+};
 const ratePairsFromText = (text, names) => {
   const rows = [];
   const pattern = /由\s*([\d.]+)%\s*(?:升至|降至|到)\s*([\d.]+)%/g;
@@ -652,7 +663,8 @@ export const renderBasicsSheet = (content, { module = "质量分析", snapshot =
   const judge = judgeOf(source);
   const cards = cardsFor(source, module, snapshot, visualSpec);
   const actions = actionHtml(source);
-  return `<div class="basics-wrap report-publisher"><style>${css}</style><div class="page"><h1>${escapeHtml(title)}</h1>${period ? `<p class="sub">${escapeHtml(period)}</p>` : ""}${judge ? `<p class="judge">${escapeHtml(judge)}</p>` : ""}<div class="rows">${packChartRows(cards)}${actions ? `<div class="row c1 action">${actions}</div>` : ""}</div></div></div>`;
+  const knowledge = knowledgeHtml(source);
+  return `<div class="basics-wrap report-publisher"><style>${css}</style><div class="page"><h1>${escapeHtml(title)}</h1>${period ? `<p class="sub">${escapeHtml(period)}</p>` : ""}${judge ? `<p class="judge">${escapeHtml(judge)}</p>` : ""}<div class="rows">${packChartRows(cards)}${actions ? `<div class="row c1 action">${actions}</div>` : ""}${knowledge ? `<div class="row c1 action">${knowledge}</div>` : ""}</div></div></div>`;
 };
 
 export const installBasicsInteraction = () => {
